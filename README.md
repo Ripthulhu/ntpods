@@ -10,76 +10,58 @@
 > Secure Boot can block Test Mode, and changing either setting can trigger
 > BitLocker recovery. Save your recovery key before changing boot settings.
 
-NTPods brings AirPods controls, battery information and a virtual microphone to
-Windows. This is [Ripthulhu's fork](https://github.com/Ripthulhu/ntpods) of
-[arctumn/NTPods](https://github.com/arctumn/ntpods), based on commit
-`188e45df20259b616ce155be812086259d1a2488`. NTPods derives its protocol work from
+AirPods controls, battery levels and a microphone for Windows 11 x64.
+Based on [arctumn/NTPods](https://github.com/arctumn/ntpods) and
 [LibrePods](https://github.com/librepods-org/librepods).
 
-This fork targets Windows 11 x64 and remains experimental. The
-[microphone driver's licensing issue](THIRD_PARTY.md) is unresolved.
-Production signing and hardware acceptance also remain incomplete. See the
-[validation record](docs/WINDOWS-VALIDATION.md) for completed checks and open gates.
-
 ## Preview
-
-Rendered from the current Windows UI with sample data; no AirPods were connected.
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: light)" srcset="docs/images/app-light.png">
-    <img src="docs/images/app-dark.png" alt="NTPods settings with AirPods artwork, individual battery readings and the Adaptive listening-mode slider" width="640">
+    <img src="docs/images/app-dark.png" alt="NTPods with AirPods Pro connected" width="640">
   </picture>
 </p>
 
-The Dynamic Island shows listening-mode changes and individual battery levels.
+### Dynamic Island
 
-<p align="center"><img src="docs/images/dynamic-island.png" alt="NTPods Dynamic Island with AirPods artwork and separate left, right and case battery levels" width="440"></p>
+<p align="center"><img src="docs/images/dynamic-island.png" alt="Dynamic Island showing Adaptive mode and battery levels" width="440"></p>
 
-## Features in this fork
+## Features
 
-- A focused settings page with continuous listening-mode and Adaptive controls,
-  animated menus, and a battery popup on the primary monitor.
-- Connected and nearby battery readings, with per-component freshness and cached
-  case percentages.
-- Native three-band EQ, Conversation Awareness, personalized volume and
-  model-specific device settings.
-- Automatic pause that resumes only playback NTPods paused.
-- A 48 kHz mono Windows microphone while playback remains stereo, with automatic,
-  delayed-stop, keep-active and manual modes.
-- Live head movement and heart-rate views on supported models.
-- Account-restricted driver and IPC access, bounded microphone recovery, and
-  installation under Program Files with a persistent Start with Windows option.
+- Listening-mode controls with an adjustable Adaptive slider.
+- Earbud and case battery levels, including nearby charging updates.
+- Three-band EQ, Conversation Awareness and Personalized Volume.
+- Automatic pause when you remove an earbud. Manually paused audio stays paused.
+- A 48 kHz mono microphone while playback stays stereo, with automatic,
+  timed, always-active and manual controls.
+- Live head tracking and heart rate on supported models.
+- A Dynamic Island popup and Start with Windows.
 
-Controls depend on the model, firmware and reported settings. Hardware checks used
-an Intel AX200 and AirPods Pro 3 on firmware 9A348. First-generation AirPods Pro
-also passed battery, listening-mode and automatic-pause checks. Other catalog
-entries still need hardware testing; see [model support](docs/WINDOWS-MODEL-SUPPORT.md).
+Tested with an Intel AX200 and AirPods Pro 3 on firmware 9A348. First-generation
+AirPods Pro also passed battery, listening-mode and automatic-pause checks.
+Features vary by model and firmware; see [model support](docs/WINDOWS-MODEL-SUPPORT.md).
 
-Short stereo recording tests and twenty microphone start/stop cycles passed on
-Pro 3. A sustained recording exposed one-sided playback after stopping; the
-subsequent automatic recovery passed the shorter cycle checks. Sustained capture
-with that recovery, calibrated latency/drift, Discord and interrupted recovery
-still need validation. Windows keeps the existing A2DP playback driver and codec
-configuration. See [controls and protocol limits](docs/WINDOWS-FEATURES.md).
+Microphone recovery briefly interrupts playback. Short recordings and twenty
+start/stop cycles passed; longer recordings, latency, drift, Discord and interrupted
+recovery still need testing. See [test results](docs/WINDOWS-VALIDATION.md).
+NTPods preserves your existing A2DP playback driver and codec settings.
 
-The supported build uses the Windows 11 ACX microphone driver. Older Windows and
-PortCls support are outside this fork's validation scope. For Android or Linux,
-use [LibrePods](https://github.com/librepods-org/librepods).
+This build uses the Windows 11 ACX microphone driver. Older Windows versions
+are untested. For Android or Linux, use [LibrePods](https://github.com/librepods-org/librepods).
 
 ## Installing on Windows
 
-Download the experimental **MSI** or **ZIP** from this fork's
-[releases](https://github.com/Ripthulhu/ntpods/releases). The MSI includes a setup
-wizard; the ZIP includes the same app and drivers for manual installation.
+Download the **MSI** for guided setup or the **ZIP** for manual installation from
+[releases](https://github.com/Ripthulhu/ntpods/releases). Both include the app and
+drivers and require Test Mode. Source archives and checksums are included.
+See the [installation guide](windows/README.md) and [release notes](docs/WINDOWS-RELEASE-NOTES.md).
+Upstream nightly builds do not include this fork's changes.
 
-Read the [release notes](docs/WINDOWS-RELEASE-NOTES.md),
-[Windows README](windows/README.md) and [validation record](docs/WINDOWS-VALIDATION.md)
-before installing. **Test Mode must already be enabled.** These downloads are
-experimental, and the licensing issue described above remains unresolved.
-Source archives and checksums accompany each release. See the
-[build instructions](docs/BUILD-WINDOWS.md) to build locally. Upstream nightly
-builds do not include this fork's changes.
+## Contributing
+
+Start with [CONTRIBUTING.md](CONTRIBUTING.md) for the code layout and tests,
+or [build the app and drivers](docs/BUILD-WINDOWS.md).
 
 ## What's in the repo
 
@@ -93,8 +75,8 @@ builds do not include this fork's changes.
 - [arctumn/NTPods](https://github.com/arctumn/ntpods) for the Windows application,
   daemon, drivers and installer this fork builds on.
 - [LibrePods](https://github.com/kavishdevar/librepods) by
-  [kavishdevar](https://github.com/kavishdevar) and its contributors. The protocol
-  work this is built on comes from there. NTPods isn't affiliated with LibrePods.
+  [kavishdevar](https://github.com/kavishdevar) and its contributors for the AirPods
+  protocol work. NTPods isn't affiliated with LibrePods.
 - [@thibaup](https://github.com/thibaup) (heart rate on Android, LibrePods PR #702)
   and [@SAGIRIxr](https://github.com/SAGIRIxr) for their heart-rate findings.
 - [@Gab4545](https://github.com/Gab4545) for building the drivers in CI.

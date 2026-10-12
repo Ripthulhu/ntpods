@@ -17,7 +17,7 @@
         "windows/winui/NTPods.WinUI/Controls/FeaturesCard.xaml",
         "windows/winui/NTPods.WinUI/Controls/BatteryCard.xaml"
       ],
-      "previewScope": "Self-contained HTML specimens represent native composition. Browser controls and focus feedback are approximations; XAML remains authoritative. Native device artwork and mode raster icons are omitted from these specimens. Specimens are not connected to hardware.",
+      "previewScope": "HTML layout examples; use the XAML controls for native appearance and interaction.",
       "primaryText": "WinUI TextFillColorPrimaryBrush",
       "highContrast": "Custom colors map to SystemColorWindowColor, SystemColorWindowTextColor, SystemColorHighlightColor and SystemColorHighlightTextColor.",
       "inheritedTemplates": ["DefaultButtonStyle", "DefaultToggleButtonStyle", "DefaultToggleSwitchStyle", "TextBox", "ComboBox", "RadioButtons", "Slider", "NavigationView", "MenuFlyout", "InfoBar"],
@@ -68,16 +68,16 @@
     },
     "elevation": {
       "groups": "Solid fills without custom shadows or outer borders.",
-      "selection": "One-DIP AppleDividerBrush border around the moving capsule.",
+      "selection": "Refracting glass capsule with a fine rim and soft shadow; native fallback uses a one-DIP AppleDividerBrush border.",
       "nativeSurfaces": "Menu, tooltip and control feedback use WinUI templates.",
       "serialPrivacy": "The serial field alone uses AcrylicBrush with TintOpacity 0.55 and TintLuminosityOpacity 0.9."
     },
     "interaction": {
-      "listeningSelection": "Direct pointer-following geometry; no custom animation duration or easing.",
+      "listeningSelection": "Follow the pointer directly while dragging; use spring motion for mode widths and release. See DESIGN.md.",
       "adaptiveFocus": "Two-DIP TextFillColorPrimaryBrush outline, corner radius 27 DIP, inset 1 DIP.",
       "adaptiveRange": "0–100; keyboard small change 1 and large change 10.",
       "requestFeedback": "Gesture preview, pending request, confirmed setting and errors have separate rendering paths.",
-      "offVisibility": "Off requires reported AllowOff = 1 and is hidden while Adaptive is expanded."
+      "offVisibility": "Legacy ANC models offer Off directly; newer Pro models use reported or saved Allow Off. Hide Off while Adaptive is expanded."
     }
   },
   "components": [
@@ -124,21 +124,14 @@
       "name": "Expanded Adaptive geometry",
       "kind": "custom",
       "refersTo": "listening-track-light",
-      "description": "Five-unit geometry with the middle three units assigned to Adaptive. Raster mode icons are omitted. This range previews the layout only; native shared-thumb interaction is defined in NoiseControlCard.",
+      "description": "Five equal units, with three for Adaptive. NoiseControlCard implements the shared thumb and icons.",
       "html": "<div class=\"ds-modes\"><div class=\"ds-mode-track\"><button class=\"ds-mode-end\" aria-label=\"Transparency\" type=\"button\"></button><div class=\"ds-adaptive\"><svg class=\"ds-adaptive-min\" viewBox=\"0 0 16 16\" aria-hidden=\"true\"><circle cx=\"8\" cy=\"8\" r=\"6\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-dasharray=\"1 2\"/></svg><input class=\"ds-adaptive-range\" type=\"range\" min=\"0\" max=\"100\" value=\"50\" aria-label=\"Adaptive strength\"><svg class=\"ds-adaptive-max\" viewBox=\"0 0 16 16\" aria-hidden=\"true\"><circle cx=\"8\" cy=\"8\" r=\"6\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"/></svg></div><button class=\"ds-mode-end\" aria-label=\"Noise cancellation\" type=\"button\"></button></div><div class=\"ds-mode-labels\"><span>Transparency</span><span>Adaptive</span><span>Noise cancellation</span></div></div>",
       "css": ".ds-modes{font-family:'Segoe UI',sans-serif;color:CanvasText}.ds-mode-track{display:grid;grid-template-columns:1fr 3fr 1fr;gap:0;background:#E3E3E8;border-radius:30px;padding:4px;height:54px}.ds-mode-end{background:transparent;border:0;border-radius:26px;padding:0;min-width:0}.ds-mode-end:hover,.ds-mode-end:active{background:#E7E7EB}.ds-mode-end:focus-visible{outline:2px solid Highlight;outline-offset:-2px}.ds-adaptive{position:relative;background:rgba(255,255,255,.5);border-radius:27px;display:flex;align-items:center;min-width:0}.ds-adaptive-min,.ds-adaptive-max{position:absolute;width:13px;height:13px;pointer-events:none}.ds-adaptive-min{left:16px}.ds-adaptive-max{right:16px}.ds-adaptive-range{appearance:none;background:transparent;margin:0;width:100%;height:54px;z-index:1}.ds-adaptive-range::-webkit-slider-runnable-track{background:transparent;height:54px}.ds-adaptive-range::-webkit-slider-thumb{appearance:none;background:#FFFFFF;border:1px solid #D1D1D6;border-radius:27px;width:33.333%;height:54px}.ds-adaptive-range:hover::-webkit-slider-thumb,.ds-adaptive-range:active::-webkit-slider-thumb{background:#FFFFFF}.ds-adaptive:focus-within{outline:2px solid CanvasText;outline-offset:-3px}.ds-adaptive-range:focus-visible{outline:0}.ds-mode-labels{display:grid;grid-template-columns:1fr 3fr 1fr;margin:8px 4px 0;font-size:12px;text-align:center}.ds-mode-labels span{margin:0 2px}"
-    },
-    {
-      "name": "Native top navigation",
-      "kind": "nav",
-      "description": "Device and app-settings destinations. Browser focus and selection represent the native NavigationView without recreating its template.",
-      "html": "<nav class=\"ds-nav\" aria-label=\"NTPods\"><button class=\"ds-nav-item\" type=\"button\" aria-current=\"page\">NTPods</button><button class=\"ds-nav-item\" type=\"button\">Settings</button></nav>",
-      "css": ".ds-nav{display:flex;background:#F2F2F7;color:CanvasText;font-family:'Segoe UI',sans-serif}.ds-nav-item{font:inherit;background:transparent;color:inherit;border:0;padding:12px 16px}.ds-nav-item[aria-current=page]{text-decoration:underline;text-decoration-color:#0066D6;text-underline-offset:8px}.ds-nav-item:hover,.ds-nav-item:active{background:ButtonFace}.ds-nav-item:focus-visible{outline:2px solid Highlight;outline-offset:-2px}"
     }
   ],
   "narrative": {
     "northStar": "LibrePods Apple appearance with native Windows controls",
-    "overview": "NTPods uses the user-selected LibrePods Apple appearance: a light gray or black page, rounded inset groups, device artwork, green switches and battery rings. The Windows app keeps native text, navigation, keyboard controls and accessibility semantics.",
+    "overview": "NTPods follows LibrePods' Apple appearance: a light gray or black page, rounded inset groups, device artwork, green switches and battery rings. Text, navigation, keyboard controls and accessibility use native Windows behavior.",
     "keyCharacteristics": [],
     "rules": [],
     "dos": [
@@ -148,7 +141,7 @@
       "Do reuse the existing device artwork and proportional image scaling."
     ],
     "donts": [
-      "Don't show Off before the device reports it enabled, or while Adaptive occupies its expanded region.",
+      "Show Off according to the model and Allow Off setting; hide it while Adaptive is expanded.",
       "Don't treat a drag preview or an outgoing request as confirmed device state.",
       "Don't replace native input and accessibility behavior with a visual-only control."
     ]

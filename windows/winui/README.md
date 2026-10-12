@@ -1,158 +1,80 @@
-# NTPods — WinUI 3 client (`ntpods-winui.exe`)
+# NTPods WinUI client
 
-![The WinUI 3 client](docs/screenshot-device.png)
+`ntpods-winui.exe` is the C# / WinUI 3 interface to `ntpodsd.exe`. The daemon owns
+the drivers, Bluetooth session and microphone decoding. The app displays its
+state and sends commands over named pipes.
 
-A native **C# / WinUI 3 (Windows App SDK)** front-end for NTPods.
+Normal launches show the main window; `--tray` starts it hidden. Closing the
+window hides it in the tray. **Quit** exits the app and shuts down the daemon.
 
-## Screenshots
+## Build and run
 
-| | |
-|---|---|
-| ![Light theme](docs/screenshot-device-light.png) | ![Narrow single-column layout](docs/screenshot-narrow.png) |
-| The device page in the light theme | Responsive: one column when narrow |
-| ![Settings](docs/screenshot-settings.png) | ![Tray menu](docs/screenshot-tray.png) |
-| Settings (theme, language, experimental) | Tray menu (battery + Noise Control + Mute) |
-| ![Hearing aid](docs/screenshot-hearing.png) | ![Connection island](docs/screenshot-island.png) |
-| Hearing aid controls | iOS-style connection island |
- It is the Windows client — a thin IPC client of the Rust daemon,
-**`ntpodsd.exe`**, which owns the drivers, the AAP session and the hi-res mic.
-(An earlier lightweight Rust tray was retired; this app carries its own tray.)
+Use [BUILD-WINDOWS.md](../../docs/BUILD-WINDOWS.md) for the toolchain and build
+commands. `windows/build.ps1` builds and tests the app, daemon, drivers and
+installer together.
 
-This app is **primarily a tray app**:
+WinUI needs Visual Studio's MSBuild. Plain `dotnet build` / `dotnet publish`
+can fail at the Windows App SDK PRI task. Keep the project's package versions
+and lock file together; do not change dependencies to work around a missing
+build tool.
 
-- It starts **hidden to the system tray**.
-- Left-click the tray icon (or **Open** in its menu) shows the main window.
-- Closing the window **hides it back to the tray** — it does not exit.
-- **Quit** in the tray menu exits the app and shuts the daemon down with it.
+The app is unpackaged and self-contained. Distribute the whole generated
+`winui/` directory, including `ntpods-winui.pri` and the runtime files, alongside
+the daemon and its FFmpeg DLLs. A lone executable is not a complete app.
 
-## What it talks to
-
-Two one-directional Windows named pipes (see `../ipc/src/lib.rs`):
-
-| Pipe | Direction | Purpose |
-|------|-----------|---------|
-| `NTPods-events` | daemon → app (read) | newline-delimited JSON events (`state` / `overlay` / `connect_prompt`) |
-| `NTPods-cmds`   | app → daemon (write) | newline-delimited JSON commands (`hello`, `set_anc`, …) |
-
-If the daemon isn't running when the app starts, it launches the sibling
-`ntpodsd.exe` (from `AppContext.BaseDirectory`) and retries every 500 ms. Put
-`ntpods-winui.exe` next to the other NTPods exes (the `dist/` layout).
-
-All pipe I/O is fully asynchronous (`ConnectAsync` / `ReadLineAsync` /
-`WriteAsync`) on background loops; snapshots are marshalled to the UI thread via
-`DispatcherQueue`.
-
-## Prerequisites
-
-- **Windows 10 1809 (17763)+ or Windows 11**, x64.
-- **Visual Studio 2022 (17.11+)** with the **.NET Desktop Development** workload
-  and the **Windows App SDK C# templates** component, *or* a standalone MSBuild
-  plus the SDKs below.
-- **.NET 10 SDK** (LTS).
-- **Windows 10 SDK (10.0.19041.0)** or newer (pulled in by the build tools
-  package, but the matching Windows SDK must be installed).
-- NuGet restore reaches nuget.org for the packages below.
-
-## Pinned versions
-
-| Component | Version |
-|-----------|---------|
-| Target framework | `net10.0-windows10.0.19041.0` (min `10.0.17763.0`) |
-| .NET SDK | **.NET 10** (LTS) |
-| `Microsoft.WindowsAppSDK` | **1.7.250606001** |
-| `Microsoft.Windows.SDK.BuildTools` | **10.0.26100.4188** |
-| `H.NotifyIcon.WinUI` | **2.3.0** |
-| RuntimeIdentifier | `win-x64` |
-
-The project is **unpackaged** (`WindowsPackageType=None`) and **self-contained**
-(`WindowsAppSDKSelfContained=true`, `SelfContained=true`), so the output is a
-plain `.exe` with the WinUI/WinAppSDK and .NET runtimes carried alongside — no
-MSIX, no machine-wide runtime install.
-
-> If NuGet cannot resolve an exact version above (feeds drift over time), bump to
-> the newest stable of the same major/minor — the code only uses stable public
-> API (`TaskbarIcon`, `MicaBackdrop`, `AppWindow`, `NamedPipeClientStream`,
-> `System.Text.Json`).
-
-## Build
-
-From this `winui/` directory (the folder with the `.sln`):
-
-```powershell
-# Restore + build (Release, x64)
-dotnet build NTPods.WinUI.sln -c Release -p:Platform=x64
-```
-
-or, to produce the self-contained unpackaged output explicitly:
-
-```powershell
-dotnet publish NTPods.WinUI\NTPods.WinUI.csproj -c Release -r win-x64 --self-contained true
-```
-
-With MSBuild directly:
-
-```powershell
-msbuild NTPods.WinUI.sln /t:Restore,Build /p:Configuration=Release /p:Platform=x64
-```
-
-The executable is emitted as **`ntpods-winui.exe`** under
-`NTPods.WinUI\bin\x64\Release\net10.0-windows10.0.19041.0\win-x64\`
-(`publish\` for the `dotnet publish` command). Copy it — plus its runtime files —
-next to `ntpodsd.exe`.
-
-## Run
+From the generated `winui/` directory:
 
 ```powershell
 .\ntpods-winui.exe
 ```
 
-It appears in the tray, connects to (or launches) `ntpodsd.exe`, and renders
-the state. The **Switch default UI to iced** button writes
-`%LOCALAPPDATA%\NTPods\ui.pref` = `iced`, so the tray's "Open App" launches
-the iced front-end by default next time.
+## IPC
 
-## Project layout
+The shared contract is in [`windows/ipc/src/lib.rs`](../ipc/src/lib.rs).
 
-```
-winui/
-  NTPods.WinUI.sln
-  NTPods.WinUI/
-    NTPods.WinUI.csproj
-    app.manifest
-    App.xaml / App.xaml.cs          bootstrap; wires tray + DaemonClient
-    MainWindow.xaml / .xaml.cs      Fluent UI (Mica, light/dark aware)
-    Ipc/
-      Messages.cs                   Snapshot/Battery DTOs, command DTOs, event parser
-      DaemonClient.cs               async named-pipe client + reconnect + daemon spawn
-    Tray/
-      TrayIcon.cs                   H.NotifyIcon.WinUI tray icon + Open/Quit menu
-    Services/
-      UiPreference.cs               read/write %LOCALAPPDATA%\NTPods\ui.pref
-    Assets/
-      app.ico  tray.ico  icon.png   NTPods icon (window / tray / app)
-      airpods.png                    AirPods product image for the device card
-```
+| Pipe | Direction | Contents |
+|------|-----------|----------|
+| `NTPods-events` | daemon to app | NDJSON state, overlay and connection-prompt events |
+| `NTPods-cmds` | app to daemon | NDJSON commands |
+
+`Ipc/DaemonClient.cs` handles connection, retries and daemon startup. It looks for
+`ntpodsd.exe` beside the client or in its parent directory, matching the generated
+distribution. Pipe I/O runs asynchronously; state updates reach WinUI through
+`DispatcherQueue`.
+
+## Source map
+
+| Path under `NTPods.WinUI/` | Purpose |
+|---------------------------|---------|
+| `App.xaml` / `App.xaml.cs` | Startup, tray integration and daemon client |
+| `MainWindow.xaml` / `MainWindow.xaml.cs` | Window and navigation |
+| `Pages/DevicePage.xaml` / `Pages/DevicePage.xaml.cs` | Device controls and battery display |
+| `Ipc/Messages.cs` | C# IPC types and event parsing |
+| `Ipc/DaemonClient.cs` | Named-pipe connection and session lifecycle |
+| `Tray/` | Tray icon and menu |
+| `Services/` | Localization, history, startup and other app services |
+| `Strings/` | Translations |
+| `Assets/` | Product artwork and application icons |
+
+The UI checks in [`windows/tests`](../tests/README.md) exercise IPC and shared
+interaction logic without opening the app. Visual changes also need a native
+WinUI check in light and dark themes, including narrow windows and reduced motion.
 
 ## Localization
 
-UI strings are externalized to `Strings/en-US/Resources.resw` (the base language).
-Two mechanisms use it:
+Strings live in `Strings/<culture>/Resources.resw`, with `en-US` as the fallback.
+`Services/Loc.cs` loads the embedded resources and updates bindings when the user
+changes language. `Localize.Get()` uses the same service for code lookups.
 
-- **XAML** labels carry `x:Uid` — the framework resolves `<Uid>.Text` /
-  `.Content` / `.Header` against the `.resw` automatically (no code).
-- **Runtime** strings (connection status, mute/unmute, the tray menu, toasts) are
-  fetched in code via `Services/Localize.cs` (`Localize.Get("Key")`), a thin
-  wrapper over the Windows App SDK `ResourceLoader`.
+To add a language, translate a copy of `Strings/en-US`, add its embedded resource
+to the project, and register the culture in `Loc.cs` and the language selector.
+The project also compiles the `.resw` files into `resources.pri`; keep that file
+in the distribution.
 
-To add a language, copy `Strings/en-US` to `Strings/<lang>` (e.g. `Strings/pt-PT`)
-and translate the `<value>`s — the build merges them into `resources.pri` and the
-OS display language selects the match at runtime. `en-US` stays the fallback
-(`<DefaultLanguage>` in the csproj).
+## Design
 
-## Visual identity
-
-The UI look comes from LibrePods (Android app + iced app), adapted to native
-Fluent: a **Mica** backdrop, rounded cards for the device/battery/sections, the
-AirPods product image in the device header, and the NTPods brand accent
-(`#039BE5`, the Android app's `light_blue_600`) applied to the progress bars and
-Fluent accent controls. It is light/dark-theme aware via system theme resources.
+Follow [DESIGN.md](../../DESIGN.md) and [AGENTS.md](../../AGENTS.md) when changing
+the interface. The approved design uses one focused settings page, rounded
+sections, AirPods artwork and the LibrePods-inspired listening control and
+notification island. Keep motion, typography and spacing consistent with the
+existing controls.

@@ -1,15 +1,11 @@
-//! Shared IPC protocol between `ntpodsd` (the driver-owning daemon) and the
-//! NTPods UIs (the tray + the full app). Newline-delimited JSON over a Windows
-//! named pipe — see `../../../docs/windows/daemon-ipc/PLAN.md`.
+//! NDJSON protocol between `ntpodsd` and the WinUI app over Windows named pipes.
+//! See `../../docs/daemon-ipc/PLAN.md`.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// Two one-directional named pipes (a single duplex pipe deadlocks: a Windows
-/// *synchronous* handle serializes I/O, so a blocking ReadFile for commands
-/// stalls the WriteFile for events on the same handle). The daemon only WRITES
-/// events on `PIPE_EVENTS` and only READS commands on `PIPE_CMDS`, so no handle
-/// ever does both directions concurrently.
+/// Separate event and command pipes avoid synchronous-handle serialization:
+/// a blocking ReadFile would otherwise stall WriteFile on the same handle.
 pub const PIPE_EVENTS: &str = r"\\.\pipe\NTPods-events";
 pub const PIPE_CMDS: &str = r"\\.\pipe\NTPods-cmds";
 
@@ -205,10 +201,8 @@ pub struct Snapshot {
     pub firmware: String,
     #[serde(default)]
     pub serial: String,
-    /// Every host the AirPods report themselves connected to (AAP 0x2E) — this PC
-    /// plus whatever else is sharing them. Multipoint is invisible to Windows, so
-    /// this list is the only place the user can see that a phone is also holding
-    /// the buds. Empty until the first 0x2E arrives. (serde default: older snapshots.)
+    /// Hosts reported by AAP 0x2E, including connections Windows cannot observe.
+    /// Empty until the first report, or when reading an older snapshot.
     #[serde(default)]
     pub multipoint: Vec<ConnectedDevice>,
 }
@@ -550,12 +544,16 @@ mod tests {
         for present in [None, Some(false), Some(true)] {
             let observation = BatteryObservation { present, ..legacy };
             let text = serde_json::to_string(&observation).unwrap();
-            assert_eq!(serde_json::from_str::<BatteryObservation>(&text).unwrap(), observation);
+            assert_eq!(
+                serde_json::from_str::<BatteryObservation>(&text).unwrap(),
+                observation
+            );
         }
         for invalid in ["0", "1", "\"false\"", "{}"] {
             assert!(serde_json::from_str::<BatteryObservation>(&format!(
                 r#"{{"timestamp_ms":1000,"live":false,"present":{invalid}}}"#
-            )).is_err());
+            ))
+            .is_err());
         }
     }
 

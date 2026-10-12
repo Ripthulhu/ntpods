@@ -55,9 +55,7 @@ public partial class App : Application
             client: Daemon);
         _tray.Show();
 
-        // Surface daemon overlays as the centred floating island (not a Windows
-        // toast — the toast was the corner card the user didn't want). Marshalled
-        // to the UI thread.
+        // Show daemon overlays in the island on the UI thread.
         Daemon.OverlayReceived += (title, body) =>
             _window.DispatcherQueue.TryEnqueue(() => ShowIslandMessage(title, body));
 
@@ -75,11 +73,8 @@ public partial class App : Application
             });
         };
 
-        // Show the connection island on the AirPods connect transition only
-        // (Snapshot.Connected false→true). Tracking the snapshot's connected flag
-        // — rather than the pipe-level ConnectionChanged — means a daemon pipe
-        // reconnect (which re-pushes the same connected=true snapshot) does not
-        // re-fire the popup. Marshalled to the UI thread.
+        // Track AirPods connection transitions so reopening the daemon pipe does
+        // not repeat the connection popup.
         Daemon.SnapshotReceived += s =>
         {
             bool sessionReady = Daemon.IsReady;
@@ -106,9 +101,7 @@ public partial class App : Application
         if (!startHidden) _window.ShowFromTray();
     }
 
-    /// Create (or reuse) the single island window and play the connect popup.
-    /// Must run on the UI thread. Fully guarded — a popup failure never crashes
-    /// the app; at worst there is simply no island.
+    /// Show the connection popup on the UI thread, containing window-creation failures.
     private void ShowIsland(Snapshot snapshot)
     {
         try

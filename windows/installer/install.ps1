@@ -1,8 +1,7 @@
 <#
-    NTPods for Windows — one-shot installer (the zip install; NTPods.msi does the
-    same thing with a normal setup wizard).
+    NTPods ZIP installer. NTPods.msi uses the same shared installation steps.
 
-    Installs BOTH kernel drivers (test-signed on the fly):
+    Test-signs and installs both kernel drivers:
       • NTPodsAAP  — opens the AirPods AAP L2CAP channel (battery, ANC, mic, …).
       • NTPodsMic  — a virtual microphone so any app can use the AirPods mic.
                      Hardened ACX driver; Windows 11 22H2 or newer only.
@@ -10,14 +9,14 @@
     two elevated helper tasks (driver recovery, mic rename) and adds the apps to
     startup (the WinUI app launches minimised to the tray).
 
-    RUN AS ADMINISTRATOR, and only AFTER you have:
+    Run as administrator after you have:
       1. Backed up your BitLocker recovery key.
       2. Disabled Secure Boot in your firmware/BIOS.
       3. Enabled test signing:  bcdedit /set testsigning on   (then rebooted).
 
-    Everything it needs is in this folder: driver packages (with catalogs), devcon
-    and the apps. Nothing from Visual Studio, the Windows SDK or the WDK has to be
-    installed — the drivers are signed with PowerShell's own Authenticode support.
+    The distribution includes the driver packages, catalogs, devcon and apps.
+    Setup uses PowerShell Authenticode signing; no development tools are needed
+    on the test PC.
 
     Usage (elevated):  powershell -ExecutionPolicy Bypass -File .\install.ps1
     With BitLocker on it asks you to confirm the recovery key is saved; -Yes
@@ -30,7 +29,7 @@ $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $dest = Join-Path $env:ProgramFiles 'NTPods'
 $sid = Get-CurrentUserSid
 
-# ---- 0. preflight: fail BEFORE touching certificates or drivers -------------
+# ---- 0. preflight: check before changing certificates or drivers ------------
 Write-Warning 'NTPods requires Test Mode, which weakens Windows driver-signature checks. These experimental drivers are not Microsoft production-signed. Do not enable Test Mode on your everyday or work PC for NTPods; use a dedicated test PC.'
 if (-not (Test-Admin)) { throw 'Run this from an ADMINISTRATOR PowerShell.' }
 Assert-UserSid $sid
@@ -52,8 +51,7 @@ Test Mode is not active, so Windows would refuse to load the NTPods drivers.
   4. Reboot ("Test Mode" shows in the bottom-right corner), then run this again.
 "@
 }
-# Test Mode is on, but whoever turns it (or Secure Boot) back off later hits the
-# same BitLocker prompt, so make sure the key is saved before going further.
+# Later changes to Test Mode or Secure Boot can also trigger BitLocker recovery.
 if ($bitlocker) {
     Write-Host "BitLocker is ON for $env:SystemDrive.`n$script:BitLockerAdvice" -ForegroundColor Yellow
     if (-not $Yes) {
@@ -113,10 +111,9 @@ Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\NTPods' -Name InstalledUserSid -Va
 Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\NTPods' -Name InstallKind -Value 'zip'
 
 # ---- 5. auto-start at login -------------------------------------------------
-# The daemon is the always-on background process (per-user, in the session — NOT a
-# SYSTEM service, which couldn't touch the user's audio/mic). The WinUI app starts
-# minimised to the tray (--tray) and is the UI; closing its window hides it back.
-# Same Run values the app's own "Start with Windows" setting uses.
+# The daemon runs in the user's session to access their audio devices.
+# WinUI starts hidden (--tray). These are the same Run values used by the app's
+# "Start with Windows" setting.
 Write-Host '==> Adding the daemon + WinUI app to startup...'
 $startup = Get-StartupDir $env:APPDATA
 foreach ($l in 'NTPods Daemon.lnk', 'NTPods.lnk') {   # older installs used shortcuts

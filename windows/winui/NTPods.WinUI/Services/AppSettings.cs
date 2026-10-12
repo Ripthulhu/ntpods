@@ -4,10 +4,8 @@ using Microsoft.UI.Xaml;
 
 namespace NTPods.WinUI.Services;
 
-/// Small persisted settings for the WinUI app, stored as JSON at
-/// %LOCALAPPDATA%\NTPods\winui-settings.json. An unpackaged app has no
-/// ApplicationData.LocalSettings, so we keep our own file next to the daemon's
-/// data. Best-effort — a read/write failure just falls back to defaults.
+/// JSON settings at %LOCALAPPDATA%\NTPods\winui-settings.json for the unpackaged app.
+/// Read failures use defaults; write failures leave the in-memory settings intact.
 public static class AppSettings
 {
     private sealed class Model
@@ -15,18 +13,14 @@ public static class AppSettings
         // 0 = System (Default), 1 = Light, 2 = Dark — the ThemeButtons indices.
         public int ThemeIndex { get; set; }
 
-        // Experimental gate for the experimental main-UI cards (hearing aid — its ATT
-        // channel is still maturing). Off by default. Heart rate used to sit behind
-        // this too; it works now (docs/heart-rate.md) and is always shown.
+        // Hearing assistance is opt-in; heart rate is controlled separately.
         public bool EnableExperimental { get; set; }
 
         // BCP-47 UI language override (e.g. "pt-PT"); "" = follow the system.
         // Applied as ApplicationLanguages.PrimaryLanguageOverride at startup.
         public string LanguageTag { get; set; } = "";
 
-        // Last-seen device model number (from the 0x1D metadata). Cached so the
-        // connect island can show the right artwork *immediately*, before this
-        // session's metadata packet arrives.
+        // Cache model 0x1D metadata for island artwork before the next session reports it.
         public string LastModel { get; set; } = "";
         public string LastDeviceId { get; set; } = "";
     }

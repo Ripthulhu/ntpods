@@ -1,19 +1,14 @@
 #!/usr/bin/env bash
-# Fetch the minimal FFmpeg 7.1 shared libraries the daemon links against for
-# AAC-ELD decode (avcodec / avutil / swresample) into vendor/ffmpeg — so the
-# ~28k lines of FFmpeg headers are NOT vendored into git. Runs both on the
-# Windows CI runner (Git Bash) and locally (WSL / Linux cross-build).
+# Fetch FFmpeg 7.1 shared libraries for AAC-ELD decoding into vendor/ffmpeg.
+# Runs in Git Bash on Windows and in WSL / Linux for cross-builds.
 #
-# We copy BOTH import-lib formats: .lib (MSVC — what CI's default target uses)
-# and .dll.a (MinGW — the x86_64-pc-windows-gnu cross-build), so build.rs links
-# under either toolchain. Pinned to a dated BtbN autobuild tag + SHA256 (NOT the
-# rolling "latest" tag, which gets rebuilt and breaks the checksum).
+# Copy .lib (MSVC) and .dll.a (MinGW) import libraries for both targets.
+# Pin a dated BtbN autobuild tag and SHA256; the rolling latest tag changes.
 #
-# IMPORTANT — pin only to the LAST autobuild OF A MONTH (…-MM-{28..31}-…). BtbN
-# keeps the last ~14 daily builds plus one build per month (~2 years back) and
-# deletes the rest, so a mid-month tag 404s a fortnight later — which is exactly
-# how this broke before. To move versions: pick a month-end tag, keep the
-# av*-NN.dll SONAMEs in sync with what the app loads, update URL + URL_SHA256.
+# Use the last autobuild of a month. BtbN retains about 14 daily builds and one
+# monthly build for about two years; other daily tags are pruned. When updating,
+# check the DLL SONAMEs and update URL and URL_SHA256 together with the source
+# archives documented in docs/FFMPEG-SOURCES.md.
 set -euo pipefail
 
 URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-07-31-14-10/ffmpeg-n7.1.5-12-g1fdbca85aa-win64-lgpl-shared-7.1.zip"

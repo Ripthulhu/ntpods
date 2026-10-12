@@ -1,13 +1,7 @@
-//! Auto-rename the virtual microphone to the connected device's name (e.g.
-//! "AirPods Pro de Pedro", "Beats Fit Pro"), so calls/recordings show that.
-//!
-//! Renaming an audio endpoint writes to HKLM and needs admin, but the tray runs
-//! unelevated. So `install.ps1` registers an elevated, on-demand scheduled task
-//! ("NTPods Rename Mic") that runs `rename-mic.ps1` with highest privileges. We
-//! drop the desired name in a file and trigger the task via `schtasks /run`,
-//! which runs it elevated WITHOUT a UAC prompt. `rename-mic.ps1` is idempotent —
-//! it does nothing (no audio-service restart) when the mic is already named
-//! correctly, so firing this on every launch is cheap.
+//! Name the virtual microphone after the connected device.
+//! Endpoint names are stored in HKLM, so the unelevated daemon writes the desired
+//! name to a file and triggers the installer-created "NTPods Rename Mic" task.
+//! `rename-mic.ps1` skips the write and audio-service restart when the name matches.
 
 use std::os::windows::process::CommandExt;
 use std::process::Command;
@@ -15,9 +9,8 @@ use std::process::Command;
 const TASK_NAME: &str = "NTPods Rename Mic";
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-/// Best-effort, non-blocking: publish `dev_name` and kick the elevated rename
-/// task. Never blocks the tray or surfaces errors — if the task isn't installed,
-/// an elevated `rename-mic.ps1 "<name>"` still works.
+/// Queue an endpoint rename without blocking or surfacing task errors.
+/// If the task is missing, run `rename-mic.ps1 "<name>"` as administrator.
 pub fn apply(dev_name: &str) {
     let name = dev_name.trim().to_string();
     if name.is_empty() {

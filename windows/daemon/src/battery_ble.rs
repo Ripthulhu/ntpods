@@ -1208,11 +1208,16 @@ mod tests {
             ..Default::default()
         };
         for (at, packet) in [
-            (1000, &[4, 0, 4, 0, 4, 0, 2, 4, 1, 80, 2, 1, 2, 1, 81, 2, 1][..]),
+            (
+                1000,
+                &[4, 0, 4, 0, 4, 0, 2, 4, 1, 80, 2, 1, 2, 1, 81, 2, 1][..],
+            ),
             (2000, &[4, 0, 4, 0, 4, 0, 1, 2, 1, 255, 4, 1][..]),
             (3000, &[4, 0, 4, 0, 4, 0, 1, 4, 1, 79, 2, 1][..]),
         ] {
-            crate::aap::parse_battery(packet).unwrap().apply_to_state(&mut state, at);
+            crate::aap::parse_battery(packet)
+                .unwrap()
+                .apply_to_state(&mut state, at);
             refresh_live(&mut state, at);
         }
         let ages = state.battery_freshness.unwrap();

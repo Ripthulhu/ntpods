@@ -1,18 +1,20 @@
 # Control Commands
 
-AACP uses opcode `9` for control commands. opcodes are 16 bit integers that specify the kind of action being done. The length of a control command is fixed to 7 bytes + 4 bytes header (`04 00 04 00`)
+AACP control commands use the 16-bit opcode `9`. Each command is seven bytes plus the four-byte header (`04 00 04 00`).
 
-An AACP packet is formated as:
+An AACP packet is formatted as:
 
 `04 00 04 00 [opcode, little endian] [data]`
 
-So, our control commands becomes
+Control commands use this layout:
 
 ```
 04 00 04 00 09 00 [identifier] [data1] [data2] [data3] [data4]
 ```
 
-Bytes that are not used are set to `0x00`. From what I've observed, the `data3` and `data4` are never used, and hence always zero. And, the `data2` is usually used when the configuration can be different for the two buds: like, to change the long press mode. Or, if there can be two "state" variables for the same feature: like the Hearing Aid feature.
+Unused bytes are `0x00`. In the observed packets, `data3` and `data4` are always zero. `data2`
+usually carries a separate setting for the second bud, such as its long-press mode, or a second
+state variable for one feature, such as Hearing Aid.
 
 ## Identifiers and details 
 
@@ -232,5 +234,5 @@ Values: 0 to 100.
 Format: Single value (1 byte)
 
 > [!NOTE]
-> - These identifiers have been extracted from the iOS 19.1 Beta (23B5044l)'s bluetooth stack. 
-> - I have already added the ranges of values a command takes that I know of. Feel free to experiment by sending the packets for which the range/values are not given here.
+> These identifiers were extracted from the iOS 19.1 Beta (23B5044l) Bluetooth stack. Known value
+> ranges are listed above; unspecified values remain unverified.

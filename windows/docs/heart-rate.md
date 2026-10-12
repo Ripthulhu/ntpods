@@ -1,10 +1,8 @@
 # Heart rate on Windows
 
-**Short version: heart rate works on Windows.** AirPods Pro 3 stream heart rate at
-1 Hz into the app. The fix was not in the AAP protocol at all. It was the **L2CAP
-MTU of the AAP channel**, which is set by the driver. This page records the cause,
-what the daemon sends and decodes, and what was ruled out on the way, so nobody has
-to repeat it.
+AirPods Pro 3 stream heart rate at 1 Hz into the app. This required increasing
+the AAP channel's L2CAP MTU in the driver. This page records the channel settings,
+packet format and experiments that identified the cause.
 
 Verified on AirPods Pro 3 (A3063/A3064) with iOS 27 firmware, Windows 11 and an
 Intel AX210, 2026-09-29.
@@ -13,8 +11,8 @@ Intel AX210, 2026-09-29.
 
 ## The cause: the AAP channel's MTU
 
-For months the AirPods *accepted* every heart-rate request and never sent a
-reading. Two things were behind it.
+The AirPods accepted heart-rate requests but sent no readings with the original
+channel configuration:
 
 - **The driver opened the AAP channel (PSM `0x1001`) without an MTU option.**
   `bthport` then sent a Configure Request with no MTU, and the inbound MTU stayed
@@ -24,9 +22,9 @@ reading. Two things were behind it.
 
 | RTBuddy service | descriptor size | fits in 672? |
 |---|---|---|
-| 16 `devmotion6` | ~521 B | ✅ |
-| 14 `activity` (+ 18) | ~573 B | ✅ |
-| 19 `HEARTRATE` / 20 `HEARTRATEv2` | **~920 B** | ❌ |
+| 16 `devmotion6` | ~521 B | Yes |
+| 14 `activity` (+ 18) | ~573 B | Yes |
+| 19 `HEARTRATE` / 20 `HEARTRATEv2` | ~920 B | No |
 
 With 672, the heart-rate services were never advertised to this host, and the
 symptoms followed from that:
@@ -113,7 +111,7 @@ at 672 bytes.
 - **Link security alone.** An authenticated + encrypted channel with MTU 672 still
   gave nothing.
 
-What finally isolated it was driving the same AX210 with **Bumble** (WinUSB) at
+The cause was isolated by driving the same AX210 with **Bumble** (WinUSB) at
 MTU 1691. Right after the AACP connect, the buds pushed the HR descriptors on
 their own and streamed BPM. Comparing descriptor sizes against the 672-byte MTU
 seen in older btvs captures pointed at the channel configuration.
@@ -129,8 +127,8 @@ Two protocol notes from the investigation:
 
 ## In the app
 
-The **Heart Rate** card is always on the device page. It is no longer behind
-Settings ▸ Experimental. Switching **Monitor heart rate** on starts the stream.
+On supported models, the device page includes a **Heart Rate** section.
+Switching **Monitor heart rate** on starts the stream.
 
 - The card shows the current BPM and a graph of the last minute, with min / avg /
   max. Hovering a point shows its value.
@@ -153,5 +151,5 @@ extra battery while it's on.
   enable and start sequence.
 - [`daemon/src/hr.rs`](../daemon/src/hr.rs) holds the RTBuddy decoder and the
   validity rules.
-- Upstream PR #702 is the Android heart-rate implementation. Our write-up of the MTU
-  finding is in its thread.
+- Upstream PR #702 contains the Android heart-rate implementation and the MTU
+  investigation discussion.

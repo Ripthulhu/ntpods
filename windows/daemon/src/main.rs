@@ -1,7 +1,6 @@
-//! ntpodsd — the NTPods Windows daemon. Owns the exclusive AAP driver
-//! handle, the AAP session, and the hi-res mic pipeline, and serves the tray /
-//! full app over a named-pipe IPC (NDJSON). See ../../../docs/windows/daemon-ipc/PLAN.md.
-//! Runs headless — no console window (it's spawned by the tray/app).
+//! NTPods background service: AAP connection, device state and microphone pipeline.
+//! Serves the WinUI app over NDJSON pipes; see ../../docs/daemon-ipc/PLAN.md.
+//! Runs without a console window.
 
 #![windows_subsystem = "windows"]
 #![allow(dead_code)]
@@ -22,6 +21,7 @@ mod hearing;
 mod helper_launch;
 mod hr;
 mod hrdb;
+mod ipc_server;
 mod le;
 mod media;
 mod mic_lifecycle;
@@ -38,18 +38,9 @@ use std::{io, ptr};
 
 use connection_request::ConnectionRequest;
 use ntpods_ipc as ipc;
-use ntpods_ipc::{to_line, Command, Event, Snapshot, PIPE_CMDS, PIPE_EVENTS};
+use ntpods_ipc::{to_line, Command, Event, Snapshot};
 
-use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, ERROR_PIPE_CONNECTED, HANDLE,
-    INVALID_HANDLE_VALUE,
-};
-use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
-use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile, PIPE_ACCESS_DUPLEX};
-use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
-    PIPE_TYPE_BYTE, PIPE_WAIT,
-};
+use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
 use windows_sys::Win32::System::Threading::CreateMutexW;
 
 fn wide(s: &str) -> Vec<u16> {
@@ -60,9 +51,7 @@ fn cooldown_elapsed(last: Option<Instant>, now: Instant, cooldown: Duration) -> 
     last.is_none_or(|last| now.duration_since(last) >= cooldown)
 }
 
-/// ISO 8601 UTC, e.g. `2026-09-30T18:06:02.071Z`. The date and the `Z` are there
-/// so nobody has to guess the time zone when matching log lines with a bug report
-/// or another log (a bare HH:MM:SS in UTC read as an hour off in Portugal).
+/// ISO 8601 UTC with milliseconds, for matching timestamps across logs.
 fn utc_timestamp(d: std::time::Duration) -> String {
     let secs = d.as_secs();
     let (days, tod) = ((secs / 86_400) as i64, secs % 86_400);
@@ -115,18 +104,6 @@ fn battery_text(b: &ntpods_ipc::Battery, connected: bool) -> String {
     )
 }
 
-/// Owns a client's pipe HANDLE; closes it once both the reader and writer
-/// threads have dropped their `Arc<Pipe>`. Duplex pipes allow the reader and
-/// writer to use the same handle concurrently.
-struct Pipe(HANDLE);
-impl Drop for Pipe {
-    fn drop(&mut self) {
-        unsafe { CloseHandle(self.0) };
-    }
-}
-unsafe impl Send for Pipe {}
-unsafe impl Sync for Pipe {}
-
 /// Outgoing queue to one client (drained by its writer thread — so a slow client
 /// never blocks the session/broadcast, i.e. async delivery).
 type ClientTx = std::sync::mpsc::SyncSender<Vec<u8>>;
@@ -159,16 +136,11 @@ struct Ctx {
     /// AirPods Pro 3 heart-rate monitoring is on (opt-in — off by default). When
     /// set, `run_receiver` feeds each recv chunk into the RTBuddy HR decoder.
     hr_on: Arc<AtomicBool>,
-    /// Set by `run_receiver` the moment the decoder yields its first BPM sample.
-    /// The HR retry thread polls this to know an enable attempt actually took
-    /// (the RTBuddy stream almost never starts on the first try) — cleared before
-    /// each attempt. This is the run_receiver↔retry-thread rendezvous.
+    /// First decoded BPM sample, set by `run_receiver` and polled by the retry thread.
+    /// Cleared before each enable attempt.
     hr_got_sample: Arc<AtomicBool>,
-    /// Set by `run_receiver` when an HR-prefixed frame arrives (the HEARTRATE
-    /// service is streaming, even if it carries no reading payload yet). Once the
-    /// service is live the retry campaign stops churning STOP/re-init and just
-    /// keeps the stream open, so a reading can land whenever the sensor produces
-    /// one (it may take real sustained activity). Cleared before each attempt.
+    /// An HR frame arrived, possibly without a reading. Keep a live stream open
+    /// while the sensor warms up. Cleared before each enable attempt.
     hr_stream_live: Arc<AtomicBool>,
     /// True while an HR retry thread is live. A one-thread guard so rapid on/off
     /// never stacks two retry campaigns over the one driver.
@@ -188,18 +160,15 @@ struct Ctx {
     /// True while an audio-reclaim campaign is running — one at a time, so a
     /// burst of losses can't stack campaigns fighting each other for the buds.
     reclaiming: Arc<AtomicBool>,
-    /// The user pressed Disconnect. Distinguishes "we are idle because you told us
-    /// to let go" from "we are idle because another device took the buds" — only
-    /// the second may resume by itself. Cleared by Connect / Repair.
+    /// Explicit Disconnect blocks automatic resume. Connect or Repair clears it.
     user_disconnected: Arc<AtomicBool>,
     /// Reserved at Disconnect, applied only after the receiver closes its channel.
     pending_audio_disconnect: Arc<Mutex<PendingAudioDisconnect>>,
     /// When the last reclaim campaign ended. Cooldown: a phone that really owns
     /// the buds (a call — tier 1 on its side) must not be fought over and over.
     last_reclaim: Arc<Mutex<Option<Instant>>>,
-    /// When "Repair connection" last ran. Debounce: a frustrated double/triple
-    /// click drops and reopens the exclusive driver handle several times a
-    /// second, and that churn is exactly what leaves the devnode in Code 38.
+    /// Last repair request. Debounce prevents repeated handle reopens that can
+    /// leave the devnode in Code 38.
     last_repair: Arc<Mutex<Option<Instant>>>,
     dev_name: Arc<Mutex<String>>,
     mac: Arc<AtomicU64>,
@@ -297,179 +266,15 @@ impl Ctx {
     }
 }
 
-/// Write the whole buffer to a pipe handle. Returns false if the client is gone.
-unsafe fn write_all(h: HANDLE, buf: &[u8]) -> bool {
-    let mut off = 0usize;
-    while off < buf.len() {
-        let mut written = 0u32;
-        let ok = WriteFile(
-            h,
-            buf[off..].as_ptr(),
-            (buf.len() - off) as u32,
-            &mut written,
-            ptr::null_mut(),
-        );
-        if ok == 0 || written == 0 {
-            return false;
-        }
-        off += written as usize;
-    }
-    true
-}
-
-fn decode_command_chunk(acc: &mut Vec<u8>, bytes: &[u8]) -> Option<Vec<Command>> {
-    if acc.len() + bytes.len() > 16 * 1024 {
-        return None;
-    }
-    // Pipe reads may split a UTF-8 character; decode only complete JSON lines.
-    acc.extend_from_slice(bytes);
-    let mut commands = Vec::new();
-    while let Some(nl) = acc.iter().position(|&byte| byte == b'\n') {
-        if let Ok(command) = serde_json::from_slice::<Command>(&acc[..nl]) {
-            commands.push(command);
-        }
-        acc.drain(..=nl);
-    }
-    Some(commands)
-}
-
-/// Per-client reader: parse NDJSON commands and apply them until it disconnects.
-fn client_reader(pipe: Arc<Pipe>, ctx: Ctx) {
-    volume::init(); // this thread applies StepVolume/ToggleMute (WASAPI needs COM)
-    let h = pipe.0;
-    let mut buf = [0u8; 4096];
-    let mut acc = Vec::new();
-    let mut head_tracking_owner = None;
-    loop {
-        let mut read = 0u32;
-        let ok = unsafe {
-            ReadFile(
-                h,
-                buf.as_mut_ptr(),
-                buf.len() as u32,
-                &mut read,
-                ptr::null_mut(),
-            )
-        };
-        if ok == 0 || read == 0 {
-            break; // disconnected
-        }
-        let Some(commands) = decode_command_chunk(&mut acc, &buf[..read as usize]) else {
-            break; // Commands have a bounded input buffer.
-        };
-        for cmd in commands {
-            if let Command::SetHeadTracking { on } = cmd {
-                head_tracking_owner = Some(set_head_tracking(&ctx, on));
-            } else {
-                apply_command(&ctx, cmd);
-            }
-        }
-    }
-    if let Some(owner) = head_tracking_owner {
-        let mut tracking = ctx.head_tracking.lock().unwrap();
-        if tracking.release(owner) {
-            publish_head_tracking(&ctx, &tracking);
-        }
-    }
-    // The pipe closes once this Arc and the writer thread's Arc both drop.
-}
-
-/// Create one pipe instance and block until a client connects; returns its handle.
-unsafe fn accept(name: &[u16], sa: *const SECURITY_ATTRIBUTES) -> Option<HANDLE> {
-    let h = CreateNamedPipeW(
-        name.as_ptr(),
-        PIPE_ACCESS_DUPLEX,
-        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-        16,
-        4096,
-        4096,
-        0,
-        sa,
-    );
-    if h == INVALID_HANDLE_VALUE {
-        thread::sleep(Duration::from_secs(1));
-        return None;
-    }
-    // ERROR_PIPE_CONNECTED = the client beat us to it (still a success).
-    let ok = ConnectNamedPipe(h, ptr::null_mut());
-    if ok == 0 && GetLastError() != ERROR_PIPE_CONNECTED {
-        CloseHandle(h);
-        return None;
-    }
-    Some(h)
-}
-
-/// Events pipe: the daemon only WRITES here (one direction → no sync-handle
-/// serialization). Each client gets a queue drained by its own writer thread.
-unsafe fn events_server(ctx: Ctx) {
-    let name = wide(PIPE_EVENTS);
-    let Ok(mut security) = security::PipeSecurity::new() else {
-        log("IPC: cannot establish the current-user ACL; refusing connections");
-        return;
-    };
-    let sa = security.attributes();
-    loop {
-        let h = match accept(&name, &sa) {
-            Some(h) => h,
-            None => continue,
-        };
-        let pipe = Arc::new(Pipe(h));
-        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(32);
-        let n = {
-            let mut cl = ctx.clients.lock().unwrap();
-            cl.push(tx);
-            cl.len()
-        };
-        log(&format!("events: client connected ({n} total)"));
-        let p = pipe.clone();
-        thread::spawn(move || {
-            for msg in rx {
-                if !unsafe { write_all(p.0, &msg) } {
-                    break;
-                }
-            }
-        });
-        ctx.push_state(); // greet the newcomer
-    }
-}
-
-/// Commands pipe: the daemon only READS here (one direction). Commands are
-/// global, so any client's commands just apply to the daemon.
-unsafe fn cmds_server(ctx: Ctx) {
-    let name = wide(PIPE_CMDS);
-    let Ok(mut security) = security::PipeSecurity::new() else {
-        log("IPC: cannot establish the current-user ACL; refusing connections");
-        return;
-    };
-    let sa = security.attributes();
-    loop {
-        let h = match accept(&name, &sa) {
-            Some(h) => h,
-            None => continue,
-        };
-        log("cmds: client connected");
-        let pipe = Arc::new(Pipe(h));
-        let c = ctx.clone();
-        thread::spawn(move || client_reader(pipe, c));
-    }
-}
-
-/// Audio-ownership priority, mirroring the hierarchy Apple itself routes by:
+/// Audio-ownership priority, following Apple's routing hierarchy:
 ///
 ///   1. Calls / FaceTime (highest)  — steals the audio from anything
 ///   2. User-initiated playback     — steals it from other media
 ///   3. Background audio / system sounds — ignored unless manually triggered
 ///
-/// An iPhone notification chime is **tier 3**. By Apple's own order it must not
-/// take the AirPods away from a tier-1 or tier-2 session on this host — but the
-/// buds hand them over anyway, and we don't control the buds' side. So we
-/// enforce the rule from here: after a loss we reclaim the audio route only when
-/// THIS host held tier 1 or tier 2 at the moment the link dropped.
-///
-/// At tier 3 we hold nothing worth defending, so we let go and wait for the BLE
-/// watcher — the previous behaviour, unchanged. And when the *phone* is at tier 1
-/// (a real call) it keeps the buds: our campaign is bounded and backs off, so the
-/// higher tier still wins wherever it lives.
+/// Reclaim after a loss only if this host held a call or playback session.
+/// Background audio waits for the BLE watcher; bounded retries avoid continuously
+/// reclaiming the AirPods from a phone call.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Tier {
     /// Tier 1 — an app is capturing the AirPods microphone through us.
@@ -505,16 +310,8 @@ fn recently_cased(report: Option<(u64, aap::Battery)>, now_ms: u64) -> bool {
     })
 }
 
-/// Turn one AAP 0x2E entry into something the UI can show, trying the sources in
-/// order of how much they can be trusted:
-///
-///   1. our own radios      — certain: this is the PC the user is looking at
-///   2. paired to this PC   — Windows' own name + Class of Device (authoritative)
-///   3. nothing             — say so, and show the address
-///
-/// A phone sharing the AirPods with us is normally NOT paired to this PC, so in
-/// practice it lands on step 3 and shows as "Other device" with its address. That
-/// is as far as the evidence goes; naming it "iPhone" would be invention.
+/// Identify an AAP 0x2E host from local radios, then Windows pairing metadata.
+/// Unpaired hosts remain "Other device" with their address; flags do not identify a model.
 fn describe_device(addr: u64, flags: [u8; 2], local_radios: &[u64]) -> ipc::ConnectedDevice {
     let b = addr.to_be_bytes();
     let address = format!(
@@ -539,9 +336,7 @@ fn describe_device(addr: u64, flags: [u8; 2], local_radios: &[u64]) -> ipc::Conn
             };
         }
     }
-    // Nothing else to go on. The 0x2E flag bytes look like state, not class (see
-    // aap::flags_hex), so we do NOT guess a type from them — an iPhone labelled
-    // "Computer" is worse than no label at all.
+    // The 0x2E flags do not identify a device class; see aap::flags_hex.
     let _ = flags;
     ipc::ConnectedDevice {
         address,
@@ -557,11 +352,7 @@ fn host_tier(ctx: &Ctx) -> Tier {
     if ctx.mic_on.load(Ordering::Acquire) && ctx.capture_active.load(Ordering::Acquire) {
         Tier::Call
     } else if media::is_playing() || volume::any_render_active() {
-        // Two probes, because neither alone is enough: SMTC catches browsers and
-        // media players (and keeps reporting through a brief device switch),
-        // while the Core Audio session walk catches everything that just renders
-        // — Teams, Discord, games — which is most of what you would be doing when
-        // a phone notification steals the buds.
+        // SMTC survives brief endpoint switches; Core Audio also covers calls and games.
         Tier::Playback
     } else {
         Tier::Background
@@ -705,13 +496,8 @@ const RECLAIM_COOLDOWN: Duration = Duration::from_secs(60);
 
 /// Waits before each reclaim attempt, ~39 s in total.
 ///
-/// The first version gave up after three tries over 10 s and that was measurably
-/// too impatient: in the 2026-08-31 Teams capture the campaign gave up at
-/// 12:42:49 and the AAP session came back at 12:42:52 — three seconds late, so
-/// the one moment we could have acted was the one we had just stopped watching.
-/// A phone notification returns the buds in seconds; a real call on the phone
-/// keeps them, and that case is ended by the tier re-check inside the loop
-/// rather than by a short deadline.
+/// A 10 s deadline missed the AAP return by 3 s in the 2026-08-31 Teams capture.
+/// Recheck host activity between attempts and stop when it no longer needs audio.
 const RECLAIM_BACKOFF_MS: [u64; 8] = [1_000, 2_000, 3_000, 4_000, 5_000, 6_000, 8_000, 10_000];
 
 /// Full-target recovery for an explicit request or the final microphone fallback.
@@ -770,17 +556,8 @@ fn spawn_reclaim(ctx: &Ctx, tier: Tier, request: u64) {
                 won = true;
                 break;
             }
-            // Deliberately NOT calling set_audio_connected here.
-            //
-            // `BluetoothSetServiceState` needs the device to be connected: across
-            // the 2026-08-31 logs it returned ERROR_SUCCESS every time the AirPods
-            // were attached (13:39:04, 13:39:10, 14:06:50, 14:06:56) and
-            // ERROR_INVALID_PARAMETER (87) every time they were not (12:54, 13:02,
-            // 14:01, 14:03, 14:36, 14:37). The old campaign called it only while
-            // they were away with the phone — the one moment it cannot work — which
-            // is why every attempt logged `= false` and nothing was ever reclaimed.
-            //
-            // Wait for Windows' normal profile reconnection instead.
+            // BluetoothSetServiceState returned error 87 for disconnected AirPods
+            // in the 2026-08-31 logs. Wait for Windows to restore the link.
             log(&format!(
                 "reclaim: attempt {} — AirPods still away, waiting for the link",
                 i + 1
@@ -1197,9 +974,8 @@ fn service_mic(
 }
 
 // ---- HR retry constants (mirror the Android HeartRateMonitor companion) ----
-/// Wait this long for a decoded reading before re-enabling. Android uses 8 s, but
-/// the decoder now drops the PPG warm-up (confidence < 0x80), and the first locked
-/// sample lands ~6-8 s after the start — 12 s avoids re-enabling mid-warm-up.
+/// Allow 12 s for the first reading: confidence filtering drops warm-up samples,
+/// and the first accepted sample takes about 6-8 s. Android waits 8 s.
 const HR_FIRST_SAMPLE_TIMEOUT_MS: u64 = 12_000;
 /// Gap after HRM_STATE before the stream start (Android's START_COMMAND_DELAY).
 const HR_START_COMMAND_DELAY_MS: u64 = 120;
@@ -1344,11 +1120,8 @@ fn next_hr_seq() -> u16 {
 }
 /// Backoff between attempts, indexed by attempt number (last value repeats).
 const HR_RETRY_BACKOFF_MS: [u64; 3] = [500, 1_000, 2_000];
-/// Consecutive enable attempts (each an ~8 s sample wait) with no reading before we
-/// give up. We do NOT rebuild / reconnect the L2CAP channel to "try again": on this
-/// firmware the buds only ever ACK service 19 and never stream, so reconnecting is
-/// pointless churn (it just re-opens the audio link). The user toggles HR off/on to
-/// retry.
+/// Bound HR retries without reconnecting the shared audio channel.
+/// Toggle heart rate off/on to start another campaign.
 const HR_MAX_ATTEMPTS: u32 = 4;
 
 /// How one retry campaign ended.
@@ -1492,15 +1265,10 @@ fn spawn_hr_retry(ctx: &Ctx) {
     });
 }
 
-/// Keep re-sending the enable sequence and waiting for a REAL heart-rate reading,
-/// mirroring the Android HeartRateMonitor loop. One attempt = full enable + up to
-/// FIRST_SAMPLE_TIMEOUT waiting for a *decoded reading*. Mere ACKs / a live-but-empty
-/// stream do NOT end the campaign: the buds ACK a start they will never serve (e.g.
-/// when the AAP channel's MTU is too small for the HR descriptor — see the driver's
-/// L2cap.c). Plain re-enable retries repeat over the SAME channel, up to
-/// HR_MAX_ATTEMPTS, then give up — we never rebuild/reconnect the L2CAP channel,
-/// because the audio + mic links ride it and must not be collapsed for an optional
-/// feature. Runs until a reading lands, the user turns HR off, or the attempts are spent.
+/// Retry HR enable on the existing channel, following Android's HeartRateMonitor.
+/// An ACK alone does not prove data will arrive; an insufficient MTU can prevent it.
+/// Keep a live stream open for readings and bound failed enables by HR_MAX_ATTEMPTS.
+/// Never reconnect the shared audio/microphone channel for this optional sensor.
 fn hr_retry_campaign(ctx: &Ctx, generation: u64) -> HrOutcome {
     let mut attempt: u32 = 0;
     while hr_current(ctx, generation) {
@@ -2424,8 +2192,7 @@ impl MicStats {
     }
 }
 
-/// The AAP session: keep the link up, decode the mic, track battery/ANC/ear
-/// detection, and broadcast state + overlay events. (Ported from the tray.)
+/// Retry discovery until a device is found or shutdown is requested.
 fn discover_until_ready<T>(
     mut stopped: impl FnMut() -> bool,
     mut discover: impl FnMut() -> Option<T>,
@@ -2521,8 +2288,6 @@ fn run_receiver(ctx: Ctx) {
         select_paired_device(&ctx, mac, &name);
     }
     let mut buf = [0u8; 8192];
-    // Whether we've announced "mic fully operational" for the current capture session
-    // (fires when the buds actually start streaming audio, not just when it's requested).
     let clock = ctx.mic_clock;
     // Uplink timing, logged every 30 s while the mic is on: the virtual mic's ring
     // only holds ~100 ms, so arrival gaps longer than that come out as silence.
@@ -2548,16 +2313,10 @@ fn run_receiver(ctx: Ctx) {
             .collect::<Vec<_>>()
             .join(", ")
     ));
-    // Consecutive failures to reach the AirPods. After a few (they're on the
-    // iPhone / gone), we give up so we DON'T keep stealing them back — reset the
-    // gate and wait for a fresh prompt/Connect.
+    // Bound connection retries, then require a fresh request or an existing Windows link.
     let mut reach_fails = 0u32;
-    // Throttles the "have the AirPods come home?" check in the idle gate below.
+    // Throttle checks for a restored Windows connection.
     let mut resume_poll = None;
-    // The user asked to connect — keep trying for a generous window (the AirPods
-    // may take a few seconds to become reachable) before giving up. We never
-    // *steal* here: a failed connect() doesn't pull them, and once connected a
-    // drop releases the gate (below).
     // Consecutive `Driver::open()` failures. Distinct from `reach_fails`: this
     // one is about the *devnode*, not the AirPods.
     let mut open_fails = 0u32;
@@ -2599,23 +2358,9 @@ fn run_receiver(ctx: Ctx) {
             }
         }
         let mac = ctx.mac();
-        // Gate: stay idle until the user accepts the "connect?" prompt — OR until
-        // Windows has the AirPods connected again on its own.
-        //
-        // That second clause is what was missing, and it is the whole reason a
-        // phone call killed the PC audio for good. On a real call the buds stay
-        // with the phone for minutes: we exhaust the ~18 s of connect retries,
-        // `give_up` clears connect_requested, and then nothing ever tries again.
-        // The BLE watcher cannot help — it re-arms only after the buds have been
-        // ABSENT for 45 s and reappear, and during the call they are present and
-        // advertising the whole time. Measured 2026-08-31: released at 14:37:05,
-        // gave up at 14:38:17, and the session only came back at 14:38:33 because
-        // the user pressed Connect by hand.
-        //
-        // Resuming on `is_connected` steals nothing: the OS link is already up, so
-        // the buds have come home by themselves and we are only reopening our own
-        // AAP channel. An explicit Disconnect still wins — that is a decision, not
-        // a loss, so `user_disconnected` holds us off until Connect/Repair.
+        // Reopen AAP when Windows reconnects, even if a phone call exhausted retries.
+        // BLE presence alone cannot signal return while the buds keep advertising.
+        // Explicit Disconnect blocks this until Connect or Repair.
         if !ctx.connect_requested.load(Ordering::Relaxed) {
             if !ctx.user_disconnected.load(Ordering::Relaxed)
                 && cooldown_elapsed(resume_poll, Instant::now(), Duration::from_secs(5))
@@ -2725,11 +2470,8 @@ fn run_receiver(ctx: Ctx) {
         let mut pending_card = true;
         ctx.push_state();
         log("run_receiver: handshake done, connected=true");
-        // EXPERIMENT (opt-in): one-shot GATT discovery — walk the buds' GATT server as
-        // a CLIENT to find any heart-rate characteristic we never enumerated. It wakes
-        // hearing-assist and blocks the AAP loop while it listens, so it must NOT run in
-        // normal use — it's gated behind the NTPODS_GATT_PROBE env flag (start the
-        // daemon with that var set to enable it). Runs once per session.
+        // Opt-in GATT probe: wakes hearing assistance and blocks AAP while scanning.
+        // Keep it out of normal operation; run at most once per daemon process.
         if std::env::var_os("NTPODS_GATT_PROBE").is_some() {
             static GATT_PROBED: AtomicBool = AtomicBool::new(false);
             if !GATT_PROBED.swap(true, Ordering::Relaxed) {
@@ -3023,11 +2765,7 @@ fn run_receiver(ctx: Ctx) {
                                 ctx.push_state();
                             }
                         }
-                        // Multipoint: the AirPods' own list of connected hosts. This is
-                        // the earliest warning we get — in the 2026-08-31 capture the
-                        // phone appeared here 3.2 s before Windows dropped us, and it is
-                        // the ONLY signal that moves when the buds hand the audio over
-                        // while every Windows-side indicator stays healthy.
+                        // AAP reports other hosts even while Windows still shows connected.
                         if let Some(devs) = aap::parse_connected_devices(data) {
                             if devs != last_devices {
                                 let list: Vec<ipc::ConnectedDevice> = devs
@@ -3152,9 +2890,7 @@ fn run_receiver(ctx: Ctx) {
                         // Conversational Awareness: the AirPods signal speech start/stop;
                         // we (the host, single volume owner) duck/restore the volume.
                         if let Some(status) = aap::parse_conversational_awareness(data) {
-                            // Don't duck while the hi-res mic is in use (you're on a
-                            // call — you ARE talking, but the call audio shouldn't
-                            // drop). Restore if a duck was already in progress.
+                            // Preserve call volume during capture and undo any active duck.
                             if ctx.mic_on.load(Ordering::Acquire)
                                 && ctx.capture_active.load(Ordering::Acquire)
                             {
@@ -3662,11 +3398,11 @@ fn main() {
     // IPC: two one-directional pipe servers (events out, commands in).
     {
         let c = ctx.clone();
-        thread::spawn(move || unsafe { events_server(c) });
+        thread::spawn(move || unsafe { ipc_server::events_server(c) });
     }
     {
         let c = ctx.clone();
-        thread::spawn(move || unsafe { cmds_server(c) });
+        thread::spawn(move || unsafe { ipc_server::cmds_server(c) });
     }
     // Idle BLE reports are resolved to our paired AirPods before use. Keeping
     // the audio connection separate lets a closed case report without waking it.
@@ -3816,42 +3552,6 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn fragmented_commands_preserve_non_ascii_names() {
-        let name = "Zoë's 耳機 🎵";
-        let line = super::to_line(&super::Command::SetName {
-            name: name.into(),
-            request_id: 42,
-        });
-        for split in 0..line.len() {
-            let mut buffer = Vec::new();
-            let mut commands = super::decode_command_chunk(&mut buffer, &line.as_bytes()[..split])
-                .unwrap();
-            commands.extend(
-                super::decode_command_chunk(&mut buffer, &line.as_bytes()[split..]).unwrap(),
-            );
-            assert!(matches!(&commands[..], [super::Command::SetName { name: actual, request_id: 42 }]
-                if actual == name), "split at byte {split}");
-            assert!(buffer.is_empty());
-        }
-    }
-
-    #[test]
-    fn command_chunks_reject_invalid_utf8_and_keep_the_input_bound() {
-        let mut buffer = Vec::new();
-        let commands = super::decode_command_chunk(
-            &mut buffer,
-            b"{\"cmd\":\"set_name\",\"name\":\"\xff\"}\n{\"cmd\":\"ping\"}\n",
-        )
-        .unwrap();
-        assert!(matches!(&commands[..], [super::Command::Ping]));
-        assert!(super::decode_command_chunk(&mut buffer, &vec![b' '; 16 * 1024])
-            .unwrap()
-            .is_empty());
-        assert!(super::decode_command_chunk(&mut buffer, b"x").is_none());
-        assert_eq!(buffer.len(), 16 * 1024);
-    }
-
     #[test]
     fn quiet_connected_control_link_remains_usable_without_echoes() {
         let mut link = super::ControlLinkStatus::default();

@@ -52,6 +52,6 @@ and [Microsoft's test-signing documentation](https://learn.microsoft.com/en-us/w
 for the boot policy. Do not use the upstream nightly or old driver-only scripts
 as substitutes for this fork's build.
 
-[Third-party notices and redistribution gates](../THIRD_PARTY.md) include the
+[Third-party notices](../THIRD_PARTY.md) include the
 Microsoft ACX sample's MS-PL terms and the verified FFmpeg LGPL-3.0-or-later
 bundle. Retain those notices with build artifacts.

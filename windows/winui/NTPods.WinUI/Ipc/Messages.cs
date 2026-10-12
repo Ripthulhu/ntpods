@@ -105,9 +105,7 @@ public sealed class Snapshot
     [JsonPropertyName("firmware")] public string Firmware { get; set; } = "";
     [JsonPropertyName("serial")] public string Serial { get; set; } = "";
 
-    /// Every host the AirPods report themselves connected to (AAP 0x2E) -- this PC
-    /// plus whatever else is sharing them. Multipoint is invisible to Windows, so
-    /// this is the only place the user can see that a phone is also holding the buds.
+    /// Hosts reported by AAP 0x2E, including connections Windows cannot observe.
     [JsonPropertyName("multipoint")] public List<ConnectedDevice> Multipoint { get; set; } = new();
 }
 

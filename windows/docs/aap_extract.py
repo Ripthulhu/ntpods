@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
-"""Extract & annotate AirPods AAP packets from a hex/text export.
+"""Extract and annotate AirPods AAP packets from a hex/text export.
 
-Feed it anything that contains hex byte runs — tshark `-e data` output, a
-Wireshark "Export as plain text", or a copy-pasted hex dump. It reconstructs the
-byte arrays, keeps the ones that look like AAP (header `04 00 04 00` or a bare
-control/notify opcode) and prints them one per line with the opcode named.
+Accepts tshark `-e data` output, Wireshark plain-text exports and hex dumps.
+Prints byte runs starting with the AAP header `04 00 04 00`, annotated with
+their opcode. It does not reassemble fragmented packets.
 
     tshark -r cap.pklg -Y btl2cap -T fields -e frame.time_relative -e data \
       | python3 aap_extract.py
 
-Deliberately forgiving about input format — tweak on the Mac if your export
-differs. This is a starting point, not a full dissector.
 """
 import re
 import sys

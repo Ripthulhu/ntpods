@@ -124,7 +124,7 @@ Pro 3 firmware **9A348**. These are initial hardware checks, not completed accep
   **13 seconds** yielded zero PCM while the other client remained open until **20
   seconds**. State reached idle/uplink-off approximately **753 ms** after disable;
   the capture-active flag stayed true until that last client closed.
-- The requested rapid **20-cycle test stopped at cycle 7** on runtime 0.1.3.
+- The rapid **20-cycle test stopped at cycle 7** on runtime 0.1.3.
   Cycles **1–6** produced real PCM and reached idle/uplink-off. Cycle **7** delivered
   **96,000 zero-valued frames**, then kept receiving microphone packets after STOP:
   **58 packets by 2,118 ms**, rising to **224 by 7,103 ms**. The bounded recovery
@@ -156,12 +156,12 @@ Pro 3 firmware **9A348**. These are initial hardware checks, not completed accep
   Runtime **0.1.6-final**, executable SHA-256
   `C207145C1B15956A79658EA3D65FFBCB026E27875CEAEE5B9CE897AEAE5B10A6`,
   passed a live soft STOP retry before starting the longer capture test.
-- The user ended the 0.1.6-final sustained recording early. The native capture
+- The 0.1.6-final sustained recording ended early. The native capture
   recorded **42 complete intervals covering 1,260.3179 seconds (21:00.318)** and
   **60,494,880 frames**. It reported one startup discontinuity, zero nonfinite
   samples and zero empty intervals. The final partial interval was not counted.
   Sound Recorder saved **Recording 4**, displayed as **20:52**. The user reported
-  a good experience while moving around during recording. The agreed 30-minute
+  a good experience while moving around during recording. The planned 30-minute
   duration was not completed.
 - The daemon measured **1,283.258 seconds**, with first packet and PCM at **386 ms**,
   **42,761 packets**, **0 invalid packets**, **171,044 audio units**, and
@@ -207,7 +207,7 @@ Pro 3 firmware **9A348**. These are initial hardware checks, not completed accep
   Alternative A2DP remained version **1.8.0.1**, with **AAC stereo, 48 kHz, 256 kbps**.
   The user confirmed separate left/right tones after this installed-app stop too.
   Automatic microphone use was left enabled with no capture client or active uplink.
-- The requested reboot completed at **2026-10-11 01:30 Europe/Amsterdam**. Both
+- Windows restarted at **2026-10-11 01:30 Europe/Amsterdam**. Both
   NTPods drivers were Running afterward; the installed daemon still matched the
   tested executable hash. NTPods was opened manually after login and retained its
   automatic microphone preference. A five-second capture produced **239,520 frames
@@ -295,8 +295,8 @@ Alternative A2DP again reported **AAC stereo, 48 kHz, 256 kbps** after recovery.
 
 MSI 0.1.8 SHA-256 is
 `58CC3561DC4B77856F658C619625952FDAC39B11E3204EF1BA4B2EACBC9A199F`.
-At the end of the overnight tests it was **not installed**: installation required
-an administrator prompt and the user was unavailable. Both driver binaries were
+It was **not installed** at the end of the overnight tests; administrator
+approval was still pending. Both driver binaries were
 unchanged. All native capture clients and portable test processes were stopped;
 the installed 0.1.7 app was restored, connected and idle, with automatic microphone
 use on and both Start with Windows entries still pointing into Program Files.
@@ -305,7 +305,7 @@ the shorter refresh/capture regression, not another duration run.
 
 ### Daytime installation and repair
 
-The user authorized installation on **2026-10-11**. The upgrade from 0.1.7 returned
+The upgrade from 0.1.7 on **2026-10-11** returned
 **3010**, requesting a restart, but left the WinUI EXE and DLL missing. The old
 files had PE file version **1.0.0.0**; the 0.1.8 build lowered it to **0.1.8.0**
 while keeping the same MSI component GUIDs. Windows Installer rejected those
@@ -394,13 +394,13 @@ supplement these measurements; they do not establish long-run stability.
 
 Preserve test results with date, Windows/Intel driver versions, firmware, build
 manifest, application input/output selections and observed timings. Keep recordings
-local; daemon logs deliberately exclude microphone content. Do not mark the stereo
-or microphone-stop gates passed based only on source inspection or synthetic tests.
+local; daemon logs exclude microphone content. Do not mark the stereo
+or microphone-stop checks passed based only on source inspection or synthetic tests.
 
 ### Post-reboot check on 2026-10-11
 
-Windows restarted at **11:20:48 Europe/Amsterdam**. With system access restored,
-both NTPods drivers were Running and both devices reported problem code 0.
+Windows restarted at **11:20:48 Europe/Amsterdam**. Both NTPods drivers were
+Running and both devices reported problem code 0.
 Alternative A2DP remained **1.8.0.1 / oem21.inf**. The installed 0.1.8 daemon and
 UI DLL still matched the verified package. The user confirmed the app opened and
 connected; the observed frontend started manually at **11:29:25**, followed by
@@ -440,7 +440,7 @@ failure. These attempts do not validate hardware control changes.
 This preview ran from the build output against the installed daemon. The redesigned
 frontend was packaged as 0.1.9; the first elevation attempt was cancelled before
 installation. Startup entries were not changed.
-The user's System theme preference was restored after the visual checks.
+The System theme preference was restored after the visual checks.
 
 ### Microphone interruption fix on 2026-10-11
 
@@ -491,9 +491,8 @@ these interruptions remain pending. Ordinary end-of-capture recovery is unchange
 
 ### Installed 0.1.9 verification on 2026-10-11
 
-The user approved the visible Windows administrator prompt. The app-only MSI
-upgrade completed with exit code 0 and no restart request. All 588 installed
-payload files matched the package manifest; both WinUI version resources report
+The app-only MSI upgrade completed with exit code 0 and no restart request.
+All 588 installed payload files matched the package manifest; both WinUI version resources report
 0.1.9.0, and the installed daemon matches the hardware-tested candidate above.
 The MSI SHA-256 is
 `633159AEAF5F0C5271AB9C8092CD0208149BB46F9DE3D10C7954DD9E768D59B4`.
@@ -546,7 +545,7 @@ intervals. All 52 daemon tests passed, including first-run and exact-boundary
 checks for both intervals. The Release daemon and WinUI builds passed; the UI
 retained its existing nullable warning. No driver code or packages changed.
 
-During diagnosis, this tool session resolved the usual user log path to a stale
+The diagnostic environment resolved the usual user log path to a stale
 package-private copy. The stale log was preserved in the local outputs directory;
 removing that shadow allowed reads of the actual startup log. Process ownership,
 the named-pipe server PID and the actual log confirmed the observations above.
@@ -644,11 +643,10 @@ remained 1.8.0.1 / oem21.inf. Evidence is in `ntpods-0111-installed-files.json`,
 
 ### Continuous slider and quieter controls
 
-The user rejected 0.1.11's three-position restriction and requested Android's
-continuous dragging, removal of routine status copy and complete removal of the
-banner below the batteries. The reconnect tests above establish coarse reports,
-not a limit on the audible effect's resolution. The revised UI preserves the
-full range and requested values independently from those reports.
+Version 0.1.12 replaces the three-position restriction with Android's continuous
+dragging. The reconnect tests above establish coarse reports, not a limit on the
+audible effect's resolution. The UI preserves the full range and requested values
+independently from those reports.
 
 The 0.1.12 selector keeps a continuous pointer position and coalesces live
 requests every 100 ms, with one request outstanding and one replaceable target.
@@ -666,18 +664,16 @@ Selector regression checks passed for geometry, all 101 strength values,
 coalescing, final-value delivery, stale readback, cancellation and mode ordering.
 The Release WinUI build passed with the existing IslandView nullable warning.
 Review found no remaining code blocker. Native dragging remains pending.
-Computer Use was stopped with Escape during the build turn; after installation,
-the main page was visually checked and the banner and routine status lines were
-absent. Mode widths still change immediately; Android's spring animation is
-not implemented.
+Native interaction testing was interrupted. A post-install visual check
+confirmed that the banner and routine status lines were absent. Mode widths still
+change immediately; Android's spring animation is not implemented.
 
 The 0.1.12 MSI was built from the updated UI and unchanged 0.1.11 daemon and
 driver packages. It passed all 40 startup-preservation and 18 driver-preservation
 cases. Its SHA-256 is
 `CFB1795EEB881DEA5AE9FB89C2FCF6A708C9F6E1C82BCAD8CD0F48D77EB18789`.
-The manifest records all 589 distribution files. The user then requested
-installation. The MSI completed with code 0, and all 587 installed payload files
-matched the package. Both startup entries remain enabled and point to Program
+The manifest records all 589 distribution files. The MSI completed with code 0,
+and all 587 installed payload files matched the package. Both startup entries remain enabled and point to Program
 Files. The NTPods drivers retain their paths and hashes and are running;
 Alternative A2DP remains 1.8.0.1 / oem21.inf. The installed app and daemon opened
 from Program Files and connected with a fresh link and idle microphone.
@@ -698,15 +694,15 @@ scrolling and hidden after idle. It waits 400 ms, then fades over 120 ms while
 retaining native hit targets and keyboard access.
 
 The first island preview was visible but appeared on the wrong monitor and kept
-a rectangular Windows frame around its pill. The user requested the primary
-monitor. The revision removes residual dialog-frame and window-edge styles,
+a rectangular Windows frame around its pill. The revision uses the primary
+monitor, removes residual dialog-frame and window-edge styles,
 uses primary-monitor DPI, and follows LibrePods' expanded layout with combined
 buds artwork and the battery number inside its ring. Light and dark appearance,
 large text, high contrast and reduced motion have explicit handling.
 
-The final Release build passed without warnings. Computer Use was stopped with
-Escape before the revised popup could be launched, so the new frame, placement
-and expanded layout still need visual confirmation. This candidate has not
+The final Release build passed without warnings. Native interaction testing
+ended before the revised popup launched, leaving its frame, placement and
+expanded layout unverified. This candidate has not
 replaced the installed 0.1.12 app. The backend and driver packages are unchanged;
 audio hardware tests were not repeated for these UI changes.
 
@@ -714,7 +710,7 @@ The 0.1.13 MSI passed all 40 startup-preservation and 18 driver-preservation
 cases. Its manifest records 590 distribution files and MSI SHA-256
 `F8E6356BC17454013FF6B4746DC59DE35B108C9C64DDAAA4E1B90993E68A2082`.
 
-The user subsequently requested installation. The MSI completed with code 0,
+The MSI completed with code 0,
 and all 588 installed payload files matched the distribution. Both startup
 entries remain enabled and point to Program Files. Both NTPods drivers are
 running with unchanged paths and hashes; Alternative A2DP remains 1.8.0.1 /
@@ -727,9 +723,8 @@ Evidence: `ntpods-upgrade-0113.log`, `ntpods-0113-installed-files.json`,
 
 ## 0.1.14 parity and bug review (2026-10-11)
 
-The user accepted the 0.1.13 popup's appearance before requesting this pass.
-The 0.1.14 candidate was built and checked before installation. Installation
-results are recorded below; the new audio behavior still needs live validation.
+The 0.1.13 popup passed visual review. The 0.1.14 build and installation checks
+are recorded below; its new audio behavior still needs live validation.
 
 Compared the pinned LibrePods rewrite, main branch and popular/relevant forks in
 [`WINDOWS-UPSTREAM-REVIEW.md`](WINDOWS-UPSTREAM-REVIEW.md). Added a saved Windows
@@ -772,7 +767,7 @@ Repeat the stereo stop/start and ear-removal checks before promoting this build.
 No drivers, codec settings, startup entries or installed files changed during
 the build and review pass.
 
-The user subsequently requested installation. The app-only MSI upgrade completed
+The app-only MSI upgrade completed
 with exit code 0 and no restart required. All 588 installed payload files match
 the distribution; `install.ps1` and the distribution marker are intentionally
 excluded from installation. Both NTPods drivers remain running with unchanged
@@ -822,7 +817,7 @@ The 0.1.15 MSI passed 40 startup-preservation and 18 driver-preservation cases;
 all six driver-package files match 0.1.14. Its 590-file distribution and hashes
 are recorded in `windows/build-output/package-0.1.15/build-manifest.json`.
 
-The user then requested installation. The app-only upgrade completed with exit
+The app-only upgrade completed with exit
 code 0 and no restart required. All 588 installed payload files match the build.
 Both NTPods drivers remain running with unchanged paths and hashes; Alternative
 A2DP remains 1.8.0.1 / oem21.inf. The startup entry is unchanged. The installed
@@ -922,7 +917,7 @@ before unbinding, retains exported packages until commit, and restores them on
 failure. Fault tests exercise the production installer functions with mocked
 privileged operations; they do not prove Windows can recover every PnP failure.
 
-The requested microphone modes add automatic idle timeout, Keep active and
+The microphone modes add automatic idle timeout, Keep active and
 manual Start/Stop. Automatic immediate shutdown remains the default. Saved
 preferences exclude manual start intent. Removing both AirPods, disable and disconnect
 override retained streams, and audio received without a recording client is
@@ -1094,8 +1089,7 @@ deadline; the existing manual Restore audio failure reporting is unchanged.
 Connection requests carry a generation: a finishing reconnect worker cannot
 clear a newer request. Auto-resume observes media-session changes from before
 the ear-removal pause and relinquishes control after manual playback changes.
-This is deliberately conservative; another playback-info change can also cancel
-automatic resume.
+Another playback-info change can also cancel automatic resume.
 
 Each battery component now retains its own observation time. Buds-only reports
 cannot refresh an old case percentage or charging flag. Cards, island, tray and
@@ -1158,8 +1152,8 @@ reported no errors or warnings. All 592 payload files matched the build manifest
 The package is `windows/build-output/features-0.1.21/NTPods-experimental.msi`,
 SHA-256 `3A1C6EF634829F277F66C534D8E20AD07735D73595BB2DADBCF4889D195076B6`.
 
-The live preview connected to the AX200 and AirPods Pro 3 after the user connected
-them through Windows. It received 32 movement events in a five-second observation,
+The live preview connected to the AX200 and AirPods Pro 3 through Windows. It
+received 32 movement events in a five-second observation,
 and the user confirmed that turns and nods moved the graph. Pause returned to idle
 with zero movement events during the next five seconds. A separate command client
 restarted tracking and received 33 samples; closing that client returned to idle
@@ -1183,7 +1177,7 @@ live again. Reconnecting the same pair invalidates freshness without deleting th
 values. The cache lasts for the daemon session. All 139 daemon tests passed after
 this fix, including AAP absence, BLE/AAP transitions and reconnect regressions.
 
-The corrected preview passed the user's case sequence: a fresh 95% case report
+The corrected preview passed the case sequence: a fresh 95% case report
 remained 95% after the bud was removed. Its original observation timestamp stayed
 unchanged, `live` became false and charging was false while both buds had fresh
 readings. The user confirmed that the percentage remained visible. Evidence is in
@@ -1242,10 +1236,9 @@ cancellation cleared pending drawing work and returned to idle. The full
 ListeningMode suite and the Release WinUI build passed after these changes.
 Burst evidence is in `../../outputs/listening-glass-burst-checks-0121.json`.
 
-The user still noticed hitches in the preview containing many selectors and asked
-to assess the normal app build. Smooth manual crossing in the normal single
-selector was initially unconfirmed. After installation, the user confirmed that
-the actual slider in the built app is smooth.
+The preview containing multiple selectors still hitched during manual dragging.
+After installation, manual dragging was reported smooth in the normal app with
+one selector.
 
 The updated installer is
 `windows/build-output/features-0.1.21-polish/NTPods-experimental.msi`, SHA-256
@@ -1253,7 +1246,7 @@ The updated installer is
 It passed 40 startup-preservation and 18 driver-preservation MSI checks. Its 597
 payload files include the new graphics dependency and licensing notices. It
 reuses verified unchanged backend and driver binaries from the preceding build.
-The user authorized installation, and the app-only upgrade completed with MSI
+The app-only upgrade completed with MSI
 exit code 0. All 596 installed payload files matched the build manifest (the zip
 installer is excluded). Both NTPods driver hashes and Alternative A2DP 1.8.0.1
 remained unchanged. Start with Windows stayed enabled, and both scheduled helpers
@@ -1289,7 +1282,7 @@ The Release WinUI build passed. The installer is
 It passed all 40 startup-preservation and 18 driver-preservation checks and reuses
 the verified, unchanged backend and driver payload.
 
-The user authorized installation, and the app-only upgrade completed on
+The app-only upgrade completed on
 2026-10-12 with MSI exit code 0. All 596 installed payload files matched the build
 manifest. Both NTPods drivers remained running with unchanged hashes and valid
 signatures; Alternative A2DP 1.8.0.1 and Start with Windows were preserved. Both
@@ -1325,7 +1318,7 @@ installer checks passed. The package is
 `B173E7EFDF9927FF0FB7CB60D54B152E489B0179EE744E948B44343ECF60ABE6`.
 Backend and driver binaries are unchanged.
 
-The user authorized installation, and the app-only upgrade completed on
+The app-only upgrade completed on
 2026-10-12 with MSI exit code 0. All 596 installed payload files matched the
 manifest. NTPods driver hashes, valid signatures, Alternative A2DP 1.8.0.1, startup
 entries and direct-daemon helper tasks were preserved. The app and daemon started
@@ -1365,9 +1358,10 @@ Live preview checks on 2026-10-12 used the Intel AX200 and first-generation Pro
 A2084. The device supplied firmware `6619472`, normalized to `6F21`. Windows
 connection selected the correct AAP interface; the app reported the pair's name,
 model, left/right batteries and case battery. The known case percentage remained
-after removing the buds, with its freshness marked correctly. The user confirmed
-audible Off, Transparency and Noise Cancellation changes, automatic pause/resume,
-and that manually paused playback stayed paused after ear removal/reinsertion.
+after removing the buds, with its freshness marked correctly. Listening checks
+confirmed Off, Transparency and Noise Cancellation changes.
+Automatic pause/resume worked, and manually paused playback stayed paused after
+ear removal/reinsertion.
 
 Press speed changed from 0 to 1 and back to 0, with both values verified by a fresh
 control session. This firmware did not echo the writes or replay them after a
@@ -1446,7 +1440,7 @@ The installer is
 `windows/build-output/features-0.1.25-final/NTPods-experimental.msi`, SHA-256
 `C7ED833D4132F4F94C51F220A5A719E0EE20AB1C7D5720633846A9D7B517EC8A`.
 
-On 2026-10-12, the requested app-only upgrade from 0.1.23 completed with MSI exit
+On 2026-10-12, the app-only upgrade from 0.1.23 completed with MSI exit
 code 0; no restart was required. All 597 installed payload files match the build
 manifest. NTPods AAP, ACX microphone and Alternative A2DP driver hashes are
 unchanged, and both Start with Windows entries still point to Program Files.
@@ -1461,11 +1455,11 @@ New-model controls and Loud Sound Reduction still need physical-device checks.
 Legacy double-tap actions remain hidden because their value encoding is
 unverified. Max 2 and Powerbeats BLE battery layouts also remain unverified;
 their proposed identifiers alone are not enough to enable decoding. Earlier
-microphone, licensing and production-signing gates remain open.
+microphone, licensing and production-signing requirements remain unmet.
 
 ## 0.1.26 publication review and individual artwork availability
 
-Ponytail review found fragmented UTF-8 commands could corrupt non-ASCII device
+Code review found that fragmented UTF-8 commands could corrupt non-ASCII device
 names. The daemon now assembles bounded byte input and decodes complete JSON
 lines. Regression tests cover every byte split of accented, CJK and emoji names,
 malformed UTF-8, and the existing input limit. The ACX capture circuit also checks
@@ -1495,12 +1489,11 @@ The isolated preview sent no commands. Evidence is in
 `../../outputs/header-typography-0126-before.json`,
 `../../outputs/header-typography-0126-after.json` and their images.
 
-No-ai-slop review updated the fork README, design notes and installer wording,
-preserving attribution and hardware limitations. The microphone license remains
-unresolved; no new license grant or upstream clarification was obtained. The
-source publication retains that caveat and leaves binary release publishing off.
+The publication review updated the README, design notes and installer wording.
+The microphone license remained unresolved, with no new grant or upstream
+clarification. Binary publishing was disabled for the initial source push.
 
-## Release gates
+## Production release requirements
 
 Production redistribution is held by the ACX sample licensing discrepancy described
 in `THIRD_PARTY.md`. Author clarification or a compatible replacement is required;

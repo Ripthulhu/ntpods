@@ -1,25 +1,21 @@
-# Hi-res AirPods microphone on Windows
+# AirPods microphone on Windows: implementation history
 
-**Status: shipped** — the feature works end to end and is on by default (see the
-Status section at the bottom for what each phase settled). Developed on the branch
-`windows-hires-mic`, now part of the Windows port.
+This records the initial `windows-hires-mic` work and its hardware checks.
+Some lifecycle behavior and installation paths have since changed. See
+[Windows features](../../../docs/WINDOWS-FEATURES.md) and
+[validation results](../../../docs/WINDOWS-VALIDATION.md) for the current build.
 
-**Goal:** expose the AirPods' hi-res (AAC-ELD) microphone as a **native Windows
-microphone**, so any app (Teams, Zoom, Discord, OBS…) can use it — the same
-feature the Linux side is adding in
-[PR #655](https://github.com/librepods-org/librepods/pull/655), but with a
-self-contained **virtual audio driver** instead of PipeWire.
+The feature exposes the AirPods' AAC-ELD uplink as a Windows microphone endpoint,
+using the protocol described in
+[LibrePods PR #655](https://github.com/librepods-org/librepods/pull/655).
 
-## Why a driver (not VB-Cable)
+## Driver choice
 
-Windows has no API to "create a virtual microphone" — it needs a virtual audio
-device driver. We already ship a signed kernel driver (`NTPodsAAP`), so a
-second one is the clean, dependency-free path (no third-party VB-Cable). Base it
-on Microsoft's **SYSVAD** sample (a virtual audio device with capture + render
-endpoints, no hardware). NOTE: audio drivers use **PortCls/AVStream** or the
-newer **ACX** framework — different from the KMDF+BRB approach of `NTPodsAAP`.
-*(What we ended up using is the MS **ACX `AudioCodec`** sample rather than SYSVAD —
-ACX on KMDF, already ROOT-enumerated and with a capture circuit.)*
+A virtual audio driver supplies the Windows capture endpoint. The plan initially
+considered SYSVAD; the implementation used Microsoft's ACX `AudioCodec` sample,
+which already had a ROOT-enumerated device and a capture circuit. ACX runs on
+KMDF, also used by the NTPodsAAP Bluetooth driver. Both NTPods drivers require
+test signing in the development setup.
 
 ## Architecture
 
@@ -35,12 +31,11 @@ AirPods ──AAP / L2CAP──▶ NTPodsAAP driver ──IOCTL──▶ app
                                    (Teams / Zoom / Discord / OBS / …)
 ```
 
-The protocol (enable-mic control command, uplink packet framing, AAC-ELD params)
-is platform-neutral and comes from PR #655 — it lands in the shared
-`app` crate (`aacp`/`media_controller`), gated per platform for
-the sink.
+The enable command, uplink framing and AAC-ELD parameters came from PR #655.
+The original plan placed decoding in the shared `app` crate with a
+platform-specific audio sink. It later moved to `ntpodsd`.
 
-## Phases (incremental, each independently testable)
+## Original plan
 
 1. **Virtual-mic driver base** — build + test-sign + install SYSVAD (or a trimmed
    fork) so Windows shows a "NTPods Microphone" capture endpoint. Prove it
@@ -55,10 +50,10 @@ the sink.
    mic. Conversation-awareness pause during capture, AGC toggle, settings
    persistence (mirror #655).
 
-## Risks / open questions
+## Initial risks
 
 - **Audio driver complexity** — WaveRT buffering, formats, timing. SYSVAD is a
-  large sample; getting a stable capture endpoint is the bulk of the work.
+  large sample; capture buffering and timing needed validation.
 - **AAC-ELD patents** — the decoder (FFmpeg) is patent-encumbered; distribution
   implications (PR #655 raises the same). Keep the decoder optional / documented.
 - **Latency** — L2CAP → decode → driver ring; needs a small, steady buffer.
@@ -68,44 +63,43 @@ the sink.
 
 - Microsoft SYSVAD (virtual audio device sample), and the ACX audio samples.
 - LibrePods PR #655 (Linux hi-res mic: AAC-ELD + PipeWire) — the protocol RE.
-- `../windows/drivers/aap/` — our existing driver + build/sign/install loop.
+- [`windows/drivers/aap`](../../drivers/aap/) — Bluetooth profile driver.
 
-## Status
+## Recorded implementation checks
 
-- **Phase 1 — DONE** ✅ (`windows/drivers/mic/`, based on the MS ACX
+- **Phase 1** (`windows/drivers/mic/`, based on the MS ACX
   AudioCodec sample). Builds with WDK 28000, installs via `install.ps1`, and
   Windows shows a virtual **"Microphone (AudioCodec Device)"** (confirmed on
-  hardware). The audio source is still the sample's dummy; feeding real audio is
-  next.
-- **Phase 1b — DONE** ✅ (`522f9e8`): trimmed to **capture-only** — dropped the
+  hardware). This stage used the sample's dummy audio source.
+- **Phase 1b** (`522f9e8`): trimmed to **capture-only** — dropped the
   render (speaker) circuit in `Device.cpp` (create/add/remove) so only a mic
-  endpoint exists (no phantom speaker grabbing default output). Builds clean.
-  `install.ps1` now `devcon remove`s any prior device before installing so
-  re-running updates in place.
-- **Phase 2 — DONE** ✅ (`87ed69f`, validated on hardware): `Common/MicPipe.{h,cpp}`
+  endpoint exists. The build passed.
+  The original `install.ps1` used `devcon remove` on the prior device before
+  installing the replacement.
+- **Phase 2** (`87ed69f`, validated on hardware): `Common/MicPipe.{h,cpp}`
   — a spin-locked global PCM ring buffer + a control device `\\.\NTPodsMic`
   exposing `IOCTL_NTPODS_MIC_WRITE_PCM` (0x0022A000). `StreamEngine.cpp`
   `ProcessPacket` drains the ring instead of the WAV/tone dummy. Proven end to
   end: `lp-mic-test` (a user-mode tone feeder, `windows/tools/mic-test/`)
   pushed a 440 Hz sine and it was **recorded and audible** on "Microphone
-  (AudioCodec Device)". The audio-driver de-risk is complete.
-- **Phase 3a — DONE** ✅ (`c843d32`, validated on hardware): the AAP enable
+  (AudioCodec Device)".
+- **Phase 3a** (`c843d32`, validated on hardware): the AAP enable
   command works. The tray's "Hi-res microphone (test)" toggle sends `START_AUDIO`
   (`04 00 04 00 58 …`, from PR #655); the AirPods enter mic mode (A2DP playback
-  drops to right-only mono, as expected — needs an A2DP reset like #655), and the
+  dropped to right-only mono and required an A2DP reset, as in #655), and the
   receive loop confirmed the **0x58 uplink audio packets flow** ("receiving
-  audio" card). Constants + `is_audio_packet` in `aap.rs`; protocol in
-  [[hires-mic-protocol]].
-- **Phase 3b — DONE** ✅ (validated on hardware, user's voice recorded clean &
-  in tune). The tray decodes the 0x58 AUs (AAC-ELD) via an FFmpeg libavcodec
-  shim (LGPL, `eld_shim.c`), resamples, and streams to `\\.\NTPodsMic`. Key
-  fixes: mic frames are **480 samples @ 64 kHz** (not 48 kHz — the 4-byte ASC
-  lies; confirmed by the +180/AU timestamp = a 24 kHz clock over 7.5 ms frames),
-  so resample **64000 → 48000**; capture circuit restricted to **48 kHz only**;
-  and a **silence cushion** on the ring (80 ms in the shipped code) to absorb the
-  bursty per-packet feed. Pitch went ~105 → ~122 Hz (ref ~148), zero click/gap artifacts. Audio is
-  a bit quiet (a gain stage would help) and mono (single mic capsule).
-- **Phase 4 — essentially COMPLETE** ✅ (plug-and-play). Done:
+  audio" card). Constants and `is_audio_packet` were added to `aap.rs`.
+  See [microphone protocol research](../../../docs/WINDOWS-MIC-PROTOCOL-RESEARCH.md).
+- **Phase 3b** (recorded speech on hardware). The tray decoded the 0x58 AUs
+  (AAC-ELD) via an FFmpeg libavcodec shim (LGPL, `eld_shim.c`), resampled them
+  and streamed to `\\.\NTPodsMic`. Mic frames are **480 samples @ 64 kHz**,
+  although the 4-byte ASC indicates
+  48 kHz. The +180/AU timestamp corresponds to a 24 kHz clock over 7.5 ms frames.
+  The implementation resampled **64000 → 48000**, restricted capture to
+  **48 kHz**, and used an 80 ms silence buffer for packet bursts. Pitch went
+  ~105 → ~122 Hz (ref ~148), with zero click/gap artifacts reported.
+  Audio was quiet and mono (single mic capsule).
+- **Phase 4 integration**:
   - **A2DP auto-reset** — toggle the AirPods' AudioSink (0x110B) service to
     restore stereo after the mic stops (0x110D gave ERROR 1060; found via
     BluetoothEnumerateInstalledServices), with a persistent "Restoring stereo…"
@@ -122,10 +116,9 @@ the sink.
 > `ntpodsd`, which now owns the drivers and the decode; the UI is a thin IPC
 > client. See [`../daemon-ipc/PLAN.md`](../daemon-ipc/PLAN.md).
 
-**Follow-ups still open:** exact per-device dynamic name (IPolicyConfig, needs a
-debugger), VendorID spoofing (Apple DID), and unifying the decode with PR #655 in a
-shared crate. Robustness lessons learned since (all applied in the daemon): never
-tear down the AAP L2CAP channel for a stall — a silence is usually just nobody
-speaking, so re-send `START_AUDIO` in place, rate-limited; re-arm `START_AUDIO`
-after any reconnect, because the AirPods forget stream state; and open the ATT
-channel lazily, since an idle one gets torn down and stalls AAP on the shared ACL.
+At the end of this work, follow-ups included per-device endpoint names, Apple
+Device-ID experiments and a shared decoder crate. Early recovery changes resent
+`START_AUDIO` on silence, re-armed it after reconnects and opened ATT lazily to
+avoid idle ATT stalls on the shared Bluetooth link. Current recovery behavior
+has additional state and hardware checks; use the feature and validation docs
+linked above when changing it.

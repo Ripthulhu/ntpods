@@ -69,8 +69,7 @@ avoids repeating that sequence between nearby recordings.
 | Accessibility and charging | Noise cancellation with one bud, tone volume, case sounds and volume, optimized charging |
 
 Except for the explicit request paths above, unreported settings stay unavailable.
-A listed control is not a claim that
-every model or firmware supports it. The current hardware checks are below.
+Availability depends on the model and firmware. Hardware checks are listed below.
 
 ## AirPods Pro 3 checks on firmware 9A348
 
@@ -83,7 +82,7 @@ Ten other controls passed change/readback/restore checks: press speed, hold
 duration, one-bud ANC, tone volume, call-gesture preference, volume swipe,
 personalized volume, Conversation Awareness, sleep detection and optimized
 charging. These are stored-setting checks; physical gestures and acoustic effects
-were not tested while the user was away.
+were not tested.
 
 With Adaptive mode confirmed, fresh control connections returned strength values
 0, 0, 50, 100, 100 and 100 after requests for 0, 10, 25, 75, 90 and 100.
@@ -91,9 +90,9 @@ These writes produced no immediate strength report. The coarse readback does
 not establish the resolution of the audible effect. The selector retains the
 continuous 0–100 range used by Android, with the requested position kept separate
 from readback. Native drag and tap checks in 0.1.11 passed, including returning
-to the middle after an endpoint. The user confirmed that moving between the
-endpoints audibly changes the outside sound, then requested smooth continuous
-dragging instead of that build's three-position restriction.
+to the middle after an endpoint. A listening check confirmed that moving between
+the endpoints audibly changes the outside sound. The later continuous control
+replaces that build's three-position restriction.
 
 The device did not report microphone side, ear-detection preference, left/right
 hold actions, noise-mode cycle, swipe duration, or case-sound settings in these
@@ -141,7 +140,7 @@ Scanning is passive. By default it pauses while Windows audio or AAP is
 connected. The Nearby battery updates setting also permits scanning while
 listening; microphone capture and uplink still pause it. A one-minute AX200
 playback check with other Bluetooth devices disconnected received 55 verified
-battery reports, and the user reported smooth audio. This does not establish
+battery reports; the listener reported smooth audio. This does not establish
 coexistence with other Bluetooth devices or microphone capture.
 
 Reports from both cased buds update batteries without requesting an audio
@@ -150,8 +149,8 @@ distinguishes nearby battery reports from audio availability. After 90 seconds
 without another BLE report, values become dated last-known readings and charging
 indicators disappear. The timeout is NTPods' policy, not a measured macOS timeout.
 Firmware and radio delivery determine how long the case reports. The AX200 test
-received fresh percentages and charging state after the user confirmed the lid
-was closed. A roughly one-minute report gap motivated the 90-second timeout;
+received fresh percentages and charging state with the lid reported closed.
+A roughly one-minute report gap motivated the 90-second timeout;
 reporting did not continue indefinitely. Reports while wearing the buds contained
 their batteries but no case value.
 
@@ -194,5 +193,5 @@ customization need separate ATT validation; visible Android controls are not
 proof of working support because the pinned rewrite's ATT methods are stubs.
 
 Heart rate and multipoint remain experimental. Find My, firmware updates and
-spatial audio are not implemented. Hardware checks and remaining release gates
+spatial audio are not implemented. Hardware results and outstanding tests
 are recorded in `WINDOWS-VALIDATION.md`.
