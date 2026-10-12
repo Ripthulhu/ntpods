@@ -1,36 +1,55 @@
 using System.IO;
+using System.Numerics;
 using NTPods.WinUI.Ipc;
 using NTPods.WinUI.Services;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Hosting;
 using Microsoft.UI.Xaml.Media;
-using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.Graphics;
+using Windows.UI.ViewManagement;
 
 namespace NTPods.WinUI;
 
-/// The Fluent shell: a NavigationView that content-swaps between the DevicePage
-/// and SettingsPage UserControls. It owns no card logic — it wires the daemon
+/// The window swaps between the device and settings pages. It wires the daemon
 /// client into the pages, forwards daemon events (marshalled to the UI thread) to
 /// the device page, and applies the settings page's theme choice to the window
 /// root. Closing the window hides it to the tray rather than exiting.
 public sealed partial class MainWindow : Window
 {
     private readonly DaemonClient _client;
+    private readonly UISettings _uiSettings = new();
+    private bool _entrancePending;
+    private bool _closed;
 
     public MainWindow(DaemonClient client)
     {
         _client = client;
         InitializeComponent();
 
-        // Native Fluent look: Mica backdrop, theme-aware via system resources.
-        SystemBackdrop = new MicaBackdrop();
+        RootGrid.Loaded += (_, _) =>
+        {
+            if (_entrancePending && AppWindow.IsVisible) AnimateEntrance();
+        };
+        if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
+            _uiSettings.AnimationsEnabledChanged += OnAnimationsEnabledChanged;
+        Closed += (_, _) =>
+        {
+            _closed = true;
+            FinishEntrance();
+            if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
+                _uiSettings.AnimationsEnabledChanged -= OnAnimationsEnabledChanged;
+        };
+
+        RootGrid.ActualThemeChanged += (_, _) => ApplyTitleBarTheme();
 
         // Hand the client to the pages: DevicePage fans it out to its cards; the
         // SettingsPage uses it for "Refresh state".
         DevicePageView.Client = _client;
+        DevicePageView.SettingsRequested += () => ShowSettings(true);
         SettingsPageView.Client = _client;
+        DevicePageView.SetDaemonReady(_client.IsReady);
 
         // The settings theme picker owns the choice; the window root owns the theme.
         SettingsPageView.ThemeChanged += theme =>
@@ -46,8 +65,8 @@ public sealed partial class MainWindow : Window
         SettingsPageView.ExperimentalVisibilityChanged += () => DevicePageView.RefreshExperimentalVisibility();
         SettingsPageView.InitExperimentalSetting();
 
-        // Wider default so the responsive 2-column device layout shows at launch.
-        AppWindow.Resize(new SizeInt32(1000, 800));
+        AppWindow.Resize(new SizeInt32(820, 880));
+        ApplyTitleBarTheme();
         // Enforce a minimum size — the layout breaks if the window is dragged
         // absurdly narrow (no app is usable at ~100px). Clamp on resize.
         AppWindow.Changed += (sender, e) =>
@@ -60,17 +79,9 @@ public sealed partial class MainWindow : Window
         };
         TrySetWindowIcon();
 
-        // Start on the device page.
-        NavView.SelectedItem = DeviceNavItem;
-
-        // The built-in NavigationView Settings item is OS-localized; re-label it
-        // from our Loc service so it follows the in-app language too (live). The
-        // SettingsItem only exists once the control template is applied (Loaded).
-        NavView.Loaded += (_, _) => LocalizeSettingsNavItem();
         Services.Loc.Instance.PropertyChanged += (_, _) =>
             DispatcherQueue.TryEnqueue(() =>
             {
-                LocalizeSettingsNavItem();
                 if (_lastSnapshot is { } s) RenderSnapshot(s);
             });
 
@@ -79,9 +90,21 @@ public sealed partial class MainWindow : Window
 
         // Daemon → UI. These fire on a background thread; marshal to the UI queue.
         _client.SnapshotReceived += OnSnapshot;
-        _client.OverlayReceived += OnOverlay;
         _client.ConnectPromptReceived += OnConnectPrompt;
         _client.ConnectionChanged += OnConnectionChanged;
+    }
+
+    private void ApplyTitleBarTheme()
+    {
+        bool dark = RootGrid.ActualTheme == ElementTheme.Dark;
+        var background = dark ? Microsoft.UI.Colors.Black : Windows.UI.Color.FromArgb(255, 242, 242, 247);
+        var foreground = dark ? Microsoft.UI.Colors.White : Microsoft.UI.Colors.Black;
+        AppWindow.TitleBar.BackgroundColor = background;
+        AppWindow.TitleBar.ForegroundColor = foreground;
+        AppWindow.TitleBar.ButtonBackgroundColor = background;
+        AppWindow.TitleBar.ButtonForegroundColor = foreground;
+        AppWindow.TitleBar.InactiveBackgroundColor = background;
+        AppWindow.TitleBar.ButtonInactiveBackgroundColor = background;
     }
 
     private void TrySetWindowIcon()
@@ -97,31 +120,95 @@ public sealed partial class MainWindow : Window
     /// Show + focus the window (from the tray icon / "Open").
     public void ShowFromTray()
     {
+        bool opening = !AppWindow.IsVisible;
+        if (opening) _entrancePending = true;
         AppWindow.Show();
         Activate();
+        if (_entrancePending && RootGrid.IsLoaded) AnimateEntrance();
+    }
+
+    private void AnimateEntrance()
+    {
+        FinishEntrance();
+        if (!_uiSettings.AnimationsEnabled) return;
+
+        var visual = ElementCompositionPreview.GetElementVisual(ShellGrid);
+        var compositor = visual.Compositor;
+        visual.CenterPoint = new Vector3((float)ShellGrid.ActualWidth / 2, (float)ShellGrid.ActualHeight / 2, 0);
+        var ease = compositor.CreateCubicBezierEasingFunction(new Vector2(0.16f, 1), new Vector2(0.3f, 1));
+        var scale = compositor.CreateVector3KeyFrameAnimation();
+        scale.InsertKeyFrame(0, new Vector3(0.985f, 0.985f, 1));
+        scale.InsertKeyFrame(1, Vector3.One, ease);
+        scale.Duration = TimeSpan.FromMilliseconds(220);
+        var opacity = compositor.CreateScalarKeyFrameAnimation();
+        opacity.InsertKeyFrame(0, 0.88f);
+        opacity.InsertKeyFrame(1, 1, ease);
+        opacity.Duration = TimeSpan.FromMilliseconds(140);
+        visual.StartAnimation(nameof(visual.Scale), scale);
+        visual.StartAnimation(nameof(visual.Opacity), opacity);
+    }
+
+    private void FinishEntrance()
+    {
+        _entrancePending = false;
+        var visual = ElementCompositionPreview.GetElementVisual(ShellGrid);
+        visual.StopAnimation(nameof(visual.Scale));
+        visual.StopAnimation(nameof(visual.Opacity));
+        visual.Scale = Vector3.One;
+        visual.Opacity = 1;
+    }
+
+    private void OnAnimationsEnabledChanged(UISettings sender, UISettingsAnimationsEnabledChangedEventArgs args) =>
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (!_closed && !sender.AnimationsEnabled) FinishEntrance();
+        });
+
+    public void SetClosingState(bool closing)
+    {
+        if (closing) DevicePageView.StopHeadTracking();
+        Title = closing ? Localize.Get("Shutdown.Closing") : "NTPods";
+        DevicePageView.SetDaemonReady(!closing && _client.IsReady);
+    }
+
+    public async Task ShowShutdownFailureAsync()
+    {
+        ShowFromTray();
+        var dialog = new ContentDialog
+        {
+            XamlRoot = RootGrid.XamlRoot,
+            RequestedTheme = RootGrid.RequestedTheme,
+            Title = Localize.Get("Shutdown.FailedTitle"),
+            Content = Localize.Get("Shutdown.FailedBody"),
+            CloseButtonText = Localize.Get("Action_Close"),
+        };
+        await dialog.ShowAsync();
     }
 
     private void OnClosing(AppWindow sender, AppWindowClosingEventArgs args)
     {
         args.Cancel = true;   // don't destroy the window…
+        DevicePageView.StopHeadTracking();
+        FinishEntrance();
         AppWindow.Hide();     // …just hide it back to the tray.
     }
 
     // ---- Navigation --------------------------------------------------------
 
-    private void Nav_SelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
+    private void ShowSettings(bool settings)
     {
-        var settings = args.IsSettingsSelected;
+        if (settings) DevicePageView.StopHeadTracking();
         DevicePageView.Visibility = settings ? Visibility.Collapsed : Visibility.Visible;
         SettingsPageView.Visibility = settings ? Visibility.Visible : Visibility.Collapsed;
+        SettingsNavigation.Visibility = settings ? Visibility.Visible : Visibility.Collapsed;
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (SettingsPageView.Visibility == Visibility.Visible) BackButton.Focus(FocusState.Programmatic);
+            else DevicePageView.FocusActions();
+        });
     }
 
-    /// Re-label the built-in NavigationView Settings item from the Loc service.
-    private void LocalizeSettingsNavItem()
-    {
-        if (NavView.SettingsItem is NavigationViewItem item)
-            item.Content = Localize.Get("SettingsTitle.Text");
-    }
+    private void Back_Click(object sender, RoutedEventArgs args) => ShowSettings(false);
 
     // ---- Daemon events (marshalled to the UI thread) -----------------------
 
@@ -139,31 +226,6 @@ public sealed partial class MainWindow : Window
     {
             _connected = s.Connected;
 
-            // The device NavigationViewItem mirrors the header: name, a model-aware
-            // icon, and a compact battery summary (visible in the expanded pane).
-            NavDeviceName.Text = string.IsNullOrWhiteSpace(s.DevName) ? "NTPods" : s.DevName;
-
-            var family = DeviceArt.Family(s.Model);
-            if (family != _navArtFamily)
-            {
-                _navArtFamily = family;
-                try { NavDeviceIcon.Source = new BitmapImage(new Uri(DeviceArt.MainImage(s.Model))); }
-                catch { }
-            }
-
-            // Lowest earbud reading (or the headphone band for Max) — one number is
-            // enough at nav width; the full L/R/Case breakdown is on the card.
-            byte? summary = LowestReading(s.Battery.Left, s.Battery.Right, s.Battery.Headphone);
-            if (summary is byte v)
-            {
-                NavDeviceBattery.Text = $"{v}%";
-                NavDeviceBattery.Visibility = Visibility.Visible;
-            }
-            else
-            {
-                NavDeviceBattery.Visibility = Visibility.Collapsed;
-            }
-
             // A live connection dismisses any stale "Connect?" prompt (in-app InfoBar
             // + the centred popup window).
             if (s.Connected)
@@ -176,23 +238,8 @@ public sealed partial class MainWindow : Window
             SettingsPageView.UpdateDeviceInfo(s);
     }
 
-    /// The lowest valid (<=100) battery reading among the given components, or null
-    /// when none report. The 0xFF "absent" sentinel (>100) is ignored.
-    private static byte? LowestReading(params byte?[] values)
-    {
-        byte? lowest = null;
-        foreach (var value in values)
-            if (value is byte v and <= 100 && (lowest is null || v < lowest))
-                lowest = v;
-        return lowest;
-    }
-
-    private void OnOverlay(string title, string body) =>
-        DispatcherQueue.TryEnqueue(() => DevicePageView.ShowOverlay(title, body));
-
     private Popup.ConnectPromptWindow? _connectPrompt;
     private bool _connected;
-    private string? _navArtFamily;
     private Snapshot? _lastSnapshot;
 
     private void OnConnectPrompt(string name) =>
@@ -219,6 +266,7 @@ public sealed partial class MainWindow : Window
     private void OnConnectionChanged(bool connected) =>
         DispatcherQueue.TryEnqueue(() =>
         {
+            DevicePageView.SetDaemonReady(connected && _client.IsReady);
             if (!connected) DevicePageView.ShowWaitingForDaemon();
         });
 }

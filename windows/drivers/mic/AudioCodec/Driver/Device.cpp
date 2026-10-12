@@ -251,6 +251,8 @@ Return Value:
 
     ASSERT(devCtx->Capture);
     RETURN_NTSTATUS_IF_FAILED(AcxDeviceAddCircuit(Device, devCtx->Capture));
+    // A single-circuit endpoint gets its symbolic link only after it is added.
+    RETURN_NTSTATUS_IF_FAILED(CodecC_SetPacketConstraints(devCtx->Capture));
 
     return status;
 }
@@ -420,14 +422,6 @@ Return Value:
 --*/
 {
     WDFDEVICE               device;
-    PCODEC_DEVICE_CONTEXT   devCtx;
-
     device = (WDFDEVICE)WdfDevice;
-    devCtx = GetCodecDeviceContext(device);
-    ASSERT(devCtx != nullptr);
-
-    if (devCtx->Capture)
-    {
-        CodecC_CircuitCleanup(devCtx->Capture);
-    }
+    MicPipeDeleteControlDevice(device);
 }

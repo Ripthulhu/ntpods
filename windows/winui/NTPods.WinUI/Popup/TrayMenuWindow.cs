@@ -4,6 +4,7 @@ using NTPods.WinUI.Ipc;
 using NTPods.WinUI.Services;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Windows.Graphics;
 
@@ -25,8 +26,10 @@ public sealed class TrayMenuWindow : Window
     private readonly Action _onQuit;
     private bool _closed;
     private bool _positioned;
+    private PointInt32 _anchor;
+    private DisplayArea? _display;
 
-    public TrayMenuWindow(DaemonClient client, Action onOpen, Action onQuit)
+    public TrayMenuWindow(DaemonClient client, Action onOpen, Action onQuit, Action? onBatteries = null)
     {
         _client = client;
         _onOpen = onOpen;
@@ -38,19 +41,32 @@ public sealed class TrayMenuWindow : Window
         _view.OnAnc = a => _client.SetAnc(a);
         _view.OnMute = () => _client.ToggleMute();
         _view.OnOpen = () => _onOpen();
+        _view.OnBatteries = onBatteries;
         _view.OnQuit = () => _onQuit();
         _view.OnDismiss = SafeClose;
+        _view.AddHandler(UIElement.KeyDownEvent, new KeyEventHandler((_, e) =>
+        {
+            if (e.Key != Windows.System.VirtualKey.Escape) return;
+            e.Handled = true;
+            SafeClose();
+        }), true);
 
         try { ConfigurePresenter(); } catch { }
         try { SystemBackdrop = new DesktopAcrylicBackdrop(); } catch { }
 
         _view.Loaded += OnViewLoaded;
-        // Dismiss when focus leaves the menu (click elsewhere / Esc handled by focus).
         Activated += OnActivated;
         Closed += (_, _) => _closed = true;
     }
 
     /// Populate + show the menu at the current cursor position.
+    public void UpdateSnapshot(Snapshot snapshot)
+    {
+        if (_closed) return;
+        _view.Apply(snapshot);
+        if (_positioned) PositionMenu();
+    }
+
     public void ShowAt(Snapshot snapshot)
     {
         if (_closed) return;
@@ -60,6 +76,11 @@ public sealed class TrayMenuWindow : Window
             _view.Apply(snapshot);
             try { ApplyExStyles(); } catch { }
             try { RoundCorners(); } catch { }
+            if (!GetCursorPos(out var cursor)) { SafeClose(); return; }
+            _anchor = new PointInt32(cursor.X, cursor.Y);
+            _display = DisplayArea.GetFromPoint(_anchor, DisplayAreaFallback.Nearest);
+            // Destination DPI must be selected before measuring the menu.
+            AppWindow.Move(_anchor);
             // Realize the HWND + lay out the content; final placement happens in
             // OnViewLoaded once the rasterization scale is known.
             AppWindow.Show(true);
@@ -67,39 +88,34 @@ public sealed class TrayMenuWindow : Window
         catch { SafeClose(); }
     }
 
-    private void OnViewLoaded(object sender, RoutedEventArgs e)
+    private void OnViewLoaded(object sender, RoutedEventArgs e) => PositionMenu();
+
+    private void PositionMenu()
     {
         if (_closed) return;
         try
         {
-            double scale = _view.XamlRoot?.RasterizationScale ?? 1.0;
+            double scale = GetDpiForWindow(WinRT.Interop.WindowNative.GetWindowHandle(this)) / 96.0;
             if (scale <= 0) scale = 1.0;
 
-            _view.Measure(new Windows.Foundation.Size(MenuWidthDip, double.PositiveInfinity));
+            var work = (_display ?? DisplayArea.Primary).WorkArea;
+            _view.Width = Math.Min(MenuWidthDip, work.Width / scale);
+            _view.MaxHeight = work.Height / scale;
+            _view.Measure(new Windows.Foundation.Size(_view.Width, _view.MaxHeight));
             double heightDip = _view.DesiredSize.Height > 0 ? _view.DesiredSize.Height : FallbackHeightDip;
             double widthDip = _view.DesiredSize.Width > 0 ? _view.DesiredSize.Width : MenuWidthDip;
 
-            int w = (int)Math.Ceiling(widthDip * scale);
-            int h = (int)Math.Ceiling(heightDip * scale);
-            try { AppWindow.Resize(new SizeInt32(w, h)); } catch { }
-
-            var area = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Nearest);
-            var work = area.WorkArea;
-            GetCursorPos(out var cur);
-
-            // Grow up-left from the cursor (tray sits bottom-right); clamp on-screen.
-            int x = cur.X;
-            int y = cur.Y - h;
-            if (x + w > work.X + work.Width) x = work.X + work.Width - w;
-            if (x < work.X) x = work.X;
-            if (y < work.Y) y = work.Y;
-            if (y + h > work.Y + work.Height) y = work.Y + work.Height - h;
-
-            try { AppWindow.Move(new PointInt32(x, y)); } catch { }
-            _positioned = true;
-
+            var bounds = TrayMenuLayout.Fit(_anchor.X, _anchor.Y,
+                (int)Math.Ceiling(widthDip * scale), (int)Math.Ceiling(heightDip * scale),
+                work.X, work.Y, work.Width, work.Height);
+            if (AppWindow.Size.Width != bounds.Width || AppWindow.Size.Height != bounds.Height)
+                AppWindow.Resize(new SizeInt32(bounds.Width, bounds.Height));
+            if (AppWindow.Position.X != bounds.X || AppWindow.Position.Y != bounds.Y)
+                AppWindow.Move(new PointInt32(bounds.X, bounds.Y));
             // Take focus so the first click-away deactivates (and dismisses) us.
-            try { SetForegroundWindow(WinRT.Interop.WindowNative.GetWindowHandle(this)); } catch { }
+            if (!_positioned)
+                try { SetForegroundWindow(WinRT.Interop.WindowNative.GetWindowHandle(this)); } catch { }
+            _positioned = true;
         }
         catch { SafeClose(); }
     }
@@ -157,6 +173,9 @@ public sealed class TrayMenuWindow : Window
 
     [DllImport("user32.dll")]
     private static extern bool GetCursorPos(out POINT lpPoint);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetDpiForWindow(nint hwnd);
 
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(nint hWnd);

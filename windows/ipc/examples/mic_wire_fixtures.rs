@@ -1,0 +1,361 @@
+//! Executed by windows/tests/test-ipc.ps1 against the real C# wire model.
+use ntpods_ipc::{
+    from_line, to_line, BatteryFreshness, BatteryObservation, Command, Equalizer, Event, MicMode,
+    Snapshot,
+};
+
+fn snapshots() -> Vec<Snapshot> {
+    [
+        "idle",
+        "starting",
+        "capturing",
+        "stopping",
+        "recovering",
+        "unavailable",
+        "error",
+        "waiting_for_ear",
+    ]
+    .into_iter()
+    .map(|phase| Snapshot {
+        connected: true,
+        battery_live: phase != "error",
+        battery_timestamp_ms: Some(1_792_000_000_100),
+        battery_freshness: Some(BatteryFreshness {
+            left: BatteryObservation {
+                timestamp_ms: Some(1_792_000_000_100),
+                live: phase != "error",
+                present: Some(true),
+            },
+            right: BatteryObservation {
+                timestamp_ms: Some(1_792_000_000_090),
+                live: phase != "error",
+                present: Some(true),
+            },
+            case: BatteryObservation {
+                timestamp_ms: Some(1_791_999_900_000),
+                live: false,
+                present: Some(false),
+            },
+            ..Default::default()
+        }),
+        battery_source: if phase == "idle" { "ble" } else { "aap" }.into(),
+        ble_scan_while_connected: phase == "idle",
+        dev_name: "AirPods fixture — \"test\"".into(),
+        mic_state: phase.into(),
+        mic_capture_active: matches!(
+            phase,
+            "starting" | "capturing" | "error" | "waiting_for_ear"
+        ),
+        mic_uplink_active: matches!(phase, "starting" | "capturing" | "stopping" | "recovering"),
+        mic_recording: phase == "capturing",
+        mic_available: phase != "unavailable",
+        auto_mode: !matches!(phase, "unavailable" | "error"),
+        mic_mode: match phase {
+            "capturing" => MicMode::KeepActive,
+            "waiting_for_ear" => MicMode::Manual,
+            _ => MicMode::Automatic,
+        },
+        mic_stop_delay_secs: if phase == "starting" { 30 } else { 0 },
+        mic_manual_active: phase == "waiting_for_ear",
+        conversational_awareness_pending: match phase {
+            "starting" => Some(true),
+            "stopping" => Some(false),
+            _ => None,
+        },
+        mic_error: (phase == "error")
+            .then(|| "Output failed: \"device gone\"\nTry again — later.".into()),
+        device_controls: [(1, 0), (31, 0x504B), (36, 0x0300), (40, 2)].into(),
+        device_controls_pending: if phase == "starting" {
+            [(35, 3), (40, 1)].into()
+        } else {
+            Default::default()
+        },
+        adaptive_strength_requested: match phase {
+            "idle" => Some(0),
+            "starting" => Some(50),
+            "capturing" => Some(100),
+            _ => None,
+        },
+        allow_off_requested: match phase {
+            "idle" => Some(true),
+            "starting" => Some(false),
+            _ => None,
+        },
+        device_settings_error: (phase == "error")
+            .then(|| "AirPods did not confirm the setting.".into()),
+        eq: (phase != "unavailable").then_some(Equalizer {
+            mode: 2,
+            low: 35,
+            mid: 50,
+            high: 65,
+        }),
+        eq_pending: (phase == "starting").then_some(Equalizer {
+            mode: 2,
+            low: 40,
+            mid: 55,
+            high: 70,
+        }),
+        loud_sound_reduction: match phase {
+            "idle" => Some(true),
+            "starting" | "error" => Some(false),
+            _ => None,
+        },
+        loud_sound_reduction_pending: phase == "starting",
+        loud_sound_reduction_error: (phase == "error")
+            .then(|| "AirPods did not apply Loud Sound Reduction. Try again.".into()),
+        auto_pause: phase != "stopping",
+        conversation_volume: match phase {
+            "idle" => 0,
+            "starting" => 25,
+            "capturing" => 100,
+            _ => 60,
+        },
+        heart_rate_enabled: phase == "capturing",
+        heart_rate: (phase == "capturing").then_some(72),
+        heart_rate_timestamp_ms: (phase == "capturing").then_some(1_792_000_000_123),
+        head_tracking_enabled: matches!(phase, "starting" | "capturing" | "waiting_for_ear"),
+        head_tracking_state: match phase {
+            "capturing" => "streaming",
+            "starting" | "waiting_for_ear" | "error" => phase,
+            _ => "idle",
+        }
+        .into(),
+        head_tracking_error: (phase == "error").then(|| "No head-tracking data.".into()),
+        anc_unconfirmed: matches!(phase, "starting" | "error"),
+        ..Snapshot::default()
+    })
+    .collect()
+}
+
+fn main() {
+    let args: Vec<_> = std::env::args().collect();
+    assert_eq!(args.len(), 3, "usage: mic_wire_fixtures emit|check FILE");
+    let states = snapshots();
+    match args[1].as_str() {
+        "emit" => {
+            let mut lines = String::new();
+            for snapshot in &states {
+                let line = to_line(&Event::State(snapshot.clone()));
+                assert_eq!(
+                    line.lines().count(),
+                    1,
+                    "escaped text must stay one NDJSON message"
+                );
+                let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(value["event"], "state");
+                assert!(
+                    value.get("snapshot").is_none(),
+                    "state must remain flattened"
+                );
+                let Event::State(roundtrip) = from_line::<Event>(&line).unwrap() else {
+                    panic!("wrong event");
+                };
+                assert_eq!(&roundtrip, snapshot);
+                lines.push_str(&line);
+            }
+            // An older daemon can report mic_recording=true without the new
+            // lifecycle fields. Neither client may infer new permissions from it.
+            let mut legacy = serde_json::to_value(Event::State(states[2].clone())).unwrap();
+            for key in [
+                "battery_live",
+                "battery_freshness",
+                "battery_timestamp_ms",
+                "battery_source",
+                "ble_scan_while_connected",
+                "anc_unconfirmed",
+                "mic_capture_active",
+                "mic_uplink_active",
+                "mic_state",
+                "mic_error",
+                "mic_mode",
+                "mic_stop_delay_secs",
+                "mic_manual_active",
+                "conversational_awareness_pending",
+                "device_controls",
+                "device_controls_pending",
+                "adaptive_strength_requested",
+                "allow_off_requested",
+                "device_settings_error",
+                "eq",
+                "eq_pending",
+                "loud_sound_reduction",
+                "loud_sound_reduction_pending",
+                "loud_sound_reduction_error",
+                "auto_pause",
+                "conversation_volume",
+                "heart_rate_enabled",
+                "heart_rate_timestamp_ms",
+                "head_tracking_enabled",
+                "head_tracking_state",
+                "head_tracking_error",
+            ] {
+                legacy.as_object_mut().unwrap().remove(key);
+            }
+            let legacy_line = to_line(&legacy);
+            let Event::State(old) = from_line::<Event>(&legacy_line).unwrap() else {
+                panic!("wrong legacy event");
+            };
+            assert!(!old.mic_capture_active && !old.mic_uplink_active);
+            assert!(old.mic_state.is_empty() && old.mic_error.is_none());
+            assert!(old.conversational_awareness_pending.is_none());
+            assert!(old.adaptive_strength_requested.is_none());
+            assert!(old.allow_off_requested.is_none());
+            assert!(
+                old.loud_sound_reduction.is_none()
+                    && !old.loud_sound_reduction_pending
+                    && old.loud_sound_reduction_error.is_none()
+            );
+            assert!(old.device_controls.is_empty() && old.device_controls_pending.is_empty());
+            assert!(
+                old.eq.is_none() && old.eq_pending.is_none() && old.device_settings_error.is_none()
+            );
+            assert!(old.auto_pause);
+            assert_eq!(old.conversation_volume, 25);
+            assert!(!old.anc_unconfirmed);
+            assert!(!old.heart_rate_enabled && old.heart_rate_timestamp_ms.is_none());
+            assert!(
+                !old.head_tracking_enabled
+                    && old.head_tracking_state == "idle"
+                    && old.head_tracking_error.is_none()
+            );
+            assert!(!old.ble_scan_while_connected);
+            assert!(
+                !old.battery_live
+                    && old.battery_freshness.is_none()
+                    && old.battery_timestamp_ms.is_none()
+                    && old.battery_source.is_empty()
+            );
+            lines.push_str(&legacy_line);
+            std::fs::write(&args[2], lines).unwrap();
+            println!("Rust: emitted eight production lifecycle events and one legacy event");
+        }
+        "check" => {
+            let text = std::fs::read_to_string(&args[2]).unwrap();
+            let lines: Vec<_> = text.lines().collect();
+            assert_eq!(
+                lines.len(),
+                states.len() + 24,
+                "C# states, legacy state and twenty-three commands expected"
+            );
+            for (line, expected) in lines.iter().zip(&states) {
+                let Event::State(actual) = from_line::<Event>(line).expect("C# event must parse")
+                else {
+                    panic!("wrong event");
+                };
+                assert_eq!(
+                    &actual, expected,
+                    "C# roundtrip changed the production state"
+                );
+            }
+            let Event::State(legacy) = from_line::<Event>(lines[states.len()]).unwrap() else {
+                panic!("wrong legacy event");
+            };
+            assert!(!legacy.mic_capture_active && !legacy.mic_uplink_active);
+            assert_eq!(legacy.mic_state, "unavailable");
+            assert!(legacy.mic_error.is_none());
+            assert!(legacy.auto_pause && legacy.device_controls.is_empty() && legacy.eq.is_none());
+            assert!(!legacy.anc_unconfirmed);
+            assert!(legacy.adaptive_strength_requested.is_none());
+            assert!(legacy.allow_off_requested.is_none());
+            assert!(
+                legacy.loud_sound_reduction.is_none()
+                    && !legacy.loud_sound_reduction_pending
+                    && legacy.loud_sound_reduction_error.is_none()
+            );
+            assert_eq!(legacy.conversation_volume, 25);
+            assert_eq!(legacy.mic_mode, MicMode::Automatic);
+            assert_eq!(legacy.mic_stop_delay_secs, 0);
+            assert!(!legacy.mic_manual_active);
+            assert!(!legacy.ble_scan_while_connected);
+            assert!(
+                !legacy.head_tracking_enabled
+                    && legacy.head_tracking_state == "idle"
+                    && legacy.head_tracking_error.is_none()
+            );
+            assert!(
+                !legacy.battery_live
+                    && legacy.battery_freshness.is_none()
+                    && legacy.battery_timestamp_ms.is_none()
+                    && legacy.battery_source.is_empty()
+            );
+            let commands = &lines[states.len() + 1..];
+            for (line, expected_auto) in commands[..2].iter().zip([false, true]) {
+                let Command::SetMicMode { auto, manual } = from_line::<Command>(line).unwrap()
+                else {
+                    panic!("wrong command");
+                };
+                assert_eq!(auto, expected_auto);
+                assert!(
+                    !manual,
+                    "the UI must not request a manual microphone override"
+                );
+            }
+            assert!(matches!(
+                from_line::<Command>(commands[2]),
+                Some(Command::SetDeviceControl {
+                    id: 0x24,
+                    value: 0x0200
+                })
+            ));
+            assert!(matches!(
+                from_line::<Command>(commands[3]),
+                Some(Command::SetEq {
+                    mode: 2,
+                    low: 40,
+                    mid: 50,
+                    high: 60
+                })
+            ));
+            assert!(matches!(
+                from_line::<Command>(commands[4]),
+                Some(Command::SetAutoPause { on: false })
+            ));
+            assert!(matches!(
+                from_line::<Command>(commands[5]),
+                Some(Command::RefreshDeviceSettings)
+            ));
+            for (line, expected) in commands[6..9].iter().zip([0, 25, 100]) {
+                assert!(matches!(from_line::<Command>(line),
+                    Some(Command::SetConversationVolume { percent }) if percent == expected));
+            }
+            assert!(matches!(from_line::<Command>(commands[9]),
+                Some(Command::SetName { name, request_id: 42 }) if name == "Écouteurs 🎧"));
+            assert!(matches!(
+                from_line::<Command>(commands[10]),
+                Some(Command::Ping)
+            ));
+            for (line, (expected_mode, expected_delay)) in commands[11..15].iter().zip([
+                (MicMode::Automatic, 0),
+                (MicMode::Automatic, 3600),
+                (MicMode::KeepActive, 0),
+                (MicMode::Manual, 0),
+            ]) {
+                assert!(matches!(from_line::<Command>(line),
+                    Some(Command::SetMicPolicy { mode, stop_delay_secs })
+                    if mode == expected_mode && stop_delay_secs == expected_delay));
+            }
+            for (line, expected) in commands[15..17].iter().zip([false, true]) {
+                assert!(matches!(from_line::<Command>(line),
+                    Some(Command::SetMicManualActive { active }) if active == expected));
+            }
+            assert!(matches!(
+                from_line::<Command>(commands[17]),
+                Some(Command::SetBleScanWhileConnected { enabled: true })
+            ));
+            for (line, expected) in commands[18..20].iter().zip([false, true]) {
+                assert!(matches!(from_line::<Command>(line),
+                    Some(Command::SetHeadTracking { on }) if on == expected));
+            }
+            assert!(matches!(
+                from_line::<Command>(commands[20]),
+                Some(Command::GetLoudSoundReduction)
+            ));
+            for (line, expected) in commands[21..23].iter().zip([false, true]) {
+                assert!(matches!(from_line::<Command>(line),
+                    Some(Command::SetLoudSoundReduction { on }) if on == expected));
+            }
+            println!("Rust: C# state, microphone and device-setting command roundtrips passed");
+        }
+        _ => panic!("expected emit or check"),
+    }
+}

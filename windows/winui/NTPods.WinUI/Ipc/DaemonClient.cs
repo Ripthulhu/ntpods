@@ -1,249 +1,251 @@
 using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Channels;
+using Microsoft.Win32.SafeHandles;
 
 namespace NTPods.WinUI.Ipc;
 
-/// IPC client to `ntpodsd` over the two one-directional named pipes:
-///   * read State/Overlay/ConnectPrompt events from "NTPods-events" (In)
-///   * write commands to "NTPods-cmds" (Out)
-///
-/// A single duplex pipe deadlocks a Windows sync handle, so the daemon keeps the
-/// directions on separate pipes; we mirror that. Both directions run on their own
-/// background task and reconnect (spawning the daemon if it isn't running), so a
-/// stalled pipe never freezes the UI thread. Events are raised on a background
-/// thread — subscribers must marshal to the UI via DispatcherQueue.
+/// Both pipes and their command queue belong to one connection. Commands never survive reconnecting.
 public sealed class DaemonClient : IDisposable
 {
-    private const string EventsPipe = "NTPods-events";
-    private const string CommandsPipe = "NTPods-cmds";
-    private const string DaemonExe = "ntpodsd.exe";
-
-    // Raised on a background thread.
     public event Action<Snapshot>? SnapshotReceived;
     public event Action<string, string>? OverlayReceived;
     public event Action<string>? ConnectPromptReceived;
-    public event Action<bool>? ConnectionChanged; // true = events pipe connected
+    public event Action<DaemonEvent.CommandResult>? CommandResultReceived;
+    public event Action<DaemonEvent.HeadTracking>? HeadTrackingReceived;
+    public event Action<bool>? ConnectionChanged;
 
-    private readonly Channel<byte[]> _outgoing =
-        Channel.CreateUnbounded<byte[]>(new UnboundedChannelOptions
-        {
-            SingleReader = true,
-            SingleWriter = false,
-        });
+    private sealed record Outgoing(byte[] Bytes, TaskCompletionSource<bool>? Delivered = null, CancellationToken Expires = default);
 
+    private sealed class Session(NamedPipeClientStream events, NamedPipeClientStream commands, CancellationTokenSource cancellation, int processId)
+    {
+        public readonly NamedPipeClientStream Events = events;
+        public readonly NamedPipeClientStream Commands = commands;
+        public readonly CancellationTokenSource Cancellation = cancellation;
+        public readonly int ProcessId = processId;
+        public readonly Channel<Outgoing> Outgoing = Channel.CreateBounded<Outgoing>(256);
+        public bool Ready;
+    }
+
+    private readonly object _gate = new();
     private readonly CancellationTokenSource _cts = new();
-    private bool _started;
+    private readonly string _eventsPipe;
+    private readonly string _commandsPipe;
+    private readonly Action _spawnDaemon;
+    private Session? _session;
+    private TaskCompletionSource<Session> _nextReady = NewReady();
+    private Task? _run;
+    private bool _stopping;
 
-    /// Start the two async pipe loops. They are launched directly (no Task.Run):
-    /// each hits its first `await` at ConnectAsync almost immediately and then
-    /// runs entirely on the thread pool via ConfigureAwait(false), so nothing
-    /// blocks the caller or the UI thread. Both loops swallow their own
-    /// exceptions, so the discarded tasks never fault unobserved.
+    public DaemonClient() : this("NTPods-events", "NTPods-cmds", TrySpawnDaemon) { }
+
+    internal DaemonClient(string eventsPipe, string commandsPipe, Action spawnDaemon)
+    {
+        _eventsPipe = eventsPipe;
+        _commandsPipe = commandsPipe;
+        _spawnDaemon = spawnDaemon;
+    }
+
+    private static TaskCompletionSource<Session> NewReady() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public bool IsReady { get { lock (_gate) return !_stopping && _session is { Ready: true }; } }
+
     public void Start()
     {
-        if (_started) return;
-        _started = true;
-        _ = ReadLoopAsync(_cts.Token);
-        _ = WriteLoopAsync(_cts.Token);
+        if (_run is null) _run = RunAsync(_cts.Token);
     }
 
-    // ---- Command helpers ---------------------------------------------------
-
-    public void Send(object command)
+    public bool Send(object command)
     {
-        var bytes = Encoding.UTF8.GetBytes(Wire.ToLine(command));
-        _outgoing.Writer.TryWrite(bytes);
+        Session? stalled = null;
+        lock (_gate)
+        {
+            if (_stopping || _session is not { Ready: true } session) return false;
+            if (session.Outgoing.Writer.TryWrite(new Outgoing(Encode(command)))) return true;
+            stalled = session;
+        }
+        // A blocked command pipe must not build an ever-growing backlog behind a healthy events pipe.
+        try { stalled.Cancellation.Cancel(); } catch (ObjectDisposedException) { }
+        return false;
     }
 
-    public void SendHello() => Send(new HelloCmd());
+    private static byte[] Encode(object command) => Encoding.UTF8.GetBytes(Wire.ToLine(command));
     public void RequestState() => Send(new GetStateCmd());
     public void SetAnc(byte mode) => Send(new SetAncCmd { Mode = mode });
     public void SetMicMode(bool auto, bool manual) => Send(new SetMicModeCmd { Auto = auto, Manual = manual });
     public void SetFeature(byte feature, bool on) => Send(new SetFeatureCmd { Feature = feature, On = on });
     public void SetControl(byte id, byte value) => Send(new SetControlCmd { Id = id, Value = value });
+    public void SetDeviceControl(byte id, uint value) => Send(new SetDeviceControlCmd { Id = id, Value = value });
+    public void SetEq(Equalizer eq) => Send(new SetEqCmd { Mode = eq.Mode, Low = eq.Low, Mid = eq.Mid, High = eq.High });
+    public void SetAutoPause(bool on) => Send(new SetAutoPauseCmd { On = on });
+    public void RefreshDeviceSettings() => Send(new RefreshDeviceSettingsCmd());
     public void SetHearingAid(SetHearingAidCmd cmd) => Send(cmd);
     public void StepVolume(int delta) => Send(new StepVolumeCmd { Delta = delta });
-    public void SetVolume(byte percent) => Send(new SetVolumeCmd { Percent = percent });
     public void ToggleMute() => Send(new ToggleMuteCmd());
     public void SetHeartRate(bool on) => Send(new SetHeartRateCmd { On = on });
     public void Connect() => Send(new ConnectCmd());
     public void Disconnect() => Send(new DisconnectCmd());
     public void RepairConnection() => Send(new RepairConnectionCmd());
     public void RebuildAudio() => Send(new RebuildAudioCmd());
-    public void SetName(string name) => Send(new SetNameCmd { Name = name });
-    public void Shutdown() => Send(new ShutdownCmd());
+    public bool SetName(string name, ulong requestId) => Send(new SetNameCmd { Name = name, RequestId = requestId });
 
-    // ---- Reader ------------------------------------------------------------
-
-    private async Task ReadLoopAsync(CancellationToken ct)
+    public async Task ShutdownAsync(TimeSpan? recoveryTimeout = null)
     {
-        while (!ct.IsCancellationRequested)
+        Task<Session> ready;
+        lock (_gate)
         {
-            NamedPipeClientStream? pipe = null;
-            try
-            {
-                pipe = new NamedPipeClientStream(".", EventsPipe, PipeDirection.In,
-                    PipeOptions.Asynchronous);
-                try
-                {
-                    await pipe.ConnectAsync(500, ct).ConfigureAwait(false);
-                }
-                catch (TimeoutException)
-                {
-                    // Daemon not up yet — launch it (it's a sibling exe) and retry.
-                    TrySpawnDaemon();
-                    await Task.Delay(500, ct).ConfigureAwait(false);
-                    continue;
-                }
-
-                ConnectionChanged?.Invoke(true);
-
-                // On (re)connect, announce ourselves and pull a fresh snapshot.
-                SendHello();
-                RequestState();
-
-                using var reader = new StreamReader(pipe, Encoding.UTF8,
-                    detectEncodingFromByteOrderMarks: false);
-                string? line;
-                while ((line = await reader.ReadLineAsync(ct).ConfigureAwait(false)) is not null)
-                {
-                    Dispatch(Wire.ParseEvent(line));
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-            catch (IOException)
-            {
-                // Pipe closed / daemon exited — fall through to reconnect.
-            }
-            catch (Exception)
-            {
-                // Never let the loop die; back off and retry.
-            }
-            finally
-            {
-                pipe?.Dispose();
-                ConnectionChanged?.Invoke(false);
-            }
-
-            try { await Task.Delay(500, ct).ConfigureAwait(false); }
-            catch (OperationCanceledException) { break; }
+            _stopping = true;
+            ready = _session is { Ready: true } session ? Task.FromResult(session) : _nextReady.Task;
         }
-    }
-
-    private void Dispatch(DaemonEvent? ev)
-    {
-        switch (ev)
-        {
-            case DaemonEvent.State s:
-                SnapshotReceived?.Invoke(s.Snapshot);
-                break;
-            case DaemonEvent.Overlay o:
-                OverlayReceived?.Invoke(o.Title, NTPods.WinUI.Services.OverlayText.Resolve(o.Body));
-                break;
-            case DaemonEvent.ConnectPrompt p:
-                ConnectPromptReceived?.Invoke(p.Name);
-                break;
-        }
-    }
-
-    // ---- Writer ------------------------------------------------------------
-
-    private async Task WriteLoopAsync(CancellationToken ct)
-    {
-        while (!ct.IsCancellationRequested)
-        {
-            NamedPipeClientStream? pipe = null;
-            try
-            {
-                pipe = new NamedPipeClientStream(".", CommandsPipe, PipeDirection.Out,
-                    PipeOptions.Asynchronous);
-                try
-                {
-                    await pipe.ConnectAsync(500, ct).ConfigureAwait(false);
-                }
-                catch (TimeoutException)
-                {
-                    // The reader loop is responsible for spawning the daemon.
-                    await Task.Delay(500, ct).ConfigureAwait(false);
-                    continue;
-                }
-
-                // Drain the outgoing queue until the pipe breaks.
-                while (!ct.IsCancellationRequested)
-                {
-                    var msg = await _outgoing.Reader.ReadAsync(ct).ConfigureAwait(false);
-                    await pipe.WriteAsync(msg, ct).ConfigureAwait(false);
-                    await pipe.FlushAsync(ct).ConfigureAwait(false);
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-            catch (IOException)
-            {
-                // Pipe broke — reconnect. (The in-flight message is lost, which
-                // matches the tray's best-effort behaviour.)
-            }
-            catch (Exception)
-            {
-            }
-            finally
-            {
-                pipe?.Dispose();
-            }
-
-            try { await Task.Delay(500, ct).ConfigureAwait(false); }
-            catch (OperationCanceledException) { break; }
-        }
-    }
-
-    // ---- Daemon launch -----------------------------------------------------
-
-    /// If a `ntpodsd` is already running when this app starts (e.g. an orphan
-    /// from a crashed or force-killed session), ask it to exit GRACEFULLY over the
-    /// commands pipe and wait for it to go — so this app owns a single clean
-    /// instance and the freshly-spawned daemon can open the driver. The daemon
-    /// releases the exclusive AAP driver handle on Shutdown; we deliberately do
-    /// NOT hard-kill a stuck one — a kill leaks that handle and sticks the devnode
-    /// in Code 38 (CM_PROB_DRIVER_FAILED_PRIOR_UNLOAD), i.e. worse than leaving it
-    /// for the single-instance mutex + a reboot to resolve. Best-effort and fully
-    /// guarded: any failure just falls through to the normal connect/spawn path.
-    public static void ShutdownExistingDaemon()
-    {
-        Process[] existing;
-        try { existing = Process.GetProcessesByName("ntpodsd"); }
-        catch { return; }
-        if (existing.Length == 0) return;
-
+        ConnectionChanged?.Invoke(false);
         try
         {
-            using var pipe = new NamedPipeClientStream(".", CommandsPipe,
-                PipeDirection.Out, PipeOptions.None);
-            pipe.Connect(500);
-            // Byte-identical to a normal command (Wire.ToLine carries the newline).
-            var bytes = Encoding.UTF8.GetBytes(Wire.ToLine(new ShutdownCmd()));
-            pipe.Write(bytes, 0, bytes.Length);
-            pipe.Flush();
+            var session = await ready.WaitAsync(TimeSpan.FromSeconds(5), _cts.Token).ConfigureAwait(false);
+            using var process = Process.GetProcessById(session.ProcessId);
+            var delivered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var deliveryTimeout = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
+            deliveryTimeout.CancelAfter(TimeSpan.FromSeconds(5));
+            await session.Outgoing.Writer.WriteAsync(new Outgoing(Encode(new ShutdownCmd()), delivered, deliveryTimeout.Token), deliveryTimeout.Token).ConfigureAwait(false);
+            await delivered.Task.WaitAsync(deliveryTimeout.Token).ConfigureAwait(false);
+            // The backend can spend up to 60 seconds draining capture and restoring stereo.
+            await process.WaitForExitAsync(_cts.Token).WaitAsync(recoveryTimeout ?? TimeSpan.FromSeconds(70), _cts.Token).ConfigureAwait(false);
         }
         catch
         {
-            // Couldn't reach it (stuck daemon) — leave it be; never hard-kill.
-            foreach (var p in existing) p.Dispose();
-            return;
+            lock (_gate) _stopping = false;
+            ConnectionChanged?.Invoke(IsReady);
+            RequestState();
+            throw;
         }
+    }
 
-        // Let it actually exit (releasing the driver) before we spawn a fresh one.
-        foreach (var p in existing)
+    private async Task RunAsync(CancellationToken ct)
+    {
+        SnapshotReceived?.Invoke(new Snapshot());
+        ConnectionChanged?.Invoke(false);
+        while (!ct.IsCancellationRequested)
         {
-            try { p.WaitForExit(2000); } catch { }
-            p.Dispose();
+            using var events = new NamedPipeClientStream(".", _eventsPipe, PipeDirection.In, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+            using var commands = new NamedPipeClientStream(".", _commandsPipe, PipeDirection.Out, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+            using var connection = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            Session? session = null;
+            Task? reader = null, writer = null;
+            try
+            {
+                await Task.WhenAll(events.ConnectAsync(500, ct), commands.ConnectAsync(500, ct)).ConfigureAwait(false);
+                if (!GetNamedPipeServerProcessId(commands.SafePipeHandle, out uint processId) ||
+                    !GetNamedPipeServerProcessId(events.SafePipeHandle, out uint eventsProcessId) || processId != eventsProcessId)
+                    throw new IOException("Could not identify the background service.");
+                session = new Session(events, commands, connection, checked((int)processId));
+                lock (_gate) _session = session;
+                reader = ReadSessionAsync(session);
+                writer = WriteSessionAsync(session);
+                await await Task.WhenAny(reader, writer).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                lock (_gate) { if (!_stopping && !ct.IsCancellationRequested) _spawnDaemon(); }
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception) { }
+            finally
+            {
+                lock (_gate)
+                {
+                    if (ReferenceEquals(_session, session)) _session = null;
+                    if (_nextReady.Task.IsCompleted) _nextReady = NewReady();
+                }
+                connection.Cancel();
+                events.Dispose();
+                commands.Dispose();
+                if (session is not null)
+                {
+                    session.Outgoing.Writer.TryComplete();
+                    while (session.Outgoing.Reader.TryRead(out var pending))
+                        pending.Delivered?.TrySetException(new IOException("The background service disconnected."));
+                    SnapshotReceived?.Invoke(new Snapshot());
+                    ConnectionChanged?.Invoke(false);
+                }
+                try { if (reader is not null && writer is not null) await Task.WhenAll(reader, writer).ConfigureAwait(false); }
+                catch (Exception) { }
+            }
+            try { await Task.Delay(500, ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { break; }
+        }
+    }
+
+    private async Task ReadSessionAsync(Session session)
+    {
+        using var reader = new StreamReader(session.Events, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
+        while (await reader.ReadLineAsync(session.Cancellation.Token).ConfigureAwait(false) is { } line)
+        {
+            switch (Wire.ParseEvent(line))
+            {
+                case DaemonEvent.State state:
+                    lock (_gate)
+                    {
+                        if (!ReferenceEquals(_session, session)) return;
+                        session.Ready = true;
+                        _nextReady.TrySetResult(session);
+                    }
+                    SnapshotReceived?.Invoke(state.Snapshot);
+                    ConnectionChanged?.Invoke(IsReady);
+                    break;
+                case DaemonEvent.Overlay overlay:
+                    OverlayReceived?.Invoke(overlay.Title, Services.OverlayText.Resolve(overlay.Body));
+                    break;
+                case DaemonEvent.ConnectPrompt prompt:
+                    ConnectPromptReceived?.Invoke(prompt.Name);
+                    break;
+                case DaemonEvent.CommandResult result:
+                    CommandResultReceived?.Invoke(result);
+                    break;
+                case DaemonEvent.HeadTracking movement:
+                    HeadTrackingReceived?.Invoke(movement);
+                    break;
+            }
+        }
+    }
+
+    private async Task WriteSessionAsync(Session session)
+    {
+        var ct = session.Cancellation.Token;
+        await session.Commands.WriteAsync(Encode(new HelloCmd()), ct).ConfigureAwait(false);
+        await session.Commands.WriteAsync(Encode(new GetStateCmd()), ct).ConfigureAwait(false);
+        await session.Commands.FlushAsync(ct).ConfigureAwait(false);
+        while (!ct.IsCancellationRequested)
+        {
+            Outgoing message;
+            using (var idle = CancellationTokenSource.CreateLinkedTokenSource(ct))
+            {
+                idle.CancelAfter(TimeSpan.FromSeconds(2));
+                try { message = await session.Outgoing.Reader.ReadAsync(idle.Token).ConfigureAwait(false); }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    // Detect a lost command pipe even if events continue and the user is idle.
+                    message = new Outgoing(Encode(new PingCmd()));
+                }
+            }
+            lock (_gate) { if (_stopping && message.Delivered is null) continue; }
+            if (message.Expires.IsCancellationRequested)
+            {
+                message.Delivered?.TrySetCanceled(message.Expires);
+                continue;
+            }
+            try
+            {
+                using var write = CancellationTokenSource.CreateLinkedTokenSource(ct, message.Expires);
+                await session.Commands.WriteAsync(message.Bytes, write.Token).ConfigureAwait(false);
+                await session.Commands.FlushAsync(write.Token).ConfigureAwait(false);
+                message.Delivered?.TrySetResult(true);
+            }
+            catch (Exception error)
+            {
+                message.Delivered?.TrySetException(error);
+                throw;
+            }
         }
     }
 
@@ -253,44 +255,36 @@ public sealed class DaemonClient : IDisposable
         {
             var path = FindDaemon();
             if (path is null) return;
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = path,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                WorkingDirectory = Path.GetDirectoryName(path)!,
-            });
+            Process.Start(new ProcessStartInfo { FileName = path, UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = Path.GetDirectoryName(path)! });
         }
-        catch
-        {
-            // Best effort — if we can't spawn it, keep retrying the connect.
-        }
+        catch { }
     }
 
-    /// Locate ntpodsd.exe: next to us (the deployed layout has every exe in the
-    /// same folder), else the standard install dir %LOCALAPPDATA%\NTPods — so a
-    /// VS debug run (from bin\...) still finds and launches the installed daemon
-    /// without needing the Rust tray to be up first.
     private static string? FindDaemon()
     {
         string[] candidates =
-        {
-            Path.Combine(AppContext.BaseDirectory, DaemonExe),
-            // MSI layout: ntpodsd.exe sits one folder up, next to winui\.
-            Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", DaemonExe)),
-            Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "NTPods", DaemonExe),
-        };
-        foreach (var c in candidates)
-            if (File.Exists(c)) return c;
-        return null;
+        [
+            Path.Combine(AppContext.BaseDirectory, "ntpodsd.exe"),
+            Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "ntpodsd.exe")),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "NTPods", "ntpodsd.exe"),
+        ];
+        return candidates.FirstOrDefault(File.Exists);
     }
 
     public void Dispose()
     {
-        try { _cts.Cancel(); } catch { }
-        _outgoing.Writer.TryComplete();
+        try { _cts.Cancel(); } catch (ObjectDisposedException) { }
+        // RunAsync owns the pipe handles and finishes cancellation on its background continuation.
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        Dispose();
+        if (_run is not null) await _run.ConfigureAwait(false);
         _cts.Dispose();
     }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetNamedPipeServerProcessId(SafePipeHandle pipe, out uint serverProcessId);
 }

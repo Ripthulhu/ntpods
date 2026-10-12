@@ -12,8 +12,7 @@ Abstract:
     ProcessPacket). Exposed to user mode through a control device
     (\\.\NTPodsMic).
 
-    PCM format: mono, 16-bit, 44100 or 48000 Hz (whatever the client opens the
-    capture endpoint with — see Capture_AllocateSupportedFormats).
+    PCM format: mono, 16-bit, 48000 Hz.
 
 Environment:
 
@@ -38,11 +37,18 @@ Environment:
 // IOCTL: user mode reads a capture-activity counter (ULONG). It advances every
 // time an app pulls a capture packet, so the tray can tell when the mic is
 // actually being recorded and auto-enable/disable the hi-res stream.
+// If the output buffer holds 8 bytes, a second ULONG reports running capture
+// streams; the original 4-byte result is retained for older callers.
 // Value (precomputed): 0x00226004.
 //   CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_READ_DATA)
 //
 #define IOCTL_NTPODS_MIC_STATUS \
     CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_READ_DATA)
+
+// No input/output buffers. Drop queued speech without removing the endpoint.
+// Value: 0x0022A008.
+#define IOCTL_NTPODS_MIC_FLUSH \
+    CTL_CODE(FILE_DEVICE_UNKNOWN, 0x802, METHOD_BUFFERED, FILE_WRITE_DATA)
 
 EXTERN_C_START
 
@@ -67,15 +73,17 @@ MicPipeCreateControlDevice(
     _In_ WDFDEVICE Parent
 );
 
-//
-// Append PCM bytes to the ring (called from the IOCTL handler, PASSIVE_LEVEL).
-// On overflow the oldest bytes are dropped so we always keep the newest audio.
-//
+// Called at PASSIVE_LEVEL from the owning PnP device's cleanup callback.
+VOID MicPipeDeleteControlDevice(_In_ WDFDEVICE Parent);
+
 VOID
-MicPipeWrite(
-    _In_reads_bytes_(Len) PVOID Data,
-    _In_                  ULONG Len
+MicPipeFlush(
+    VOID
 );
+
+// Paired once per successful capture RUN/PAUSE transition.
+VOID MicPipeCaptureStarted(VOID);
+VOID MicPipeCaptureStopped(VOID);
 
 //
 // Fill Out with Len bytes from the ring (called from ProcessPacket, up to

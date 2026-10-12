@@ -1,362 +1,241 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using NTPods.WinUI.Ipc;
-using NTPods.WinUI.Services;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
 using Windows.Graphics;
+using Windows.UI.ViewManagement;
 
 namespace NTPods.WinUI.Popup;
 
-/// A borderless, always-on-top, no-taskbar island that slides down from the
-/// top-centre of the work area when the AirPods connect, holds ~4s, then slides
-/// back up and closes itself.
-///
-/// It hosts an <see cref="IslandView"/> on a DesktopAcrylic backdrop with
-/// DWM-rounded corners, so the whole window IS the rounded translucent card —
-/// this avoids needing true per-pixel window transparency (which WinUI 3 does not
-/// reliably support). The slide is a smooth eased animation of the window's
-/// screen position driven by a DispatcherQueueTimer (a transform of the whole
-/// card, not per-frame redrawing); the fade rides the same interpolation on the
-/// content's Opacity.
-///
-/// Every Win32 / windowing call is wrapped so a popup failure can never crash the
-/// app — the worst case is simply no island.
+/// One non-activating capsule, reused for connection and control notifications.
 public sealed class IslandWindow : Window
 {
-    // Card geometry (device-independent pixels). Width matches IslandView's Width.
-    // The Apple-style card is a narrow vertical layout (name / render / battery),
-    // so it is taller than the old horizontal strip — the real height is measured
-    // from the view's DesiredSize; this fallback is only used if that measure fails.
-    private const double DesignWidthDip = 300;
-    private const double FallbackHeightDip = 210;
-    private const double TopMarginDip = 12;
-
-    // Animation timing.
-    private const double SlideMs = 300;
-    private const double HoldMs = 4000;
-
-    private enum Phase { In, Hold, Out }
-
     private readonly IslandView _view = new();
-    private readonly DispatcherQueueTimer _timer;
-    private readonly Stopwatch _clock = new();
-
-    private Phase _phase = Phase.In;
-    private bool _shown;
-    private bool _prepared;
-    private bool _loaded;
-    private bool _closed;
-
-    // Physical-pixel geometry, computed once the XamlRoot scale is known.
+    private readonly IslandMotion _motion = new();
+    private readonly UISettings _uiSettings = new();
+    private readonly Stopwatch _clock = Stopwatch.StartNew();
+    private readonly DispatcherQueueTimer _dismissTimer;
+    private bool _rendering;
+    private (int Left, int Width, int Height, int Diameter)? _lastRegion;
     private int _width;
     private int _height;
-    private int _centerX;
-    private int _targetY;
-    private int _startY;
+    private double _scale = 1;
+    private DisplayArea? _display;
+    private bool _closed;
 
     public IslandWindow()
     {
         Content = _view;
         Title = "NTPods";
-
-        try { ConfigurePresenter(); } catch { }
-        try { SystemBackdrop = new DesktopAcrylicBackdrop(); } catch { }
-
-        _timer = DispatcherQueue.CreateTimer();
-        _timer.Interval = TimeSpan.FromMilliseconds(16); // ~60 fps
-        _timer.Tick += OnTick;
-
-        // Geometry + the slide-in start once the content is laid out (its
-        // XamlRoot — and therefore the rasterization scale — is available then).
-        _view.Loaded += OnViewLoaded;
-
-        Closed += (_, _) => { _closed = true; try { _timer.Stop(); } catch { } };
-    }
-
-    /// Match the island to the app's chosen theme — the DesktopAcrylic tint and the
-    /// ThemeResource text brushes follow the content's RequestedTheme. Default just
-    /// follows the system. Applied on each show in case the theme changed meanwhile.
-    private void ApplyTheme()
-    {
-        try { _view.RequestedTheme = AppSettings.Theme; } catch { }
-    }
-
-    /// Show the island for a fresh connection, or — if one is already on screen —
-    /// re-populate it and reset the hold so reconnect spam never stacks popups.
-    public void ShowConnected(Snapshot s)
-    {
-        if (_closed) return;
-        try
-        {
-            ApplyTheme();
-            _view.Apply(s);
-
-            if (!_shown)
-            {
-                _shown = true;
-                // Show without activating so it never steals focus. The no-activate
-                // / tool-window ex-styles and rounded corners are applied here (the
-                // HWND exists once AppWindow does).
-                try { ApplyExStyles(); } catch { }
-                try { RoundCorners(); } catch { }
-                AppWindow.Show(false);
-                // First-ever show: the slide-in is kicked off from OnViewLoaded (the
-                // XamlRoot isn't ready yet). Reuse after a hide: the view is already
-                // loaded, so start it now.
-                if (_loaded) StartSlideIn();
-            }
-            else
-            {
-                // Already visible: snap to the resting spot and restart the hold.
-                _view.Opacity = 1;
-                _phase = Phase.Hold;
-                _clock.Restart();
-                if (_prepared)
-                {
-                    try { AppWindow.Move(new PointInt32(_centerX, _targetY)); } catch { }
-                }
-                try { AppWindow.Show(false); } catch { }
-                if (!_timer.IsRunning) _timer.Start();
-            }
-        }
-        catch
-        {
-            // Never let a popup refresh crash the app.
-        }
-    }
-
-    /// Show a daemon overlay as the centred island (message mode) instead of a
-    /// Windows toast — same slide/hold as the connection card.
-    public void ShowMessage(string title, string body, string? model = null)
-    {
-        if (_closed) return;
-        try
-        {
-            ApplyTheme();
-            _view.ApplyMessage(title, body, model);
-
-            if (!_shown)
-            {
-                _shown = true;
-                try { ApplyExStyles(); } catch { }
-                try { RoundCorners(); } catch { }
-                AppWindow.Show(false);
-                if (_loaded) StartSlideIn(); // reuse after a hide (see ShowConnected)
-            }
-            else
-            {
-                _view.Opacity = 1;
-                _phase = Phase.Hold;
-                _clock.Restart();
-                if (_prepared)
-                {
-                    try { AppWindow.Move(new PointInt32(_centerX, _targetY)); } catch { }
-                }
-                try { AppWindow.Show(false); } catch { }
-                if (!_timer.IsRunning) _timer.Start();
-            }
-        }
-        catch
-        {
-            // Never let a popup refresh crash the app.
-        }
-    }
-
-    // ---- Presenter / interop ----------------------------------------------
-
-    private void ConfigurePresenter()
-    {
         AppWindow.IsShownInSwitchers = false;
-        if (AppWindow.Presenter is OverlappedPresenter p)
+        if (AppWindow.Presenter is OverlappedPresenter presenter)
         {
-            p.SetBorderAndTitleBar(false, false);
-            p.IsAlwaysOnTop = true;
-            p.IsResizable = false;
-            p.IsMaximizable = false;
-            p.IsMinimizable = false;
+            presenter.SetBorderAndTitleBar(false, false);
+            presenter.IsAlwaysOnTop = true;
+            presenter.IsResizable = false;
+            presenter.IsMaximizable = false;
+            presenter.IsMinimizable = false;
         }
+        nint hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
+        SetWindowLongPtr(hwnd, -20, (GetWindowLongPtr(hwnd, -20) & ~(nint)0x00020301) | 0x08000000 | 0x00000080);
+        // The shaped popup owns its edge; Windows must not draw a rectangular frame.
+        SetWindowLongPtr(hwnd, -16, (GetWindowLongPtr(hwnd, -16) & ~(nint)0x00CF0000) | unchecked((nint)0x80000000));
+        int disabled = 1;
+        DwmSetWindowAttribute(hwnd, 2, ref disabled, sizeof(int)); // DWMNCRP_DISABLED
+        DwmSetWindowAttribute(hwnd, 3, ref disabled, sizeof(int)); // Own the show/hide transition.
+        if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
+        {
+            int noBorder = unchecked((int)0xFFFFFFFE);
+            DwmSetWindowAttribute(hwnd, 34, ref noBorder, sizeof(int));
+            DwmSetWindowAttribute(hwnd, 33, ref disabled, sizeof(int)); // DWMWCP_DONOTROUND
+        }
+        SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0037); // Apply the frame change without activation.
+
+        _dismissTimer = DispatcherQueue.CreateTimer();
+        _dismissTimer.IsRepeating = false;
+        _dismissTimer.Tick += (_, _) => AdvanceFrame();
+        _view.Loaded += (_, _) =>
+        {
+            if (!_motion.Visible) return;
+            try { Prepare(); AdvanceFrame(); } catch { Hide(); }
+        };
+        if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
+            _uiSettings.AnimationsEnabledChanged += OnAnimationsEnabledChanged;
+        Closed += (_, _) =>
+        {
+            _closed = true;
+            _dismissTimer.Stop();
+            StopRendering();
+            if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
+                _uiSettings.AnimationsEnabledChanged -= OnAnimationsEnabledChanged;
+        };
     }
 
-    private void OnViewLoaded(object sender, RoutedEventArgs e)
+    public void ShowConnected(Snapshot snapshot)
     {
-        _loaded = true;
         if (_closed) return;
-        // A show requested before the view had loaded (the first show) starts here,
-        // once the XamlRoot/scale is available.
-        if (_shown) StartSlideIn();
+        try { _view.Apply(snapshot, _clock.Elapsed.TotalMilliseconds, _uiSettings.AnimationsEnabled); Show(); } catch { Hide(); }
     }
 
-    /// Begin the slide-in → hold → slide-out cycle from the top. Callable on every
-    /// show (the first waits for OnViewLoaded; reuse-after-hide calls it directly).
-    private void StartSlideIn()
+    public void ShowMessage(string title, string body, Snapshot? snapshot = null, string? model = null)
     {
         if (_closed) return;
+        try { _view.ApplyMessage(title, body, snapshot, model, _clock.Elapsed.TotalMilliseconds, _uiSettings.AnimationsEnabled); Show(); } catch { Hide(); }
+    }
+
+    public void UpdateSnapshot(Snapshot snapshot)
+    {
+        if (_closed || !_motion.Visible) return;
         try
         {
+            _view.UpdateSnapshot(snapshot, _clock.Elapsed.TotalMilliseconds, _uiSettings.AnimationsEnabled);
             Prepare();
-            _phase = Phase.In;
-            _view.Opacity = 0;
-            try { AppWindow.Move(new PointInt32(_centerX, _startY)); } catch { }
-            _clock.Restart();
-            if (!_timer.IsRunning) _timer.Start();
+            AdvanceFrame();
         }
-        catch
-        {
-            // If we can't set up the slide, just hide quietly.
-            SafeClose();
-        }
+        catch { Hide(); }
     }
 
-    /// Compute physical-pixel size/position from the current display work area and
-    /// the content's rasterization scale.
+    private void Show()
+    {
+        _view.RequestedTheme = Services.AppSettings.Theme;
+        var display = DisplayArea.Primary;
+        bool changedDisplay = _display is null || !_display.DisplayId.Equals(display.DisplayId);
+        _display = display;
+        if (changedDisplay)
+        {
+            // Move hidden so destination DPI is current before measuring the content.
+            AppWindow.Hide();
+            var work = display.WorkArea;
+            AppWindow.Move(new PointInt32(work.X + work.Width / 2, work.Y));
+        }
+        Prepare();
+        _motion.Show(_clock.Elapsed.TotalMilliseconds, _uiSettings.AnimationsEnabled);
+        Render(_clock.Elapsed.TotalMilliseconds);
+        AppWindow.Show(false);
+        ScheduleFrame(_clock.Elapsed.TotalMilliseconds);
+    }
+
     private void Prepare()
     {
-        if (_prepared) return;
-
-        double scale = _view.XamlRoot?.RasterizationScale ?? 1.0;
-        if (scale <= 0) scale = 1.0;
-
-        // Measure the card's NATURAL height at the fixed width. ActualHeight here
-        // is the (screen-tall) window it currently fills — circular — which made
-        // the popup gigantic; DesiredSize is the content's real ~92px.
-        _view.Measure(new Windows.Foundation.Size(DesignWidthDip, double.PositiveInfinity));
-        double heightDip = _view.DesiredSize.Height > 0 ? _view.DesiredSize.Height : FallbackHeightDip;
-
-        _width = (int)Math.Ceiling(DesignWidthDip * scale);
-        _height = (int)Math.Ceiling(heightDip * scale);
-        try { AppWindow.Resize(new SizeInt32(_width, _height)); } catch { }
-
-        // Centre horizontally on the display containing this window; rest a small
-        // margin above the bottom of the work area, and slide in from off the
-        // bottom edge (rising up into view, then sliding back down to close).
-        var area = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Nearest);
-        var work = area.WorkArea;
-        int margin = (int)Math.Round(TopMarginDip * scale);
-        _centerX = work.X + (work.Width - _width) / 2;
-        _targetY = work.Y + work.Height - _height - margin;
-        _startY = work.Y + work.Height; // fully off the bottom
-
-        _prepared = true;
+        nint hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
+        _scale = Math.Max(1, GetDpiForWindow(hwnd) / 96.0);
+        var work = (_display ?? DisplayArea.Primary).WorkArea;
+        _view.Width = Math.Max(80, Math.Min(400, work.Width / _scale - 32));
+        _view.Measure(new Windows.Foundation.Size(_view.Width, double.PositiveInfinity));
+        _width = (int)Math.Ceiling(_view.Width * _scale);
+        _height = (int)Math.Ceiling(Math.Max(_view.MinHeight, _view.DesiredSize.Height) * _scale);
+        if (AppWindow.Size.Width != _width || AppWindow.Size.Height != _height)
+            AppWindow.Resize(new SizeInt32(_width, _height));
+        AppWindow.Move(new PointInt32(work.X + (work.Width - _width) / 2, work.Y + (int)Math.Round(16 * _scale)));
     }
 
-    // ---- Slide / hold / slide-out driver ----------------------------------
+    private void OnRendering(object? sender, object args) => AdvanceFrame();
 
-    private void OnTick(DispatcherQueueTimer sender, object args)
+    private void AdvanceFrame()
     {
-        if (_closed) { try { _timer.Stop(); } catch { } return; }
-
+        if (_closed) { _dismissTimer.Stop(); StopRendering(); return; }
         try
         {
-            double elapsed = _clock.Elapsed.TotalMilliseconds;
-
-            switch (_phase)
-            {
-                case Phase.In:
-                {
-                    double t = Math.Clamp(elapsed / SlideMs, 0, 1);
-                    double k = EaseOut(t);
-                    Move(Lerp(_startY, _targetY, k));
-                    _view.Opacity = t;
-                    if (t >= 1)
-                    {
-                        _view.Opacity = 1;
-                        _phase = Phase.Hold;
-                        _clock.Restart();
-                    }
-                    break;
-                }
-                case Phase.Hold:
-                {
-                    if (elapsed >= HoldMs)
-                    {
-                        _phase = Phase.Out;
-                        _clock.Restart();
-                    }
-                    break;
-                }
-                case Phase.Out:
-                {
-                    double t = Math.Clamp(elapsed / SlideMs, 0, 1);
-                    double k = EaseOut(t);
-                    Move(Lerp(_targetY, _startY, k));
-                    _view.Opacity = 1 - t;
-                    if (t >= 1)
-                    {
-                        try { _timer.Stop(); } catch { }
-                        SafeClose();
-                    }
-                    break;
-                }
-            }
+            double now = _clock.Elapsed.TotalMilliseconds;
+            _motion.Advance(now);
+            if (!_motion.Visible) { Hide(); return; }
+            Render(now);
+            ScheduleFrame(now);
         }
-        catch
+        catch { Hide(); }
+    }
+
+    private void ScheduleFrame(double now)
+    {
+        if (_motion.Animating || _view.Animating)
         {
-            try { _timer.Stop(); } catch { }
-            SafeClose();
+            _dismissTimer.Stop();
+            if (_rendering) return;
+            // Follow the display's frames; a rearmed timer adds render time to every interval.
+            CompositionTarget.Rendering += OnRendering;
+            _rendering = true;
+        }
+        else
+        {
+            StopRendering();
+            _dismissTimer.Stop();
+            _dismissTimer.Interval = TimeSpan.FromMilliseconds(_motion.DismissDelay(now));
+            _dismissTimer.Start();
         }
     }
 
-    private void Move(double y)
+    private void StopRendering()
     {
-        try { AppWindow.Move(new PointInt32(_centerX, (int)Math.Round(y))); } catch { }
+        if (!_rendering) return;
+        CompositionTarget.Rendering -= OnRendering;
+        _rendering = false;
     }
 
-    /// End the current popup. Deliberately does NOT call Window.Close(): closing a
-    /// WinUI 3 Window that carries a DesktopAcrylicBackdrop + themed content, from a
-    /// DispatcherQueueTimer tick, fail-fasts inside the XAML theme-resource teardown
-    /// (Microsoft_UI_Xaml!OverrideXamlResourcePropertyBag, 0xC000027B) — a native
-    /// crash a try/catch can't stop. Instead we hide the single window and reset the
-    /// animation state so the next show slides it back in (the reuse the design
-    /// already intends). The window then lives for the app's lifetime.
-    private void SafeClose()
+    private void OnAnimationsEnabledChanged(UISettings sender, UISettingsAnimationsEnabledChangedEventArgs args) =>
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (_closed || !_motion.Visible) return;
+            try
+            {
+                _motion.SetAnimationsEnabled(_clock.Elapsed.TotalMilliseconds, _uiSettings.AnimationsEnabled);
+                if (!_uiSettings.AnimationsEnabled) _view.FinishAnimations();
+                if (!_motion.Visible) { Hide(); return; }
+                AdvanceFrame();
+            }
+            catch { Hide(); }
+        });
+
+    private void Render(double now)
     {
-        if (_closed) return;
-        try { _timer.Stop(); } catch { }
-        try { AppWindow.Hide(); } catch { }
-        _shown = false;
-        _phase = Phase.In;
+        int revealedWidth = (int)Math.Round(96 * _scale + (_width - 96 * _scale) * _motion.Expansion);
+        int revealedHeight = (int)Math.Round(34 * _scale + (_height - 34 * _scale) * _motion.Expansion);
+        int diameter = (int)Math.Round((34 + 38 * _motion.Expansion) * _scale);
+        int left = (_width - revealedWidth) / 2;
+        var bounds = (left, revealedWidth, revealedHeight, diameter);
+        if (_lastRegion != bounds)
+        {
+            nint region = CreateRoundRectRgn(left, 0, left + revealedWidth + 1, revealedHeight + 1, diameter, diameter);
+            if (region == 0) throw new Win32Exception();
+            if (SetWindowRgn(WinRT.Interop.WindowNative.GetWindowHandle(this), region, true) == 0)
+            {
+                DeleteObject(region);
+                throw new Win32Exception();
+            }
+            // SetWindowRgn transfers ownership to Windows and needlessly invalidates unchanged edges.
+            _lastRegion = bounds;
+        }
+        _view.RenderFrame(now, _motion.HeaderOpacity, _motion.BatteryOpacity);
     }
 
-    private static double Lerp(double a, double b, double t) => a + (b - a) * t;
-
-    // Cubic ease-out: fast start, gentle settle — the iOS/Android island feel.
-    private static double EaseOut(double t) => 1 - Math.Pow(1 - t, 3);
-
-    // ---- Win32 ex-styles + DWM rounded corners ----------------------------
-
-    private void ApplyExStyles()
+    private void Hide()
     {
-        var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
-        nint ex = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
-        // NOACTIVATE: never take focus (no focus-steal). TOOLWINDOW: keep it off
-        // the taskbar and Alt-Tab (belt-and-braces with IsShownInSwitchers=false).
-        ex |= WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW;
-        SetWindowLongPtr(hwnd, GWL_EXSTYLE, ex);
+        _dismissTimer.Stop();
+        StopRendering();
+        _motion.Hide();
+        // Reuse the window: closing themed WinUI content here has crashed XAML teardown.
+        if (!_closed) try { AppWindow.Hide(); } catch { }
     }
-
-    private void RoundCorners()
-    {
-        var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
-        int pref = DWMWCP_ROUND;
-        // No-op on Windows 10 (square corners); harmless there.
-        DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, ref pref, sizeof(int));
-    }
-
-    private const int GWL_EXSTYLE = -20;
-    private const nint WS_EX_NOACTIVATE = 0x08000000;
-    private const nint WS_EX_TOOLWINDOW = 0x00000080;
-    private const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
-    private const int DWMWCP_ROUND = 2;
 
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW", SetLastError = true)]
-    private static extern nint GetWindowLongPtr(nint hWnd, int nIndex);
-
+    private static extern nint GetWindowLongPtr(nint hwnd, int index);
     [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
-    private static extern nint SetWindowLongPtr(nint hWnd, int nIndex, nint dwNewLong);
-
-    [DllImport("dwmapi.dll", SetLastError = true)]
-    private static extern int DwmSetWindowAttribute(nint hwnd, int attribute, ref int pvAttribute, int cbAttribute);
+    private static extern nint SetWindowLongPtr(nint hwnd, int index, nint value);
+    [DllImport("user32.dll")]
+    private static extern uint GetDpiForWindow(nint hwnd);
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetWindowPos(nint hwnd, nint after, int x, int y, int width, int height, uint flags);
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(nint hwnd, uint attribute, ref int value, int size);
+    [DllImport("gdi32.dll", SetLastError = true)]
+    private static extern nint CreateRoundRectRgn(int left, int top, int right, int bottom, int ellipseWidth, int ellipseHeight);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern int SetWindowRgn(nint hwnd, nint region, [MarshalAs(UnmanagedType.Bool)] bool redraw);
+    [DllImport("gdi32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DeleteObject(nint obj);
 }

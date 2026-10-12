@@ -18,8 +18,12 @@ const T: u32 = 1200;
 // control commands (0x2C on + 0x33 on) and DELIBERATELY skip the Transparency
 // switch the hearing-aid path uses, so probing doesn't disturb the user's noise
 // control. If the ATT server won't wake without it, add it back + restore ANC after.
-const HA_ON_2C: [u8; 11] = [0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x2C, 0x01, 0x01, 0x00, 0x00];
-const HA_ON_33: [u8; 11] = [0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x33, 0x01, 0x00, 0x00, 0x00];
+const HA_ON_2C: [u8; 11] = [
+    0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x2C, 0x01, 0x01, 0x00, 0x00,
+];
+const HA_ON_33: [u8; 11] = [
+    0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x33, 0x01, 0x00, 0x00, 0x00,
+];
 
 /// Wake the buds' ATT server so the outbound ATT client channel can open. Does NOT
 /// touch noise control (no Transparency switch).
@@ -109,13 +113,18 @@ pub fn probe(drv: &Driver) -> Vec<String> {
         let verdict = if n >= 1 && buf[0] == 0x13 {
             "OK (Write Rsp 0x13)".to_string()
         } else if n >= 5 && buf[0] == 0x01 {
-            format!("ERROR (att err 0x{:02x} on handle 0x{:02x}{:02x})", buf[4], buf[3], buf[2])
+            format!(
+                "ERROR (att err 0x{:02x} on handle 0x{:02x}{:02x})",
+                buf[4], buf[3], buf[2]
+            )
         } else if n == 0 {
             "no response".to_string()
         } else {
             format!("rsp[{n}] op=0x{:02x}", buf[0])
         };
-        out.push(format!("gatt-probe: sub valH=0x{vh:04X} cccd=0x{cccd:04X} -> {verdict}"));
+        out.push(format!(
+            "gatt-probe: sub valH=0x{vh:04X} cccd=0x{cccd:04X} -> {verdict}"
+        ));
     }
 
     // Listen ~15 s for Handle Value Notifications (0x1B) / Indications (0x1D). Log the
@@ -132,10 +141,16 @@ pub fn probe(drv: &Driver) -> Vec<String> {
         if op == 0x1B || op == 0x1D {
             let handle = u16::from_le_bytes([buf[1], buf[2]]);
             let hex: String = buf[3..n].iter().map(|b| format!("{b:02x}")).collect();
-            out.push(format!("gatt-probe: NOTIFY h=0x{handle:04X} [{}] {hex}", n - 3));
+            out.push(format!(
+                "gatt-probe: NOTIFY h=0x{handle:04X} [{}] {hex}",
+                n - 3
+            ));
             notifs += 1;
         } else {
-            let hex: String = buf[..n.min(48)].iter().map(|b| format!("{b:02x}")).collect();
+            let hex: String = buf[..n.min(48)]
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
             out.push(format!("gatt-probe: rx op=0x{op:02x} [{n}] {hex}"));
         }
     }

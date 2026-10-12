@@ -8,8 +8,7 @@ pub const HANDSHAKE: [u8; 16] = [
 pub const SET_FEATURES: [u8; 14] = [
     0x04, 0x00, 0x04, 0x00, 0x4D, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
-pub const REQUEST_NOTIFS: [u8; 10] =
-    [0x04, 0x00, 0x04, 0x00, 0x0F, 0x00, 0xFF, 0xFF, 0xFF, 0xFF];
+pub const REQUEST_NOTIFS: [u8; 10] = [0x04, 0x00, 0x04, 0x00, 0x0F, 0x00, 0xFF, 0xFF, 0xFF, 0xFF];
 
 /// Enable the hi-res (AAC-ELD) microphone stream — the AirPods start pushing
 /// 0x58 uplink audio packets. Taken from LibrePods PR #655.
@@ -58,7 +57,9 @@ pub const HR_CAPABILITIES_SERVICE_4: [u8; 7] = [0x04, 0x00, 0x04, 0x00, 0x01, 0x
 /// is the reproducible one. NOTE: sending this makes our enable byte-match Android, but
 /// on the A3063 test unit the AirPods still ACK service 19 and emit no data frames — so
 /// it is necessary but, standalone, not sufficient here (see hr_retry_campaign).
-pub const HR_ENABLE: [u8; 11] = [0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x30, 0x01, 0x00, 0x00, 0x00];
+pub const HR_ENABLE: [u8; 11] = [
+    0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x30, 0x01, 0x00, 0x00, 0x00,
+];
 
 // ---- Sensor stream control ----
 //
@@ -99,14 +100,12 @@ pub const STREAM_HEART_RATE_LEGACY: u8 = 0x13; // HEARTRATE — older firmware
 /// Stream id for 6-axis device motion — data type 16 (DEVMOTION6). This was
 /// mislabelled "raw PPG": the RTBuddy schema's ServiceType enum is 16=DEVMOTION6,
 /// 19=HEARTRATE. It is motion, unrelated to heart rate (Android never sends it),
-/// so it is NOT part of the HR enable — the ~150 frames/window we saw were motion,
-/// never PPG. Kept for reference only.
+/// so it is NOT part of the HR enable. LibrePods uses it for head tracking on
+/// firmware 8 and newer; the motion decoder lives in head_tracking.rs.
 pub const STREAM_DEVMOTION6: u8 = 0x10;
-/// Stream id 14 — the ACTIVITY classifier (RTBuddy SensorServiceType 14; its
-/// descriptor names it "activity"), NOT head tracking as this was once labelled.
-/// It reports a 23-byte record at ~5 Hz whose byte 12 is the activity state
-/// (3 = still, 0/1/2 while moving). Head tracking uses DEVMOTION6 (16). Kept for
-/// reference; heart rate does not need it stopped.
+/// Stream id 14 is the ACTIVITY classifier on current firmware. LibrePods also
+/// uses this service for 58-byte head-tracking records on firmware older than 8;
+/// its 23-byte activity records must never be decoded as movement.
 pub const STREAM_ACTIVITY: u8 = 0x0E;
 
 /// One-second sampling period, in microseconds — the cadence iOS uses for heart rate.
@@ -159,17 +158,35 @@ pub fn sensor_stream(seq: u16, stream_id: u8, period_us: u32) -> [u8; 28] {
 pub fn hr_stream(seq: u8, service: u8, period_us: u32) -> [u8; 29] {
     let p = period_us.to_le_bytes();
     [
-        0x04, 0x00, 0x04, 0x00, // header
-        0x17, 0x00, 0x00, 0x00, // opcode (BuddyCommand)
-        0x10, 0x00, // descriptor (SensorDataWX)
-        0x11, 0x00, // payload length = 17
-        0x08, seq & 0x7F, // sequence, single-byte varint
-        0x10, 0x02, // top-level field 2 = 2
-        0x42, 0x0B, // field 8 (ServiceSettings), 11 bytes
-        0x08, service, //   service (84 = HEARTRATE_COMMAND / 19 = HEARTRATE)
-        0x10, 0x02, //   setting = 2
-        0x1A, 0x05, //   config, 5 bytes
-        0x01, p[0], p[1], p[2], p[3], // 0x01 + interval µs, little-endian
+        0x04,
+        0x00,
+        0x04,
+        0x00, // header
+        0x17,
+        0x00,
+        0x00,
+        0x00, // opcode (BuddyCommand)
+        0x10,
+        0x00, // descriptor (SensorDataWX)
+        0x11,
+        0x00, // payload length = 17
+        0x08,
+        seq & 0x7F, // sequence, single-byte varint
+        0x10,
+        0x02, // top-level field 2 = 2
+        0x42,
+        0x0B, // field 8 (ServiceSettings), 11 bytes
+        0x08,
+        service, //   service (84 = HEARTRATE_COMMAND / 19 = HEARTRATE)
+        0x10,
+        0x02, //   setting = 2
+        0x1A,
+        0x05, //   config, 5 bytes
+        0x01,
+        p[0],
+        p[1],
+        p[2],
+        p[3], // 0x01 + interval µs, little-endian
     ]
 }
 
@@ -299,32 +316,41 @@ pub fn route_opcode_name(op: u8) -> &'static str {
     }
 }
 
-/// True if `data` is a 0x58 uplink audio packet (carries AAC-ELD frames).
-pub fn is_audio_packet(data: &[u8]) -> bool {
-    data.len() >= 8
-        && data[0] == 0x04
-        && data[2] == 0x04
-        && data[4] == 0x58
-        && data[6] == 0x01
-        && data[7] == 0x00
+/// All microphone protocol messages stay out of general IPC and diagnostics,
+/// including malformed audio and control acknowledgements.
+pub fn is_microphone_message(data: &[u8]) -> bool {
+    data.len() >= 6 && data[..4] == HEADER && data[4..6] == [0x58, 0]
 }
 
-/// 0x58 packet layout (PR #655): a 22-byte header, then one or more access
-/// units, each a 5-byte record header (length at byte 4) followed by the AU
-/// payload. Calls `f` with each AU's AAC-ELD bytes.
-pub fn for_each_au(sdu: &[u8], mut f: impl FnMut(&[u8])) {
-    const HEADER_LEN: usize = 22;
-    let mut off = HEADER_LEN;
-    while off + 5 <= sdu.len() {
-        let au_len = sdu[off + 4] as usize;
-        let start = off + 5;
-        let end = start + au_len;
-        if au_len == 0 || end > sdu.len() {
-            break;
+pub fn is_audio_packet(data: &[u8]) -> bool {
+    data.len() >= 22 && is_microphone_message(data) && data[6..8] == [1, 0]
+}
+
+/// Validate the whole SDU before decoding any access unit. Each record is a
+/// little-endian timestamp, an 8-bit length and AAC-ELD bytes.
+pub fn for_each_au(sdu: &[u8], mut f: impl FnMut(u32, &[u8])) -> bool {
+    if !is_audio_packet(sdu) || sdu.len() == 22 {
+        return false;
+    }
+    let mut off = 22;
+    while off < sdu.len() {
+        if sdu.len() - off < 5 {
+            return false;
         }
-        f(&sdu[start..end]);
+        let n = sdu[off + 4] as usize;
+        if n == 0 || n > sdu.len() - off - 5 {
+            return false;
+        }
+        off += 5 + n;
+    }
+    off = 22;
+    while off < sdu.len() {
+        let end = off + 5 + sdu[off + 4] as usize;
+        let timestamp = u32::from_le_bytes(sdu[off..off + 4].try_into().unwrap());
+        f(timestamp, &sdu[off + 5..end]);
         off = end;
     }
+    true
 }
 
 /// Listening-mode (ANC) control command. value = mode (1 off, 2 anc, 3 transparency, 4 adaptive).
@@ -335,7 +361,41 @@ pub fn anc_command(mode: u8) -> [u8; 11] {
 /// Generic AAP control command (opcode 0x09): `[HEADER, 0x09, 0x00, id, value, 0,0,0]`.
 /// ANC and the boolean feature toggles are all this shape.
 pub fn control_command(id: u8, value: u8) -> [u8; 11] {
-    [0x04, 0x00, 0x04, 0x00, 0x09, 0x00, id, value, 0x00, 0x00, 0x00]
+    device_control_command(id, value.into())
+}
+
+pub fn device_control_command(id: u8, value: u32) -> [u8; 11] {
+    let value = value.to_le_bytes();
+    [
+        0x04, 0x00, 0x04, 0x00, 0x09, 0x00, id, value[0], value[1], value[2], value[3],
+    ]
+}
+
+pub fn parse_device_control(data: &[u8]) -> Option<(u8, u32)> {
+    if data.len() != 11 || data[..6] != [0x04, 0x00, 0x04, 0x00, 0x09, 0x00] {
+        return None;
+    }
+    let value = u32::from_le_bytes(data[7..11].try_into().ok()?);
+    super::device_settings::valid_control(data[6], value).then_some((data[6], value))
+}
+
+pub fn eq_command(eq: ntpods_ipc::Equalizer) -> [u8; 13] {
+    [
+        0x04, 0x00, 0x04, 0x00, 0x63, 0x00, 0x05, 0x00, 0x01, eq.mode, eq.low, eq.mid, eq.high,
+    ]
+}
+
+pub fn parse_eq(data: &[u8]) -> Option<ntpods_ipc::Equalizer> {
+    if data.len() != 13 || data[..9] != [0x04, 0x00, 0x04, 0x00, 0x63, 0x00, 0x05, 0x00, 0x01] {
+        return None;
+    }
+    let eq = ntpods_ipc::Equalizer {
+        mode: data[9],
+        low: data[10],
+        mid: data[11],
+        high: data[12],
+    };
+    super::device_settings::valid_equalizer(eq).then_some(eq)
 }
 
 /// Boolean feature toggle: 0x01 = on, 0x02 = off (matches the AirPods encoding).
@@ -349,6 +409,18 @@ pub fn parse_control_value(data: &[u8], id: u8) -> Option<u8> {
         Some(data[7])
     } else {
         None
+    }
+}
+
+/// Boolean status is confirmed only by a complete control record with value 1/2.
+pub fn parse_feature_status(data: &[u8], id: u8) -> Option<bool> {
+    if data.len() < 11 || data[5] != 0 {
+        return None;
+    }
+    match parse_control_value(data, id)? {
+        1 => Some(true),
+        2 => Some(false),
+        _ => None,
     }
 }
 
@@ -368,16 +440,26 @@ pub fn parse_rename(data: &[u8]) -> Option<String> {
 /// `[HEADER, 0x1A, 0x00, 0x01, size, 0x00, ...name]`.
 pub fn build_rename(name: &str) -> Vec<u8> {
     let bytes = name.as_bytes();
-    let mut f = vec![0x04, 0x00, 0x04, 0x00, 0x1A, 0x00, 0x01, bytes.len() as u8, 0x00];
+    let mut f = vec![
+        0x04,
+        0x00,
+        0x04,
+        0x00,
+        0x1A,
+        0x00,
+        0x01,
+        bytes.len() as u8,
+        0x00,
+    ];
     f.extend_from_slice(bytes);
     f
 }
 
 /// Conversational Awareness event (opcode 0x4B): the AirPods signal that you
 /// started/stopped speaking; the status byte drives the host-side volume duck.
-/// 1 = start, 2 = reduce, 3 = partial, 4/6/7 = end.
+/// 1 = start, 2 = reduce, 3 = partial, 4/6/7/8/9 = end.
 pub fn parse_conversational_awareness(data: &[u8]) -> Option<u8> {
-    if data.len() >= 10 && data[..4] == HEADER && data[4] == 0x4B {
+    if data.len() >= 10 && data[..4] == HEADER && data[4..6] == [0x4B, 0] {
         Some(data[9])
     } else {
         None
@@ -396,6 +478,7 @@ pub fn anc_name(mode: u8) -> &'static str {
 
 #[derive(Default, Clone, Copy)]
 pub struct Battery {
+    reported: u8,
     pub headphone: Option<u8>,
     pub left: Option<u8>,
     pub right: Option<u8>,
@@ -407,33 +490,105 @@ pub struct Battery {
     pub case_charging: bool,
 }
 
+impl Battery {
+    pub fn apply_to_state(self, state: &mut ntpods_ipc::Snapshot, now_ms: u64) {
+        if self.reported == 0 {
+            return;
+        }
+        self.apply_to(&mut state.battery);
+        let freshness = state.battery_freshness.get_or_insert_with(Default::default);
+        for (bit, value, age) in [
+            (1, self.headphone, &mut freshness.headphone),
+            (2, self.right, &mut freshness.right),
+            (4, self.left, &mut freshness.left),
+            (8, self.case, &mut freshness.case),
+        ] {
+            if self.reported & bit != 0 {
+                age.present = Some(value.is_some());
+                if value.is_some() {
+                    age.timestamp_ms = Some(now_ms);
+                }
+                age.live = value.is_some();
+            }
+        }
+        state.battery_source = "aap".into();
+        state.battery_timestamp_ms = Some(now_ms);
+    }
+
+    pub fn apply_to(self, battery: &mut ntpods_ipc::Battery) {
+        for (bit, level, charging, dest, dest_charging) in [
+            (
+                1,
+                self.headphone,
+                self.headphone_charging,
+                &mut battery.headphone,
+                &mut battery.headphone_charging,
+            ),
+            (
+                2,
+                self.right,
+                self.right_charging,
+                &mut battery.right,
+                &mut battery.right_charging,
+            ),
+            (
+                4,
+                self.left,
+                self.left_charging,
+                &mut battery.left,
+                &mut battery.left_charging,
+            ),
+            (
+                8,
+                self.case,
+                self.case_charging,
+                &mut battery.case,
+                &mut battery.case_charging,
+            ),
+        ] {
+            if self.reported & bit != 0 {
+                if level.is_some() {
+                    *dest = level;
+                }
+                *dest_charging = level.is_some() && charging;
+            }
+        }
+    }
+}
+
 const HEADER: [u8; 4] = [0x04, 0x00, 0x04, 0x00];
 
 /// If `data` is a battery packet (opcode 0x04), return the parsed levels.
 pub fn parse_battery(data: &[u8]) -> Option<Battery> {
-    if data.len() < 7 || data[..4] != HEADER || data[4] != 0x04 {
+    if data.len() < 7 || data[..4] != HEADER || data[4..6] != [0x04, 0] {
         return None;
     }
     let payload = &data[4..]; // starts at opcode
     let count = payload[2] as usize;
+    if count == 0 || payload.len() < 3 + count * 5 {
+        return None;
+    }
     let mut b = Battery::default();
     for i in 0..count {
         let base = 3 + i * 5;
-        if base + 3 >= payload.len() {
-            break;
-        }
         // status 0x04 = component not connected/present; level 0xFF (255) = the
         // slot exists but is absent (e.g. the headphone slot on earbuds) -> both
         // report as unknown. (0x05 = charging in case, level valid.)
         let status = payload[base + 3];
         let raw = payload[base + 2];
+        if raw > 100 && raw != 0xFF {
+            return None;
+        }
         let level = if status == 0x04 || raw == 0xFF {
             None
         } else {
             Some(raw)
         };
         // 0x01 = charging, 0x05 = charging while in the case; both mean "charging".
-        let charging = status == 0x01 || status == 0x05;
+        let charging = level.is_some() && matches!(status, 0x01 | 0x05);
+        if matches!(payload[base], 1 | 2 | 4 | 8) {
+            b.reported |= payload[base];
+        }
         match payload[base] {
             0x01 => {
                 b.headphone = level;
@@ -494,37 +649,74 @@ impl EarStatus {
 /// secondary) earbud statuses. Which physical bud is "primary" varies, so
 /// callers should treat them symmetrically (e.g. "is any bud in ear").
 pub fn parse_ear_detection(data: &[u8]) -> Option<(EarStatus, EarStatus)> {
-    if data.len() >= 8 && data[..4] == HEADER && data[4] == 0x06 {
+    if data.len() >= 8
+        && data[..4] == HEADER
+        && data[4..6] == [0x06, 0]
+        && data[6] <= 4
+        && data[7] <= 4
+    {
         Some((EarStatus::from_byte(data[6]), EarStatus::from_byte(data[7])))
     } else {
         None
     }
 }
 
-/// Device metadata (from the iOS capture) parsed from the 0x1D packet: model
-/// number, firmware version and serial. The payload is a short header then a run
-/// of NUL-terminated ASCII strings in a stable order:
-/// `[name, model, manufacturer, serial, firmware, …]` (see `AAP Definitions.md`
-/// → "0x1D — device identity"). Best-effort — returns None if it can't be read.
+/// In-motion reports retain the last stable state for playback and mic decoding.
+pub fn in_ear_state(previous: [bool; 2], current: [EarStatus; 2]) -> [bool; 2] {
+    std::array::from_fn(|i| {
+        if current[i].is_transitional() {
+            previous[i]
+        } else {
+            current[i].in_ear()
+        }
+    })
+}
+
+/// Model, public firmware version and serial from the information packet.
 pub fn parse_metadata(data: &[u8]) -> Option<(String, String, String)> {
-    if data.len() < 8 || data[..4] != HEADER || data[4] != 0x1D {
+    if data.len() < 11 || data[..4] != HEADER || data[4..6] != [0x1D, 0] {
         return None;
     }
-    // Collect the NUL-separated printable-ASCII strings, in order. The binary
-    // blocks (digest, timestamps) come after the fields we want, so index-based
-    // lookup is stable for the first few strings.
-    let strings: Vec<String> = data[6..]
-        .split(|&b| b == 0)
-        .filter(|s| s.len() >= 3 && s.iter().all(|&c| c.is_ascii_graphic() || c == b' '))
-        .map(|s| String::from_utf8_lossy(s).into_owned())
-        .collect();
-    let model = strings.get(1).cloned().unwrap_or_default();
-    let serial = strings.get(3).cloned().unwrap_or_default();
-    let firmware = strings.get(4).cloned().unwrap_or_default();
+    // The five-byte information header precedes UTF-8 fields; UUIDs follow field 10.
+    let mut remaining = &data[11..];
+    let mut strings = Vec::with_capacity(11);
+    for _ in 0..11 {
+        let end = remaining.iter().position(|&b| b == 0)?;
+        let value = std::str::from_utf8(&remaining[..end]).ok()?;
+        if value.chars().any(char::is_control) {
+            return None;
+        }
+        strings.push(value);
+        remaining = &remaining[end + 1..];
+    }
+    let model = strings[1].to_owned();
+    let serial = strings[3].to_owned();
+    let firmware = [strings[10], strings[4]]
+        .into_iter()
+        .find(|value| crate::device_models::firmware_major(value) > 0)
+        .map(str::to_owned)
+        .or_else(|| packed_release_firmware(strings[10]))
+        .unwrap_or_default();
     if model.is_empty() && firmware.is_empty() {
         return None;
     }
     Some((model, firmware, serial))
+}
+
+fn packed_release_firmware(value: &str) -> Option<String> {
+    if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let packed: u32 = value.parse().ok()?;
+    let major = packed >> 20;
+    if !(1..=99).contains(&major) || packed & 0xF != 0 {
+        return None;
+    }
+    // Inferred from release reports 6357536=6B34, 6619472=6F21 and 9442752=9A348.
+    // Unknown prerelease low-nibble values are deliberately not decoded.
+    let branch = char::from(b'A' + ((packed >> 16) & 0xF) as u8);
+    let build = (packed >> 4) & 0xFFF;
+    Some(format!("{major}{branch}{build}"))
 }
 
 /// If `data` reports the listening mode (control command 0x09, id 0x0D),
@@ -534,5 +726,285 @@ pub fn parse_anc_mode(data: &[u8]) -> Option<u8> {
         Some(data[7])
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn battery_reports_keep_absent_components_without_erasing_omitted_ones() {
+        let mut state = ntpods_ipc::Battery {
+            left: Some(60),
+            right: Some(61),
+            case: Some(90),
+            case_charging: true,
+            ..Default::default()
+        };
+        let packet = [4, 0, 4, 0, 4, 0, 2, 4, 1, 55, 2, 0, 8, 1, 255, 4, 0];
+        parse_battery(&packet).unwrap().apply_to(&mut state);
+        assert_eq!(state.left, Some(55));
+        assert_eq!(state.right, Some(61));
+        assert_eq!(state.case, Some(90));
+        assert!(!state.case_charging);
+        for length in 0..packet.len() {
+            assert!(parse_battery(&packet[..length]).is_none());
+        }
+        for invalid in 101..255 {
+            let mut bad = packet;
+            bad[9] = invalid;
+            assert!(parse_battery(&bad).is_none());
+        }
+        let mut bad_opcode = packet;
+        bad_opcode[5] = 1;
+        assert!(parse_battery(&bad_opcode).is_none());
+        let unknown = [4, 0, 4, 0, 4, 0, 1, 1, 1, 255, 1, 0];
+        let battery = parse_battery(&unknown).unwrap();
+        assert_eq!(battery.headphone, None);
+        assert!(!battery.headphone_charging);
+    }
+
+    #[test]
+    fn metadata_uses_public_firmware_and_preserves_utf8_short_and_empty_fields() {
+        let fields = [
+            "Écouteurs",
+            "A3063",
+            "Apple Inc.",
+            "EXAMPLE",
+            "90.3431.6807",
+            "",
+            "1",
+            "com.apple.accessory.updater",
+            "LEFT",
+            "RIGHT",
+            "9A348",
+        ];
+        let mut packet = vec![4, 0, 4, 0, 0x1D, 0, 2, 0, 0, 4, 0];
+        for field in fields {
+            packet.extend_from_slice(field.as_bytes());
+            packet.push(0);
+        }
+        let length = (packet.len() - 9) as u16;
+        packet[7..9].copy_from_slice(&length.to_le_bytes());
+        assert_eq!(
+            parse_metadata(&packet),
+            Some(("A3063".into(), "9A348".into(), "EXAMPLE".into()))
+        );
+        for length in 0..packet.len() {
+            assert!(parse_metadata(&packet[..length]).is_none());
+        }
+        packet[5] = 1;
+        assert!(parse_metadata(&packet).is_none());
+    }
+
+    #[test]
+    fn metadata_normalizes_release_builds_without_using_internal_versions_as_a_major() {
+        for (model, version1, version3, expected) in [
+            ("A2084", "90.3431.6807", "6619472", "6F21"),
+            ("A2084", "6F21", "6619472", "6F21"),
+            ("A3063", "90.3431.6807", "9442752", "9A348"),
+            ("A2084", "", "6357536", "6B34"),
+            ("A3063", "9A348", "", "9A348"),
+            ("A3063", "9A348", "9A5347a", "9A5347a"),
+            ("A1523", "6.8.8", "", "6.8.8"),
+            ("A3063", "90.3431.6807", "", ""),
+            ("A3063", "6619472", "unknown", ""),
+            ("A3063", "90.3431.6807", "6619473", ""),
+            ("A3063", "90.3431.6807", "4294967296", ""),
+            ("A3063", "90.3431.6807", "0", ""),
+        ] {
+            let fields = [
+                "AirPods",
+                model,
+                "Apple Inc.",
+                "EXAMPLE",
+                version1,
+                "",
+                "1",
+                "com.apple.accessory.updater",
+                "LEFT",
+                "RIGHT",
+                version3,
+            ];
+            let mut packet = vec![4, 0, 4, 0, 0x1D, 0, 2, 0, 0, 4, 0];
+            for field in fields {
+                packet.extend_from_slice(field.as_bytes());
+                packet.push(0);
+            }
+            assert_eq!(
+                parse_metadata(&packet),
+                Some((model.into(), expected.into(), "EXAMPLE".into()))
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_ear_reports_cannot_pause_playback_or_restart_the_microphone() {
+        let mut packet = [4, 0, 4, 0, 6, 0, 0, 1];
+        assert_eq!(
+            parse_ear_detection(&packet),
+            Some((EarStatus::InEar, EarStatus::OutOfEar))
+        );
+        for position in [6, 7] {
+            for value in 5..=255 {
+                let mut invalid = packet;
+                invalid[position] = value;
+                assert_eq!(parse_ear_detection(&invalid), None);
+            }
+        }
+        packet[5] = 1;
+        assert_eq!(parse_ear_detection(&packet), None);
+    }
+
+    #[test]
+    fn adaptive_controls_match_android_rewrite_wire_format() {
+        for strength in [0, 25, 50, 100] {
+            let packet = device_control_command(0x2E, strength);
+            assert_eq!(packet, [4, 0, 4, 0, 9, 0, 0x2E, strength as u8, 0, 0, 0]);
+            assert_eq!(parse_device_control(&packet), Some((0x2E, strength)));
+        }
+    }
+
+    #[test]
+    fn ear_handoffs_reset_only_on_stable_state_changes() {
+        use EarStatus::*;
+        let mut previous = [true, true];
+        for (reported, expected, changed) in [
+            ([Transitional, InEar], [true, true], false),
+            ([OutOfEar, InEar], [false, true], true),
+            ([OutOfEar, InEar], [false, true], false),
+            ([Transitional, InEar], [false, true], false),
+            ([InEar, InEar], [true, true], true),
+            ([InEar, OutOfEar], [true, false], true),
+            ([OutOfEar, OutOfEar], [false, false], true),
+            ([InCase, Disconnected], [false, false], false),
+            ([Transitional, Transitional], [false, false], false),
+            ([InEar, InEar], [true, true], true),
+        ] {
+            let current = in_ear_state(previous, reported);
+            assert_eq!(current, expected);
+            assert_eq!(current != previous, changed);
+            previous = current;
+        }
+    }
+    #[test]
+    fn feature_status_requires_a_complete_known_reply() {
+        let enabled = [4, 0, 4, 0, 9, 0, 0x28, 1, 0, 0, 0];
+        let mut reply = enabled;
+        assert_eq!(parse_feature_status(&reply, 0x28), Some(true));
+        reply[7] = 2;
+        assert_eq!(parse_feature_status(&reply, 0x28), Some(false));
+        for value in [0, 3, 0xff] {
+            reply[7] = value;
+            assert_eq!(parse_feature_status(&reply, 0x28), None);
+        }
+        assert_eq!(parse_feature_status(&enabled, 0x26), None);
+        for len in 0..enabled.len() {
+            assert_eq!(parse_feature_status(&enabled[..len], 0x28), None);
+        }
+        reply = enabled;
+        reply[5] = 1;
+        assert_eq!(parse_feature_status(&reply, 0x28), None);
+        reply = enabled;
+        reply[4] = 0x58;
+        assert_eq!(parse_feature_status(&reply, 0x28), None);
+    }
+
+    #[test]
+    fn device_controls_require_complete_valid_records_and_keep_both_value_bytes() {
+        let record = device_control_command(0x24, 0x0200);
+        assert_eq!(record, [4, 0, 4, 0, 9, 0, 0x24, 0, 2, 0, 0]);
+        assert_eq!(parse_device_control(&record), Some((0x24, 0x0200)));
+        for length in 0..record.len() {
+            assert_eq!(parse_device_control(&record[..length]), None);
+        }
+        let mut extra = record.to_vec();
+        extra.push(0);
+        assert_eq!(parse_device_control(&extra), None);
+        for offset in 0..6 {
+            let mut wrong_header = record;
+            wrong_header[offset] ^= 0xFF;
+            assert_eq!(parse_device_control(&wrong_header), None);
+        }
+        assert_eq!(parse_device_control(&device_control_command(0x03, 1)), None);
+        assert_eq!(parse_device_control(&device_control_command(0x23, 0)), None);
+        assert_eq!(
+            parse_device_control(&device_control_command(0x28, 0x0101)),
+            None
+        );
+    }
+
+    #[test]
+    fn native_eq_matches_librepods_and_rejects_truncated_or_unknown_forms() {
+        let eq = ntpods_ipc::Equalizer {
+            mode: 2,
+            low: 0,
+            mid: 50,
+            high: 100,
+        };
+        let packet = eq_command(eq);
+        assert_eq!(packet, [4, 0, 4, 0, 0x63, 0, 5, 0, 1, 2, 0, 50, 100]);
+        assert_eq!(parse_eq(&packet), Some(eq));
+        for length in 0..packet.len() {
+            assert_eq!(parse_eq(&packet[..length]), None);
+        }
+        for offset in 0..packet.len() {
+            let mut malformed = packet;
+            malformed[offset] = 0xFF;
+            assert_eq!(parse_eq(&malformed), None, "offset={offset}");
+        }
+        let mut extra = packet.to_vec();
+        extra.push(0);
+        assert_eq!(parse_eq(&extra), None);
+    }
+
+    fn audio() -> Vec<u8> {
+        let mut p = vec![0u8; 22];
+        p[..8].copy_from_slice(&[4, 0, 4, 0, 0x58, 0, 1, 0]);
+        p.extend_from_slice(&[180, 0, 0, 0, 3, 10, 11, 12]);
+        p
+    }
+    #[test]
+    fn microphone_payload_never_becomes_route_diagnostics() {
+        let p = audio();
+        assert!(is_microphone_message(&p));
+        assert!(route_diag(&p).is_none());
+        for n in 0..6 {
+            assert!(!is_microphone_message(&p[..n]));
+        }
+    }
+    #[test]
+    fn rejects_every_truncated_audio_record_without_partial_delivery() {
+        let p = audio();
+        for n in 0..p.len() {
+            let mut calls = 0;
+            assert!(!for_each_au(&p[..n], |_, _| calls += 1));
+            assert_eq!(calls, 0);
+        }
+        let mut received = Vec::new();
+        assert!(for_each_au(&p, |stamp, au| received.push((stamp, au.to_vec()))));
+        assert_eq!(received, vec![(180, vec![10, 11, 12])]);
+        let mut bad = p.clone();
+        bad.extend_from_slice(&[0, 0, 0, 0, 255, 1]);
+        assert!(!for_each_au(&bad, |_, _| panic!(
+            "partially validated packet"
+        )));
+    }
+    #[test]
+    fn arbitrary_packet_lengths_do_not_panic() {
+        let mut seed = 7u32;
+        for n in 0..8193 {
+            let p: Vec<u8> = (0..n)
+                .map(|_| {
+                    seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                    (seed >> 24) as u8
+                })
+                .collect();
+            let _ = for_each_au(&p, |_, _| {});
+            let _ = parse_battery(&p);
+            let _ = parse_ear_detection(&p);
+            let _ = parse_anc_mode(&p);
+        }
     }
 }

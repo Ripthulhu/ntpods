@@ -12,7 +12,7 @@ Class       = Bluetooth
 ClassGuid   = {e0cbf06c-cd8b-4647-bb8a-263b43f0f974}
 Provider    = %ProviderString%
 CatalogFile = NTPodsAAP.cat
-DriverVer   = 08/08/2026,1.0.4.0
+DriverVer   = 08/08/2026,1.0.4.1
 PnpLockdown = 1
 
 [DestinationDirs]
@@ -25,9 +25,10 @@ DefaultDestDir = 13
 NTPodsAAP.sys = 1,,
 
 [Manufacturer]
-%ManufacturerString% = NTPodsAAP,NTamd64.10.0.1..16299
+; Do not restrict ProductType: Windows Enterprise multi-session reports type 3.
+%ManufacturerString% = NTPodsAAP,NTamd64.10.0...16299
 
-[NTPodsAAP.NTamd64.10.0.1..16299]
+[NTPodsAAP.NTamd64.10.0...16299]
 %DeviceDesc% = NTPodsAAP_Inst, BTHENUM\{74ec2172-0bad-4d01-8f77-997b2be0722a}
 
 [NTPodsAAP_Inst.NT]

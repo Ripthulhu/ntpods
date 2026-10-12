@@ -31,6 +31,7 @@ Environment:
 #include "streamengine.h"
 #include "cpp_utils.h"
 #include "circuithelper.h"
+#include "MicRing.h"
 
 #ifndef __INTELLISENSE__
 #include "captureCircuit.tmh"
@@ -40,6 +41,32 @@ Environment:
 // Controls how the custom name of the bridge pin is read.
 //
 BOOL g_UseCustomInfName = TRUE;
+
+_Use_decl_annotations_
+PAGED_CODE_SEG
+NTSTATUS CodecC_SetPacketConstraints(ACXCIRCUIT Circuit)
+{
+    PAGED_CODE();
+
+    UNICODE_STRING acxLink = {0};
+    UNICODE_STRING audioLink = {0};
+    WDFSTRING link = AcxCircuitGetSymbolicLinkName(Circuit);
+    if (!link) return STATUS_INVALID_DEVICE_STATE;
+    WdfStringGetUnicodeString(link, &acxLink);
+    if (!acxLink.Buffer || !acxLink.Length) return STATUS_INVALID_DEVICE_STATE;
+    NTSTATUS status = IoGetDeviceInterfaceAlias(&acxLink, &KSCATEGORY_AUDIO, &audioLink);
+    if (!NT_SUCCESS(status)) return status;
+
+    // Match AllocateRtPackets so clients cannot negotiate speech-dropping periods.
+    KSAUDIO_PACKETSIZE_CONSTRAINTS2 constraints = {};
+    constraints.PacketSizeFileAlignment = FILE_WORD_ALIGNMENT;
+    constraints.MaxPacketSizeInBytes = MIC_RT_MAX_PACKET_BYTES;
+    status = IoSetDeviceInterfacePropertyData(&audioLink,
+        &DEVPKEY_KsAudio_PacketSize_Constraints2, 0, 0, DEVPROP_TYPE_BINARY,
+        FIELD_OFFSET(KSAUDIO_PACKETSIZE_CONSTRAINTS2, ProcessingModeConstraints), &constraints);
+    RtlFreeUnicodeString(&audioLink);
+    return status;
+}
 
 PAGED_CODE_SEG
 NTSTATUS
@@ -67,124 +94,6 @@ Return Value:
     // NOTE: update device/mixed format here.
 
     return STATUS_NOT_SUPPORTED;
-}
-
-///////////////////////////////////////////////////////////
-//
-// For more information on volume element see: https://docs.microsoft.com/en-us/windows-hardware/drivers/audio/ksnodetype-volume
-//
-_Use_decl_annotations_
-NTSTATUS
-CodecC_EvtVolumeAssignLevelCallback(
-    _In_    ACXVOLUME   Volume,
-    _In_    ULONG       Channel,
-    _In_    LONG        VolumeLevel
-)
-{
-    PAGED_CODE();
-
-    ASSERT(Volume);
-    PVOLUME_ELEMENT_CONTEXT volumeCtx = GetVolumeElementContext(Volume);
-    ASSERT(volumeCtx);
-
-    if (Channel != ALL_CHANNELS_ID)
-    {
-        volumeCtx->VolumeLevel[Channel] = VolumeLevel;
-    }
-    else
-    {
-        for (ULONG i = 0; i < MAX_CHANNELS; ++i)
-        {
-            volumeCtx->VolumeLevel[i] = VolumeLevel;
-        }
-    }
-
-    return STATUS_SUCCESS;
-}
-
-_Use_decl_annotations_
-NTSTATUS
-CodecC_EvtVolumeRetrieveLevelCallback(
-    _In_    ACXVOLUME   Volume,
-    _In_    ULONG       Channel,
-    _Out_   LONG *      VolumeLevel
-)
-{
-    PAGED_CODE();
-
-    ASSERT(Volume);
-    PVOLUME_ELEMENT_CONTEXT volumeCtx = GetVolumeElementContext(Volume);
-    ASSERT(volumeCtx);
-
-    if (Channel == ALL_CHANNELS_ID)
-    {
-        Channel = 0;
-    }
-
-    *VolumeLevel = volumeCtx->VolumeLevel[Channel];
-
-    return STATUS_SUCCESS;
-}
-
-PAGED_CODE_SEG
-NTSTATUS
-CodecC_CreateVolumeElement(
-    _In_    ACXCIRCUIT  Circuit,
-    _Out_   ACXVOLUME* Element
-)
-/*++
-
-Routine Description:
-
-    This routine creates a volume element.
-
-Return Value:
-
-    NT status value
---*/
-{
-    NTSTATUS                        status = STATUS_SUCCESS;
-    WDF_OBJECT_ATTRIBUTES           attributes;
-    ACX_VOLUME_CALLBACKS            volumeCallbacks;
-    ACX_VOLUME_CONFIG               volumeCfg;
-    VOLUME_ELEMENT_CONTEXT *        volumeCtx;
-
-    PAGED_CODE();
-
-    //
-    // The driver uses this DDI to assign its volume element callbacks.
-    //
-    ACX_VOLUME_CALLBACKS_INIT(&volumeCallbacks);
-    volumeCallbacks.EvtAcxVolumeAssignLevel = CodecC_EvtVolumeAssignLevelCallback;
-    volumeCallbacks.EvtAcxVolumeRetrieveLevel = CodecC_EvtVolumeRetrieveLevelCallback;
-
-    //
-    // Create Volume element
-    //
-    ACX_VOLUME_CONFIG_INIT(&volumeCfg);
-    volumeCfg.ChannelsCount = MAX_CHANNELS;
-    volumeCfg.Minimum = VOLUME_LEVEL_MINIMUM;
-    volumeCfg.Maximum = VOLUME_LEVEL_MAXIMUM;
-    volumeCfg.SteppingDelta = VOLUME_STEPPING;
-    volumeCfg.Callbacks = &volumeCallbacks;
-
-    WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attributes, VOLUME_ELEMENT_CONTEXT);
-    attributes.ParentObject = Circuit;
-
-    RETURN_NTSTATUS_IF_FAILED(AcxVolumeCreate(Circuit, &attributes, &volumeCfg, Element));
-
-    ASSERT(*Element != nullptr);
-    volumeCtx = GetVolumeElementContext(*Element);
-    ASSERT(volumeCtx);
-
-    //
-    // (max + min)/2 puts it in the middle of the valid range, divide that by the stepping to get the nearest
-    // valid step, multiply that by stepping to put it back at a level value.
-    //
-    volumeCtx->VolumeLevel[0] = (VOLUME_LEVEL_MAXIMUM + VOLUME_LEVEL_MINIMUM) / 2 / VOLUME_STEPPING * VOLUME_STEPPING;
-    volumeCtx->VolumeLevel[1] = (VOLUME_LEVEL_MAXIMUM + VOLUME_LEVEL_MINIMUM) / 2 / VOLUME_STEPPING * VOLUME_STEPPING;
-
-    return status;
 }
 
 PAGED_CODE_SEG
@@ -239,25 +148,6 @@ Return Value:
 
 PAGED_CODE_SEG
 NTSTATUS
-CodecC_CircuitCleanup(
-    _In_ ACXCIRCUIT Circuit
-)
-{
-    PCODEC_CAPTURE_CIRCUIT_CONTEXT  circuitCtx;
-
-    PAGED_CODE();
-
-    //
-    // Remove the static capture circuit.
-    //
-    circuitCtx = GetCaptureCircuitContext(Circuit);
-    ASSERT(circuitCtx != nullptr);
-
-    return STATUS_SUCCESS;
-}
-
-PAGED_CODE_SEG
-NTSTATUS
 CodecC_AddStaticCapture(
     _In_ WDFDEVICE              Device,
     _In_ const GUID *           ComponentGuid,
@@ -268,23 +158,12 @@ CodecC_AddStaticCapture(
 
 Routine Description:
 
-    Creates the static capture circuit (pictured below)
+    Creates the static capture circuit
     and adds it to the device context. This is called
     when a new device is detected and the AddDevice
     call is made by the pnp manager.
 
-    ******************************************************
-    * Capture Circuit                                    *
-    *                                                    *
-    *              +-----------------------+             *
-    *              |                       |             *
-    *              |    +-------------+    |             *
-    * Host  ------>|    | Volume Node |    |---> Bridge  *
-    * Pin          |    +-------------+    |      Pin    *
-    *              |                       |             *
-    *              +-----------------------+             *
-    *                                                    *
-    ******************************************************
+    The PCM source connects directly to the host pin. Windows provides volume.
 
 Return Value:
 
@@ -395,7 +274,6 @@ Return Value:
     NTSTATUS                        status;
     WDF_OBJECT_ATTRIBUTES           attributes;
     ACXCIRCUIT                      circuit;
-    CODEC_CAPTURE_CIRCUIT_CONTEXT*  circuitCtx;
     ACXPIN                          pin[CodecCapturePinCount];
 
     PAGED_CODE();
@@ -419,6 +297,7 @@ Return Value:
         // a standalone audio circuit representing an audio device. 
         //
         circuitInit = AcxCircuitInitAllocate(Device);
+        RETURN_NTSTATUS_IF_TRUE(circuitInit == nullptr, STATUS_INSUFFICIENT_RESOURCES);
 
         //
         // A driver uses this DDI to free the allocated
@@ -444,7 +323,7 @@ Return Value:
         // For standalone circuits, this is the audio device name
         // which is used by clients to open handles to the audio devices.
         //
-        (VOID)AcxCircuitInitAssignName(circuitInit, CircuitName);
+        RETURN_NTSTATUS_IF_FAILED(AcxCircuitInitAssignName(circuitInit, CircuitName));
 
         //
         // The driver uses this DDI to specify the circuit type. The
@@ -469,37 +348,10 @@ Return Value:
         //
         // The driver uses this DDI to create a new ACX circuit.
         //
-        WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attributes, CODEC_CAPTURE_CIRCUIT_CONTEXT);
+        WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
         RETURN_NTSTATUS_IF_FAILED(AcxCircuitCreate(Device, &attributes, &circuitInit, &circuit));
 
         circuitInitScope.release();
-
-        circuitCtx = GetCaptureCircuitContext(circuit);
-        ASSERT(circuitCtx);
-    }
-
-    //
-    // Post circuit creation initialization.
-    //
-
-    ///////////////////////////////////////////////////////////
-    //
-    // Create volume element.
-    //
-    {
-        ACXELEMENT elements[CaptureElementCount] = { 0 };
-
-        RETURN_NTSTATUS_IF_FAILED(CodecC_CreateVolumeElement(circuit, (ACXVOLUME*)&elements[CaptureVolumeIndex]));
-
-        //
-        // Saving the volume element in the circuit context.
-        //
-        circuitCtx->VolumeElement = (ACXVOLUME)elements[CaptureVolumeIndex];
-
-        //
-        // The driver uses this DDI post circuit creation to add ACXELEMENTs.
-        //
-        RETURN_NTSTATUS_IF_FAILED(AcxCircuitAddElements(circuit, elements, SIZEOF_ARRAY(elements)));
     }
 
     ///////////////////////////////////////////////////////////
@@ -523,6 +375,9 @@ Return Value:
         pinCfg.Communication = AcxPinCommunicationSink;
         pinCfg.Category = &KSCATEGORY_AUDIO;
         pinCfg.PinCallbacks = &pinCallbacks;
+        // The Windows audio engine shares this one PCM source between clients.
+        // A second hardware stream would consume, not duplicate, queued speech.
+        pinCfg.MaxStreams = 1;
 
         WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attributes, CODEC_PIN_CONTEXT);
         attributes.EvtCleanupCallback = CodecC_EvtPinContextCleanup;
@@ -690,7 +545,7 @@ Return Value:
     ACX_STREAM_CALLBACKS            streamCallbacks;
     ACX_RT_STREAM_CALLBACKS         rtCallbacks;
     CCaptureStreamEngine *          streamEngine = nullptr;
-    CODEC_CAPTURE_CIRCUIT_CONTEXT * circuitCtx;
+
     CODEC_PIN_CONTEXT *             pinCtx;
 
     auto streamEngineScope = scope_exit([&streamEngine]() {
@@ -710,9 +565,6 @@ Return Value:
 
     devCtx = GetCaptureDeviceContext(Device);
     ASSERT(devCtx != nullptr);
-
-    circuitCtx = GetCaptureCircuitContext(Circuit);
-    ASSERT(circuitCtx != nullptr);
 
     pinCtx = GetCodecPinContext(Pin);
     ASSERT(pinCtx != nullptr);

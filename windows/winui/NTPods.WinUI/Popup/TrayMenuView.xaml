@@ -35,7 +35,9 @@
             BorderThickness="1"
             CornerRadius="8"
             Padding="6">
-        <StackPanel x:Name="Items" MinWidth="248" Spacing="1">
+        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                      HorizontalScrollMode="Disabled" HorizontalContentAlignment="Stretch" IsTabStop="False">
+        <StackPanel x:Name="Items" Spacing="1">
 
             <!-- Header: model image + device name -->
             <Grid Padding="10,6,10,6" ColumnSpacing="10">
@@ -56,6 +58,7 @@
             <!-- Battery line -->
             <TextBlock x:Name="BatteryText" Margin="42,0,10,4"
                        FontSize="12"
+                       TextWrapping="Wrap"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
 
             <Border Height="1" Margin="6,3" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
@@ -133,6 +136,16 @@
 
             <Border Height="1" Margin="6,3" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
 
+            <Button x:Name="BatteriesRow" Style="{StaticResource MenuRow}" Click="Batteries_Click">
+                <Grid ColumnSpacing="10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <FontIcon Grid.Column="0" Style="{StaticResource RowIcon}" Glyph="&#xE83F;" />
+                    <TextBlock x:Name="BatteriesText" Grid.Column="1" VerticalAlignment="Center" />
+                </Grid>
+            </Button>
             <Button x:Name="OpenRow" Style="{StaticResource MenuRow}" Click="Open_Click">
                 <Grid ColumnSpacing="10">
                     <Grid.ColumnDefinitions>
@@ -155,5 +168,6 @@
             </Button>
 
         </StackPanel>
+        </ScrollViewer>
     </Border>
 </UserControl>

@@ -124,8 +124,8 @@ Values: 1 = Off, 2 = noise cancellation, 3 = transparency, 4 = adaptive.
 Format: Single value (1 byte)
 
 ### 0x1F - Chime Volume
-Format: Single value (1 byte)
-Values: 0 to 100.  
+Format: Two values (2 bytes), followed by two zero bytes.
+Values: First byte 0 to 100, second byte `0x50` in LibrePods' Android rewrite writer.
 
 ### 0x20 - Connect Automatically
 Format: Single value (1 byte)
@@ -133,10 +133,12 @@ Values: `0x01` = enabled, `0x02` = disabled.
 
 ### 0x23 - VolumeSwipeInterval
 Format: Single value (1 byte)
-Values: 0x00 = Default, `0x01` = Longer, `0x02` = Longest.  
+Values: `0x01` = Default, `0x02` = Longer, `0x03` = Longest in LibrePods' Android rewrite UI.
 
 ### 0x24 - Call Management Config
-Format: Single value (1 byte)
+Format: Two values (2 bytes), followed by two zero bytes.
+Values: `[0x00, 0x03]` = usual single/double-press layout; `[0x00, 0x02]` = flipped.
+This device setting alone does not integrate call gestures with Windows apps.
 
 ### 0x25 - VolumeSwipeMode
 Format: Single value (1 byte)

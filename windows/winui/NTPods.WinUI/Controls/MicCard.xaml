@@ -2,23 +2,41 @@
 <UserControl
     x:Class="NTPods.WinUI.Controls.MicCard"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
-    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-    mc:Ignorable="d">
-
-    <!-- Hi-res microphone -->
-    <Border Style="{StaticResource Card}">
-        <StackPanel Spacing="8">
-            <TextBlock Text="{Binding [MicTitle_Text], Source={StaticResource Loc}}" Style="{ThemeResource BodyStrongTextBlockStyle}" />
-            <TextBlock x:Name="MicStatusText" TextWrapping="Wrap"
-                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-            <ToggleSwitch OnContent="{Binding [Toggle_On], Source={StaticResource Loc}}" OffContent="{Binding [Toggle_Off], Source={StaticResource Loc}}" x:Name="MicAutoSwitch"
-                          Header="{Binding [MicAutoSwitch_Header], Source={StaticResource Loc}}"
-                          Toggled="MicAuto_Toggled" />
-            <ToggleButton x:Name="MicManualToggle"
-                          Content="{Binding [MicEnableBtn_Content], Source={StaticResource Loc}}"
-                          Click="MicManual_Click" />
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Expander x:Name="MicExpander" Style="{StaticResource GroupExpander}">
+        <Expander.Header>
+            <StackPanel Spacing="4">
+                <TextBlock Text="{Binding [MicTitle_Text], Source={StaticResource Loc}}" FontSize="16" TextWrapping="Wrap" />
+                <TextBlock x:Name="MicStatusText" TextWrapping="Wrap" FontSize="13"
+                           Foreground="{ThemeResource AppleSecondaryBrush}" AutomationProperties.LiveSetting="Polite" />
+            </StackPanel>
+        </Expander.Header>
+        <StackPanel Spacing="16">
+            <Grid ColumnSpacing="16" MinHeight="36">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <TextBlock Text="{Binding [Mic_Enable], Source={StaticResource Loc}}" TextWrapping="Wrap"
+                           FontSize="16" VerticalAlignment="Center" />
+                <ToggleSwitch x:Name="MicAutoSwitch" Grid.Column="1" Style="{StaticResource SettingToggle}" VerticalAlignment="Center"
+                              AutomationProperties.Name="{Binding [Mic_Enable], Source={StaticResource Loc}}" Toggled="MicAuto_Toggled" />
+            </Grid>
+            <Border Style="{StaticResource InsetDivider}" Margin="0" />
+            <ComboBox x:Name="ModePicker" Header="{Binding [Mic_Mode], Source={StaticResource Loc}}"
+                      AutomationProperties.Name="{Binding [Mic_Mode], Source={StaticResource Loc}}"
+                      HorizontalAlignment="Stretch" SelectionChanged="Mode_Changed">
+                <ComboBoxItem Tag="automatic" Content="{Binding [Mic_Automatic], Source={StaticResource Loc}}" />
+                <ComboBoxItem Tag="keep_active" Content="{Binding [Mic_KeepActive], Source={StaticResource Loc}}" />
+                <ComboBoxItem Tag="manual" Content="{Binding [Mic_Manual], Source={StaticResource Loc}}" />
+            </ComboBox>
+            <TextBlock x:Name="ModeHelp" TextWrapping="Wrap" FontSize="13" Foreground="{ThemeResource AppleSecondaryBrush}" />
+            <StackPanel x:Name="DelayOptions" Spacing="6">
+                <NumberBox x:Name="StopAfter" Header="{Binding [Mic_StopAfter], Source={StaticResource Loc}}"
+                           AutomationProperties.Name="{Binding [Mic_StopAfter], Source={StaticResource Loc}}"
+                           Minimum="0" Maximum="3600" SmallChange="5" LargeChange="30"
+                           SpinButtonPlacementMode="Compact" ValueChanged="Delay_Changed" />
+                <TextBlock Text="{Binding [Mic_StopAfterHelp], Source={StaticResource Loc}}" TextWrapping="Wrap"
+                           FontSize="13" Foreground="{ThemeResource AppleSecondaryBrush}" />
+            </StackPanel>
+            <Button x:Name="ManualButton" Click="Manual_Click" HorizontalAlignment="Stretch" Visibility="Collapsed" />
         </StackPanel>
-    </Border>
+    </Expander>
 </UserControl>

@@ -1,145 +1,134 @@
 <?xml version="1.0" encoding="utf-8"?>
-<UserControl
-    x:Class="NTPods.WinUI.Popup.IslandView"
+<UserControl x:Class="NTPods.WinUI.Popup.IslandView"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
-    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-    mc:Ignorable="d"
-    Width="300">
-
-    <!-- Apple-style connection card (the default AirPods look): device name on
-         top, a large centred product render in the middle, and the L/R/Case
-         battery row beneath. The card fills the (acrylic-backed, DWM-rounded)
-         island window, so the Grid background is transparent and the window's
-         DesktopAcrylic shows through. All colours are ThemeResource brushes so it
-         follows light/dark. The product image gently floats and scales in — the
-         animation lives here (see the Storyboards); the slide-in of the whole
-         window is driven by IslandWindow. -->
+    Width="400" MinHeight="160" AutomationProperties.LiveSetting="Polite">
     <UserControl.Resources>
-        <!-- Continuous gentle "float" (bob) so the card feels alive without a real
-             3D turntable — a subtle ±4px vertical drift, eased both ways. -->
-        <Storyboard x:Name="FloatLoop" RepeatBehavior="Forever" AutoReverse="True">
-            <DoubleAnimation Storyboard.TargetName="ImageTransform"
-                             Storyboard.TargetProperty="TranslateY"
-                             From="-4" To="4" Duration="0:0:1.8">
-                <DoubleAnimation.EasingFunction>
-                    <QuadraticEase EasingMode="EaseInOut" />
-                </DoubleAnimation.EasingFunction>
-            </DoubleAnimation>
-        </Storyboard>
-
-        <!-- One-shot entrance: the render scales up from 0.82 as it fades in,
-             riding on top of the window's slide. -->
-        <Storyboard x:Name="Entrance">
-            <DoubleAnimation Storyboard.TargetName="ImageTransform"
-                             Storyboard.TargetProperty="ScaleX"
-                             From="0.82" To="1" Duration="0:0:0.35">
-                <DoubleAnimation.EasingFunction>
-                    <CubicEase EasingMode="EaseOut" />
-                </DoubleAnimation.EasingFunction>
-            </DoubleAnimation>
-            <DoubleAnimation Storyboard.TargetName="ImageTransform"
-                             Storyboard.TargetProperty="ScaleY"
-                             From="0.82" To="1" Duration="0:0:0.35">
-                <DoubleAnimation.EasingFunction>
-                    <CubicEase EasingMode="EaseOut" />
-                </DoubleAnimation.EasingFunction>
-            </DoubleAnimation>
-        </Storyboard>
+        <ResourceDictionary>
+            <ResourceDictionary.ThemeDictionaries>
+                <ResourceDictionary x:Key="Default">
+                    <SolidColorBrush x:Key="IslandBackground" Color="Black" />
+                    <SolidColorBrush x:Key="IslandForeground" Color="White" />
+                    <SolidColorBrush x:Key="IslandSecondary" Color="#A1A1A6" />
+                    <SolidColorBrush x:Key="IslandBattery" Color="#30D158" />
+                    <SolidColorBrush x:Key="IslandBatteryTrack" Color="#333333" />
+                    <SolidColorBrush x:Key="IslandLowBattery" Color="#FF6961" />
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="Light">
+                    <SolidColorBrush x:Key="IslandBackground" Color="#F2F2F7" />
+                    <SolidColorBrush x:Key="IslandForeground" Color="Black" />
+                    <SolidColorBrush x:Key="IslandSecondary" Color="#636366" />
+                    <SolidColorBrush x:Key="IslandBattery" Color="#248A3D" />
+                    <SolidColorBrush x:Key="IslandBatteryTrack" Color="#D1D1D6" />
+                    <SolidColorBrush x:Key="IslandLowBattery" Color="#C6282C" />
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="HighContrast">
+                    <SolidColorBrush x:Key="IslandBackground" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="IslandForeground" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="IslandSecondary" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="IslandBattery" Color="{ThemeResource SystemColorHighlightColor}" />
+                    <SolidColorBrush x:Key="IslandBatteryTrack" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="IslandLowBattery" Color="{ThemeResource SystemColorHighlightColor}" />
+                </ResourceDictionary>
+            </ResourceDictionary.ThemeDictionaries>
+        </ResourceDictionary>
     </UserControl.Resources>
-
-    <Grid x:Name="Root" Background="Transparent">
-        <StackPanel Padding="20,16,20,20"
-                    Spacing="10"
-                    HorizontalAlignment="Stretch">
-
-            <TextBlock x:Name="DeviceName"
-                       Text="AirPods"
-                       FontSize="17"
-                       FontWeight="SemiBold"
-                       HorizontalAlignment="Center"
-                       TextAlignment="Center"
-                       TextTrimming="CharacterEllipsis"
-                       Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
-
-            <!-- Message body (shown in message mode instead of the render/battery,
-                 e.g. an ANC change) — collapsed by default, toggled by ApplyMessage. -->
-            <TextBlock x:Name="MessageBody"
-                       Visibility="Collapsed"
-                       FontSize="13"
-                       HorizontalAlignment="Center"
-                       TextAlignment="Center"
-                       TextWrapping="Wrap"
-                       Margin="0,2,0,4"
-                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-
-            <!-- Large centred product render (floats + scales in). -->
-            <Image x:Name="DeviceImage"
-                   Width="112" Height="112"
-                   HorizontalAlignment="Center"
-                   Stretch="Uniform"
-                   Source="ms-appx:///Assets/airpods.png"
-                   RenderTransformOrigin="0.5,0.5">
-                <Image.RenderTransform>
-                    <CompositeTransform x:Name="ImageTransform" CenterX="56" CenterY="56" />
-                </Image.RenderTransform>
-            </Image>
-
-            <!-- Mode glyph for control-change messages (ANC etc.) — a vector icon so
-                 it follows the theme (the raster ANC art was fixed-colour and washed
-                 out on one theme). Shown instead of the device render in that case. -->
-            <FontIcon x:Name="ModeIcon"
-                      Visibility="Collapsed"
-                      Height="112"
-                      FontSize="56"
-                      HorizontalAlignment="Center"
-                      Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
-
-            <!-- L / R / Case battery — each a tiny labelled accent bar, centred.
-                 Absent components are collapsed by the code-behind. -->
-            <StackPanel x:Name="BatteryRow"
-                        Orientation="Horizontal"
-                        HorizontalAlignment="Center"
-                        Spacing="18">
-
-                <StackPanel x:Name="LeftItem" Spacing="3" MinWidth="60">
-                    <StackPanel Orientation="Horizontal" Spacing="4" HorizontalAlignment="Center">
-                        <TextBlock Text="L" FontSize="12"
-                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                        <TextBlock x:Name="LeftText" Text="—" FontSize="12" FontWeight="SemiBold"
-                                   Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
-                    </StackPanel>
-                    <ProgressBar x:Name="LeftBar" Minimum="0" Maximum="100" Value="0"
-                                 Height="4"
-                                 Foreground="{ThemeResource NTPodsAccentBrush}" />
-                </StackPanel>
-
-                <StackPanel x:Name="RightItem" Spacing="3" MinWidth="60">
-                    <StackPanel Orientation="Horizontal" Spacing="4" HorizontalAlignment="Center">
-                        <TextBlock Text="R" FontSize="12"
-                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                        <TextBlock x:Name="RightText" Text="—" FontSize="12" FontWeight="SemiBold"
-                                   Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
-                    </StackPanel>
-                    <ProgressBar x:Name="RightBar" Minimum="0" Maximum="100" Value="0"
-                                 Height="4"
-                                 Foreground="{ThemeResource NTPodsAccentBrush}" />
-                </StackPanel>
-
-                <StackPanel x:Name="CaseItem" Spacing="3" MinWidth="60">
-                    <StackPanel Orientation="Horizontal" Spacing="4" HorizontalAlignment="Center">
-                        <TextBlock Text="{Binding [IslandCaseLabel_Text], Source={StaticResource Loc}}" FontSize="12"
-                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                        <TextBlock x:Name="CaseText" Text="—" FontSize="12" FontWeight="SemiBold"
-                                   Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
-                    </StackPanel>
-                    <ProgressBar x:Name="CaseBar" Minimum="0" Maximum="100" Value="0"
-                                 Height="4"
-                                 Foreground="{ThemeResource NTPodsAccentBrush}" />
-                </StackPanel>
-
+    <Grid Background="{ThemeResource IslandBackground}" Padding="24,18,24,20" RowSpacing="14">
+        <VisualStateManager.VisualStateGroups>
+            <VisualStateGroup x:Name="LeftBatteryColors">
+                <VisualState x:Name="LeftNormal" />
+                <VisualState x:Name="LeftLow">
+                    <VisualState.Setters>
+                        <Setter Target="LeftRing.Foreground" Value="{ThemeResource IslandLowBattery}" />
+                        <Setter Target="LeftBolt.Fill" Value="{ThemeResource IslandLowBattery}" />
+                    </VisualState.Setters>
+                </VisualState>
+            </VisualStateGroup>
+            <VisualStateGroup x:Name="RightBatteryColors">
+                <VisualState x:Name="RightNormal" />
+                <VisualState x:Name="RightLow">
+                    <VisualState.Setters>
+                        <Setter Target="RightRing.Foreground" Value="{ThemeResource IslandLowBattery}" />
+                        <Setter Target="RightBolt.Fill" Value="{ThemeResource IslandLowBattery}" />
+                    </VisualState.Setters>
+                </VisualState>
+            </VisualStateGroup>
+            <VisualStateGroup x:Name="CaseBatteryColors">
+                <VisualState x:Name="CaseNormal" />
+                <VisualState x:Name="CaseLow">
+                    <VisualState.Setters>
+                        <Setter Target="CaseRing.Foreground" Value="{ThemeResource IslandLowBattery}" />
+                        <Setter Target="CaseBolt.Fill" Value="{ThemeResource IslandLowBattery}" />
+                    </VisualState.Setters>
+                </VisualState>
+            </VisualStateGroup>
+        </VisualStateManager.VisualStateGroups>
+        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+        <Grid x:Name="HeaderGrid" ColumnSpacing="12" MinHeight="56">
+            <Grid.RenderTransform><TranslateTransform x:Name="HeaderOffset" /></Grid.RenderTransform>
+            <Grid.ColumnDefinitions><ColumnDefinition Width="60" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+            <Image x:Name="DeviceImage" Height="54" Stretch="Uniform" AutomationProperties.AccessibilityView="Raw" />
+            <StackPanel Grid.Column="1" Spacing="4" VerticalAlignment="Center">
+                <TextBlock x:Name="DeviceName" FontSize="16" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
+                           Foreground="{ThemeResource IslandForeground}" />
+                <Grid>
+                    <TextBlock x:Name="PreviousMessage" FontSize="13" TextTrimming="CharacterEllipsis" Opacity="0"
+                               Foreground="{ThemeResource IslandSecondary}" AutomationProperties.AccessibilityView="Raw" />
+                    <TextBlock x:Name="MessageBody" FontSize="13" TextTrimming="CharacterEllipsis"
+                               Foreground="{ThemeResource IslandSecondary}">
+                        <TextBlock.RenderTransform><TranslateTransform x:Name="MessageOffset" /></TextBlock.RenderTransform>
+                    </TextBlock>
+                </Grid>
             </StackPanel>
+            <BitmapIcon x:Name="ModeIcon" Grid.Column="2" Width="28" Height="28" ShowAsMonochrome="True"
+                        Foreground="{ThemeResource IslandForeground}" Visibility="Collapsed" AutomationProperties.AccessibilityView="Raw" />
+        </Grid>
+        <StackPanel x:Name="BatteryPanel" Grid.Row="1" Spacing="8">
+            <StackPanel.RenderTransform><TranslateTransform x:Name="BatteryOffset" /></StackPanel.RenderTransform>
+            <Grid x:Name="BatteryRow" ColumnSpacing="12">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                <Grid x:Name="LeftCell" Grid.Column="0" ColumnSpacing="7">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="36" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                    <Grid Width="36" Height="36" VerticalAlignment="Center" AutomationProperties.AccessibilityView="Raw">
+                        <ProgressRing x:Name="LeftRing" IsIndeterminate="False" IsActive="True" Minimum="0" Maximum="100"
+                                      Foreground="{ThemeResource IslandBattery}" Background="{ThemeResource IslandBatteryTrack}" />
+                        <Path x:Name="LeftBolt" Width="10" Height="16" HorizontalAlignment="Center" VerticalAlignment="Center" Stretch="Uniform" Data="M 8,0 L 0,9 L 4,9 L 2,16 L 10,7 L 6,7 Z"
+                                  Fill="{ThemeResource IslandBattery}" Visibility="Collapsed" />
+                    </Grid>
+                    <StackPanel Grid.Column="1" Spacing="1" VerticalAlignment="Center">
+                        <TextBlock x:Name="LeftText" Text="—" FontSize="16" FontWeight="SemiBold" Foreground="{ThemeResource IslandForeground}" />
+                        <TextBlock x:Name="LeftLabel" FontSize="12" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource IslandSecondary}" />
+                    </StackPanel>
+                </Grid>
+                <Grid x:Name="RightCell" Grid.Column="1" ColumnSpacing="7">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="36" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                    <Grid Width="36" Height="36" VerticalAlignment="Center" AutomationProperties.AccessibilityView="Raw">
+                        <ProgressRing x:Name="RightRing" IsIndeterminate="False" IsActive="True" Minimum="0" Maximum="100"
+                                      Foreground="{ThemeResource IslandBattery}" Background="{ThemeResource IslandBatteryTrack}" />
+                        <Path x:Name="RightBolt" Width="10" Height="16" HorizontalAlignment="Center" VerticalAlignment="Center" Stretch="Uniform" Data="M 8,0 L 0,9 L 4,9 L 2,16 L 10,7 L 6,7 Z"
+                                  Fill="{ThemeResource IslandBattery}" Visibility="Collapsed" />
+                    </Grid>
+                    <StackPanel Grid.Column="1" Spacing="1" VerticalAlignment="Center">
+                        <TextBlock x:Name="RightText" Text="—" FontSize="16" FontWeight="SemiBold" Foreground="{ThemeResource IslandForeground}" />
+                        <TextBlock x:Name="RightLabel" FontSize="12" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource IslandSecondary}" />
+                    </StackPanel>
+                </Grid>
+                <Grid x:Name="CaseCell" Grid.Column="2" ColumnSpacing="7">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="36" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                    <Grid Width="36" Height="36" VerticalAlignment="Center" AutomationProperties.AccessibilityView="Raw">
+                        <ProgressRing x:Name="CaseRing" IsIndeterminate="False" IsActive="True" Minimum="0" Maximum="100"
+                                      Foreground="{ThemeResource IslandBattery}" Background="{ThemeResource IslandBatteryTrack}" />
+                        <Path x:Name="CaseBolt" Width="10" Height="16" HorizontalAlignment="Center" VerticalAlignment="Center" Stretch="Uniform" Data="M 8,0 L 0,9 L 4,9 L 2,16 L 10,7 L 6,7 Z"
+                                  Fill="{ThemeResource IslandBattery}" Visibility="Collapsed" />
+                    </Grid>
+                    <StackPanel Grid.Column="1" Spacing="1" VerticalAlignment="Center">
+                        <TextBlock x:Name="CaseText" Text="—" FontSize="16" FontWeight="SemiBold" Foreground="{ThemeResource IslandForeground}" />
+                        <TextBlock x:Name="CaseLabel" FontSize="12" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource IslandSecondary}" />
+                    </StackPanel>
+                </Grid>
+            </Grid>
+            <TextBlock x:Name="FreshnessText" FontSize="12" TextTrimming="CharacterEllipsis" Visibility="Collapsed"
+                       Foreground="{ThemeResource IslandSecondary}" HorizontalAlignment="Center" />
         </StackPanel>
     </Grid>
 </UserControl>

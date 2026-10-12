@@ -1,15 +1,10 @@
 #pragma once
 
-#include "SimPeakMeter.h"
-
 #define HNSTIME_PER_MILLISECOND 10000
 
 #define MAX_PACKET_COUNT 2
 
-#define DEFAULT_FREQUENCY 220
-#define LOOPBACK_FREQUENCY 500
-
-// Stream callbacks shared between Capture and Render
+// Capture stream callbacks.
 
 VOID
 EvtStreamDestroy(
@@ -67,14 +62,6 @@ EvtStreamPause(
 
 PAGED_CODE_SEG
 NTSTATUS
-EvtStreamAssignDrmContentId(
-    _In_ ACXSTREAM      Stream,
-    _In_ ULONG          DrmContentId,
-    _In_ PACXDRMRIGHTS  DrmRights
-);
-
-PAGED_CODE_SEG
-NTSTATUS
 EvtStreamGetCurrentPacket(
     _In_ ACXSTREAM          Stream,
     _Out_ PULONG            CurrentPacket
@@ -113,31 +100,31 @@ public:
 
     virtual
     __drv_maxIRQL(PASSIVE_LEVEL)
-    PAGED_CODE_SEG
+    __declspec(noinline)
     NTSTATUS
     PrepareHardware();
 
     virtual
     __drv_maxIRQL(PASSIVE_LEVEL)
-    PAGED_CODE_SEG
+    __declspec(noinline)
     NTSTATUS
     ReleaseHardware();
 
     virtual
     __drv_maxIRQL(PASSIVE_LEVEL)
-    PAGED_CODE_SEG
+    __declspec(noinline)
     NTSTATUS
     Run();
 
     virtual
     __drv_maxIRQL(PASSIVE_LEVEL)
-    PAGED_CODE_SEG
+    __declspec(noinline)
     NTSTATUS
     Pause();
 
     virtual
     __drv_maxIRQL(PASSIVE_LEVEL)
-    PAGED_CODE_SEG
+    __declspec(noinline)
     NTSTATUS
     GetPresentationPosition(
         _Out_   PULONGLONG      PositionInBlocks,
@@ -146,31 +133,7 @@ public:
 
     virtual
     __drv_maxIRQL(PASSIVE_LEVEL)
-    PAGED_CODE_SEG
-    NTSTATUS
-    GetLinearBufferPosition(
-        _Out_   PULONGLONG  Position
-        );
-
-    virtual
-    __drv_maxIRQL(PASSIVE_LEVEL)
-    PAGED_CODE_SEG
-    NTSTATUS
-    SetCurrentWritePosition(
-        _In_    ULONG   Position
-        );
-
-    virtual
-    __drv_maxIRQL(PASSIVE_LEVEL)
-    PAGED_CODE_SEG
-    NTSTATUS
-    SetLastBufferPosition(
-        _In_    ULONG   Position
-        );
-
-    virtual
-    __drv_maxIRQL(PASSIVE_LEVEL)
-    PAGED_CODE_SEG
+    __declspec(noinline)
     NTSTATUS
     GetCurrentPacket(
         _Out_ PULONG CurrentPacket
@@ -185,46 +148,17 @@ public:
         _Out_   ULONG         * Delay
         );
 
-    virtual
-    __drv_maxIRQL(PASSIVE_LEVEL)
-    PAGED_CODE_SEG
-    NTSTATUS
-    AssignDrmContentId(
-        _In_ ULONG          DrmContentId,
-        _In_ PACXDRMRIGHTS  DrmRights
-        );
-
-    virtual
-    __drv_maxIRQL(PASSIVE_LEVEL)
-    PAGED_CODE_SEG
-    CSimPeakMeter *
-    GetPeakMeter();
-
     __drv_maxIRQL(PASSIVE_LEVEL)
     PAGED_CODE_SEG
     CStreamEngine(
         _In_    ACXSTREAM       Stream, 
-        _In_    ACXDATAFORMAT   StreamFormat,
-        _In_    BOOL            Offload,
-        _In_opt_    CSimPeakMeter   *CircuitPeakmeter
+        _In_    ACXDATAFORMAT   StreamFormat
         );
 
     virtual
     __drv_maxIRQL(PASSIVE_LEVEL)
     PAGED_CODE_SEG
     ~CStreamEngine();
-
-    __drv_maxIRQL(PASSIVE_LEVEL)
-    PAGED_CODE_SEG
-    VOID
-    SetFrequency(
-        _In_    DWORD           ToneFrequency 
-        )
-    {
-        PAGED_CODE();
-
-        m_ToneFrequency = ToneFrequency;
-    }
 
 protected:
     PVOID               m_Packets[MAX_PACKET_COUNT];
@@ -233,7 +167,10 @@ protected:
     ULONG               m_FirstPacketOffset;
     WDFTIMER            m_NotificationTimer;
     ACX_STREAM_STATE    m_CurrentState;
-    ULONG               m_CurrentPacket;
+    // Methods taking this lock stay nonpaged, including when called from PAGE.
+    KSPIN_LOCK          m_PacketLock;
+    BOOLEAN             m_HasCompletedPacket;
+    ULONGLONG           m_CurrentPacket;
     ULONGLONG           m_Position;
     ACXSTREAM           m_Stream;
     ACXDATAFORMAT       m_StreamFormat;
@@ -243,10 +180,6 @@ protected:
     LARGE_INTEGER       m_PerformanceCounterFrequency;
     LARGE_INTEGER       m_CurrentPacketStart;
     LARGE_INTEGER       m_LastPacketStart;
-    DWORD               m_ToneFrequency;
-    BOOL                m_Offload;
-    CSimPeakMeter       m_PeakMeter;
-    CSimPeakMeter*      m_pCircuitPeakmeter;
 
     static
     __drv_maxIRQL(DISPATCH_LEVEL)
@@ -269,7 +202,7 @@ protected:
     virtual
     __drv_maxIRQL(DISPATCH_LEVEL)
     VOID
-    UpdatePosition();
+    UpdatePositionLocked(_In_ LARGE_INTEGER Qpc, _In_ ULONG BytesPerSecond);
 
     virtual
     __drv_maxIRQL(DISPATCH_LEVEL)
@@ -285,6 +218,14 @@ protected:
 class CCaptureStreamEngine : public CStreamEngine
 {
 public:
+    __drv_maxIRQL(PASSIVE_LEVEL)
+    PAGED_CODE_SEG
+    NTSTATUS Run() override;
+
+    __drv_maxIRQL(PASSIVE_LEVEL)
+    PAGED_CODE_SEG
+    NTSTATUS Pause() override;
+
     __drv_maxIRQL(PASSIVE_LEVEL)
     PAGED_CODE_SEG
     CCaptureStreamEngine(
@@ -309,7 +250,7 @@ public:
     ReleaseHardware();
 
     __drv_maxIRQL(PASSIVE_LEVEL)
-    PAGED_CODE_SEG
+    __declspec(noinline)
     NTSTATUS
     GetCapturePacket(
         _Out_   ULONG         * LastCapturePacket,
@@ -318,6 +259,7 @@ public:
         );
 
 protected:
+    volatile LONG m_CaptureRunning;
     virtual
     __drv_maxIRQL(DISPATCH_LEVEL)
     VOID

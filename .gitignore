@@ -1,0 +1,3 @@
+# Local visual review can contain device names and other account details.
+/.impeccable/review/
+/.impeccable/config.local.json

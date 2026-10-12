@@ -151,9 +151,12 @@
     <ClInclude Include="NewDelete.h" />
     <ClInclude Include="CircuitHelper.h" />
     <ClInclude Include="MicPipe.h" />
+    <ClInclude Include="MicRequest.h" />
+    <ClInclude Include="MicRing.h" />
+    <ClInclude Include="MicSid.h" />
+    <ClInclude Include="MicTiming.h" />
     <ClInclude Include="Private.h" />
     <ClInclude Include="Public.h" />
-    <ClInclude Include="SimPeakMeter.h" />
     <ClInclude Include="StreamEngine.h" />
     <ClInclude Include="Trace.h" />
     <ClInclude Include="Trace_macros.h" />
@@ -163,7 +166,6 @@
     <ClCompile Include="captureCircuit.cpp" />
     <ClCompile Include="CircuitHelper.cpp" />
     <ClCompile Include="MicPipe.cpp" />
-    <ClCompile Include="SimPeakMeter.cpp" />
     <ClCompile Include="StreamEngine.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
