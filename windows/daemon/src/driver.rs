@@ -4,7 +4,7 @@
 use std::ffi::c_void;
 use std::io;
 use std::ptr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, Weak};
 
 use windows_sys::core::GUID;
 use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
@@ -54,6 +54,120 @@ impl Drop for WinHandle {
 #[derive(Clone)]
 pub struct Driver {
     handle: Arc<WinHandle>,
+}
+
+#[derive(Default)]
+pub struct Shared(Mutex<Vec<(u64, Weak<WinHandle>)>>);
+
+impl Shared {
+    pub fn open(&self, address: u64) -> io::Result<Driver> {
+        let mut handles = self.0.lock().unwrap();
+        handles.retain(|(_, handle)| handle.strong_count() != 0);
+        if let Some(handle) = handles
+            .iter()
+            .find_map(|(peer, handle)| (*peer == address).then(|| handle.upgrade()).flatten())
+        {
+            return Ok(Driver { handle });
+        }
+        let driver = Driver::open(address)?;
+        // The exclusive AAP handle outlives individual control-channel reconnects.
+        handles.push((address, Arc::downgrade(&driver.handle)));
+        Ok(driver)
+    }
+}
+
+pub fn native_endpoint_owner(instance: &str, address: u64) -> bool {
+    use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
+        CM_Get_DevNode_Registry_PropertyW, CM_Locate_DevNodeW, CM_DRP_SERVICE,
+    };
+    if address == 0 || instance.is_empty() || instance.contains('\0') {
+        return false;
+    }
+    unsafe {
+        let mut node = 0;
+        if CM_Locate_DevNodeW(&mut node, crate::wide(instance).as_ptr(), 0) != CR_SUCCESS {
+            return false;
+        }
+        for _ in 0..8 {
+            let mut service = [0u16; 128];
+            let mut bytes = std::mem::size_of_val(&service) as u32;
+            if CM_Get_DevNode_Registry_PropertyW(
+                node,
+                CM_DRP_SERVICE,
+                ptr::null_mut(),
+                service.as_mut_ptr().cast(),
+                &mut bytes,
+                0,
+            ) == CR_SUCCESS
+            {
+                let end = service
+                    .iter()
+                    .position(|value| *value == 0)
+                    .unwrap_or(service.len());
+                if String::from_utf16_lossy(&service[..end]).eq_ignore_ascii_case("NTPodsAudio") {
+                    return owning_bluetooth_address(node) == Some(address);
+                }
+            }
+            let mut parent = 0;
+            if CM_Get_Parent(&mut parent, node, 0) != CR_SUCCESS || parent == node {
+                break;
+            }
+            node = parent;
+        }
+    }
+    false
+}
+
+#[cfg(feature = "experimental-playback")]
+pub fn native_audio_bound(address: u64) -> bool {
+    use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
+        SetupDiEnumDeviceInfo, SetupDiGetDeviceRegistryPropertyW, DIGCF_ALLCLASSES, SPDRP_SERVICE,
+    };
+    unsafe {
+        let devices = SetupDiGetClassDevsW(
+            ptr::null(),
+            crate::wide("BTHENUM").as_ptr(),
+            ptr::null_mut(),
+            DIGCF_ALLCLASSES | DIGCF_PRESENT,
+        );
+        if devices == INVALID_HANDLE_VALUE as isize {
+            return false;
+        }
+        let mut found = false;
+        for index in 0..u32::MAX {
+            let mut device: SP_DEVINFO_DATA = std::mem::zeroed();
+            device.cbSize = std::mem::size_of::<SP_DEVINFO_DATA>() as u32;
+            if SetupDiEnumDeviceInfo(devices, index, &mut device) == 0 {
+                break;
+            }
+            let mut service = [0u16; 128];
+            let mut bytes = 0;
+            if SetupDiGetDeviceRegistryPropertyW(
+                devices,
+                &device,
+                SPDRP_SERVICE,
+                ptr::null_mut(),
+                service.as_mut_ptr().cast(),
+                std::mem::size_of_val(&service) as u32,
+                &mut bytes,
+            ) == 0
+            {
+                continue;
+            }
+            let end = service
+                .iter()
+                .position(|value| *value == 0)
+                .unwrap_or(service.len());
+            if String::from_utf16_lossy(&service[..end]).eq_ignore_ascii_case("NTPodsAudio")
+                && owning_bluetooth_address(device.DevInst) == Some(address)
+            {
+                found = true;
+                break;
+            }
+        }
+        SetupDiDestroyDeviceInfoList(devices);
+        found
+    }
 }
 
 fn ioctl(handle: HANDLE, code: u32, input: &[u8], output: &mut [u8]) -> io::Result<u32> {
@@ -422,6 +536,26 @@ mod tests {
     use windows_sys::Win32::System::Pipes::{
         ConnectNamedPipe, CreateNamedPipeW, PIPE_REJECT_REMOTE_CLIENTS,
     };
+
+    #[test]
+    fn shared_handle_survives_control_session_replacement() {
+        let shared = Shared::default();
+        let event = unsafe { CreateEventW(ptr::null(), 1, 0, ptr::null()) };
+        assert!(!event.is_null());
+        let original = Driver {
+            handle: Arc::new(WinHandle(event)),
+        };
+        let weak = Arc::downgrade(&original.handle);
+        shared.0.lock().unwrap().push((42, weak.clone()));
+        let playback = shared.open(42).unwrap();
+        drop(original);
+        let replacement = shared.open(42).unwrap();
+        assert!(Arc::ptr_eq(&playback.handle, &replacement.handle));
+        drop(replacement);
+        assert!(weak.upgrade().is_some());
+        drop(playback);
+        assert!(weak.upgrade().is_none());
+    }
 
     #[test]
     fn driver_instance_addresses_match_only_the_selected_bluetooth_peer() {

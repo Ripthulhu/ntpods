@@ -1,4 +1,5 @@
 #include "../Common/RenderPackets.h"
+#include "../Common/RenderProvider.h"
 #include "../Common/MicTiming.h"
 #include <algorithm>
 #include <cassert>
@@ -137,11 +138,60 @@ static void stereo_clock_checks()
     assert(MicPositionBytes(19200, 200000, 100000, bytesPerSecond) == 21120);
 }
 
+static void provider_checks()
+{
+    RenderProvider first = {}, second = {};
+    const uint32_t sample = 0x1234abcd;
+    uint32_t output = 0;
+    RenderProviderOnline(&first, true);
+    RenderProviderOnline(&second, true);
+    first.Streams = second.Streams = 1;
+    assert(!RenderProviderReady(&first, 1));
+    RenderProviderOpen(&first, true);
+    RenderProviderOpen(&second, true);
+    RenderProviderWrite(&first, &sample, sizeof(sample));
+    assert(!RenderProviderConnected(&first) && first.Ring.Count == 0);
+    assert(!RenderProviderReady(&first, 2));
+    assert(RenderProviderReady(&first, 1));
+    assert(RenderProviderConnected(&first) && !RenderProviderConnected(&second));
+    RenderProviderWrite(&first, &sample, sizeof(sample));
+    assert(first.Ring.Count == sizeof(sample) && second.Ring.Count == 0);
+
+    // Reconfiguring a codec clears old PCM while preserving the open endpoint.
+    const unsigned generation = first.Ring.Generation;
+    assert(RenderProviderReady(&first, 0));
+    assert(RenderProviderConnected(&first) && first.Ring.Count == 0);
+    assert(first.Ring.Generation == generation + 1);
+    RenderProviderWrite(&first, &sample, sizeof(sample));
+    assert(RenderRingTake(&first.Ring, &output, sizeof(output)) == 0);
+    assert(RenderProviderReady(&first, 1));
+    RenderProviderWrite(&first, &sample, sizeof(sample));
+    assert(RenderRingTake(&first.Ring, &output, sizeof(output)) == sizeof(output));
+    assert(output == sample);
+
+    RenderProviderOpen(&first, false);
+    assert(!RenderProviderConnected(&first) && !first.Ready && first.Ring.Count == 0);
+    RenderProviderOpen(&first, true);
+    assert(!RenderProviderConnected(&first));
+    assert(RenderProviderReady(&first, 1));
+    RenderProviderWrite(&first, &sample, sizeof(sample));
+    RenderProviderOnline(&first, false);
+    assert(!RenderProviderConnected(&first) && !first.Ready && first.Ring.Count == 0);
+    assert(!RenderProviderReady(&first, 1));
+    RenderProviderOnline(&first, true);
+    assert(!RenderProviderConnected(&first));
+    assert(RenderProviderReady(&first, 1));
+    first.Streams = 0;
+    RenderProviderWrite(&first, &sample, sizeof(sample));
+    assert(first.Ring.Count == 0);
+}
+
 int main()
 {
     ring_checks();
     packet_checks();
     pause_restart_generation_checks();
     stereo_clock_checks();
+    provider_checks();
     std::puts("render bridge checks passed");
 }

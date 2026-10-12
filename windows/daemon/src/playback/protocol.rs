@@ -37,7 +37,7 @@ pub fn response(packet: &[u8], label: u8, signal: u8) -> io::Result<Option<&[u8]
         2 => {
             if matches!(
                 signal,
-                SET_CONFIGURATION | OPEN | START | CLOSE | SUSPEND | ABORT
+                SET_CONFIGURATION | RECONFIGURE | OPEN | START | CLOSE | SUSPEND | ABORT
             ) && packet.len() != 2
             {
                 return Err(invalid("Unexpected AVDTP acceptance payload"));
@@ -87,9 +87,23 @@ pub fn sinks(payload: &[u8]) -> io::Result<Vec<u8>> {
     Ok(result)
 }
 
-pub fn supports_apple_eld(mut payload: &[u8]) -> io::Result<bool> {
+pub fn supports_apple_eld(payload: &[u8]) -> io::Result<bool> {
+    Ok(select_apple_eld(
+        payload,
+        ntpods_ipc::PlaybackBitrate {
+            best_effort: false,
+            kbps: 256,
+        },
+    )?
+    .is_some())
+}
+
+pub fn select_apple_eld(
+    mut payload: &[u8],
+    preference: ntpods_ipc::PlaybackBitrate,
+) -> io::Result<Option<u32>> {
     let mut media_transport = false;
-    let mut codec = false;
+    let mut codec = None;
     let mut seen = 0u16;
     while !payload.is_empty() {
         if payload.len() < 2 || payload.len() < 2 + payload[1] as usize {
@@ -119,18 +133,26 @@ pub fn supports_apple_eld(mut payload: &[u8]) -> io::Result<bool> {
             }
             let data = &value[2..];
             let bitrate = u32::from_be_bytes([0, data[11] & 0x7f, data[12], data[13]]);
-            codec = data[7] & 0x80 != 0
-                && data[9] & 0x84 == 0x84
-                && data[11] & 0x80 != 0
-                && bitrate >= 256_000;
+            if data[7] & 0x80 != 0 && data[9] & 0x84 == 0x84 && data[11] & 0x80 != 0 {
+                codec = super::codec::Mode::Eld.bitrate(preference, bitrate).ok();
+            }
         }
     }
-    Ok(media_transport && codec)
+    Ok(if media_transport { codec } else { None })
 }
 
 pub fn configuration(seid: u8) -> Vec<u8> {
+    configuration_at(seid, 256_000)
+}
+
+pub fn configuration_at(seid: u8, bitrate: u32) -> Vec<u8> {
     let mut data = vec![seid << 2, 1 << 2, 1, 0, 7, 16, 0, 0xff];
     data.extend_from_slice(&APPLE_ELD);
+    let end = data.len();
+    let bytes = bitrate.to_be_bytes();
+    data[end - 3] = 0x80 | bytes[1];
+    data[end - 2] = bytes[2];
+    data[end - 1] = bytes[3];
     data
 }
 
@@ -273,6 +295,42 @@ mod tests {
         state: StreamState,
     ) -> io::Result<Option<(Vec<u8>, PeerAction)>> {
         super::peer_response(packet, state, &configuration(1)[2..])
+    }
+
+    #[test]
+    fn eld_bitrate_is_negotiated_and_reconfigure_responses_are_bounded() {
+        let caps = configuration_at(1, 192000);
+        assert_eq!(
+            select_apple_eld(&caps[2..], ntpods_ipc::PlaybackBitrate::default()).unwrap(),
+            Some(192000)
+        );
+        assert_eq!(
+            select_apple_eld(
+                &caps[2..],
+                ntpods_ipc::PlaybackBitrate {
+                    best_effort: false,
+                    kbps: 256
+                }
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            select_apple_eld(
+                &caps[2..],
+                ntpods_ipc::PlaybackBitrate {
+                    best_effort: false,
+                    kbps: 128
+                }
+            )
+            .unwrap(),
+            Some(128000)
+        );
+        assert!(response(&[0x32, RECONFIGURE, 0], 3, RECONFIGURE).is_err());
+        assert_eq!(
+            response(&[0x32, RECONFIGURE], 3, RECONFIGURE).unwrap(),
+            Some(&[][..])
+        );
     }
 
     #[test]

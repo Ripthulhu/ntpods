@@ -231,7 +231,8 @@ NTSTATUS
 CodecR_AddStaticRender(
     _In_ WDFDEVICE              Device,
     _In_ const GUID *           ComponentGuid,
-    _In_ const UNICODE_STRING * CircuitName
+    _In_ const UNICODE_STRING * CircuitName,
+    _Out_ ACXCIRCUIT *          Circuit
 );
 
 PAGED_CODE_SEG

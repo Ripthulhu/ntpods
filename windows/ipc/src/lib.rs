@@ -27,6 +27,20 @@ pub enum PlaybackMode {
     AacEld,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlaybackBitrate {
+    pub best_effort: bool,
+    pub kbps: u32,
+}
+impl Default for PlaybackBitrate {
+    fn default() -> Self {
+        Self {
+            best_effort: true,
+            kbps: 256,
+        }
+    }
+}
+
 fn deserialize_stop_delay<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
     let seconds = u32::deserialize(d)?;
     if seconds <= 3600 {
@@ -194,6 +208,14 @@ pub struct Snapshot {
     pub playback_error: Option<String>,
     #[serde(default)]
     pub playback_available: bool,
+    #[serde(default)]
+    pub playback_native_driver: bool,
+    #[serde(default)]
+    pub playback_aac_bitrate: PlaybackBitrate,
+    #[serde(default)]
+    pub playback_aac_eld_bitrate: PlaybackBitrate,
+    #[serde(default)]
+    pub playback_bitrate_kbps: Option<u32>,
     /// Latest validated heart-rate BPM (AirPods Pro 3 RTBuddy). `None` when HR
     /// monitoring is off or no sample has been decoded yet. Opt-in (drains battery).
     pub heart_rate: Option<u16>,
@@ -331,6 +353,10 @@ impl Default for Snapshot {
             playback_state: default_playback_state(),
             playback_error: None,
             playback_available: false,
+            playback_native_driver: false,
+            playback_aac_bitrate: PlaybackBitrate::default(),
+            playback_aac_eld_bitrate: PlaybackBitrate::default(),
+            playback_bitrate_kbps: None,
             heart_rate: None,
             heart_rate_enabled: false,
             heart_rate_timestamp_ms: None,
@@ -411,6 +437,11 @@ pub enum Command {
         mode: PlaybackMode,
     },
     RetryPlayback,
+    SetPlaybackBitrate {
+        mode: PlaybackMode,
+        best_effort: bool,
+        kbps: u32,
+    },
     /// Toggle an AAP control-command setting (see the `feature` module).
     SetFeature {
         feature: u8,
@@ -607,6 +638,7 @@ mod tests {
             "playback_state",
             "playback_error",
             "playback_available",
+            "playback_native_driver",
         ] {
             old.as_object_mut().unwrap().remove(key);
         }
@@ -614,6 +646,7 @@ mod tests {
         assert_eq!(state.playback_mode, PlaybackMode::Windows);
         assert_eq!(state.playback_state, "windows");
         assert!(!state.playback_available && state.playback_error.is_none());
+        assert!(!state.playback_native_driver);
     }
 
     #[test]

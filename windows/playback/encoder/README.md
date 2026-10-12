@@ -40,8 +40,11 @@ access unit. Lengths are 1–320 bytes. EOF ends the stream; there is no zero-le
 record. Errors go to stderr and return a nonzero exit code. The caller must check
 the exit code before treating EOF as a normal stop.
 
-The encoder uses AOT 39, 480-sample frames, downsampled SBR, VBR mode 5 and a
-256 kbps peak limit. It checks the generated configuration before sending it.
+The encoder uses AOT 39, 480-sample frames, downsampled SBR and VBR mode 5.
+`--bitrate <bits-per-second>` accepts 128000–256000 in 1000-bit steps; omitted, it
+uses 256000. The peak budget rounds down to whole bytes per access unit. SBR
+bandwidth may change with bitrate. The worker validates the generated core format
+and each encoded packet before sending it.
 This is lossy audio; it does not implement Apple's wireless lossless mode.
 
 ## Source and licensing

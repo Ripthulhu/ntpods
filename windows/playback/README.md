@@ -1,75 +1,87 @@
-# Experimental playback
+# AirPods playback
 
-NTPods includes Windows, AAC and AAC-ELD playback options under **Playback and
-microphone**. Windows is the default. AAC and AAC-ELD send 48 kHz stereo through
-NTPods' own AVDTP connection, without Alternative A2DP. Both codecs are lossy.
-Playback on AirPods, microphone coexistence and recovery still need hardware testing.
+NTPods replaces the playback driver on the paired AirPods AudioSink service.
+AAC and AAC-ELD use the same AirPods output, which can be the Windows default.
+There is no extra virtual playback device or per-app routing requirement.
+The initial driver replacement may make Windows create a new endpoint ID;
+subsequent codec changes keep that endpoint.
+
+The first playback driver targets AirPods Pro 1 and Pro 3. Other models retain
+their existing playback driver. Both codecs are lossy 48 kHz stereo and remain
+experimental: playback, microphone coexistence and driver recovery still need
+hardware testing.
+
+## Use it
 
 Install the MSI or Windows ZIP from [releases](https://github.com/Ripthulhu/ntpods/releases).
-Both contain the app, matching drivers and both encoders. Start with
-[TESTING.md](TESTING.md) for the laptop test procedure.
+Both contain the app, matching drivers and both encoders. Test Mode is required;
+use a dedicated test PC. See [TESTING.md](TESTING.md) for the test procedure.
+
+Keep NTPods running while playing audio. Enable Start with Windows to start it
+after login. Select the AirPods in Windows Sound as usual, then choose AAC or
+AAC-ELD under **Playback and microphone**. AAC is the initial choice. Stop
+recording before changing codecs or bitrate. Use shared-mode playback; exclusive
+mode bypasses Windows software volume and mute.
+
+Each codec remembers its own bitrate setting:
+
+| Setting | Behavior |
+| --- | --- |
+| Best effort | Highest implemented rate within the peer's advertised limit and packet budget. |
+| Manual | Chosen kbps: AAC 96–512; AAC-ELD 128–256. Unsupported rates report an error. |
+
+Best effort does not monitor radio quality or promise a fixed delivered rate.
+The encoders use variable-sized frames; kbps sets a limit, not a guarantee that
+every second contains that many bits. Codec and bitrate changes restart the
+Bluetooth stream without removing the Windows output.
+
+A failed stream supplies silence and offers Retry. Closing or crashing the
+backend also stops playback. It cannot fall back to Microsoft's driver while
+NTPods owns the AudioSink. Keep supported pairs connected during uninstall so
+setup can restore their previous playback driver. Its package is retained and
+backed up during installation. Restart Windows if setup requests it.
+
+To restore playback alone, connect the AirPods and run `restore-playback.ps1`
+from the installed folder or the extracted Windows ZIP in an administrator
+PowerShell. This keeps the app and microphone. The same script finishes a
+pending restore if the AirPods were absent during uninstall. Use the extracted
+ZIP after MSI removal, since the installed helper files will be gone.
 
 ## Build
 
-Use the [Windows build prerequisites](../../docs/BUILD-WINDOWS.md), including
-Visual Studio 2022 CMake tools and Python 3. From the repository root:
+Use the [Windows build prerequisites](../../docs/BUILD-WINDOWS.md), then run:
 
 ```powershell
 pwsh -File windows/build.ps1
 ```
 
-The normal build tests both codecs and creates `windows/build-output/NTPods-experimental.msi`.
-It does not install drivers or change Windows settings. FFmpeg supplies AAC-LC;
-a separate [FDK worker](encoder/README.md) supplies AAC-ELD. The package includes
+The build tests both codecs and creates `windows/build-output/NTPods-experimental.msi`.
+It does not install drivers or change Windows settings. Separate worker processes
+use FFmpeg for AAC-LC and [FDK](encoder/README.md) for AAC-ELD, so an encoder stall
+can be cancelled without blocking the backend. The package includes
 FDK's notice and complete pinned source archive.
 
-## Use it
+## Transport
 
-Stop recording before changing playback. Choose AAC or AAC-ELD in NTPods, then
-select **Speakers (NTPods Experimental)** in your player or Windows Volume mixer.
-The endpoint cannot become the Windows default; choose it for each playback app.
-Use shared mode, since exclusive mode bypasses Windows software volume and mute.
-NTPods volume, mute and Conversation Awareness control the experimental endpoint
-while native playback is active.
+The ACX playback driver binds Apple's model-qualified AudioSink IDs and exposes
+a per-device PCM bridge. The backend checks the bridge's Bluetooth address before
+opening AVDTP. The AAP driver's shared handle keeps playback alive across AAP
+control-channel retries. Each bridge accepts one reader and holds at most 100 ms
+of PCM; it clears queued audio when that reader closes.
 
-The app remembers your choice. To return to normal playback, select Windows in
-NTPods and select the usual AirPods output in your player. Changing codecs stops
-the previous session before starting another. A failed native session restores
-normal audio services and shows an error with Retry.
+AAC uses 1024-sample blocks with LATM framing and the 90 kHz RTP clock specified
+by [RFC 6416](https://www.rfc-editor.org/rfc/rfc6416.html). AAC-ELD uses 480-sample
+blocks, three access units per packet, and Apple vendor codec `004C/8001`.
+Its framing follows [USBPods' macOS capture research](https://github.com/wasdwasd0105/USBPods-Pico2W/blob/6286ab1618ec1143d828b1fc377d8e22c449e567/aac-eld-apple.md).
+Signaling, media, AAP and ATT use separate channels. Audio payloads are not logged.
 
-Before releasing normal AirPods audio, the backend checks the render interface,
-Bluetooth driver and encoder, then saves the enabled services. After a crash,
-the updated backend restores that saved state on its next launch from
-`%LOCALAPPDATA%/NTPods/playback-restore.json`. Do not delete this file to bypass a
-restoration error. A newer Disconnect request stays disconnected. Windows'
-Bluetooth service operations have no cancellation API and can delay cleanup.
+Microphone recovery restarts the AVDTP stream while this driver owns playback.
+It must never disable the Windows AudioSink service, which would remove the
+playback endpoint. Actual recovery timing and stereo coexistence remain hardware
+test requirements.
 
-## Transport and checks
-
-Standard AAC uses 1024-sample blocks, 48 kHz stereo and a 256 kbps codec setting.
-The encoder reserves space for LATM framing within that rate. Each frame carries
-its stream configuration; oversized frames are fragmented at the negotiated MTU.
-RTP timestamps use the 90 kHz clock specified by
-[RFC 6416](https://www.rfc-editor.org/rfc/rfc6416.html).
-
-AAC-ELD uses 480-sample blocks. Three frames go into each media packet, using the
-Apple vendor codec `004C/8001`, 48 kHz stereo and a 256 kbps peak limit. Framing follows
-[USBPods' macOS capture research](https://github.com/wasdwasd0105/USBPods-Pico2W/blob/6286ab1618ec1143d828b1fc377d8e22c449e567/aac-eld-apple.md).
-AVDTP signaling and media use separate channels; AAP and ATT stay separate.
-
-The PCM bridge holds at most 100 ms. The backend waits for complete frames and
-fails back to normal audio if it cannot keep pace. It does not log PCM or AAC
-payloads. A microphone recovery request tries AVDTP SUSPEND/START with a fresh
-encoder while this path owns playback; failure ends the experiment and restores
-the normal services. That sequence still needs an AirPods recording test.
-
-Automated checks cover packet validation, channel cancellation/cleanup, PCM
-buffer boundaries, source clock preservation and encoder pitch/stereo output.
-AAC tests encode and decode stereo tones, noise and impulses through FFmpeg.
-The AAC-ELD round trip uses FDK's own decoder because the pinned FFmpeg cannot
-decode low-delay SBR. Independent AAC-ELD decoding remains a validation gap.
-
-Hardware checks must cover endpoint enumeration, left/right playback, sustained
-playback with microphone capture, microphone stop/reinsertion, app exit/crash,
-Bluetooth disconnect and sleep/resume. Verify normal A2DP restoration after each
-failure, then run Driver Verifier on the test machine.
+Automated checks cover packet validation, cancellation, per-device PCM isolation,
+buffer limits, bitrate settings, and encoder pitch/stereo output. AAC round trips
+use FFmpeg. AAC-ELD round trips use FDK's decoder because the pinned FFmpeg cannot
+decode low-delay SBR. Independent AAC-ELD decoding and acceptance by the AirPods
+remain unverified.

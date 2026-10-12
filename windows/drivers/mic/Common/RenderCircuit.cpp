@@ -11,10 +11,12 @@
 #endif
 
 class CRenderStreamEngine final : public CStreamEngine {
+    WDFDEVICE m_Device;
     RenderPackets m_Submitted = {};
     bool m_Running = false;
 public:
-    CRenderStreamEngine(ACXSTREAM stream, ACXDATAFORMAT format) : CStreamEngine(stream, format) {}
+    CRenderStreamEngine(WDFDEVICE device, ACXSTREAM stream, ACXDATAFORMAT format)
+        : CStreamEngine(stream, format), m_Device(device) {}
     ~CRenderStreamEngine() override
     {
         (void)Pause();
@@ -44,22 +46,22 @@ public:
     NTSTATUS Run() override
     {
         // Register the producer before arming the first timer.
-        if (!m_Running) { RenderPipeStarted(); m_Running = true; }
+        if (!m_Running) { RenderPipeStarted(m_Device); m_Running = true; }
         NTSTATUS status = CStreamEngine::Run();
-        if (!NT_SUCCESS(status) && m_Running) { RenderPipeStopped(); m_Running = false; }
+        if (!NT_SUCCESS(status) && m_Running) { RenderPipeStopped(m_Device); m_Running = false; }
         return status;
     }
     NTSTATUS Pause() override
     {
         NTSTATUS status = CStreamEngine::Pause();
-        if (NT_SUCCESS(status) && m_Running) { RenderPipeStopped(); m_Running = false; }
+        if (NT_SUCCESS(status) && m_Running) { RenderPipeStopped(m_Device); m_Running = false; }
         return status;
     }
     NTSTATUS ReleaseHardware() override
     {
         (void)Pause();
         NTSTATUS status = CStreamEngine::ReleaseHardware();
-        if (m_Running) { RenderPipeStopped(); m_Running = false; }
+        if (m_Running) { RenderPipeStopped(m_Device); m_Running = false; }
         KIRQL irql;
         KeAcquireSpinLock(&m_PacketLock, &irql);
         RenderResetPackets(&m_Submitted);
@@ -95,7 +97,7 @@ protected:
         auto data = (PUCHAR)m_Packets[index] + (index == 0 ? m_FirstPacketOffset : 0);
         const ULONG valid = RenderPacketLength(&m_Submitted, current, m_PacketSize);
         RtlZeroMemory(data + valid, m_PacketSize - valid);
-        RenderPipeWrite(data, m_PacketSize);
+        RenderPipeWrite(m_Device, data, m_PacketSize);
         KeReleaseSpinLock(&m_PacketLock, irql);
     }
 };
@@ -115,6 +117,7 @@ static NTSTATUS RenderCreateStream(WDFDEVICE device, ACXCIRCUIT circuit, ACXPIN 
     UNREFERENCED_PARAMETER(pin);
     UNREFERENCED_PARAMETER(arguments);
     if (!IsEqualGUID(*mode, AUDIO_SIGNALPROCESSINGMODE_RAW) ||
+        !IsEqualGUID(AcxDataFormatGetSubFormat(format), KSDATAFORMAT_SUBTYPE_PCM) ||
         AcxDataFormatGetBitsPerSample(format) != 16 || AcxDataFormatGetChannelsCount(format) != 2 ||
         AcxDataFormatGetSampleRate(format) != 48000 || AcxDataFormatGetBlockAlign(format) != 4 ||
         AcxDataFormatGetAverageBytesPerSec(format) != 192000) {
@@ -142,7 +145,7 @@ static NTSTATUS RenderCreateStream(WDFDEVICE device, ACXCIRCUIT circuit, ACXPIN 
     attributes.EvtDestroyCallback = EvtStreamDestroy;
     ACXSTREAM stream;
     RETURN_NTSTATUS_IF_FAILED(AcxRtStreamCreate(device, circuit, &attributes, &init, &stream));
-    auto engine = new (POOL_FLAG_NON_PAGED, DeviceDriverTag) CRenderStreamEngine(stream, format);
+    auto engine = new (POOL_FLAG_NON_PAGED, DeviceDriverTag) CRenderStreamEngine(device, stream, format);
     if (!engine) return STATUS_INSUFFICIENT_RESOURCES;
     GetStreamEngineContext(stream)->StreamEngine = engine;
     return STATUS_SUCCESS;
@@ -152,13 +155,24 @@ static EVT_ACX_PIN_RETRIEVE_NAME RenderPinName;
 static NTSTATUS RenderPinName(ACXPIN pin, PUNICODE_STRING name)
 {
     UNREFERENCED_PARAMETER(pin);
-    return RtlUnicodeStringPrintf(name, L"NTPods Experimental");
+    return RtlUnicodeStringPrintf(name, L"Headphones");
+}
+
+struct RENDER_JACK_CONTEXT { WDFDEVICE Device; };
+WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(RENDER_JACK_CONTEXT, RenderJackContext);
+static EVT_ACX_JACK_RETRIEVE_PRESENCE_STATE RenderJackPresence;
+static NTSTATUS RenderJackPresence(ACXJACK jack, PBOOLEAN connected)
+{
+    *connected = RenderPipeConnected(RenderJackContext(jack)->Device);
+    return STATUS_SUCCESS;
 }
 
 PAGED_CODE_SEG
-NTSTATUS CodecR_AddStaticRender(WDFDEVICE device, const GUID* component, const UNICODE_STRING* name)
+NTSTATUS CodecR_AddStaticRender(WDFDEVICE device, const GUID* component,
+    const UNICODE_STRING* name, ACXCIRCUIT* result)
 {
     PAGED_CODE();
+    *result = nullptr;
     PACXCIRCUIT_INIT init = AcxCircuitInitAllocate(device);
     if (!init) return STATUS_INSUFFICIENT_RESOURCES;
     auto cleanup = scope_exit([&init]() { if (init) AcxCircuitInitFree(init); });
@@ -185,19 +199,26 @@ NTSTATUS CodecR_AddStaticRender(WDFDEVICE device, const GUID* component, const U
     ACX_PIN_CONFIG_INIT(&pinConfig);
     pinConfig.Type = AcxPinTypeSource;
     pinConfig.Communication = AcxPinCommunicationNone;
-    pinConfig.Category = &KSNODETYPE_SPEAKER;
+    pinConfig.Category = &KSNODETYPE_HEADPHONES;
     pinConfig.PinCallbacks = &pinCallbacks;
     RETURN_NTSTATUS_IF_FAILED(AcxPinCreate(circuit, &attributes, &pinConfig, &pins[1]));
     ACX_JACK_CONFIG jackConfig;
     ACX_JACK_CONFIG_INIT(&jackConfig);
+    ACX_JACK_CALLBACKS jackCallbacks;
+    ACX_JACK_CALLBACKS_INIT(&jackCallbacks);
+    jackCallbacks.EvtAcxJackRetrievePresenceState = RenderJackPresence;
+    jackConfig.Callbacks = &jackCallbacks;
+    jackConfig.Flags = AcxJackConfigJackDetection;
     jackConfig.Description.ChannelMapping = KSAUDIO_SPEAKER_STEREO;
-    jackConfig.Description.ConnectionType = AcxConnTypeAtapiInternal;
-    jackConfig.Description.GeoLocation = AcxGeoLocFront;
-    jackConfig.Description.GenLocation = AcxGenLocPrimaryBox;
-    jackConfig.Description.PortConnection = AcxPortConnIntegratedDevice;
+    jackConfig.Description.ConnectionType = AcxConnTypeOtherDigital;
+    jackConfig.Description.GeoLocation = AcxGeoLocNotApplicable;
+    jackConfig.Description.GenLocation = AcxGenLocSeparate;
+    jackConfig.Description.PortConnection = AcxPortConnJack;
+    WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attributes, RENDER_JACK_CONTEXT);
     attributes.ParentObject = pins[1];
     ACXJACK jack;
     RETURN_NTSTATUS_IF_FAILED(AcxJackCreate(pins[1], &attributes, &jackConfig, &jack));
+    RenderJackContext(jack)->Device = device;
     RETURN_NTSTATUS_IF_FAILED(AcxPinAddJacks(pins[1], &jack, 1));
     auto pcm = Pcm48000c1;
     pcm.WaveFormatExt.Format.nChannels = 2;
@@ -208,7 +229,8 @@ NTSTATUS CodecR_AddStaticRender(WDFDEVICE device, const GUID* component, const U
     RETURN_NTSTATUS_IF_FAILED(AllocateFormat(pcm, circuit, device, &format));
     RETURN_NTSTATUS_IF_FAILED(AcxDataFormatListAddDataFormat(AcxPinGetRawDataFormatList(pins[0]), format));
     RETURN_NTSTATUS_IF_FAILED(AcxCircuitAddPins(circuit, pins, 2));
-    GetCodecDeviceContext(device)->Render = circuit;
+    RenderPipeSetJack(device, jack);
+    *result = circuit;
     return STATUS_SUCCESS;
 }
 

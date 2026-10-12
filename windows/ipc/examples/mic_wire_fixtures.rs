@@ -1,7 +1,7 @@
 //! Executed by windows/tests/test-ipc.ps1 against the real C# wire model.
 use ntpods_ipc::{
     from_line, to_line, BatteryFreshness, BatteryObservation, Command, Equalizer, Event, MicMode,
-    PlaybackMode, Snapshot,
+    PlaybackBitrate, PlaybackMode, Snapshot,
 };
 
 fn snapshots() -> Vec<Snapshot> {
@@ -34,6 +34,16 @@ fn snapshots() -> Vec<Snapshot> {
         .into(),
         playback_error: (phase == "error").then(|| "Playback failed".into()),
         playback_available: phase != "unavailable",
+        playback_native_driver: phase != "unavailable",
+        playback_aac_bitrate: PlaybackBitrate {
+            best_effort: phase != "capturing",
+            kbps: 320,
+        },
+        playback_aac_eld_bitrate: PlaybackBitrate {
+            best_effort: phase != "error",
+            kbps: 128,
+        },
+        playback_bitrate_kbps: (phase == "capturing").then_some(128),
         battery_live: phase != "error",
         battery_timestamp_ms: Some(1_792_000_000_100),
         battery_freshness: Some(BatteryFreshness {
@@ -208,6 +218,10 @@ fn main() {
                 "playback_state",
                 "playback_error",
                 "playback_available",
+                "playback_native_driver",
+                "playback_aac_bitrate",
+                "playback_aac_eld_bitrate",
+                "playback_bitrate_kbps",
             ] {
                 legacy.as_object_mut().unwrap().remove(key);
             }
@@ -254,8 +268,8 @@ fn main() {
             let lines: Vec<_> = text.lines().collect();
             assert_eq!(
                 lines.len(),
-                states.len() + 29,
-                "C# states, legacy state and twenty-eight commands expected"
+                states.len() + 33,
+                "C# states, legacy state and thirty-two commands expected"
             );
             for (line, expected) in lines.iter().zip(&states) {
                 let Event::State(actual) = from_line::<Event>(line).expect("C# event must parse")
@@ -391,6 +405,18 @@ fn main() {
                 from_line::<Command>(commands[27]),
                 Some(Command::RetryPlayback)
             ));
+            for (line, (expected_mode, expected_best, expected_kbps)) in
+                commands[28..32].iter().zip([
+                    (PlaybackMode::Aac, true, 512),
+                    (PlaybackMode::Aac, false, 320),
+                    (PlaybackMode::AacEld, true, 256),
+                    (PlaybackMode::AacEld, false, 128),
+                ])
+            {
+                assert!(
+                    matches!(from_line::<Command>(line), Some(Command::SetPlaybackBitrate {mode, best_effort, kbps}) if mode == expected_mode && best_effort == expected_best && kbps == expected_kbps)
+                );
+            }
             println!("Rust: C# state, microphone and device-setting command roundtrips passed");
         }
         _ => panic!("expected emit or check"),

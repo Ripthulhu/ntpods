@@ -272,12 +272,18 @@
   <data name="Mic_ConnectFirst" xml:space="preserve"><value>Connectez les AirPods pour démarrer le microphone</value></data>
   <data name="Mic_RecoveringShort" xml:space="preserve"><value>Récupération du microphone en cours</value></data>
   <data name="Mic_NeedsAttention" xml:space="preserve"><value>Le microphone nécessite une intervention</value></data>
-  <data name="Playback.Title" xml:space="preserve"><value>Lecture audio</value></data>
-  <data name="Playback.Windows" xml:space="preserve"><value>Windows</value></data>
-  <data name="Playback.Help" xml:space="preserve"><value>AAC et AAC-ELD utilisent une lecture expérimentale. Le changement interrompt le son.</value></data>
-  <data name="Playback.RoutingHint" xml:space="preserve"><value>Choisissez « Speakers (NTPods Experimental) » dans votre lecteur.</value></data>
+  <data name="Playback.Title" xml:space="preserve"><value>Codec audio</value></data>
+  <data name="Playback.Help" xml:space="preserve"><value>AAC et AAC-ELD sont expérimentaux. Le changement de codec interrompt le son.</value></data>
   <data name="Playback.Retry" xml:space="preserve"><value>Réessayer</value></data>
-  <data name="Playback.StopRecording" xml:space="preserve"><value>Attendez l’arrêt du microphone avant de changer la lecture.</value></data>
-  <data name="Playback.Starting" xml:space="preserve"><value>Changement de lecture…</value></data>
-  <data name="Playback.Stopping" xml:space="preserve"><value>Rétablissement du son Windows…</value></data>
+  <data name="Playback.StopRecording" xml:space="preserve"><value>Attendez l’arrêt du microphone avant de changer de codec.</value></data>
+  <data name="Playback.Starting" xml:space="preserve"><value>Changement de codec…</value></data>
+  <data name="Playback.Stopping" xml:space="preserve"><value>Redémarrage de la lecture…</value></data>
+  <data name="Playback.DriverUnavailable" xml:space="preserve"><value>Installez le pilote audio NTPods pour changer de codec.</value></data>
+  <data name="Playback.Quality" xml:space="preserve"><value>Qualité</value></data>
+  <data name="Playback.BestEffort" xml:space="preserve"><value>Meilleure possible</value></data>
+  <data name="Playback.Manual" xml:space="preserve"><value>Manuelle</value></data>
+  <data name="Playback.Bitrate" xml:space="preserve"><value>Débit (kbps)</value></data>
+  <data name="Playback.ApplyBitrate" xml:space="preserve"><value>Appliquer le débit</value></data>
+  <data name="Playback.BitrateRange" xml:space="preserve"><value>Saisissez un nombre entier entre {0} et {1}.</value></data>
+  <data name="Playback.CurrentBitrate" xml:space="preserve"><value>Débit actuel : {0} kbps.</value></data>
 </root>

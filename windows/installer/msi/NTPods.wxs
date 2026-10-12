@@ -4,7 +4,7 @@
         wix build NTPods.wxs -arch x64 -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext
             -d DistDir=<dist> -d Version=<x.y.z> -o NTPods.msi
 
-    Installs to Program Files. The real work (test-signing and installing the two
+    Installs to Program Files. The real work (test-signing and installing the
     drivers and the elevated helper tasks) is done by
     msi-setup.ps1, the same steps install.ps1 runs for the zip install.
     Settings, logs and heart-rate history stay in %LOCALAPPDATA%\NTPods.
@@ -107,7 +107,7 @@
       <ComponentRef Id="StartMenuShortcut" />
 
       <Feature Id="Drivers" Title="Drivers"
-               Description="The AirPods driver and the NTPods microphone, test-signed on this PC. NTPods needs them; only leave this off if they are already installed.">
+               Description="AirPods control, AAC/AAC-ELD playback and the NTPods microphone, test-signed on this PC. NTPods needs them; only leave this off if they are already installed.">
         <ComponentRef Id="DriversMarker" />
         <Feature Id="MicAcx" Title="ACX microphone driver" AllowAbsent="no"
                  Description="The hardened microphone driver for this Windows 11 experimental build.">

@@ -65,7 +65,7 @@ them as calibrated angles or implement spatial audio.
 
 ## Microsoft ACX sample
 
-`windows/drivers/mic` contains derivatives of Microsoft's ACX AudioCodec sample,
+`windows/drivers/mic` and the shared code used by `windows/drivers/audio` contain derivatives of Microsoft's ACX AudioCodec sample,
 with Microsoft copyright notices in the source. The upstream
 [Windows-driver-samples license](https://github.com/microsoft/Windows-driver-samples/blob/d5569c08aa2818c6240744bb47a00f67f20fdb54/LICENSE)
 is **Microsoft Public License (MS-PL), not MIT**. Its full text is retained in

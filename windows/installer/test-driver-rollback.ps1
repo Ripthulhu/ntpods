@@ -42,16 +42,16 @@ function Remove-NTPodsCertificate([string]$storeName, [string]$thumbprint) {
     $script:certificates = @($script:certificates | Where-Object { $_.Store -ne $storeName -or $_.Thumbprint -ne $thumbprint })
 }
 function Get-ItemProperty { param($LiteralPath, $ErrorAction)
-    if ($LiteralPath -notmatch '^HKLM:\\SYSTEM\\CurrentControlSet\\Services\\(NTPodsAAP|NTPodsMicACX)\\Parameters$') { throw "Unexpected registry read: $LiteralPath" }
+    if ($LiteralPath -notmatch '^HKLM:\\SYSTEM\\CurrentControlSet\\Services\\(NTPodsAAP|NTPodsMicACX|NTPodsAudio)\\Parameters$') { throw "Unexpected registry read: $LiteralPath" }
     [pscustomobject]@{ AllowedUserSid = $script:policy[$Matches[1]] }
 }
 function Set-DriverUser([string]$service, [string]$userSid) {
     Assert-UserSid $userSid
-    Assert-True ($service -in 'NTPodsAAP', 'NTPodsMicACX') 'Unexpected service policy write.'
+    Assert-True ($service -in 'NTPodsAAP', 'NTPodsMicACX', 'NTPodsAudio') 'Unexpected service policy write.'
     $script:policy[$service] = $userSid
 }
 function Remove-ItemProperty { param($LiteralPath, $Name, $ErrorAction)
-    if ($Name -ne 'AllowedUserSid' -or $LiteralPath -notmatch '^HKLM:\\SYSTEM\\CurrentControlSet\\Services\\(NTPodsAAP|NTPodsMicACX)\\Parameters$') { throw 'Unexpected registry removal.' }
+    if ($Name -ne 'AllowedUserSid' -or $LiteralPath -notmatch '^HKLM:\\SYSTEM\\CurrentControlSet\\Services\\(NTPodsAAP|NTPodsMicACX|NTPodsAudio)\\Parameters$') { throw 'Unexpected registry removal.' }
     $script:policy.Remove($Matches[1])
 }
 function Get-PnpDevice { param([switch]$PresentOnly, $ErrorAction)
@@ -80,7 +80,7 @@ function Fail-Once([string]$point) {
 function Add-FakePackage([string]$inf) {
     Assert-TestPath $inf
     $name = Split-Path -Leaf $inf
-    Assert-True ($name -in 'NTPodsAAP.inf', 'AudioCodec.inf') 'Attempted to stage another driver.'
+    Assert-True ($name -in 'NTPodsAAP.inf', 'AudioCodec.inf', 'NTPodsAudio.inf') 'Attempted to stage another driver.'
     $payload = (Get-Content -LiteralPath $inf -Raw).Trim()
     $existing = @($script:packages | Where-Object Payload -eq $payload)
     if ($existing.Count) { return $existing[0].Driver }
@@ -105,6 +105,7 @@ function pnputil {
             $payload = (Get-Content -LiteralPath $Arguments[1] -Raw).Trim()
             $point = if ($payload -eq 'new-aap') { if ($Arguments -contains '/install') { 'install-new-aap' } else { 'stage-aap' } }
                 elseif ($payload -eq 'new-mic') { 'stage-mic' }
+                elseif ($payload -eq 'new-audio') { 'stage-audio' }
                 elseif ($payload -eq 'old-aap') { 'restore-aap' }
                 else { 'restore-mic' }
             if (Fail-Once $point) { return }
@@ -152,11 +153,12 @@ function Assert-Restored {
 
 try {
     $env:ProgramData = Join-Path $testRoot 'ProgramData'
-    foreach ($folder in @((Join-Path $env:ProgramData 'NTPods'), (Join-Path $root 'driver'), (Join-Path $root 'driver-mic-acx'), (Join-Path $root 'tools'))) {
+    foreach ($folder in @((Join-Path $env:ProgramData 'NTPods'), (Join-Path $root 'driver'), (Join-Path $root 'driver-mic-acx'), (Join-Path $root 'driver-audio'), (Join-Path $root 'tools'))) {
         New-Item -ItemType Directory -Path $folder -Force | Out-Null
     }
     foreach ($file in 'NTPodsAAP.inf', 'NTPodsAAP.sys', 'ntpodsaap.cat') { Set-Content -LiteralPath (Join-Path $root "driver\$file") -Value 'new-aap' }
     foreach ($file in 'AudioCodec.inf', 'AudioCodec.sys', 'audiocodec.cat') { Set-Content -LiteralPath (Join-Path $root "driver-mic-acx\$file") -Value 'new-mic' }
+    foreach ($file in 'NTPodsAudio.inf', 'NTPodsAudio.sys', 'ntpodsaudio.cat') { Set-Content -LiteralPath (Join-Path $root "driver-audio\$file") -Value 'new-audio' }
     Set-Item -LiteralPath ('Function:\' + $devconPath) -Value {
         param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
         $script:calls += 'devcon:' + ($Arguments -join '|')
@@ -182,12 +184,12 @@ try {
         } else { throw 'Unexpected devcon command.' }
     }
 
-    foreach ($failure in 'export', 'stage-aap', 'stage-mic', 'delete-old-aap', 'install-new-aap', 'remove-mic', 'install-new-mic', 'ghost-mic', 'failed-start-mic', 'failed-start-mic-reboot', 'missing-mic-status') {
+    foreach ($failure in 'export', 'stage-aap', 'stage-mic', 'stage-audio', 'delete-old-aap', 'install-new-aap', 'remove-mic', 'install-new-mic', 'ghost-mic', 'failed-start-mic', 'failed-start-mic-reboot', 'missing-mic-status') {
         Reset-Fixture @($failure)
         Assert-Fails { Install-NTPodsDrivers $root (Join-Path $testRoot $failure) 'acx' $sid $failure } "Fault did not fail installation: $failure"
         Assert-True ($script:faults.Count -eq 0) "Fault was not reached: $failure"
         Assert-Restored
-        if ($failure -in 'export', 'stage-aap', 'stage-mic') {
+        if ($failure -in 'export', 'stage-aap', 'stage-mic', 'stage-audio') {
             Assert-True (-not @($script:calls | Where-Object { $_ -like 'devcon:*' -or $_ -like 'pnputil:/delete-driver|oem1.inf*' -or $_ -like 'pnputil:/delete-driver|oem2.inf*' }).Count) 'Staging failure disturbed an installed driver.'
         }
         Write-Host "PASS recovery after $failure"
@@ -251,7 +253,7 @@ try {
     $before = $script:calls.Count
     Complete-NTPodsDriverTransaction 'commit'
     Assert-True ($script:calls.Count -eq $before) 'Commit touched a driver.'
-    Assert-True (($script:packages.Payload | Sort-Object) -join ',' -ceq 'a2dp,new-aap,new-mic,other-mic') 'Commit changed the installed packages.'
+    Assert-True (($script:packages.Payload | Sort-Object) -join ',' -ceq 'a2dp,new-aap,new-audio,new-mic,other-mic') 'Commit changed the installed packages.'
     Assert-True (-not (Test-Path -LiteralPath (Get-DriverCheckpointPath))) 'Commit left the backup.'
     Write-Host 'PASS commit removes only its own backup'
 } finally {

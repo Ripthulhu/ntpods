@@ -45,7 +45,7 @@ Features vary by model and firmware; see [model support](docs/WINDOWS-MODEL-SUPP
 Microphone recovery briefly interrupts playback. Short recordings and twenty
 start/stop cycles passed; longer recordings, latency, drift, Discord and interrupted
 recovery still need testing. See [test results](docs/WINDOWS-VALIDATION.md).
-The default Windows playback option preserves your existing A2DP driver and codec settings.
+The replacement AAC/AAC-ELD playback driver has separate hardware tests pending.
 
 This build uses the Windows 11 ACX microphone driver. Older Windows versions
 are untested. For Android or Linux, use [LibrePods](https://github.com/librepods-org/librepods).
@@ -58,10 +58,12 @@ drivers and require Test Mode. Source archives and checksums are included.
 See the [installation guide](windows/README.md) and [release notes](docs/WINDOWS-RELEASE-NOTES.md).
 Upstream nightly builds do not include this fork's changes.
 
-Both downloads include experimental AAC and AAC-ELD playback without Alternative
-A2DP. Choose Windows, AAC or AAC-ELD under **Playback and microphone**. Windows is
-the default. Native playback and microphone coexistence still need hardware
-testing; see the [playback test guide](windows/playback/TESTING.md).
+Both downloads include an experimental playback driver for AirPods Pro 1 and Pro 3.
+It replaces the paired AirPods output driver, with AAC/AAC-ELD and Best effort or
+Manual kbps settings under **Playback and microphone**. NTPods must stay running
+for playback. No extra speaker or per-app routing is needed. Keep the AirPods
+connected during uninstall to restore their previous driver; see the
+[playback test guide](windows/playback/TESTING.md).
 
 ## Contributing
 
@@ -70,7 +72,7 @@ or [build the app and drivers](docs/BUILD-WINDOWS.md).
 
 ## What's in the repo
 
-- `windows/`: the two drivers (AAP channel and virtual mic), the daemon (Rust), the
+- `windows/`: the drivers (AAP, playback and virtual mic), the daemon (Rust), the
   WinUI app (C#) and the installer
 - `docs/` and `AAP Definitions.md`: notes on the AirPods protocol
 - `.github/workflows/ci-windows.yml`: builds, tests and opt-in experimental packages

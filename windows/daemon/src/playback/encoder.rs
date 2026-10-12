@@ -1,4 +1,4 @@
-use super::protocol::{invalid, MAX_AU, PCM_BYTES};
+use super::{codec::Mode, protocol::invalid};
 use std::io::{self, Read, Write};
 use std::os::windows::process::CommandExt;
 use std::path::Path;
@@ -12,34 +12,75 @@ pub struct Encoder {
     input: Option<SyncSender<Vec<u8>>>,
     output: Receiver<io::Result<Vec<u8>>>,
     threads: Vec<JoinHandle<()>>,
+    pcm_bytes: usize,
+    config: Vec<u8>,
 }
 
-fn read_header(stream: &mut impl Read) -> io::Result<()> {
+fn read_header(stream: &mut impl Read, mode: Mode) -> io::Result<Vec<u8>> {
     let mut header = [0; 12];
     stream.read_exact(&mut header)?;
     let asc_len = u16::from_le_bytes([header[10], header[11]]) as usize;
-    if &header[..8] != b"NPELD001" || header[8..10] != [0xe0, 1] || !(1..=64).contains(&asc_len) {
+    let magic = match mode {
+        Mode::Aac => b"NPAAC001",
+        Mode::Eld => b"NPELD001",
+    };
+    if &header[..8] != magic
+        || u16::from_le_bytes([header[8], header[9]]) as usize != mode.frame_samples()
+        || !(1..=64).contains(&asc_len)
+    {
         return Err(invalid("Invalid playback encoder header"));
     }
     let mut asc = vec![0; asc_len];
     stream.read_exact(&mut asc)?;
-    // NPELD001 fixes 48 kHz stereo, 480 samples and the pinned SBR configuration.
-    if asc != [0xf8, 0xe6, 0x51, 0x3a, 0xe0, 0x9e, 0] {
-        return Err(invalid(
-            "Encoder selected an unsupported AAC-ELD configuration",
-        ));
+    let valid = match mode {
+        Mode::Aac => asc == [0x11, 0x90, 0x56, 0xe5, 0],
+        // SBR bandwidth changes at lower rates; core format stays fixed.
+        Mode::Eld => {
+            asc == [0xf8, 0xe6, 0x51, 0x3a, 0xe0, 0x9e, 0]
+                || asc == [0xf8, 0xe6, 0x51, 0x36, 0xe0, 0x9e, 0]
+        }
+    };
+    if !valid {
+        return Err(invalid("Encoder selected an unsupported configuration"));
     }
-    Ok(())
+    Ok(asc)
+}
+
+fn maximum_au(mode: Mode, bitrate: u32) -> io::Result<usize> {
+    mode.bitrate(
+        ntpods_ipc::PlaybackBitrate {
+            best_effort: false,
+            kbps: bitrate / 1000,
+        },
+        0,
+    )?;
+    if bitrate % 1000 != 0 {
+        return Err(invalid("Unsupported playback bitrate"));
+    }
+    Ok(match mode {
+        Mode::Aac => bitrate as usize * 1024 / (48000 * 8) - 8,
+        Mode::Eld => bitrate as usize / 800,
+    })
 }
 
 impl Encoder {
-    pub fn start() -> io::Result<Self> {
-        let executable = std::env::current_exe()?.with_file_name("ntpods-eld-encoder.exe");
-        Self::start_at(&executable)
+    pub fn start(mode: Mode, bitrate: u32) -> io::Result<Self> {
+        let name = match mode {
+            Mode::Aac => "ntpods-aac-encoder.exe",
+            Mode::Eld => "ntpods-eld-encoder.exe",
+        };
+        let executable = std::env::current_exe()?.with_file_name(name);
+        Self::start_at(&executable, mode, bitrate)
     }
 
-    fn start_at(executable: &Path) -> io::Result<Self> {
+    pub fn config(&self) -> &[u8] {
+        &self.config
+    }
+
+    fn start_at(executable: &Path, mode: Mode, bitrate: u32) -> io::Result<Self> {
+        let maximum = maximum_au(mode, bitrate)?;
         let mut child = Command::new(executable)
+            .args(["--bitrate", &bitrate.to_string()])
             .creation_flags(0x0800_0000)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -58,7 +99,7 @@ impl Encoder {
             }
         });
         let reader = thread::spawn(move || {
-            let header = read_header(&mut stdout);
+            let header = read_header(&mut stdout, mode);
             let success = header.is_ok();
             if ready_tx.send(header).is_err() || !success {
                 return;
@@ -68,7 +109,7 @@ impl Encoder {
                     let mut length = [0; 2];
                     stdout.read_exact(&mut length)?;
                     let size = u16::from_le_bytes(length) as usize;
-                    if size == 0 || size > MAX_AU {
+                    if size == 0 || size > maximum {
                         return Err(invalid("Oversized encoder frame"));
                     }
                     let mut frame = vec![0; size];
@@ -81,21 +122,23 @@ impl Encoder {
                 }
             }
         });
-        let encoder = Self {
+        let mut encoder = Self {
             child,
             input: Some(input),
             output,
             threads: vec![writer, reader],
+            pcm_bytes: mode.frame_samples() * 4,
+            config: Vec::new(),
         };
-        ready.recv_timeout(Duration::from_secs(3)).map_err(|_| {
+        encoder.config = ready.recv_timeout(Duration::from_secs(3)).map_err(|_| {
             io::Error::new(io::ErrorKind::TimedOut, "Playback encoder did not start")
         })??;
         Ok(encoder)
     }
 
     pub fn write(&self, pcm: Vec<u8>) -> io::Result<()> {
-        if pcm.len() != PCM_BYTES {
-            return Err(invalid("Expected 480 stereo PCM frames"));
+        if pcm.len() != self.pcm_bytes {
+            return Err(invalid("Invalid stereo PCM frame length"));
         }
         self.input
             .as_ref()
@@ -140,16 +183,38 @@ mod tests {
             &[0xe0, 1, 7, 0, 0xf8, 0xe6, 0x51, 0x3a, 0xe0, 0x9e, 0],
         ]
         .concat();
-        assert!(read_header(&mut valid.as_slice()).is_ok());
+        assert!(read_header(&mut valid.as_slice(), Mode::Eld).is_ok());
         for size in 0..valid.len() {
-            assert!(read_header(&mut &valid[..size]).is_err());
+            assert!(read_header(&mut &valid[..size], Mode::Eld).is_err());
         }
         let mut bad = valid;
         bad[8] = 0;
-        assert!(read_header(&mut bad.as_slice()).is_err());
+        assert!(read_header(&mut bad.as_slice(), Mode::Eld).is_err());
         bad[8] = 0xe0;
         bad[14] = 0x50;
-        assert!(read_header(&mut bad.as_slice()).is_err());
+        assert!(read_header(&mut bad.as_slice(), Mode::Eld).is_err());
+    }
+
+    #[test]
+    fn aac_header_and_frame_budget_are_codec_specific() {
+        let header = [
+            b"NPAAC001".as_slice(),
+            &[0, 4, 5, 0, 0x11, 0x90, 0x56, 0xe5, 0],
+        ]
+        .concat();
+        assert_eq!(
+            read_header(&mut header.as_slice(), Mode::Aac).unwrap(),
+            [0x11, 0x90, 0x56, 0xe5, 0]
+        );
+        assert!(read_header(&mut header.as_slice(), Mode::Eld).is_err());
+        for size in 0..header.len() {
+            assert!(read_header(&mut &header[..size], Mode::Aac).is_err());
+        }
+        assert_eq!(maximum_au(Mode::Aac, 96000).unwrap(), 248);
+        assert_eq!(maximum_au(Mode::Aac, 512000).unwrap(), 1357);
+        assert_eq!(maximum_au(Mode::Eld, 129000).unwrap(), 161);
+        assert!(maximum_au(Mode::Aac, 95999).is_err());
+        assert!(maximum_au(Mode::Eld, 257000).is_err());
     }
 
     #[test]
@@ -157,24 +222,88 @@ mod tests {
         let nonexistent = std::env::current_exe()
             .unwrap()
             .with_file_name("missing-ntpods-eld-encoder.exe");
-        assert!(Encoder::start_at(&nonexistent).is_err());
+        assert!(Encoder::start_at(&nonexistent, Mode::Eld, 256_000).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires the local FDK worker via NTPODS_ELD_ENCODER_TEST_PATH"]
+    fn accepts_every_exposed_worker_bitrate() {
+        let executable =
+            std::path::PathBuf::from(std::env::var_os("NTPODS_ELD_ENCODER_TEST_PATH").unwrap());
+        for kbps in 128..=256 {
+            drop(
+                Encoder::start_at(&executable, Mode::Eld, kbps * 1000)
+                    .unwrap_or_else(|error| panic!("{kbps} kbps: {error}")),
+            );
+        }
     }
 
     #[test]
     #[ignore = "requires the local FDK worker via NTPODS_ELD_ENCODER_TEST_PATH"]
     fn streams_real_worker_and_drops_it() {
-        let executable = std::path::PathBuf::from(
-            std::env::var_os("NTPODS_ELD_ENCODER_TEST_PATH")
-                .expect("Set NTPODS_ELD_ENCODER_TEST_PATH to the local worker executable"),
+        for mode in [Mode::Aac, Mode::Eld] {
+            stream_and_drop(mode);
+            drop_with_blocked_pipes(mode);
+        }
+    }
+
+    fn drop_with_blocked_pipes(mode: Mode) {
+        #[link(name = "ntdll")]
+        extern "system" {
+            fn NtSuspendProcess(process: windows_sys::Win32::Foundation::HANDLE) -> i32;
+        }
+        let variable = match mode {
+            Mode::Aac => "NTPODS_AAC_ENCODER_TEST_PATH",
+            Mode::Eld => "NTPODS_ELD_ENCODER_TEST_PATH",
+        };
+        let executable = std::path::PathBuf::from(std::env::var_os(variable).expect(variable));
+        let encoder = Encoder::start_at(&executable, mode, 256000).unwrap();
+        let process = encoder.child.as_handle().try_clone_to_owned().unwrap();
+        // Freeze only this test's child so its stdin stops draining and stdout stays open.
+        assert_eq!(
+            unsafe { NtSuspendProcess(process.as_raw_handle().cast()) },
+            0
         );
+        let mut blocked = false;
+        for _ in 0..100 {
+            if encoder.write(vec![0; mode.frame_samples() * 4]).is_err() {
+                blocked = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(blocked, "Encoder input must be bounded");
+        let (finished, completion) = mpsc::sync_channel(1);
+        let cleanup = thread::spawn(move || {
+            drop(encoder);
+            let _ = finished.send(());
+        });
+        completion
+            .recv_timeout(Duration::from_secs(3))
+            .expect("Blocked encoder pipes survived Drop");
+        cleanup.join().unwrap();
+        assert_eq!(
+            unsafe { WaitForSingleObject(process.as_raw_handle().cast(), 1000) },
+            0
+        );
+    }
+
+    fn stream_and_drop(mode: Mode) {
+        let variable = match mode {
+            Mode::Aac => "NTPODS_AAC_ENCODER_TEST_PATH",
+            Mode::Eld => "NTPODS_ELD_ENCODER_TEST_PATH",
+        };
+        let executable = std::path::PathBuf::from(std::env::var_os(variable).expect(variable));
         assert!(executable.is_absolute());
-        let encoder = Encoder::start_at(&executable).expect("Worker must return the pinned ASC");
+        let encoder = Encoder::start_at(&executable, mode, 256_000)
+            .expect("Worker must return a supported ASC");
         let process = encoder.child.as_handle().try_clone_to_owned().unwrap();
         let mut units = 0;
         for frame in 0..100 {
-            let mut pcm = Vec::with_capacity(PCM_BYTES);
-            for sample in 0..480 {
-                let phase = std::f64::consts::TAU * (frame * 480 + sample) as f64 / 48_000.0;
+            let mut pcm = Vec::with_capacity(mode.frame_samples() * 4);
+            for sample in 0..mode.frame_samples() {
+                let phase = std::f64::consts::TAU * (frame * mode.frame_samples() + sample) as f64
+                    / 48_000.0;
                 for frequency in [440.0, 880.0] {
                     pcm.extend_from_slice(
                         &(((phase * frequency).sin() * 6000.0) as i16).to_le_bytes(),
@@ -182,9 +311,11 @@ mod tests {
                 }
             }
             encoder.write(pcm).expect("Worker must consume paced PCM");
-            thread::sleep(Duration::from_millis(10));
+            thread::sleep(Duration::from_secs_f64(
+                mode.frame_samples() as f64 / 48000.0,
+            ));
             while let Some(unit) = encoder.read().expect("Worker must keep its output open") {
-                assert!(!unit.is_empty() && unit.len() <= MAX_AU);
+                assert!(!unit.is_empty() && unit.len() <= maximum_au(mode, 256000).unwrap());
                 units += 1;
             }
             if frame == 19 {
@@ -192,18 +323,19 @@ mod tests {
             }
         }
         let deadline = Instant::now() + Duration::from_secs(1);
-        while units < 100 && Instant::now() < deadline {
+        let expected = match mode {
+            Mode::Aac => 99,
+            Mode::Eld => 100,
+        };
+        while units < expected && Instant::now() < deadline {
             if let Some(unit) = encoder.read().unwrap() {
-                assert!(!unit.is_empty() && unit.len() <= MAX_AU);
+                assert!(!unit.is_empty() && unit.len() <= maximum_au(mode, 256000).unwrap());
                 units += 1;
             } else {
                 thread::sleep(Duration::from_millis(1));
             }
         }
-        assert_eq!(
-            units, 100,
-            "One AU must arrive for each PCM block before EOF"
-        );
+        assert_eq!(units, expected, "Unexpected encoder delay before EOF");
         assert_eq!(
             unsafe { WaitForSingleObject(process.as_raw_handle().cast(), 0) },
             258

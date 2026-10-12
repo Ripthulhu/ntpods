@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{E02445AC-C580-4B0E-8F89-E1C0B726B3FD}</ProjectGuid>
+    <RootNamespace>NTPodsAudio</RootNamespace>
+    <WindowsTargetPlatformVersion>$(LatestTargetPlatformVersion)</WindowsTargetPlatformVersion>
+    <KMDF_VERSION_MAJOR>1</KMDF_VERSION_MAJOR><KMDF_VERSION_MINOR>31</KMDF_VERSION_MINOR>
+    <ACX_VERSION_MAJOR>1</ACX_VERSION_MAJOR><ACX_VERSION_MINOR>1</ACX_VERSION_MINOR>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <TargetVersion>Windows10</TargetVersion>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <ConfigurationType>Driver</ConfigurationType><DriverType>KMDF</DriverType>
+    <DriverTargetPlatform>Windows Driver</DriverTargetPlatform>
+    <UseDebugLibraries Condition="'$(Configuration)'=='Debug'">true</UseDebugLibraries>
+    <UseDebugLibraries Condition="'$(Configuration)'!='Debug'">false</UseDebugLibraries>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <OutDir>$(IntDir)</OutDir>
+    <NTPodsSamplesCommonLibrary Condition="'$(NTPodsSamplesCommonLibrary)'==''">$(MSBuildThisFileDirectory)..\mic\Common\$(Platform)\$(Configuration)\SamplesCommon.lib</NTPodsSamplesCommonLibrary>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WppEnabled>true</WppEnabled><WppRecorderEnabled>true</WppRecorderEnabled><WppKernelMode>true</WppKernelMode>
+      <WppScanConfigurationData>..\mic\Common\trace_macros.h</WppScanConfigurationData>
+      <AdditionalIncludeDirectories>$(SDK_INC_PATH);$(DDK_INC_PATH)\acx\km\1.1;..\mic\Common;..\mic\Inc;..\mic\Shared;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>NTPODS_EXPERIMENTAL_PLAYBACK=1;ACX_VERSION_MAJOR=1;ACX_VERSION_MINOR=1;KMDF_VERSION_MAJOR=1;KMDF_VERSION_MINOR=31;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <WarningLevel>Level4</WarningLevel><TreatWarningAsError>true</TreatWarningAsError>
+    </ClCompile>
+    <Link><AdditionalDependencies>$(DDK_LIB_PATH)\libcntpr.lib;wpprecorder.lib;acx\km\1.1\acxstub.lib;$(NTPodsSamplesCommonLibrary);%(AdditionalDependencies)</AdditionalDependencies></Link>
+    <DriverSign><FileDigestAlgorithm>sha256</FileDigestAlgorithm></DriverSign>
+  </ItemDefinitionGroup>
+  <ItemGroup><ClCompile Include="Driver.cpp" /><Inf Include="NTPodsAudio.inf" /><FilesToPackage Include="$(TargetPath)" /></ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\mic\Common\SamplesCommon.vcxproj">
+      <Project>{6A946D59-6690-4ED0-A77D-7D4C3D4B3241}</Project>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+      <AdditionalProperties>NTPodsExperimentalPlayback=true</AdditionalProperties>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

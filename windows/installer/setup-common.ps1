@@ -92,7 +92,7 @@ function Assert-ProtectedInstallPath([string]$path) {
 
 function Set-DriverUser([string]$service, [string]$userSid) {
     Assert-UserSid $userSid
-    if ($service -notin 'NTPodsAAP', 'NTPodsMicACX') { throw 'Unexpected driver service.' }
+    if ($service -notin 'NTPodsAAP', 'NTPodsMicACX', 'NTPodsAudio') { throw 'Unexpected driver service.' }
     $key = "HKLM:\SYSTEM\CurrentControlSet\Services\$service\Parameters"
     New-Item -Path $key -Force | Out-Null
     $acl = New-Object Security.AccessControl.RegistrySecurity
@@ -165,6 +165,7 @@ function Invoke-Tool([string]$what, [int[]]$ok, [scriptblock]$cmd) {
 }
 
 . (Join-Path $PSScriptRoot 'stop-ntpods.ps1')
+. (Join-Path $PSScriptRoot 'audio-driver.ps1')
 
 # Published names (oemNN.inf) of driver-store packages with this original INF
 # name (and provider, when given). Uses DISM rather than parsing `pnputil
@@ -248,7 +249,7 @@ function Get-DriverCheckpointPath {
 function Get-NTPodsDriverPackages {
     @(Get-WindowsDriver -Online -ErrorAction Stop | Where-Object {
         $_.ProviderName -eq 'NTPods' -and
-        (Split-Path -Leaf $_.OriginalFileName) -in 'NTPodsAAP.inf', 'AudioCodec.inf', 'NTPodsMicPC.inf'
+        (Split-Path -Leaf $_.OriginalFileName) -in 'NTPodsAAP.inf', 'AudioCodec.inf', 'NTPodsMicPC.inf', 'NTPodsAudio.inf'
     })
 }
 
@@ -310,12 +311,12 @@ function Save-NTPodsDriverCheckpoint([string]$transactionId) {
             if ($inf -notin $packages.Published) { throw "Cannot back up the driver for $hwid." }
             [pscustomobject]@{ HardwareId = $hwid; Published = $inf }
         })
-        $policy = @(foreach ($service in 'NTPodsAAP', 'NTPodsMicACX') {
+        $policy = @(foreach ($service in 'NTPodsAAP', 'NTPodsMicACX', 'NTPodsAudio') {
             $sid = (Get-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\$service\Parameters" -ErrorAction SilentlyContinue).AllowedUserSid
             if ($sid) { Assert-UserSid $sid }
             [pscustomobject]@{ Service = $service; Sid = $sid }
         })
-        [pscustomobject]@{ TransactionId = $transactionId; Packages = $packages; Devices = $devices; Policy = $policy; Certificates = @(Get-NTPodsCertificates) } |
+        [pscustomobject]@{ TransactionId = $transactionId; Packages = $packages; Devices = $devices; AudioBindings = @(Get-NativeAudioBindings); Policy = $policy; Certificates = @(Get-NTPodsCertificates) } |
             ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $path 'checkpoint.json') -Encoding UTF8
     } catch {
         # No driver or certificate has changed before this checkpoint is complete.
@@ -336,11 +337,11 @@ function Restore-NTPodsDriverCheckpoint([string]$root, [string]$transactionId) {
             Invoke-Tool 'Removing the failed driver replacement' @(0, 3010) { pnputil /delete-driver $driver.Driver /uninstall /force }
         }
     }
+    foreach ($item in $saved.Policy) {
+        if ($item.Sid) { Set-DriverUser $item.Service $item.Sid }
+        else { Remove-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\$($item.Service)\Parameters" -Name AllowedUserSid -ErrorAction SilentlyContinue }
+    }
     if ($mutated) {
-        foreach ($item in $saved.Policy) {
-            if ($item.Sid) { Set-DriverUser $item.Service $item.Sid }
-            else { Remove-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\$($item.Service)\Parameters" -Name AllowedUserSid -ErrorAction SilentlyContinue }
-        }
         foreach ($package in $saved.Packages) {
             $inf = [IO.Path]::GetFullPath((Join-Path $path $package.Inf))
             if (-not $inf.StartsWith($path + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Invalid driver backup path.' }
@@ -356,6 +357,9 @@ function Restore-NTPodsDriverCheckpoint([string]$root, [string]$transactionId) {
             $inf = Join-Path $path $package[0].Inf
             Invoke-Tool 'Restoring the microphone device' @(0, 1) { & $devcon install $inf $device.HardwareId }
         }
+    }
+    if ($mutated -or (Test-Path -LiteralPath (Join-Path $path 'audio-staging'))) {
+        Restore-NativeAudioBindings $root $saved.AudioBindings $saved.Packages $path
     }
     foreach ($cert in Get-NTPodsCertificates) {
         if (-not @($saved.Certificates | Where-Object { $_.Store -eq $cert.Store -and $_.Thumbprint -eq $cert.Thumbprint }).Count) {
@@ -438,7 +442,7 @@ function Assert-MicDevice([string]$hardwareId) {
     }
 }
 
-# $root holds driver\, driver-mic-acx\ and tools\devcon.exe
+# $root holds the driver packages and installation tools.
 # (the dist / install dir). The packages are copied to $work and signed there, so
 # the files the MSI installed stay byte-identical (a repair would otherwise see
 # them as changed). $micDriver: auto | acx, see Resolve-MicDriver.
@@ -447,25 +451,32 @@ function Install-NTPodsDrivers([string]$root, [string]$work, [string]$micDriver 
     if ((Resolve-MicDriver $micDriver) -ne 'acx') { throw 'This experimental build supports only the hardened ACX microphone on Windows 11 22H2 or newer.' }
     $devcon = Join-Path $root 'tools\devcon.exe'
     New-Item -ItemType Directory -Force -Path $work | Out-Null
-    foreach ($d in 'driver', 'driver-mic-acx') {
+    foreach ($d in 'driver', 'driver-mic-acx', 'driver-audio') {
         Copy-Item (Join-Path $root $d) $work -Recurse -Force
     }
     $aap = @{ sys = Join-Path $work 'driver\NTPodsAAP.sys'; cat = Join-Path $work 'driver\ntpodsaap.cat'; inf = Join-Path $work 'driver\NTPodsAAP.inf' }
     $mic = @{ name = 'ACX'; hwid = 'ROOT\NTPodsMicACX'
         sys = Join-Path $work 'driver-mic-acx\AudioCodec.sys'; cat = Join-Path $work 'driver-mic-acx\audiocodec.cat'; inf = Join-Path $work 'driver-mic-acx\AudioCodec.inf' }
+    $audio = @{ sys = Join-Path $work 'driver-audio\NTPodsAudio.sys'; cat = Join-Path $work 'driver-audio\ntpodsaudio.cat'; inf = Join-Path $work 'driver-audio\NTPodsAudio.inf' }
 
     Save-NTPodsDriverCheckpoint $transactionId
     try {
-
+        Save-NativeAudioOriginals
         $cert = Get-NTPodsSigningCertificate
         # Embedded signatures preserve the Authenticode hashes covered by the catalogs.
         Set-NTPodsPackageSignature $aap.sys $cert
         Set-NTPodsPackageSignature $aap.cat $cert
         Set-NTPodsPackageSignature $mic.sys $cert
         Set-NTPodsPackageSignature $mic.cat $cert
-        # Validate both signed packages before unbinding either installed driver.
+        Set-NTPodsPackageSignature $audio.sys $cert
+        Set-NTPodsPackageSignature $audio.cat $cert
+        Set-DriverUser 'NTPodsAudio' $userSid
+        # Stage every signed package before replacing the installed devices.
         Invoke-Tool 'Staging NTPodsAAP' @(0, 259, 3010) { pnputil /add-driver $aap.inf }
         Invoke-Tool 'Staging NTPodsMic' @(0, 259, 3010) { pnputil /add-driver $mic.inf }
+        # A reconnect may select the staged profile before our explicit bind.
+        Set-Content -LiteralPath (Join-Path (Get-DriverCheckpointPath) 'audio-staging') -Value 'Original playback bindings saved.'
+        Invoke-Tool 'Staging NTPods playback' @(0, 259, 3010) { pnputil /add-driver $audio.inf }
         $checkpoint = Get-DriverCheckpointPath
         $saved = Get-Content -LiteralPath (Join-Path $checkpoint 'checkpoint.json') -Raw | ConvertFrom-Json
         Set-Content -LiteralPath (Join-Path $checkpoint 'replacing') -Value 'Driver replacement started.'
@@ -486,7 +497,7 @@ function Install-NTPodsDrivers([string]$root, [string]$work, [string]$micDriver 
         Write-Host '==> Removing any existing mic device...'
         Remove-MicDevices $devcon
         # Old mic packages pile up in the driver store otherwise (one per install).
-        foreach ($oem in @($saved.Packages | Where-Object Name -ne 'NTPodsAAP.inf' | ForEach-Object Published)) {
+        foreach ($oem in @($saved.Packages | Where-Object { $_.Name -in 'AudioCodec.inf', 'NTPodsMicPC.inf' } | ForEach-Object Published)) {
             Invoke-Tool 'Removing the old microphone package' @(0, 3010) { pnputil /delete-driver $oem /uninstall /force }
         }
         Start-Sleep -Seconds 1
@@ -495,6 +506,13 @@ function Install-NTPodsDrivers([string]$root, [string]$work, [string]$micDriver 
         # devcon: 0 = done, 1 = done but a reboot is needed.
         Invoke-Tool 'Installing NTPodsMic (devcon)' @(0, 1) { & $devcon install $mic.inf $mic.hwid }
         Assert-MicDevice $mic.hwid
+        Install-NativeAudioDriver $root $audio.inf
+        $boundAudioPackages = @((Get-NativeAudioBindings).Published)
+        foreach ($oem in @($saved.Packages | Where-Object Name -eq 'NTPodsAudio.inf' | ForEach-Object Published)) {
+            if ($oem -in $boundAudioPackages) { continue }
+            # An upgrade must never forcibly unbind the newly selected package.
+            Invoke-Tool 'Removing the old playback package' @(0, 3010) { pnputil /delete-driver $oem }
+        }
     } catch {
         $failure = $_
         try { Restore-NTPodsDriverCheckpoint $root $transactionId }
@@ -504,6 +522,7 @@ function Install-NTPodsDrivers([string]$root, [string]$work, [string]$micDriver 
 }
 
 function Uninstall-NTPodsDrivers([string]$root) {
+    Uninstall-NativeAudioDriver $root
     $devcon = Join-Path $root 'tools\devcon.exe'
     if (Test-Path $devcon) {
         Write-Host '==> Removing the NTPods microphone device...'
@@ -515,7 +534,7 @@ function Uninstall-NTPodsDrivers([string]$root) {
     }
     Remove-MicDriverPackages
     Remove-TestCert 'CN=NTPods Test Cert'
-    foreach ($service in 'NTPodsAAP', 'NTPodsMicACX') {
+    foreach ($service in 'NTPodsAAP', 'NTPodsMicACX', 'NTPodsAudio') {
         Remove-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\$service\Parameters" -Name AllowedUserSid -ErrorAction SilentlyContinue
     }
 }

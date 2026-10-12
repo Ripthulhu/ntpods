@@ -39,7 +39,7 @@ wix extension add -g WixToolset.UI.wixext/5.0.2 WixToolset.Util.wixext/5.0.2
 ```
 
 The script verifies FFmpeg and FDK-AAC, uses locked Rust/NuGet dependencies, runs
-unit tests and encoder round trips, builds both drivers and the AAC-ELD worker
+unit tests and encoder round trips, builds all three drivers and both encoder workers
 from source, generates catalogs, builds WinUI, and assembles
 `windows/build-output/NTPods-experimental.msi`. It never takes driver binaries
 from committed `prebuilt` folders. The manifest records artifact hashes and
@@ -47,8 +47,8 @@ whether local source modifications were included. Package dependencies are
 pinned; hosted toolchain patches and generated timestamps can change output hashes.
 
 The MSI includes both playback codecs, the FDK notice and its complete pinned
-source archive. Windows playback remains the default; users choose AAC or AAC-ELD
-in the app. See [playback testing](../windows/playback/TESTING.md).
+source archive. AAC is the initial playback codec; AAC-ELD and per-codec bitrate
+settings are available in the app. See [playback testing](../windows/playback/TESTING.md).
 
 Startup checks use a private temporary registry key and a restricted MSI session
 that cannot install files or run setup scripts. New MSI installs leave startup
@@ -89,7 +89,7 @@ whether they came from a branch or a version tag.
 Use a test setup already configured for test-signed drivers. This installer does
 not change Secure Boot, Memory Integrity, or Test Mode. Both MSI and ZIP install
 executables and elevated helpers under `%ProgramFiles%\NTPods`. The installing
-account's SID is bound to both driver control devices; SYSTEM is also allowed.
+account's SID is bound to the driver control devices; SYSTEM is also allowed.
 This build accepts ordinary local/domain account SIDs, not Entra-only SIDs.
 
 Test Mode must remain enabled while using the NTPods drivers. Secure Boot can
@@ -104,9 +104,15 @@ Helper tasks can restart only the unique NTPods AAP service device, never the
 Bluetooth radio, and rename only this virtual input without resetting Windows
 audio services.
 
-The AAP INF binds only Apple's dedicated service UUID. Installation and removal
-select only NTPods driver packages; the Alternative A2DP/Luculent audio-sink
-driver and its codec configuration are outside every setup action.
+The AAP INF binds Apple's dedicated service UUID. The playback INF binds only
+Apple-qualified AudioSink IDs for Pro 1 and Pro 3. Setup saves the previous playback
+provider under `%ProgramData%\NTPods\audio-original`, then binds NTPodsAudio to
+each supported device instance. The prior provider's package is retained for
+uninstall; unrelated Bluetooth audio devices are excluded. Initial replacement
+may create a new Windows output ID. Codec changes keep NTPods' output ID.
+Keep supported pairs connected during uninstall. For an absent pair with a pending
+restore, reconnect it and run `restore-playback.ps1` from the extracted Windows ZIP
+as administrator. This helper can also restore playback while keeping the app.
 
 Remove MSI installations through Windows Settings > Apps. ZIP installations
 include an elevated `uninstall.ps1`, which removes programs, tasks, driver-store
@@ -116,7 +122,7 @@ unelevated session. Development toolchains remain installed for future rebuilds.
 Boot settings are never automatically changed.
 
 Before replacing drivers, setup exports the installed NTPods packages and saves
-their access policy under `%ProgramData%\NTPods\driver-rollback`. Both new packages
+their access policy under `%ProgramData%\NTPods\driver-rollback`. All new packages
 must stage successfully before setup unbinds the old drivers. An installation
 failure restores those packages, microphone devices and access policy. MSI keeps
 the backup until the transaction commits, including upgrades and repairs. A failed

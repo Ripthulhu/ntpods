@@ -21,8 +21,16 @@ for (var index = 0; index < lines.Length; ++index)
     Check(s.PlaybackMode == (raw.RootElement.TryGetProperty("playback_mode", out var playbackMode) ? playbackMode.GetString() : "windows") &&
         s.PlaybackState == (raw.RootElement.TryGetProperty("playback_state", out var playbackState) ? playbackState.GetString() : "windows") &&
         s.PlaybackAvailable == (raw.RootElement.TryGetProperty("playback_available", out var playbackAvailable) && playbackAvailable.GetBoolean()) &&
+        s.PlaybackNativeDriver == (raw.RootElement.TryGetProperty("playback_native_driver", out var nativeDriver) && nativeDriver.GetBoolean()) &&
         s.PlaybackError == (raw.RootElement.TryGetProperty("playback_error", out var playbackError) && playbackError.ValueKind != JsonValueKind.Null ? playbackError.GetString() : null),
         "Playback selection, actual route state and errors must remain separate across IPC.");
+    foreach (var (key, bitrate) in new[] { ("playback_aac_bitrate", s.PlaybackAacBitrate), ("playback_aac_eld_bitrate", s.PlaybackAacEldBitrate) })
+    {
+        var expected = raw.RootElement.TryGetProperty(key, out var value) ? value.Deserialize<PlaybackBitrate>() : new PlaybackBitrate();
+        Check(bitrate == expected, "Each codec must retain its own bitrate preference across IPC.");
+    }
+    Check(s.PlaybackBitrateKbps == (raw.RootElement.TryGetProperty("playback_bitrate_kbps", out var actualBitrate) && actualBitrate.ValueKind != JsonValueKind.Null
+        ? actualBitrate.GetUInt32() : (uint?)null), "The active bitrate must remain separate from the saved preferences.");
     Check(s.BleScanWhileConnected == (raw.RootElement.TryGetProperty("ble_scan_while_connected", out var scanDuringPlayback) && scanDuringPlayback.GetBoolean()),
         "Playback battery scan preference changed across IPC");
     Check(s.BatteryLive == (raw.RootElement.TryGetProperty("battery_live", out var liveBattery) && liveBattery.GetBoolean()),
@@ -88,8 +96,10 @@ for (var index = 0; index < lines.Length; ++index)
         Check(!s.BatteryLive && s.BatteryTimestampMs is null && s.BatterySource == "", "Legacy snapshots must not invent report metadata.");
         Check(s.BatteryFreshness is null, "Legacy snapshots must not invent per-component report metadata.");
         Check(!s.BleScanWhileConnected, "Legacy snapshots must keep playback BLE scanning disabled.");
-        Check(s.PlaybackMode == "windows" && s.PlaybackState == "windows" && !s.PlaybackAvailable && s.PlaybackError is null,
+        Check(s.PlaybackMode == "windows" && s.PlaybackState == "windows" && !s.PlaybackAvailable && !s.PlaybackNativeDriver && s.PlaybackError is null,
             "Legacy snapshots must keep Windows playback and must not claim native playback support.");
+        Check(s.PlaybackAacBitrate == new PlaybackBitrate() && s.PlaybackAacEldBitrate == new PlaybackBitrate() && s.PlaybackBitrateKbps is null,
+            "Missing bitrate preferences default to Best effort without inventing a current bitrate.");
         Check(s.MicRecording, "Legacy fixture must exercise an old recording=true state");
         Check(s.ConversationalAwarenessPending is null, "Legacy fixture cannot claim a pending setting");
         Check(s.AdaptiveStrengthRequested is null, "Legacy fixture cannot claim a sent strength");
@@ -118,7 +128,27 @@ string[] malformed = ["", " ", "{", "null", "true", "12", "\"text\"", "[]", "[{}
     "{\"event\":\"state\",\"playback_state\":\"playing\"}",
     "{\"event\":\"state\",\"playback_available\":1}",
     "{\"event\":\"state\",\"playback_available\":null}",
+    "{\"event\":\"state\",\"playback_native_driver\":null}",
+    "{\"event\":\"state\",\"playback_native_driver\":1}",
     "{\"event\":\"state\",\"playback_error\":false}",
+    "{\"event\":\"state\",\"playback_aac_bitrate\":null}",
+    "{\"event\":\"state\",\"playback_aac_eld_bitrate\":null}",
+    "{\"event\":\"state\",\"playback_aac_bitrate\":{}}",
+    "{\"event\":\"state\",\"playback_aac_eld_bitrate\":{}}",
+    "{\"event\":\"state\",\"playback_aac_bitrate\":{\"best_effort\":true}}",
+    "{\"event\":\"state\",\"playback_aac_eld_bitrate\":{\"best_effort\":true}}",
+    "{\"event\":\"state\",\"playback_aac_bitrate\":{\"kbps\":256}}",
+    "{\"event\":\"state\",\"playback_aac_eld_bitrate\":{\"kbps\":256}}",
+    "{\"event\":\"state\",\"playback_aac_bitrate\":{\"best_effort\":null,\"kbps\":256}}",
+    "{\"event\":\"state\",\"playback_aac_bitrate\":{\"best_effort\":1,\"kbps\":256}}",
+    "{\"event\":\"state\",\"playback_aac_bitrate\":{\"best_effort\":true,\"kbps\":95}}",
+    "{\"event\":\"state\",\"playback_aac_bitrate\":{\"best_effort\":true,\"kbps\":513}}",
+    "{\"event\":\"state\",\"playback_aac_eld_bitrate\":{\"best_effort\":true,\"kbps\":127}}",
+    "{\"event\":\"state\",\"playback_aac_eld_bitrate\":{\"best_effort\":true,\"kbps\":257}}",
+    "{\"event\":\"state\",\"playback_aac_eld_bitrate\":{\"best_effort\":true,\"kbps\":128.5}}",
+    "{\"event\":\"state\",\"playback_aac_bitrate\":{\"best_effort\":true,\"kbps\":null}}",
+    "{\"event\":\"state\",\"playback_bitrate_kbps\":0}",
+    "{\"event\":\"state\",\"playback_bitrate_kbps\":513}",
     "{\"event\":\"state\",\"loud_sound_reduction\":1}",
     "{\"event\":\"state\",\"loud_sound_reduction\":\"true\"}",
     "{\"event\":\"state\",\"loud_sound_reduction_pending\":null}",
@@ -248,5 +278,7 @@ output.Add(Wire.ToLine(new ToggleMicManualCmd()).TrimEnd('\n'));
 foreach (string mode in new[] { "windows", "aac", "aac_eld" })
     output.Add(Wire.ToLine(new SetPlaybackModeCmd { Mode = mode }).TrimEnd('\n'));
 output.Add(Wire.ToLine(new RetryPlaybackCmd()).TrimEnd('\n'));
+foreach (var (mode, bestEffort, kbps) in new[] { ("aac", true, 512u), ("aac", false, 320u), ("aac_eld", true, 256u), ("aac_eld", false, 128u) })
+    output.Add(Wire.ToLine(new SetPlaybackBitrateCmd { Mode = mode, BestEffort = bestEffort, Kbps = kbps }).TrimEnd('\n'));
 File.WriteAllLines(args[1], output);
 Console.WriteLine($"C#: {lines.Length} production/legacy events and {malformed.Length + malformedPresence.Length} malformed inputs passed");

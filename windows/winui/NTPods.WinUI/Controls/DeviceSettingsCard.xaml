@@ -31,14 +31,28 @@
                 <StackPanel>
                     <StackPanel x:Name="PlaybackRouteRow" Spacing="8" Margin="0,14" Visibility="Collapsed">
                         <TextBlock Text="{Binding [Playback_Title], Source={StaticResource Loc}}" Style="{StaticResource DeviceLabel}" />
-                        <ComboBox x:Name="PlaybackPicker" HorizontalAlignment="Stretch" SelectionChanged="Playback_Changed"
+                        <ComboBox x:Name="PlaybackPicker" HorizontalAlignment="Stretch" PlaceholderText="—" SelectionChanged="Playback_Changed"
                                   AutomationProperties.Name="{Binding [Playback_Title], Source={StaticResource Loc}}">
-                            <ComboBoxItem Tag="windows" Content="{Binding [Playback_Windows], Source={StaticResource Loc}}" />
                             <ComboBoxItem Tag="aac" Content="AAC" />
                             <ComboBoxItem Tag="aac_eld" Content="AAC-ELD" />
                         </ComboBox>
-                        <TextBlock x:Name="PlaybackRoutingHint" Text="{Binding [Playback_RoutingHint], Source={StaticResource Loc}}"
-                                   Style="{StaticResource DeviceStatus}" Visibility="Collapsed" />
+                        <StackPanel x:Name="PlaybackQualityRow" Spacing="8" Margin="0,12,0,0">
+                            <TextBlock Text="{Binding [Playback_Quality], Source={StaticResource Loc}}" Style="{StaticResource DeviceLabel}" />
+                            <ComboBox x:Name="PlaybackQualityPicker" HorizontalAlignment="Stretch" SelectionChanged="PlaybackQuality_Changed"
+                                      AutomationProperties.Name="{Binding [Playback_Quality], Source={StaticResource Loc}}">
+                                <ComboBoxItem Content="{Binding [Playback_BestEffort], Source={StaticResource Loc}}" />
+                                <ComboBoxItem Content="{Binding [Playback_Manual], Source={StaticResource Loc}}" />
+                            </ComboBox>
+                            <StackPanel x:Name="PlaybackBitrateRow" Spacing="8">
+                                <TextBlock Text="{Binding [Playback_Bitrate], Source={StaticResource Loc}}" Style="{StaticResource DeviceLabel}" />
+                                <NumberBox x:Name="PlaybackKbps"
+                                           AutomationProperties.Name="{Binding [Playback_Bitrate], Source={StaticResource Loc}}"
+                                           Minimum="96" Maximum="512" SmallChange="8" LargeChange="32"
+                                           SpinButtonPlacementMode="Compact" ValueChanged="PlaybackKbps_Changed" />
+                                <Button x:Name="PlaybackBitrateApply" Content="{Binding [DeviceControls_Apply], Source={StaticResource Loc}}"
+                                        AutomationProperties.Name="{Binding [Playback_ApplyBitrate], Source={StaticResource Loc}}" Click="PlaybackBitrateApply_Click" />
+                            </StackPanel>
+                        </StackPanel>
                         <TextBlock x:Name="PlaybackError" Style="{StaticResource DeviceStatus}" Visibility="Collapsed"
                                    AutomationProperties.LiveSetting="Polite" />
                         <Button x:Name="PlaybackRetry" Content="{Binding [Playback_Retry], Source={StaticResource Loc}}"

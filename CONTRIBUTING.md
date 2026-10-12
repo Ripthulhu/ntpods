@@ -1,6 +1,6 @@
 # Contributing
 
-NTPods has a Rust backend, a WinUI app and two Windows kernel drivers.
+NTPods has a Rust backend, a WinUI app and three Windows kernel drivers.
 Start with the code for the feature you want to change; most tests run without
 AirPods or installed drivers.
 
@@ -20,16 +20,17 @@ AirPods or installed drivers.
 | Dynamic Island | `windows/winui/NTPods.WinUI/Popup` |
 | Bluetooth AAP driver | `windows/drivers/aap` |
 | Windows 11 ACX microphone driver | `windows/drivers/mic` |
-| Optional AAC and AAC-ELD playback | `windows/playback`, `windows/daemon/src/playback` |
+| AirPods AudioSink playback driver | `windows/drivers/audio` |
+| AAC and AAC-ELD playback | `windows/playback`, `windows/daemon/src/playback` |
 | Installation and packaging | `windows/installer`, `windows/build.ps1` |
 
 The backend owns Bluetooth connections and publishes state through named pipes.
 The UI displays that state and sends commands; it does not open the drivers.
-The microphone driver receives PCM from the backend. Windows keeps control of
-normal Bluetooth playback.
+The microphone driver receives PCM from the backend. The playback driver sends
+PCM to the backend for encoding and AVDTP transport. Windows keeps control of the radio.
 
-The normal build includes optional [AAC and AAC-ELD playback](windows/playback/README.md).
-Windows playback remains the default; users select a native codec in the app.
+The normal build includes [AAC and AAC-ELD playback](windows/playback/README.md).
+The codec and bitrate are selected in the app; both use the same AirPods output.
 
 ## Build and test
 
@@ -40,7 +41,7 @@ repository root, PowerShell 7 runs the full build and test suite:
 ./windows/build.ps1
 ```
 
-This builds the app, both drivers and MSI. It does not install them or change
+This builds the app, the drivers and MSI. It does not install them or change
 boot settings. Test Mode is required to load the drivers, not to compile them.
 Use this script for WinUI builds; `dotnet build` alone can miss the resource targets.
 

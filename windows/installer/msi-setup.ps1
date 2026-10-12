@@ -3,9 +3,9 @@
     install folder, and passes who is installing (their SID and profile folders).
 
       -Action install         register the helper tasks,
-                              and with -Drivers also test-sign + install both drivers
+                              and with -Drivers also test-sign + install the drivers
                               (-MicDriver acx, Windows 11 only)
-      -Action remove-drivers  remove both drivers and the test certificate
+      -Action remove-drivers  remove the drivers and the test certificate
       -Action uninstall       stop NTPods, remove the helper tasks and startup entries
       -Action stop            stop NTPods so its files can be replaced
 

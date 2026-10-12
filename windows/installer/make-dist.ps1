@@ -5,7 +5,7 @@
     Local builds and CI use this script. Missing installer inputs fail the build.
 
     Installer scripts, helpers and devcon come from the repository. The daemon,
-    WinUI app and both driver packages must be built from the current source:
+    WinUI app and driver packages must be built from the current source:
 
         windows\daemon                 cargo build --release --target x86_64-pc-windows-gnu
                                        (or the msvc target WITH -C target-feature=+crt-static)
@@ -56,7 +56,7 @@ if ((Test-Path -LiteralPath $Out) -and (Get-ChildItem -LiteralPath $Out -Force |
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 if ((Get-Item -LiteralPath $Out -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'The distribution directory cannot be a reparse point.' }
 Set-Content -LiteralPath (Join-Path $Out '.ntpods-dist') -Value 'NTPods generated distribution' -Encoding ASCII
-foreach ($sub in 'driver', 'driver-mic-acx', 'tools', 'winui', 'licenses') {
+foreach ($sub in 'driver', 'driver-mic-acx', 'driver-audio', 'tools', 'winui', 'licenses') {
     $d = Join-Path $Out $sub
     if (-not [IO.Path]::GetFullPath($d).StartsWith($Out.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Output path escapes the distribution directory.' }
     if (Test-Path $d) { Remove-Item -LiteralPath $d -Recurse -Force }
@@ -71,12 +71,15 @@ foreach ($old in 'lp-mic-rename.exe') {
 # ---- installer + helper scripts ---------------------------------------------
 Copy-Item (Join-Path $installer 'install.ps1')        $Out -Force
 Copy-Item (Join-Path $installer 'setup-common.ps1')   $Out -Force
+Copy-Item (Join-Path $installer 'audio-driver.ps1')  $Out -Force
+Copy-Item (Join-Path $installer 'restore-playback.ps1') $Out -Force
 Copy-Item (Join-Path $installer 'stop-ntpods.ps1')    $Out -Force
 Copy-Item (Join-Path $installer 'msi-setup.ps1')      $Out -Force
 Copy-Item (Join-Path $installer 'fix-driver.ps1')     $Out -Force
 Copy-Item (Join-Path $installer 'rename-mic.ps1')     $Out -Force
 Copy-Item (Join-Path $installer 'uninstall.ps1')      $Out -Force
 Copy-Item (Join-Path $installer 'tools\*')            (Join-Path $Out 'tools') -Recurse -Force
+Copy-Item -LiteralPath (Join-Path $DriverPackages 'tools\audio-binding.exe') -Destination (Join-Path $Out 'tools') -Force
 Copy-Item (Join-Path $repo 'LICENSE'), (Join-Path $repo 'THIRD_PARTY.md'), (Join-Path $repo 'licenses\*') (Join-Path $Out 'licenses') -Force
 Copy-Item (Join-Path $win 'daemon\vendor\ffmpeg\LICENSE-ffmpeg.txt') (Join-Path $Out 'licenses') -Force
 Copy-Item (Join-Path $win 'playback\encoder\NOTICE-FDK.txt') (Join-Path $Out 'licenses') -Force
@@ -91,11 +94,13 @@ if ((Get-FileHash -LiteralPath (Join-Path $Out 'licenses\FDK-AAC-source.zip')).H
 Copy-Item (Join-Path $DriverPackages 'driver\*') (Join-Path $Out 'driver') -Force
 # This distribution supports only the Windows 11 22H2+ ACX microphone.
 Copy-Item (Join-Path $DriverPackages 'driver-mic-acx\*') (Join-Path $Out 'driver-mic-acx') -Force
+Copy-Item (Join-Path $DriverPackages 'driver-audio\*') (Join-Path $Out 'driver-audio') -Force
 Get-ChildItem (Join-Path $Out 'driver'), (Join-Path $Out 'driver-mic-acx') -Filter 'README.md' |
     Remove-Item -Force -ErrorAction SilentlyContinue
 
 # ---- daemon + the FFmpeg runtime it links against ---------------------------
 Copy-Item $DaemonExe $Out -Force
+Copy-Item -LiteralPath (Join-Path (Split-Path -Parent $DaemonExe) 'ntpods-aac-encoder.exe') -Destination $Out -Force
 Copy-Item (Join-Path $win 'daemon\vendor\ffmpeg\bin\*.dll') $Out -Force
 foreach ($file in 'ntpods-eld-encoder.exe', 'fdk-aac.dll') {
     Copy-Item -LiteralPath (Join-Path $win "playback\encoder\build\Release\$file") -Destination $Out -Force
@@ -112,13 +117,15 @@ if (-not (Test-Path $pri)) {
 
 # ---- completeness check ----------------------------------------------------
 $required = @(
-    'install.ps1', 'uninstall.ps1', 'setup-common.ps1', 'msi-setup.ps1', 'fix-driver.ps1', 'rename-mic.ps1', 'tools\devcon.exe',
+    'install.ps1', 'uninstall.ps1', 'setup-common.ps1', 'audio-driver.ps1', 'msi-setup.ps1', 'fix-driver.ps1', 'rename-mic.ps1', 'tools\devcon.exe', 'tools\audio-binding.exe',
+    'restore-playback.ps1',
     'licenses\LICENSE', 'licenses\THIRD_PARTY.md', 'licenses\Microsoft-Public-License.txt', 'licenses\LICENSE-ffmpeg.txt',
     'licenses\NOTICE-FDK.txt', 'licenses\LICENSE-encoder.txt', 'licenses\FDK-AAC-source.zip',
     'driver\NTPodsAAP.inf', 'driver\NTPodsAAP.sys', 'driver\ntpodsaap.cat',
     'driver-mic-acx\AudioCodec.inf', 'driver-mic-acx\AudioCodec.sys', 'driver-mic-acx\audiocodec.cat',
+    'driver-audio\NTPodsAudio.inf', 'driver-audio\NTPodsAudio.sys', 'driver-audio\ntpodsaudio.cat',
     'ntpodsd.exe', 'avcodec-61.dll', 'avutil-59.dll', 'swresample-5.dll',
-    'ntpods-eld-encoder.exe', 'fdk-aac.dll',
+    'ntpods-aac-encoder.exe', 'ntpods-eld-encoder.exe', 'fdk-aac.dll',
     'winui\ntpods-winui.exe', 'winui\ntpods-winui.pri'
 )
 $missing = @($required | Where-Object { -not (Test-Path (Join-Path $Out $_)) })
@@ -127,6 +134,7 @@ if ($missing) { throw "Dist is incomplete, missing: $($missing -join ', ')" }
 # Each driver catalog stores the flat SHA1/SHA256 of its INF. If the INF was
 # edited (or line-ending-converted) after inf2cat ran, the package won't install.
 foreach ($pkg in @(@('driver\NTPodsAAP.inf', 'driver\ntpodsaap.cat'),
+                   @('driver-audio\NTPodsAudio.inf', 'driver-audio\ntpodsaudio.cat'),
                    @('driver-mic-acx\AudioCodec.inf', 'driver-mic-acx\audiocodec.cat'))) {
     $catHex = [BitConverter]::ToString([IO.File]::ReadAllBytes((Join-Path $Out $pkg[1]))).Replace('-', '')
     $inf = Join-Path $Out $pkg[0]
@@ -137,7 +145,7 @@ foreach ($pkg in @(@('driver\NTPodsAAP.inf', 'driver\ntpodsaap.cat'),
 }
 
 # These binaries must run without the Visual C++ redistributable.
-foreach ($binary in 'ntpodsd.exe', 'ntpods-eld-encoder.exe', 'fdk-aac.dll') {
+foreach ($binary in 'ntpodsd.exe', 'ntpods-aac-encoder.exe', 'ntpods-eld-encoder.exe', 'fdk-aac.dll', 'tools\audio-binding.exe') {
     $bytes = [IO.File]::ReadAllBytes((Join-Path $Out $binary))
     $text = [Text.Encoding]::ASCII.GetString($bytes)
     foreach ($dll in 'VCRUNTIME140.dll', 'VCRUNTIME140_1.dll', 'MSVCP140.dll') {

@@ -85,6 +85,27 @@ def run():
                             capture_output=True, timeout=30, check=True)
     _, stress_sizes = parse_stream(stress.stdout)
     assert len(stress_sizes) >= 200 and max(stress_sizes) <= 320
+    for bitrate in (128000, 129000, 192000, 255000, 256000):
+        selected = subprocess.run([BUILD / "ntpods-eld-encoder.exe", "--bitrate", str(bitrate)],
+                                  input=noise, capture_output=True, timeout=30, check=True)
+        selected_asc, selected_sizes = parse_stream(selected.stdout)
+        # SBR crossover frequency changes with bitrate; the core format stays fixed.
+        assert selected_asc[:3] == asc[:3]
+        assert len(selected_sizes) >= 200 and max(selected_sizes) <= bitrate // 800
+        with tempfile.TemporaryDirectory(dir=ROOT / "build") as temporary:
+            encoded = Path(temporary) / "rate.bin"
+            decoded = Path(temporary) / "rate.f32"
+            encoded.write_bytes(selected.stdout)
+            subprocess.run([BUILD / "verify-eld.exe", encoded, decoded], check=True, timeout=30)
+            values = struct.unpack("<" + "f" * (decoded.stat().st_size // 4), decoded.read_bytes())
+            assert len(values) == len(selected_sizes) * 960
+            assert all(math.isfinite(value) and abs(value) <= 2 for value in values)
+    for arguments in (["--bitrate", "127000"], ["--bitrate", "257000"],
+                      ["--bitrate", "128001"], ["--bitrate", "128000x"],
+                      ["--bitrate", "-128000"], ["--bitrate"], ["--wrong", "256000"]):
+        rejected = subprocess.run([BUILD / "ntpods-eld-encoder.exe", *arguments],
+                                  input=b"", capture_output=True, timeout=10)
+        assert rejected.returncode != 0 and not rejected.stdout
     print(f"PASS: ASC {asc.hex()}, {len(sizes)} AUs, peak {max(sizes)} bytes; "
           f"noise peak {max(stress_sizes)} bytes; 48 kHz stereo pitch, "
           "channel separation and truncated input.")

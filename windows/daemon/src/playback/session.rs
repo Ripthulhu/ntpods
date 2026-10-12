@@ -16,7 +16,9 @@ pub struct Session {
     selected_config: Vec<u8>,
     cancel: Arc<AtomicBool>,
     closing: bool,
+    interrupted: Box<dyn Fn() -> bool>,
     pub mtu: usize,
+    pub bitrate: u32,
 }
 
 pub fn driver_ready(driver: &Driver, address: u64) -> io::Result<()> {
@@ -25,7 +27,7 @@ pub fn driver_ready(driver: &Driver, address: u64) -> io::Result<()> {
         || u32::from_le_bytes(data[..4].try_into().unwrap()) != 1
         || u64::from_le_bytes(data[20..].try_into().unwrap()) != address
     {
-        return Err(invalid("Experimental Bluetooth driver is unavailable"));
+        return Err(invalid("NTPods Bluetooth driver is unavailable"));
     }
     if data[4..12] != [0; 8] {
         return Err(invalid("A playback session is already open"));
@@ -38,7 +40,9 @@ impl Session {
         driver: Driver,
         address: u64,
         mode: Mode,
+        preference: ntpods_ipc::PlaybackBitrate,
         cancel: Arc<AtomicBool>,
+        interrupted: impl Fn() -> bool + 'static,
     ) -> io::Result<Self> {
         let mut session = Self {
             driver,
@@ -50,7 +54,9 @@ impl Session {
             selected_config: Vec::new(),
             cancel,
             closing: false,
+            interrupted: Box::new(interrupted),
             mtu: 0,
+            bitrate: 0,
         };
         session.open_channel(address, 0)?;
         let endpoints = sinks(&session.request(DISCOVER, &[])?)?;
@@ -65,13 +71,15 @@ impl Session {
                 Err(error) => return Err(error),
             };
             let config = match mode {
-                Mode::Aac => aac_protocol::select_codec(&caps)?
-                    .map(|codec| aac_protocol::configuration(seid, codec)),
-                Mode::Eld => supports_apple_eld(&caps)?.then(|| configuration(seid)),
+                Mode::Aac => aac_protocol::select_codec_at(&caps, preference)?
+                    .map(|(codec, bitrate)| (aac_protocol::configuration(seid, codec), bitrate)),
+                Mode::Eld => select_apple_eld(&caps, preference)?
+                    .map(|bitrate| (configuration_at(seid, bitrate), bitrate)),
             };
-            if let Some(config) = config {
+            if let Some((config, bitrate)) = config {
                 session.seid = seid;
                 session.selected_config = config;
+                session.bitrate = bitrate;
                 break;
             }
         }
@@ -93,8 +101,22 @@ impl Session {
         session.request(OPEN, &[session.seid << 2])?;
         session.state = StreamState::Open;
         session.mtu = session.open_channel(address, 1)?;
-        if session.mtu < 48 || (mode == Mode::Eld && session.mtu < 984) {
+        if session.mtu < 48 {
             return Err(invalid("Media MTU is too small for the selected codec"));
+        }
+        if mode == Mode::Eld {
+            let maximum = ((session.mtu.saturating_sub(24) / 3) * 800).min(256_000) as u32;
+            if session.bitrate > maximum {
+                if !preference.best_effort {
+                    return Err(invalid("Media MTU is too small for this bitrate"));
+                }
+                session.bitrate = mode.bitrate(preference, maximum)?;
+                let config = configuration_at(session.seid, session.bitrate);
+                let mut request = vec![session.seid << 2];
+                request.extend_from_slice(&config[4..]);
+                session.request(RECONFIGURE, &request)?;
+                session.selected_config = config;
+            }
         }
         session.start()?;
         Ok(session)
@@ -165,7 +187,7 @@ impl Session {
     }
 
     fn check_cancelled(&self) -> io::Result<()> {
-        if !self.closing && self.cancel.load(Ordering::Acquire) {
+        if !self.closing && (self.cancel.load(Ordering::Acquire) || (self.interrupted)()) {
             Err(io::Error::new(
                 io::ErrorKind::Interrupted,
                 "Playback selection changed",
@@ -197,7 +219,7 @@ impl Session {
         if matches!(action, PeerAction::Suspend | PeerAction::Close) {
             return Err(io::Error::new(
                 io::ErrorKind::ConnectionAborted,
-                "AirPods ended experimental playback",
+                "AirPods ended playback",
             ));
         }
         Ok(true)

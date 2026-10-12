@@ -7,7 +7,7 @@
 
 #define AAC_SAMPLES 1024
 #define AAC_PCM_BYTES (AAC_SAMPLES * 4)
-#define AAC_MAX_AU 674
+#define AAC_MAX_AU 1357
 #define AAC_MAX_CONFIG 64
 
 typedef struct {
@@ -15,6 +15,7 @@ typedef struct {
     AVFrame *frame;
     AVPacket *packet;
     int64_t samples;
+    int max_au;
 } AacEnc;
 
 void ntpods_aac_close(void *handle) {
@@ -26,7 +27,8 @@ void ntpods_aac_close(void *handle) {
     free(encoder);
 }
 
-void *ntpods_aac_open(void) {
+void *ntpods_aac_open_at(uint32_t bitrate) {
+    if (bitrate < 96000 || bitrate > 512000 || bitrate % 1000) return NULL;
     const AVCodec *codec = avcodec_find_encoder_by_name("aac");
     if (!codec) return NULL;
     AacEnc *encoder = calloc(1, sizeof(*encoder));
@@ -40,12 +42,15 @@ void *ntpods_aac_open(void) {
     ctx->sample_fmt = AV_SAMPLE_FMT_FLTP;
     ctx->time_base = (AVRational){1, 48000};
     av_channel_layout_default(&ctx->ch_layout, 2);
-    // Reserve END/alignment and LATM framing inside the advertised 256 kbps ceiling.
-    ctx->bit_rate = 252600;
+    // Reserve END/alignment and LATM framing inside the negotiated ceiling.
+    ctx->bit_rate = bitrate - 3400;
+    encoder->max_au = (int)((uint64_t)bitrate * AAC_SAMPLES / (48000 * 8)) - 8;
     ctx->bit_rate_tolerance = 0;
     ctx->profile = AV_PROFILE_MPEG2_AAC_LOW;
     ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-    if (av_opt_set_int(ctx->priv_data, "aac_pns", 0, 0) < 0 ||
+    // The two-loop coder can stall on transients under a strict frame budget.
+    if (av_opt_set(ctx->priv_data, "aac_coder", "fast", 0) < 0 ||
+        av_opt_set_int(ctx->priv_data, "aac_pns", 0, 0) < 0 ||
         av_opt_set_int(ctx->priv_data, "aac_ltp", 0, 0) < 0 ||
         av_opt_set_int(ctx->priv_data, "aac_pred", 0, 0) < 0 ||
         avcodec_open2(ctx, codec, NULL) < 0) goto fail;
@@ -64,6 +69,8 @@ fail:
     ntpods_aac_close(encoder);
     return NULL;
 }
+
+void *ntpods_aac_open(void) { return ntpods_aac_open_at(256000); }
 
 int ntpods_aac_config(void *handle, uint8_t *out, int capacity) {
     AacEnc *encoder = handle;
@@ -103,7 +110,7 @@ int ntpods_aac_read(void *handle, uint8_t *out, int capacity) {
     if (result == AVERROR(EAGAIN) || result == AVERROR_EOF) return 0;
     if (result < 0) return -1;
     int size = encoder->packet->size;
-    if (size < 1 || size > AAC_MAX_AU || !encoder->packet->data) {
+    if (size < 1 || size > encoder->max_au || !encoder->packet->data) {
         av_packet_unref(encoder->packet);
         return -1;
     }

@@ -1,4 +1,4 @@
-use super::{aac::AacEncoder, aac_protocol, encoder::Encoder, protocol};
+use super::{aac_protocol, encoder::Encoder, protocol};
 use std::io;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -8,6 +8,37 @@ pub enum Mode {
 }
 
 impl Mode {
+    pub fn bitrate(
+        self,
+        preference: ntpods_ipc::PlaybackBitrate,
+        peer_limit: u32,
+    ) -> io::Result<u32> {
+        let (minimum, maximum) = match self {
+            Self::Aac => (96_000, 512_000),
+            Self::Eld => (128_000, 256_000),
+        };
+        let ceiling = if peer_limit == 0 {
+            maximum
+        } else {
+            peer_limit.min(maximum)
+        } / 1000
+            * 1000;
+        let chosen = if preference.best_effort {
+            ceiling
+        } else {
+            preference
+                .kbps
+                .checked_mul(1000)
+                .ok_or_else(|| protocol::invalid("Invalid bitrate"))?
+        };
+        if chosen < minimum || chosen > ceiling {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "The AirPods cannot use this bitrate.",
+            ));
+        }
+        Ok(chosen)
+    }
     pub fn from_selection(mode: ntpods_ipc::PlaybackMode) -> Option<Self> {
         match mode {
             ntpods_ipc::PlaybackMode::Windows => None,
@@ -36,14 +67,14 @@ impl Mode {
 }
 
 pub enum AudioEncoder {
-    Aac(AacEncoder),
+    Aac(Encoder),
     Eld(Encoder),
 }
 impl AudioEncoder {
-    pub fn new(mode: Mode) -> io::Result<Self> {
+    pub fn new(mode: Mode, bitrate: u32) -> io::Result<Self> {
         match mode {
-            Mode::Aac => AacEncoder::new().map(Self::Aac),
-            Mode::Eld => Encoder::start().map(Self::Eld),
+            Mode::Aac => Encoder::start(mode, bitrate).map(Self::Aac),
+            Mode::Eld => Encoder::start(mode, bitrate).map(Self::Eld),
         }
     }
     pub fn write(&mut self, pcm: Vec<u8>) -> io::Result<()> {
@@ -134,5 +165,50 @@ mod tests {
             &next[0][4..8],
             &((u32::MAX - 10).wrapping_add(1920)).to_be_bytes()
         );
+    }
+}
+
+#[cfg(test)]
+mod bitrate_tests {
+    use super::*;
+    use ntpods_ipc::PlaybackBitrate;
+    #[test]
+    fn bitrate_respects_peer_limits_without_clamping_manual_choices() {
+        let best = PlaybackBitrate::default();
+        assert_eq!(Mode::Aac.bitrate(best, 0).unwrap(), 512000);
+        assert_eq!(Mode::Eld.bitrate(best, 0).unwrap(), 256000);
+        assert_eq!(Mode::Aac.bitrate(best, 255900).unwrap(), 255000);
+        assert_eq!(Mode::Eld.bitrate(best, 192400).unwrap(), 192000);
+        assert!(Mode::Eld.bitrate(best, 127999).is_err());
+        assert_eq!(
+            Mode::Aac
+                .bitrate(
+                    PlaybackBitrate {
+                        best_effort: false,
+                        kbps: 320
+                    },
+                    512000
+                )
+                .unwrap(),
+            320000
+        );
+        assert!(Mode::Aac
+            .bitrate(
+                PlaybackBitrate {
+                    best_effort: false,
+                    kbps: 321
+                },
+                320000
+            )
+            .is_err());
+        assert!(Mode::Eld
+            .bitrate(
+                PlaybackBitrate {
+                    best_effort: false,
+                    kbps: u32::MAX
+                },
+                0
+            )
+            .is_err());
     }
 }

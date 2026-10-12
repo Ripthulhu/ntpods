@@ -272,12 +272,18 @@
   <data name="Mic_ConnectFirst" xml:space="preserve"><value>Ligue os AirPods para iniciar o microfone</value></data>
   <data name="Mic_RecoveringShort" xml:space="preserve"><value>A recuperar o microfone</value></data>
   <data name="Mic_NeedsAttention" xml:space="preserve"><value>O microfone precisa de atenção</value></data>
-  <data name="Playback.Title" xml:space="preserve"><value>Reprodução</value></data>
-  <data name="Playback.Windows" xml:space="preserve"><value>Windows</value></data>
-  <data name="Playback.Help" xml:space="preserve"><value>AAC e AAC-ELD usam reprodução experimental. A mudança interrompe o áudio.</value></data>
-  <data name="Playback.RoutingHint" xml:space="preserve"><value>Selecione «Speakers (NTPods Experimental)» no seu leitor.</value></data>
+  <data name="Playback.Title" xml:space="preserve"><value>Codec de áudio</value></data>
+  <data name="Playback.Help" xml:space="preserve"><value>AAC e AAC-ELD são experimentais. Alterar o codec interrompe o áudio.</value></data>
   <data name="Playback.Retry" xml:space="preserve"><value>Tentar novamente</value></data>
-  <data name="Playback.StopRecording" xml:space="preserve"><value>Aguarde que o microfone pare antes de alterar a reprodução.</value></data>
-  <data name="Playback.Starting" xml:space="preserve"><value>A mudar a reprodução…</value></data>
-  <data name="Playback.Stopping" xml:space="preserve"><value>A restaurar o áudio do Windows…</value></data>
+  <data name="Playback.StopRecording" xml:space="preserve"><value>Aguarde que o microfone pare antes de alterar o codec.</value></data>
+  <data name="Playback.Starting" xml:space="preserve"><value>A alterar o codec…</value></data>
+  <data name="Playback.Stopping" xml:space="preserve"><value>A reiniciar a reprodução…</value></data>
+  <data name="Playback.DriverUnavailable" xml:space="preserve"><value>Instale o controlador de áudio NTPods para alterar o codec.</value></data>
+  <data name="Playback.Quality" xml:space="preserve"><value>Qualidade</value></data>
+  <data name="Playback.BestEffort" xml:space="preserve"><value>Melhor possível</value></data>
+  <data name="Playback.Manual" xml:space="preserve"><value>Manual</value></data>
+  <data name="Playback.Bitrate" xml:space="preserve"><value>Taxa de bits (kbps)</value></data>
+  <data name="Playback.ApplyBitrate" xml:space="preserve"><value>Aplicar taxa de bits</value></data>
+  <data name="Playback.BitrateRange" xml:space="preserve"><value>Introduza um número inteiro entre {0} e {1}.</value></data>
+  <data name="Playback.CurrentBitrate" xml:space="preserve"><value>Taxa de bits atual: {0} kbps.</value></data>
 </root>

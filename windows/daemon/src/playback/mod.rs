@@ -1,5 +1,4 @@
-//! Opt-in AAC and Apple AAC-ELD playback through the NTPods render endpoint.
-mod aac;
+//! AAC and Apple AAC-ELD playback through the AirPods AudioSink driver.
 mod aac_protocol;
 mod codec;
 mod encoder;
@@ -11,16 +10,16 @@ mod session;
 
 use crate::{bt, driver::Driver, Ctx};
 use codec::{AudioEncoder, MediaPackets, Mode};
-use ntpods_ipc::PlaybackMode;
+use ntpods_ipc::{PlaybackBitrate, PlaybackMode};
 use pcm::{FrameAssembler, FrameClock, MAX_READ_BYTES};
 use render::Render;
 pub use selection::{load as load_selection, Selection};
 use session::Session;
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
+use std::thread;
 use std::time::{Duration, Instant};
 
 struct Reset(SyncSender<io::Result<()>>);
@@ -31,47 +30,65 @@ struct Control {
     stop: Arc<AtomicBool>,
 }
 static CONTROL: Mutex<Option<Control>> = Mutex::new(None);
-static OWNED: AtomicBool = AtomicBool::new(false);
+static NATIVE_ADDRESS: AtomicU64 = AtomicU64::new(0);
 
-pub fn is_active() -> bool {
-    OWNED.load(Ordering::Acquire)
+pub fn active_address() -> Option<u64> {
+    let address = NATIVE_ADDRESS.load(Ordering::Acquire);
+    (address != 0).then_some(address)
 }
 
-struct Ownership;
-impl Drop for Ownership {
-    fn drop(&mut self) {
-        OWNED.store(false, Ordering::Release);
+pub fn owns_sink(address: u64) -> bool {
+    address != 0
+        && (NATIVE_ADDRESS.load(Ordering::Acquire) == address
+            || crate::driver::native_audio_bound(address))
+}
+
+pub fn start(ctx: Ctx) {
+    let bound = crate::driver::native_audio_bound(ctx.mac());
+    {
+        let mut selected = ctx.playback_selection.lock().unwrap();
+        selected.bitrates = selection::load_bitrates();
+        let mut state = ctx.state.lock().unwrap();
+        state.playback_available = bound;
+        state.playback_native_driver = bound;
+        state.playback_aac_bitrate = selected.bitrates[0];
+        state.playback_aac_eld_bitrate = selected.bitrates[1];
     }
+    thread::spawn(move || {
+        manage(&ctx);
+        ctx.playback_done.store(true, Ordering::Release);
+    });
 }
 
-pub struct Worker {
-    stop: Arc<AtomicBool>,
-    selection: Arc<Mutex<Selection>>,
-    thread: Option<JoinHandle<()>>,
-}
-
-impl Worker {
-    pub fn start(ctx: Ctx, driver: Driver, address: u64) -> Self {
-        let stop = Arc::new(AtomicBool::new(false));
-        let disconnected = stop.clone();
-        let selection = ctx.playback_selection.clone();
-        let thread = thread::spawn(move || manage(ctx, driver, address, disconnected));
-        Self {
-            stop,
-            selection,
-            thread: Some(thread),
+pub fn set_bitrate(ctx: &Ctx, mode: PlaybackMode, bitrate: PlaybackBitrate) {
+    {
+        let _preference = ctx.mic_preference.lock().unwrap();
+        let mut selected = ctx.playback_selection.lock().unwrap();
+        let mut state = ctx.state.lock().unwrap();
+        let busy = selection::microphone_busy(
+            &state,
+            ctx.capture_active.load(Ordering::Acquire),
+            ctx.mic_on.load(Ordering::Acquire),
+        );
+        match selected.change_bitrate(mode, bitrate, busy, selection::save_bitrates) {
+            Ok(changed) => {
+                state.playback_aac_bitrate = selected.bitrates[0];
+                state.playback_aac_eld_bitrate = selected.bitrates[1];
+                if changed && mode == selected.mode {
+                    state.playback_error = None;
+                    state.playback_bitrate_kbps = None;
+                    state.playback_state = if selected.cancel.is_some() {
+                        "stopping"
+                    } else {
+                        "starting"
+                    }
+                    .into();
+                }
+            }
+            Err(error) => state.playback_error = Some(error.to_string()),
         }
     }
-}
-
-impl Drop for Worker {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
-        self.selection.lock().unwrap().stop();
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
-    }
+    ctx.push_state();
 }
 
 pub fn set_mode(ctx: &Ctx, mode: Option<PlaybackMode>) {
@@ -86,14 +103,18 @@ pub fn set_mode(ctx: &Ctx, mode: Option<PlaybackMode>) {
             ctx.capture_active.load(Ordering::Acquire),
             ctx.mic_on.load(Ordering::Acquire),
         );
-        match selected.change(mode, retry, busy, selection::save) {
+        match if !state.playback_native_driver {
+            Err(io::Error::other(
+                "The NTPods playback driver is not installed for these AirPods.",
+            ))
+        } else {
+            selected.change(mode, retry, busy, selection::save)
+        } {
             Ok(true) => {
                 state.playback_mode = mode;
                 state.playback_error = None;
                 state.playback_state = if selected.cancel.is_some() {
                     "stopping"
-                } else if mode == PlaybackMode::Windows {
-                    "windows"
                 } else if state.connected {
                     "starting"
                 } else {
@@ -115,15 +136,40 @@ pub fn set_mode(ctx: &Ctx, mode: Option<PlaybackMode>) {
     }
 }
 
-fn publish(ctx: &Ctx, revision: u64, name: &str, error: Option<String>) {
+fn publication_current(
+    current_revision: u64,
+    revision: u64,
+    current_address: u64,
+    address: u64,
+    current_intent: bool,
+) -> bool {
+    current_revision == revision && current_address == address && current_intent
+}
+
+fn publish(
+    ctx: &Ctx,
+    address: u64,
+    revision: u64,
+    intent: u64,
+    name: &str,
+    error: Option<String>,
+    bitrate: Option<u32>,
+) {
     let current = {
         let selected = ctx.playback_selection.lock().unwrap();
-        if selected.revision != revision {
+        let mut state = ctx.state.lock().unwrap();
+        if !publication_current(
+            selected.revision,
+            revision,
+            ctx.mac(),
+            address,
+            bt::audio_request_is_current(intent),
+        ) {
             false
         } else {
-            let mut state = ctx.state.lock().unwrap();
             state.playback_state = name.into();
             state.playback_error = error;
+            state.playback_bitrate_kbps = bitrate;
             true
         }
     };
@@ -132,83 +178,159 @@ fn publish(ctx: &Ctx, revision: u64, name: &str, error: Option<String>) {
     }
 }
 
-fn manage(ctx: Ctx, driver: Driver, address: u64, disconnected: Arc<AtomicBool>) {
+fn availability(ctx: &Ctx, address: u64, bound: bool) {
+    let changed = {
+        let mut state = ctx.state.lock().unwrap();
+        if ctx.mac() != address {
+            return;
+        }
+        let changed = state.playback_available != bound || state.playback_native_driver != bound;
+        state.playback_available = bound;
+        state.playback_native_driver = bound;
+        if !bound {
+            state.playback_state = "unavailable".into();
+        }
+        changed
+    };
+    if changed {
+        ctx.push_state();
+    }
+}
+
+fn manage(ctx: &Ctx) {
+    let mut address = 0;
+    let mut render: Option<Render> = None;
     let mut attempted = None;
-    while !disconnected.load(Ordering::Acquire) && !ctx.shutting_down.load(Ordering::Acquire) {
+    let mut next_poll = Instant::now();
+    let mut connected = false;
+    while !ctx.shutting_down.load(Ordering::Acquire) {
+        if ctx.mac() != address {
+            render.take();
+            NATIVE_ADDRESS.store(0, Ordering::Release);
+            address = ctx.mac();
+            attempted = None;
+            next_poll = Instant::now();
+        }
+        if Instant::now() >= next_poll {
+            if render
+                .as_ref()
+                .is_some_and(|render| render.status().is_err())
+            {
+                render.take();
+                NATIVE_ADDRESS.store(0, Ordering::Release);
+                attempted = None;
+            }
+            let bound = address != 0 && crate::driver::native_audio_bound(address);
+            availability(ctx, address, bound);
+            connected = bound
+                && !ctx.user_disconnected.load(Ordering::Acquire)
+                && bt::is_connected(address);
+            if !connected {
+                render.take();
+                NATIVE_ADDRESS.store(0, Ordering::Release);
+                attempted = None;
+                if bound {
+                    let revision = ctx.playback_selection.lock().unwrap().revision;
+                    publish(
+                        ctx,
+                        address,
+                        revision,
+                        bt::playback_intent(),
+                        "disconnected",
+                        None,
+                        None,
+                    );
+                }
+            }
+            next_poll = Instant::now() + Duration::from_secs(1);
+        }
+        if !connected || ctx.user_disconnected.load(Ordering::Acquire) {
+            thread::sleep(Duration::from_millis(50));
+            continue;
+        }
         let request = {
             let _preference = ctx.mic_preference.lock().unwrap();
             let mut selected = ctx.playback_selection.lock().unwrap();
             let mut state = ctx.state.lock().unwrap();
-            if !selected.should_attempt(
-                attempted,
-                disconnected.load(Ordering::Acquire) || ctx.shutting_down.load(Ordering::Acquire),
-                &state,
-                ctx.capture_active.load(Ordering::Acquire),
-                ctx.mic_on.load(Ordering::Acquire),
-            ) {
+            let intent = bt::playback_intent();
+            if ctx.mac() != address
+                || !selected.should_attempt(
+                    selection::attempted_revision(attempted, intent),
+                    ctx.shutting_down.load(Ordering::Acquire),
+                    &state,
+                    ctx.capture_active.load(Ordering::Acquire),
+                    ctx.mic_on.load(Ordering::Acquire),
+                )
+            {
                 None
             } else {
                 let cancel = Arc::new(AtomicBool::new(false));
                 selected.cancel = Some(cancel.clone());
-                attempted = Some(selected.revision);
-                state.playback_state = if selected.mode == PlaybackMode::Windows {
-                    "stopping"
-                } else {
-                    "starting"
-                }
-                .into();
+                attempted = Some((selected.revision, intent));
+                state.playback_state = "starting".into();
                 state.playback_error = None;
-                Some((selected.revision, selected.mode, cancel))
+                Some((
+                    selected.revision,
+                    selected.mode,
+                    selected.bitrate(selected.mode),
+                    cancel,
+                    intent,
+                ))
             }
         };
-        let Some((revision, mode, cancel)) = request else {
+        let Some((revision, mode, bitrate, cancel, intent)) = request else {
             thread::sleep(Duration::from_millis(50));
             continue;
         };
         ctx.push_state();
-        let result = match Mode::from_selection(mode) {
-            Some(mode) => run(
-                driver.clone(),
+        let result = (|| {
+            if render.is_none() {
+                render = Some(Render::open(address)?);
+            }
+            let render = render.as_ref().unwrap();
+            NATIVE_ADDRESS.store(address, Ordering::Release);
+            let driver = ctx.shared_driver.open(address)?;
+            let mode = Mode::from_selection(mode)
+                .ok_or_else(|| io::Error::other("Select AAC or AAC-ELD."))?;
+            run(
+                ctx,
+                driver,
                 address,
-                cancel.clone(),
+                render,
+                cancel,
                 mode,
-                || publish(&ctx, revision, "ready", None),
-                || publish(&ctx, revision, "stopping", None),
-            ),
-            None => bt::restore_experimental_audio(),
-        };
-        {
-            let mut selected = ctx.playback_selection.lock().unwrap();
-            selected.cancel = None;
+                bitrate,
+                intent,
+                |kbps| {
+                    publish(ctx, address, revision, intent, "ready", None, Some(kbps));
+                },
+                || publish(ctx, address, revision, intent, "stopping", None, None),
+            )
+        })();
+        ctx.playback_selection.lock().unwrap().cancel = None;
+        if result.as_ref().is_err_and(|error| {
+            matches!(
+                error.kind(),
+                io::ErrorKind::NotConnected | io::ErrorKind::ConnectionReset
+            )
+        }) {
+            render.take();
+            NATIVE_ADDRESS.store(0, Ordering::Release);
+            attempted = None;
+            connected = false;
+            next_poll = Instant::now() + Duration::from_secs(1);
         }
         let (name, error) = match result {
             Err(error) if error.kind() != io::ErrorKind::Interrupted => {
                 crate::log(&format!("playback: {error}"));
                 ("error", Some(error.to_string()))
             }
-            _ if mode == PlaybackMode::Windows => ("windows", None),
             _ => ("disconnected", None),
         };
-        publish(&ctx, revision, name, error);
+        publish(ctx, address, revision, intent, name, error, None);
     }
-    let revision = ctx.playback_selection.lock().unwrap().revision;
-    let (mode, failed) = {
-        let state = ctx.state.lock().unwrap();
-        (state.playback_mode, state.playback_state == "error")
-    };
-    if failed {
-        return;
-    }
-    publish(
-        &ctx,
-        revision,
-        if mode == PlaybackMode::Windows {
-            "windows"
-        } else {
-            "disconnected"
-        },
-        None,
-    );
+    render.take();
+    NATIVE_ADDRESS.store(0, Ordering::Release);
 }
 
 struct Registration;
@@ -218,14 +340,16 @@ impl Drop for Registration {
     }
 }
 
-/// Called before taking the normal audio gate: this worker owns that gate.
+/// Native playback resets its transport without removing the AudioSink devnode.
 pub fn reset_if_active(address: u64, intent: u64) -> Option<(u32, u32)> {
     let (sender, stop) = {
         let active = CONTROL.lock().unwrap_or_else(|e| e.into_inner());
-        let control = active.as_ref()?;
+        let Some(control) = active.as_ref() else {
+            return owns_sink(address).then_some((1167, 1167));
+        };
         if control.address != address || control.intent != intent {
             control.stop.store(true, Ordering::Release);
-            return None;
+            return Some((1223, 1223));
         }
         (control.reset.clone(), control.stop.clone())
     };
@@ -240,62 +364,83 @@ pub fn reset_if_active(address: u64, intent: u64) -> Option<(u32, u32)> {
     }
 }
 
+fn shutdown_complete(shutting_down: bool, receiver_done: bool) -> bool {
+    // Microphone cleanup still needs the native transport's reset handler.
+    shutting_down && receiver_done
+}
+
 fn run(
+    ctx: &Ctx,
     driver: Driver,
     address: u64,
+    render: &Render,
     stop: Arc<AtomicBool>,
     mode: Mode,
-    ready: impl FnOnce(),
+    bitrate: PlaybackBitrate,
+    intent: u64,
+    ready: impl FnOnce(u32),
     stopping: impl FnOnce(),
 ) -> io::Result<()> {
-    bt::restore_experimental_audio()?;
     if stop.load(Ordering::Acquire) {
         return Ok(());
     }
     session::driver_ready(&driver, address)?;
-    let render = Render::open()?;
-    let mut encoder = AudioEncoder::new(mode)?;
-    let intent = bt::playback_intent();
-    // Keep volume on our endpoint until normal audio services are restored.
-    OWNED.store(true, Ordering::Release);
-    let _owned = Ownership;
-    bt::with_experimental_playback(address, intent, || {
-        if stop.load(Ordering::Acquire) {
-            return Ok(());
+    render.set_ready(false)?;
+    let session_ctx = ctx.clone();
+    let mut session = Session::open(driver, address, mode, bitrate, stop.clone(), move || {
+        shutdown_complete(
+            session_ctx.shutting_down.load(Ordering::Acquire),
+            session_ctx.receiver_done.load(Ordering::Acquire),
+        ) || session_ctx.user_disconnected.load(Ordering::Acquire)
+            || session_ctx.mac() != address
+            || !bt::audio_request_is_current(intent)
+    })?;
+    session.suspend()?;
+    let mut encoder = AudioEncoder::new(mode, session.bitrate)?;
+    let (reset, requests) = mpsc::sync_channel(1);
+    {
+        let mut active = CONTROL.lock().unwrap_or_else(|e| e.into_inner());
+        if active.is_some() {
+            return Err(io::Error::other("Playback is already running"));
         }
-        let mut session = Session::open(driver, address, mode, stop.clone())?;
-        session.suspend()?;
-        let (reset, requests) = mpsc::sync_channel(1);
-        {
-            let mut active = CONTROL.lock().unwrap_or_else(|e| e.into_inner());
-            if active.is_some() {
-                return Err(io::Error::other("Playback is already running"));
-            }
-            *active = Some(Control {
-                address,
-                intent,
-                reset,
-                stop: stop.clone(),
-            });
-        }
-        let _registered = Registration;
-        crate::log(&format!(
-            "experimental playback: {} ready on Speakers (NTPods Experimental)",
-            mode.name()
-        ));
-        ready();
-        let result = stream(
-            &mut session,
-            &render,
-            &mut encoder,
-            &stop,
+        *active = Some(Control {
+            address,
             intent,
-            &requests,
-            mode,
-        );
-        stopping();
-        result
-    })
+            reset,
+            stop: stop.clone(),
+        });
+    }
+    let _registered = Registration;
+    render.set_ready(true)?;
+    ready(session.bitrate / 1000);
+    let mut next_connection_check = Instant::now();
+    let result = stream(
+        &mut session,
+        render,
+        &mut encoder,
+        &stop,
+        intent,
+        &requests,
+        mode,
+        || {
+            if shutdown_complete(
+                ctx.shutting_down.load(Ordering::Acquire),
+                ctx.receiver_done.load(Ordering::Acquire),
+            ) || ctx.user_disconnected.load(Ordering::Acquire)
+                || ctx.mac() != address
+            {
+                return true;
+            }
+            if Instant::now() >= next_connection_check {
+                next_connection_check = Instant::now() + Duration::from_secs(1);
+                return !bt::is_connected(address);
+            }
+            false
+        },
+    );
+    stopping();
+    let muted = render.set_ready(false);
+    result.and(muted)
 }
 
 #[link(name = "winmm")]
@@ -343,6 +488,7 @@ fn stream(
     intent: u64,
     requests: &Receiver<Reset>,
     mode: Mode,
+    mut disconnected: impl FnMut() -> bool,
 ) -> io::Result<()> {
     let _timer = TimerResolution::acquire()?;
     let origin = Instant::now();
@@ -356,14 +502,14 @@ fn stream(
     let mut dropped = initial[2];
     let mut generation = initial[3];
     let mut outstanding = 0usize;
-    while !stop.load(Ordering::Acquire) && bt::audio_request_is_current(intent) {
+    while !stop.load(Ordering::Acquire) && bt::audio_request_is_current(intent) && !disconnected() {
         if let Ok(Reset(reply)) = requests.try_recv() {
             let result = (|| {
                 session.suspend()?;
                 clock = prime_output(
                     samples,
                     || {
-                        *encoder = AudioEncoder::new(mode)?;
+                        *encoder = AudioEncoder::new(mode, session.bitrate)?;
                         if active {
                             session.start()?;
                         }
@@ -402,7 +548,7 @@ fn stream(
             clock = prime_output(
                 samples,
                 || {
-                    *encoder = AudioEncoder::new(mode)?;
+                    *encoder = AudioEncoder::new(mode, session.bitrate)?;
                     session.start()
                 },
                 || render.read(MAX_READ_BYTES),
@@ -454,6 +600,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn old_transport_cannot_publish_ready_over_a_new_reconnect() {
+        assert!(publication_current(4, 4, 7, 7, true));
+        assert!(!publication_current(4, 4, 7, 7, false));
+        assert!(!publication_current(5, 4, 7, 7, true));
+        assert!(!publication_current(4, 4, 8, 7, true));
+    }
+
+    #[test]
+    fn playback_shutdown_waits_for_microphone_cleanup() {
+        assert!(!shutdown_complete(false, false));
+        assert!(!shutdown_complete(true, false));
+        assert!(shutdown_complete(true, true));
+    }
+
+    #[test]
     fn slow_start_discards_backlog_before_priming() {
         use std::cell::RefCell;
         use std::collections::VecDeque;
@@ -499,7 +660,7 @@ mod tests {
         });
         assert_eq!(reset_if_active(1, 3), Some((0, 0)));
         worker.join().unwrap();
-        assert_eq!(reset_if_active(1, 5), None);
+        assert_eq!(reset_if_active(1, 5), Some((1223, 1223)));
         assert!(stop.load(Ordering::Acquire));
         drop(_registration);
         assert_eq!(reset_if_active(1, 3), None);

@@ -39,6 +39,18 @@ public sealed class BatteryFreshness
     [JsonIgnore] public bool IsValid => Left is not null && Right is not null && Case is not null && Headphone is not null;
 }
 
+public sealed record PlaybackBitrate
+{
+    [JsonRequired, JsonPropertyName("best_effort")] public bool BestEffort { get; init; } = true;
+    [JsonRequired, JsonPropertyName("kbps")] public uint Kbps { get; init; } = 256;
+    public bool IsValidFor(string mode) => mode switch
+    {
+        "aac" => Kbps is >= 96 and <= 512,
+        "aac_eld" => Kbps is >= 128 and <= 256,
+        _ => false
+    };
+}
+
 /// The daemon's authoritative state, pushed on connect and on every change.
 public sealed class Snapshot
 {
@@ -76,6 +88,10 @@ public sealed class Snapshot
     [JsonPropertyName("playback_state")] public string PlaybackState { get; set; } = "windows";
     [JsonPropertyName("playback_error")] public string? PlaybackError { get; set; }
     [JsonPropertyName("playback_available")] public bool PlaybackAvailable { get; set; }
+    [JsonPropertyName("playback_native_driver")] public bool PlaybackNativeDriver { get; set; }
+    [JsonPropertyName("playback_aac_bitrate")] public PlaybackBitrate PlaybackAacBitrate { get; set; } = new();
+    [JsonPropertyName("playback_aac_eld_bitrate")] public PlaybackBitrate PlaybackAacEldBitrate { get; set; } = new();
+    [JsonPropertyName("playback_bitrate_kbps")] public uint? PlaybackBitrateKbps { get; set; }
     [JsonPropertyName("conversational_awareness")] public bool ConversationalAwareness { get; set; }
     [JsonPropertyName("conversational_awareness_pending")] public bool? ConversationalAwarenessPending { get; set; }
     [JsonPropertyName("conversation_volume")] public byte ConversationVolume { get; set; } = 25;
@@ -231,6 +247,14 @@ public sealed class SetPlaybackModeCmd
 public sealed class RetryPlaybackCmd
 {
     [JsonPropertyName("cmd")] public string Cmd => "retry_playback";
+}
+
+public sealed class SetPlaybackBitrateCmd
+{
+    [JsonPropertyName("cmd")] public string Cmd => "set_playback_bitrate";
+    [JsonPropertyName("mode")] public string Mode { get; init; } = "aac";
+    [JsonPropertyName("best_effort")] public bool BestEffort { get; init; } = true;
+    [JsonPropertyName("kbps")] public uint Kbps { get; init; } = 256;
 }
 
 public sealed class SetFeatureCmd
@@ -426,7 +450,10 @@ public static class Wire
                         snap.DeviceControls is null || snap.DeviceControlsPending is null ||
                         snap.MicMode is not ("automatic" or "keep_active" or "manual") || snap.MicStopDelaySecs > 3600 ||
                         snap.PlaybackMode is not ("windows" or "aac" or "aac_eld") ||
-                        snap.PlaybackState is not ("windows" or "disconnected" or "starting" or "ready" or "stopping" or "error") ||
+                        snap.PlaybackState is not ("windows" or "unavailable" or "disconnected" or "starting" or "ready" or "stopping" or "error") ||
+                        snap.PlaybackAacBitrate is null || !snap.PlaybackAacBitrate.IsValidFor("aac") ||
+                        snap.PlaybackAacEldBitrate is null || !snap.PlaybackAacEldBitrate.IsValidFor("aac_eld") ||
+                        snap.PlaybackBitrateKbps is < 96 or > 512 ||
                         snap.HeadTrackingState is not ("idle" or "starting" or "streaming" or "error" or "waiting_for_ear") ||
                         snap.AdaptiveStrengthRequested is > 100 || snap.ConversationVolume > 100 ||
                         snap.Eq is { IsValid: false } || snap.EqPending is { IsValid: false }) return null;

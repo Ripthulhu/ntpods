@@ -6,10 +6,24 @@ pub const FRAME_SAMPLES: usize = 1024;
 pub const BITRATE: u32 = 256_000;
 pub const MAX_AU: usize = 1536;
 pub const RTP_TICKS_PER_FRAME: u32 = FRAME_SAMPLES as u32 * 90_000 / 48_000;
-pub const AAC_CAPABILITIES: [u8; 6] = [0xc0, 0, 0x84, 0x03, 0xe8, 0];
+pub const AAC_CAPABILITIES: [u8; 6] = [0xc0, 0, 0x84, 0x07, 0xd0, 0];
 const ASC: [u8; 2] = [0x11, 0x90]; // AAC-LC, 48 kHz, stereo, 1024 samples.
 
-pub fn select_codec(mut capabilities: &[u8]) -> io::Result<Option<[u8; 6]>> {
+pub fn select_codec(capabilities: &[u8]) -> io::Result<Option<[u8; 6]>> {
+    select_codec_at(
+        capabilities,
+        ntpods_ipc::PlaybackBitrate {
+            best_effort: false,
+            kbps: 256,
+        },
+    )
+    .map(|selected| selected.map(|(codec, _)| codec))
+}
+
+pub fn select_codec_at(
+    mut capabilities: &[u8],
+    preference: ntpods_ipc::PlaybackBitrate,
+) -> io::Result<Option<([u8; 6], u32)>> {
     let mut transport = false;
     let mut codec = None;
     let mut seen = 0u16;
@@ -47,9 +61,13 @@ pub fn select_codec(mut capabilities: &[u8]) -> io::Result<Option<[u8; 6]>> {
                 } else {
                     data[0] & 0x40
                 };
-                if object != 0 && data[2] & 0x84 == 0x84 && (maximum == 0 || maximum >= BITRATE) {
+                if object != 0 && data[2] & 0x84 == 0x84 {
+                    let Ok(bitrate) = super::codec::Mode::Aac.bitrate(preference, maximum) else {
+                        continue;
+                    };
                     // The encoder disables MPEG-4-only tools, so either LC object type works.
-                    codec = Some([object, 0, 0x84, 0x03, 0xe8, 0]);
+                    let rate = bitrate.to_be_bytes();
+                    codec = Some(([object, 0, 0x84, rate[1], rate[2], rate[3]], bitrate));
                 }
             }
             _ => {}

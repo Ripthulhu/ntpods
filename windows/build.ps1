@@ -47,6 +47,10 @@ try {
     Enter-VsDevShell -VsInstallPath $driverVs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
     $tests = Join-Path $Out 'tests'
     New-Item -ItemType Directory -Path $tests -Force | Out-Null
+    Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', '/MT', "/Fe:$tests\audio-binding.exe", "/Fo:$tests\audio-binding.obj", 'windows/installer/audio-binding.cpp', '/link', 'setupapi.lib', 'newdev.lib')
+    Run (Join-Path $tests 'audio-binding.exe') @('--self-test')
+    Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', "/Fe:$tests\audio-inf-target.exe", "/Fo:$tests\audio-inf-target.obj", 'windows/drivers/audio/tests/inf_target_test.cpp', '/link', 'setupapi.lib')
+    Run (Join-Path $tests 'audio-inf-target.exe') @('windows/drivers/audio/NTPodsAudio.inf')
     Run 'cl.exe' @('/nologo', '/W4', '/WX', '/TC', "/Fe:$tests\aap-policy.exe", "/Fo:$tests\aap-policy.obj", 'windows/drivers/aap/tests/policy_test.c')
     Run (Join-Path $tests 'aap-policy.exe') @()
     Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', "/Fe:$tests\aap-concurrency.exe", "/Fo:$tests\aap-concurrency.obj", 'windows/drivers/aap/tests/receive_concurrency_test.cpp')
@@ -65,6 +69,9 @@ try {
     Run (Join-Path $tests 'eld-shim.exe') @()
     Run 'cl.exe' @('/nologo', '/W4', '/WX', '/std:c11', '/MD', '/O2', '/external:W0', '/external:Iwindows/daemon/vendor/ffmpeg/include', "/Fe:$tests\aac-shim.exe", "/Fo:$tests\aac-shim.obj", 'windows/daemon/tests/aac_shim_test.c', '/link', '/LIBPATH:windows/daemon/vendor/ffmpeg/lib', 'avcodec.lib', 'avutil.lib')
     Run (Join-Path $tests 'aac-shim.exe') @()
+    $aacWorkerDir = Join-Path $repo 'windows\daemon\target\release'
+    New-Item -ItemType Directory -Path $aacWorkerDir -Force | Out-Null
+    Run 'cl.exe' @('/nologo', '/W4', '/WX', '/std:c11', '/MT', '/O2', '/external:W0', '/external:Iwindows/daemon/vendor/ffmpeg/include', "/Fe:$aacWorkerDir\ntpods-aac-encoder.exe", "/Fo:$tests\aac-worker.obj", 'windows/daemon/src/playback/aac_worker.c', '/link', '/LIBPATH:windows/daemon/vendor/ffmpeg/lib', 'avcodec.lib', 'avutil.lib')
     & windows/playback/encoder/build.ps1
     Run 'python.exe' @('windows/playback/encoder/test.py')
     Run $cargo @('test', '--locked', '--manifest-path', 'windows/ipc/Cargo.toml')
@@ -77,22 +84,30 @@ try {
     Run 'dotnet' @('run', '--project', 'windows/tests/Hotkey/Hotkey.csproj', '--configuration', 'Release')
     Run $cargo @('test', '--locked', '--manifest-path', 'windows/daemon/Cargo.toml', '--features', 'experimental-playback')
     $oldEncoderTestPath = $env:NTPODS_ELD_ENCODER_TEST_PATH
+    $oldAacEncoderTestPath = $env:NTPODS_AAC_ENCODER_TEST_PATH
     try {
         $env:NTPODS_ELD_ENCODER_TEST_PATH = Join-Path $repo 'windows/playback/encoder/build/Release/ntpods-eld-encoder.exe'
+        $env:NTPODS_AAC_ENCODER_TEST_PATH = Join-Path $aacWorkerDir 'ntpods-aac-encoder.exe'
         Run $cargo @('test', '--locked', '--manifest-path', 'windows/daemon/Cargo.toml', '--features', 'experimental-playback', 'playback::encoder::tests::streams_real_worker_and_drops_it', '--', '--ignored', '--exact')
-    } finally { $env:NTPODS_ELD_ENCODER_TEST_PATH = $oldEncoderTestPath }
+    } finally {
+        $env:NTPODS_ELD_ENCODER_TEST_PATH = $oldEncoderTestPath
+        $env:NTPODS_AAC_ENCODER_TEST_PATH = $oldAacEncoderTestPath
+    }
     $oldRustFlags = $env:RUSTFLAGS
     try {
         $env:RUSTFLAGS = '-C target-feature=+crt-static'
         Run $cargo @('build', '--release', '--locked', '--manifest-path', 'windows/daemon/Cargo.toml', '--features', 'experimental-playback')
     } finally { $env:RUSTFLAGS = $oldRustFlags }
-    foreach ($project in 'windows/drivers/aap/NTPodsAAP.vcxproj', 'windows/drivers/mic/AudioCodec/Driver/AudioCodec.sln') {
+    foreach ($project in 'windows/drivers/aap/NTPodsAAP.vcxproj', 'windows/drivers/mic/AudioCodec/Driver/AudioCodec.sln', 'windows/drivers/audio/NTPodsAudio.vcxproj') {
         Run $driverBuild @($project, '/p:Configuration=Release', '/p:Platform=x64', '/p:WindowsTargetPlatformVersion=10.0.26100.0', '/p:NTPodsExperimentalPlayback=true', '/p:EnableInf2cat=false', '/p:SignMode=Off', '/m', '/nr:false', '/v:minimal')
     }
     $packages = Join-Path $Out 'driver-packages'
+    New-Item -ItemType Directory -Path (Join-Path $packages 'tools') -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $tests 'audio-binding.exe') -Destination (Join-Path $packages 'tools\audio-binding.exe') -Force
     foreach ($driver in @(
         @{ Directory = 'driver'; Root = 'windows/drivers/aap'; Name = 'NTPodsAAP' },
-        @{ Directory = 'driver-mic-acx'; Root = 'windows/drivers/mic/AudioCodec/Driver'; Name = 'AudioCodec' }
+        @{ Directory = 'driver-mic-acx'; Root = 'windows/drivers/mic/AudioCodec/Driver'; Name = 'AudioCodec' },
+        @{ Directory = 'driver-audio'; Root = 'windows/drivers/audio'; Name = 'NTPodsAudio' }
     )) {
         $sys = Get-ChildItem -LiteralPath $driver.Root -Recurse -Filter "$($driver.Name).sys" | Where-Object { $_.FullName -match '\\x64\\Release\\' -and $_.FullName -notmatch '\\prebuilt\\' } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
         if (-not $sys) { throw "Missing freshly built $($driver.Name).sys" }
@@ -106,6 +121,9 @@ try {
         if ($driver.Name -eq 'NTPodsAAP') {
             Run (Join-Path $tests 'aap-inf-target.exe') @((Join-Path $package 'NTPodsAAP.inf'))
         }
+        if ($driver.Name -eq 'NTPodsAudio') {
+            Run (Join-Path $tests 'audio-inf-target.exe') @((Join-Path $package 'NTPodsAudio.inf'))
+        }
     }
     Run $uiBuild (@('windows/winui/NTPods.WinUI/NTPods.WinUI.csproj', '-restore', '-t:Build', '-p:Configuration=Release', '-p:Platform=x64', '-p:VisualStudioVersion=18.0', '-p:RestorePackagesWithLockFile=true', '-p:RestoreLockedMode=true', '-nr:false', '-v:minimal') + $uiVersionArguments)
     $ui = Get-ChildItem 'windows/winui/NTPods.WinUI/bin/x64/Release' -Recurse -Filter ntpods-winui.exe | Where-Object { $_.FullName -notmatch '\\publish\\' } | Select-Object -First 1
@@ -114,6 +132,8 @@ try {
     Run "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'windows/installer/test-setup.ps1')
     & windows/installer/test-driver-rollback.ps1
     Run "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'windows/installer/test-driver-rollback.ps1')
+    & windows/installer/test-audio-driver.ps1
+    Run "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'windows/installer/test-audio-driver.ps1')
     & windows/installer/make-dist.ps1 -Out (Join-Path $Out 'dist') -DaemonExe windows/daemon/target/release/ntpodsd.exe -WinUIDir $ui.Directory.FullName -DriverPackages $packages
     $env:PATH = "$env:USERPROFILE\.dotnet\tools;$env:PATH"
     & windows/installer/msi/build-msi.ps1 -Dist (Join-Path $Out 'dist') -Out (Join-Path $Out 'NTPods-experimental.msi') @msiVersionArguments

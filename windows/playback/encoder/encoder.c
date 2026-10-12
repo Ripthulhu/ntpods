@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 
-enum { CHANNELS = 2, FRAME_SAMPLES = 480, PCM_SAMPLES = 960, MAX_AU = 320 };
+enum { CHANNELS = 2, FRAME_SAMPLES = 480, PCM_SAMPLES = 960 };
 
 static int write_bytes(const void *data, size_t size) {
     return fwrite(data, 1, size, stdout) == size;
@@ -38,7 +38,7 @@ static int valid_configuration(const AACENC_InfoStruct *info) {
         asc_bits(asc, 23, 3) == 4;
 }
 
-static int encode(HANDLE_AACENCODER encoder, INT_PCM *pcm, int flushing) {
+static int encode(HANDLE_AACENCODER encoder, INT_PCM *pcm, int flushing, unsigned max_au) {
     unsigned char output[2048];
     void *input_ptr = pcm;
     void *output_ptr = output;
@@ -54,7 +54,7 @@ static int encode(HANDLE_AACENCODER encoder, INT_PCM *pcm, int flushing) {
     AACENC_ERROR result = aacEncEncode(encoder, &input, &destination, &in_args, &out_args);
     if (result == AACENC_ENCODE_EOF) return 0;
     if (result != AACENC_OK || (!flushing && out_args.numInSamples != PCM_SAMPLES) ||
-        out_args.numOutBytes < 0 || out_args.numOutBytes > MAX_AU) {
+        out_args.numOutBytes < 0 || (unsigned)out_args.numOutBytes > max_au) {
         fprintf(stderr, "AAC-ELD encoding failed (%x, input %d, output %d).\n",
                 result, out_args.numInSamples, out_args.numOutBytes);
         return -1;
@@ -68,11 +68,20 @@ static int encode(HANDLE_AACENCODER encoder, INT_PCM *pcm, int flushing) {
     return 1;
 }
 
-int main(void) {
+int main(int argc, char **argv) {
     HANDLE_AACENCODER encoder = NULL;
     AACENC_InfoStruct info = {0};
     INT_PCM pcm[PCM_SAMPLES];
     int exit_code = 1;
+    unsigned bitrate = 256000;
+    if (argc != 1) {
+        if (argc != 3 || strcmp(argv[1], "--bitrate") || strlen(argv[2]) != 6 ||
+            strspn(argv[2], "0123456789") != 6 || sscanf_s(argv[2], "%u", &bitrate) != 1 ||
+            bitrate < 128000 || bitrate > 256000 || bitrate % 1000 != 0) {
+            fprintf(stderr, "Use --bitrate with 128000..256000 bits per second in 1000-bit steps.\n");
+            return 1;
+        }
+    }
     if (sizeof(INT_PCM) != 2 || _setmode(_fileno(stdin), _O_BINARY) == -1 ||
         _setmode(_fileno(stdout), _O_BINARY) == -1) {
         fprintf(stderr, "Cannot initialize PCM input and binary output.\n");
@@ -86,8 +95,9 @@ int main(void) {
         {AACENC_AOT, AOT_ER_AAC_ELD}, {AACENC_SAMPLERATE, 48000},
         {AACENC_CHANNELMODE, MODE_2}, {AACENC_GRANULE_LENGTH, FRAME_SAMPLES},
         {AACENC_SBR_MODE, 1}, {AACENC_SBR_RATIO, 1},
-        {AACENC_BITRATE, 256000}, {AACENC_BITRATEMODE, 5},
-        {AACENC_PEAK_BITRATE, 256000}, {AACENC_AFTERBURNER, 1},
+        {AACENC_BITRATE, bitrate}, {AACENC_BITRATEMODE, 5},
+        // A 10 ms access unit must fit a whole-byte packet budget.
+        {AACENC_PEAK_BITRATE, (bitrate / 800) * 800}, {AACENC_AFTERBURNER, 1},
         {AACENC_TRANSMUX, TT_MP4_RAW}
     };
     for (size_t i = 0; i < sizeof(parameters) / sizeof(parameters[0]); ++i) {
@@ -113,10 +123,10 @@ int main(void) {
             goto cleanup;
         }
         if (!count) break;
-        if (encode(encoder, pcm, 0) < 0) goto cleanup;
+        if (encode(encoder, pcm, 0, bitrate / 800) < 0) goto cleanup;
     }
     for (int i = 0; i < 32; ++i) {
-        int result = encode(encoder, pcm, 1);
+        int result = encode(encoder, pcm, 1, bitrate / 800);
         if (result < 0) goto cleanup;
         if (!result) { exit_code = 0; goto cleanup; }
     }

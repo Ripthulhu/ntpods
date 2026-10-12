@@ -126,126 +126,21 @@ pub fn restore_experimental_audio() -> std::io::Result<()> {
 }
 
 #[cfg(feature = "experimental-playback")]
-fn installed_playback_services(address: u64) -> std::io::Result<PlaybackRestore> {
-    use windows_sys::Win32::Devices::Bluetooth::BluetoothEnumerateInstalledServices;
-    unsafe {
-        let mut params: BLUETOOTH_FIND_RADIO_PARAMS = zeroed();
-        params.dwSize = size_of::<BLUETOOTH_FIND_RADIO_PARAMS>() as u32;
-        let mut radio: HANDLE = std::ptr::null_mut();
-        let found = BluetoothFindFirstRadio(&params, &mut radio);
-        if found.is_null() {
-            return Err(std::io::Error::last_os_error());
-        }
-        let result = loop {
-            let mut device: BLUETOOTH_DEVICE_INFO = zeroed();
-            device.dwSize = size_of::<BLUETOOTH_DEVICE_INFO>() as u32;
-            device.Address.Anonymous.ullLong = address;
-            if BluetoothGetDeviceInfo(radio, &mut device) == 0
-                && device.fAuthenticated != 0
-                && device.fRemembered != 0
-            {
-                let mut services: [GUID; 64] = zeroed();
-                let mut count = services.len() as u32;
-                let status = BluetoothEnumerateInstalledServices(
-                    radio,
-                    &device,
-                    &mut count,
-                    services.as_mut_ptr(),
-                );
-                CloseHandle(radio);
-                if status != 0 || count > services.len() as u32 {
-                    break Err(std::io::Error::other(
-                        "Cannot determine the installed audio services",
-                    ));
-                }
-                let contains = |wanted: &GUID| {
-                    services[..count as usize].iter().any(|id| {
-                        id.data1 == wanted.data1
-                            && id.data2 == wanted.data2
-                            && id.data3 == wanted.data3
-                            && id.data4 == wanted.data4
-                    })
-                };
-                break Ok(PlaybackRestore {
-                    address,
-                    sink: contains(&AUDIO_SINK),
-                    handsfree: contains(&HANDSFREE),
-                });
-            }
-            CloseHandle(radio);
-            radio = std::ptr::null_mut();
-            if BluetoothFindNextRadio(found, &mut radio) == 0 {
-                break Err(std::io::Error::other("Paired AirPods are unavailable"));
-            }
-        };
-        BluetoothFindRadioClose(found);
-        result
-    }
-}
-
-#[cfg(feature = "experimental-playback")]
 pub fn playback_intent() -> u64 {
     AUDIO_INTENT.snapshot()
 }
 
-#[cfg(feature = "experimental-playback")]
-pub fn with_experimental_playback(
-    address: u64,
-    intent: u64,
-    run: impl FnOnce() -> std::io::Result<()>,
-) -> std::io::Result<()> {
-    use std::io::Write;
-    let _gate = AUDIO_GATE
-        .enter(&AUDIO_INTENT, false)
-        .ok_or_else(|| std::io::Error::other("Audio is shutting down"))?;
-    if !AUDIO_INTENT.allows_recovery(intent) {
-        return Err(std::io::Error::other("Connection request changed"));
-    }
-    let record = installed_playback_services(address)?;
-    if !record.sink {
-        return Err(std::io::Error::other(
-            "Normal playback must be installed before the experiment",
-        ));
-    }
-    let path = playback_journal()?;
-    let mut journal = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)?;
-    if let Err(error) = journal
-        .write_all(&serde_json::to_vec(&record)?)
-        .and_then(|_| journal.sync_all())
-    {
-        drop(journal);
-        let _ = std::fs::remove_file(path);
-        return Err(error);
-    }
-    drop(journal);
-    let (sink, handsfree) = set_audio_services(address, false, !record.handsfree, intent);
-    let result = if sink == 0
-        && (!record.handsfree || handsfree == 0)
-        && AUDIO_INTENT.allows_recovery(intent)
-    {
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).unwrap_or_else(|_| {
-            Err(std::io::Error::other(
-                "Experimental playback worker stopped unexpectedly",
-            ))
-        })
-    } else {
-        Err(std::io::Error::other(format!(
-            "Cannot release normal playback ({sink}/{handsfree})"
-        )))
-    };
-    finish_playback_restore(
-        &AUDIO_INTENT,
-        AUDIO_INTENT.snapshot(),
-        |token| restore_playback(&record, token),
-        || std::fs::remove_file(path),
-    )?;
-    result
-}
-
 unsafe fn set_service(radio: HANDLE, mac: u64, service: &GUID, flags: u32) -> u32 {
+    #[cfg(feature = "experimental-playback")]
+    if service.data1 == AUDIO_SINK.data1
+        && service.data2 == AUDIO_SINK.data2
+        && service.data3 == AUDIO_SINK.data3
+        && service.data4 == AUDIO_SINK.data4
+        && crate::playback::owns_sink(mac)
+    {
+        // Removing this service would remove the active physical audio endpoint.
+        return 0;
+    }
     let mut device: BLUETOOTH_DEVICE_INFO = zeroed();
     device.dwSize = size_of::<BLUETOOTH_DEVICE_INFO>() as u32;
     device.Address.Anonymous.ullLong = mac;

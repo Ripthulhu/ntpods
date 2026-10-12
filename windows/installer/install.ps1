@@ -1,10 +1,11 @@
 <#
     NTPods ZIP installer. NTPods.msi uses the same shared installation steps.
 
-    Test-signs and installs both kernel drivers:
+    Test-signs and installs the kernel drivers:
       • NTPodsAAP  — opens the AirPods AAP L2CAP channel (battery, ANC, mic, …).
       • NTPodsMic  — a virtual microphone so any app can use the AirPods mic.
                      Hardened ACX driver; Windows 11 22H2 or newer only.
+      • NTPodsAudio — replaces the paired AirPods playback driver for AAC/AAC-ELD.
     Then copies the daemon + WinUI app to %ProgramFiles%\NTPods, registers the
     two elevated helper tasks (driver recovery, mic rename) and adds the apps to
     startup (the WinUI app launches minimised to the tray).
@@ -63,7 +64,9 @@ if ($bitlocker) {
 $required = @(
     'driver\NTPodsAAP.sys', 'driver\ntpodsaap.cat', 'driver\NTPodsAAP.inf',
     'driver-mic-acx\AudioCodec.sys', 'driver-mic-acx\audiocodec.cat', 'driver-mic-acx\AudioCodec.inf',
-    'tools\devcon.exe', 'ntpodsd.exe', 'avcodec-61.dll', 'avutil-59.dll', 'swresample-5.dll',
+    'driver-audio\NTPodsAudio.sys', 'driver-audio\ntpodsaudio.cat', 'driver-audio\NTPodsAudio.inf',
+    'tools\devcon.exe', 'tools\audio-binding.exe', 'audio-driver.ps1', 'ntpodsd.exe', 'avcodec-61.dll', 'avutil-59.dll', 'swresample-5.dll',
+    'ntpods-aac-encoder.exe', 'ntpods-eld-encoder.exe', 'fdk-aac.dll',
     'winui\ntpods-winui.exe', 'fix-driver.ps1', 'rename-mic.ps1'
 ) | ForEach-Object { Join-Path $here $_ }
 $missing = @($required | Where-Object { -not (Test-Path $_) })
@@ -78,7 +81,7 @@ Stop-NTPods
 $setupDir = Initialize-SetupDirectory
 Remove-SetupLeftovers $env:LOCALAPPDATA
 
-# ---- 2. both drivers (test-signed here, then pnputil / devcon) ---------------
+# ---- 2. drivers -----------------------------------------------------------
 $work = Join-Path $setupDir "drivers-$([guid]::NewGuid())"
 $transactionId = [guid]::NewGuid().ToString()
 try {
@@ -93,7 +96,7 @@ finally {
 # The daemon owns the driver + AAP session + mic; the WinUI app is its IPC client.
 Write-Host "==> Copying the apps to $dest"
 Assert-ProtectedInstallPath $dest
-foreach ($f in 'ntpodsd.exe', 'avcodec-61.dll', 'avutil-59.dll', 'swresample-5.dll', 'fix-driver.ps1', 'rename-mic.ps1', 'setup-common.ps1', 'stop-ntpods.ps1', 'msi-setup.ps1', 'uninstall.ps1') {
+foreach ($f in 'ntpodsd.exe', 'avcodec-61.dll', 'avutil-59.dll', 'swresample-5.dll', 'ntpods-aac-encoder.exe', 'ntpods-eld-encoder.exe', 'fdk-aac.dll', 'fix-driver.ps1', 'rename-mic.ps1', 'setup-common.ps1', 'audio-driver.ps1', 'restore-playback.ps1', 'stop-ntpods.ps1', 'msi-setup.ps1', 'uninstall.ps1') {
     Copy-Item (Join-Path $here $f) $dest -Force
 }
 # The WinUI app ships as a self-contained folder.

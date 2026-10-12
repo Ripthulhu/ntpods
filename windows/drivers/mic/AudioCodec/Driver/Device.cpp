@@ -25,7 +25,7 @@ Environment:
 #include <ksmedia.h>
 #include "streamengine.h"
 #include "MicPipe.h"
-#include "RenderPipe.h"
+
 #include "DriverSettings.h"
 
 #ifndef __INTELLISENSE__
@@ -176,17 +176,10 @@ Return Value:
     WdfDeviceSetPnpCapabilities(device, &pnpCaps);
 
     //
-    // Create a render circuit and capture circuit and add them to the current
-    // device context. These circuits will be added to the device when the
-    // prepare hardware callback is called. 
+    // Prepare the capture circuit before the hardware callback publishes it.
     //
-    // The render endpoint is optional for builds without playback support.
+
     RETURN_NTSTATUS_IF_FAILED(CodecC_AddStaticCapture(device, &CODEC_CAPTURE_COMPONENT_GUID, &MIC_CUSTOM_NAME, &captureCircuitName));
-#if NTPODS_EXPERIMENTAL_PLAYBACK
-    RenderPipeInit();
-    RETURN_NTSTATUS_IF_FAILED(CodecR_AddStaticRender(device, &CODEC_RENDER_COMPONENT_GUID, &renderCircuitName));
-    RETURN_NTSTATUS_IF_FAILED(RenderPipeCreateControlDevice(device));
-#endif
 
     //
     // NTPods mic bridge (Phase 2): init the PCM ring and expose the control
@@ -257,10 +250,6 @@ Return Value:
     RETURN_NTSTATUS_IF_FAILED(AcxDeviceAddCircuit(Device, devCtx->Capture));
     // A single-circuit endpoint gets its symbolic link only after it is added.
     RETURN_NTSTATUS_IF_FAILED(CodecC_SetPacketConstraints(devCtx->Capture));
-#if NTPODS_EXPERIMENTAL_PLAYBACK
-    RETURN_NTSTATUS_IF_FAILED(AcxDeviceAddCircuit(Device, devCtx->Render));
-    RETURN_NTSTATUS_IF_FAILED(CodecR_SetPacketConstraints(devCtx->Render));
-#endif
 
     return status;
 }
@@ -303,10 +292,6 @@ Return Value:
     // The driver uses this DDI to delete a circuit from the current device. 
     //
     RETURN_NTSTATUS_IF_FAILED(AcxDeviceRemoveCircuit(Device, devCtx->Capture));
-#if NTPODS_EXPERIMENTAL_PLAYBACK
-    RenderPipeSetOnline(FALSE);
-    RETURN_NTSTATUS_IF_FAILED(AcxDeviceRemoveCircuit(Device, devCtx->Render));
-#endif
 
     // NOTE: Release streaming h/w resources here.
 
@@ -327,9 +312,6 @@ Codec_EvtDeviceD0Entry(
 
     PAGED_CODE();
 
-#if NTPODS_EXPERIMENTAL_PLAYBACK
-    RenderPipeSetOnline(TRUE);
-#endif
 
     return STATUS_SUCCESS;
 }
@@ -346,9 +328,6 @@ Codec_EvtDeviceD0Exit(
     PAGED_CODE();
 
     powerAction = WdfDeviceGetSystemPowerAction(Device);
-#if NTPODS_EXPERIMENTAL_PLAYBACK
-    RenderPipeSetOnline(FALSE);
-#endif
 
     // 
     // Update the power policy D3-cold info for Connected Standby.
@@ -443,7 +422,4 @@ Return Value:
     WDFDEVICE               device;
     device = (WDFDEVICE)WdfDevice;
     MicPipeDeleteControlDevice(device);
-#if NTPODS_EXPERIMENTAL_PLAYBACK
-    RenderPipeDeleteControlDevice(device);
-#endif
 }

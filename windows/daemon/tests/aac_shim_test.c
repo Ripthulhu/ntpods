@@ -2,15 +2,19 @@
 #include <math.h>
 #include <stdio.h>
 #include <time.h>
-#include "../src/playback/aac_shim.c"
+#define main aac_worker_main
+#include "../src/playback/aac_worker.c"
+#undef main
 
 #define PI 3.14159265358979323846
 #define TONE_BLOCKS 144
 
-static AacEnc *fixture(void) {
-    AacEnc *encoder = ntpods_aac_open();
+static AacEnc *fixture(uint32_t bitrate) {
+    AacEnc *encoder = ntpods_aac_open_at(bitrate);
     assert(encoder);
     int64_t value = -1;
+    assert(av_opt_get_int(encoder->ctx->priv_data, "aac_coder", 0, &value) == 0);
+    assert(value == 2);
     for (int i = 0; i < 3; i++) {
         const char *name[] = {"aac_pns", "aac_ltp", "aac_pred"};
         assert(av_opt_get_int(encoder->ctx->priv_data, name[i], 0, &value) == 0);
@@ -24,7 +28,7 @@ static AacEnc *fixture(void) {
 }
 
 static void invalid_buffers_and_backpressure(void) {
-    AacEnc *encoder = fixture();
+    AacEnc *encoder = fixture(256000);
     uint8_t pcm[AAC_PCM_BYTES + 1] = {0};
     uint8_t output[AAC_MAX_AU];
     memset(output, 0x5a, sizeof(output));
@@ -92,8 +96,8 @@ static void decode(Decoder *decoder, const uint8_t *data, int length) {
     assert(result == AVERROR(EAGAIN));
 }
 
-static void stereo_roundtrip(void) {
-    AacEnc *encoder = fixture();
+static void stereo_roundtrip(uint32_t bitrate) {
+    AacEnc *encoder = fixture(bitrate);
     const AVCodec *codec = avcodec_find_decoder_by_name("aac");
     Decoder decoder = {0};
     decoder.ctx = avcodec_alloc_context3(codec);
@@ -147,8 +151,8 @@ static void stereo_roundtrip(void) {
     ntpods_aac_close(encoder);
 }
 
-static void peak_and_speed(void) {
-    AacEnc *encoder = fixture();
+static void peak_and_speed(uint32_t bitrate, int verbose) {
+    AacEnc *encoder = fixture(bitrate);
     uint32_t random = 0x194838;
     uint8_t pcm[AAC_PCM_BYTES], output[AAC_MAX_AU];
     int peak = 0, packets = 0;
@@ -173,17 +177,42 @@ static void peak_and_speed(void) {
         assert(size == 0);
     }
     double seconds = (double)(clock() - start) / CLOCKS_PER_SEC;
-    assert(packets >= 498 && peak <= AAC_MAX_AU);
-    printf("AAC noise/transients: %d AUs, peak %d bytes, %.3fs for 10.667s audio\n", packets, peak, seconds);
+    assert(packets >= 498 && peak <= encoder->max_au);
+    if (verbose) printf("AAC %u kbps noise/transients: %d AUs, peak %d/%d bytes, %.3fs for 10.667s audio\n", bitrate/1000, packets, peak, encoder->max_au, seconds);
     assert(seconds < 10.667);
     ntpods_aac_close(encoder);
 }
 
 int main(void) {
+    setvbuf(stdout, NULL, _IONBF, 0);
     av_log_set_level(AV_LOG_ERROR);
     invalid_buffers_and_backpressure();
-    stereo_roundtrip();
-    peak_and_speed();
+    uint32_t parsed;
+    char *defaults[] = {"worker"};
+    assert(parse_bitrate(1, defaults, &parsed) && parsed == 256000);
+    const char *invalid[] = {"", "-96000", "+96000", "96000x", "9e4", "95000", "96001", "513000", "4294967296"};
+    for (int i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        char *args[] = {"worker", "--bitrate", (char *)invalid[i]};
+        assert(!parse_bitrate(3, args, &parsed));
+    }
+    char *wrong_flag[] = {"worker", "--quality", "256000"};
+    assert(!parse_bitrate(3, wrong_flag, &parsed));
+    assert(!parse_bitrate(2, defaults, &parsed));
+    const uint32_t rates[] = {96000, 97000, 128000, 256000, 320000, 511000, 512000};
+    assert(!ntpods_aac_open_at(95000) && !ntpods_aac_open_at(513000) && !ntpods_aac_open_at(128001));
+    for (int i = 0; i < sizeof(rates) / sizeof(rates[0]); i++) {
+        printf("Testing AAC %u kbps\n", rates[i]/1000);
+        stereo_roundtrip(rates[i]);
+        peak_and_speed(rates[i], 1);
+    }
+    puts("Checking noise/transients at all 417 AAC rates");
+    for (uint32_t rate = 96000; rate <= 512000; rate += 1000) {
+        char number[7];
+        snprintf(number, sizeof(number), "%u", rate);
+        char *args[] = {"worker", "--bitrate", number};
+        assert(parse_bitrate(3, args, &parsed) && parsed == rate);
+        peak_and_speed(rate, 0);
+    }
     puts("AAC encoder: PCM bounds, backpressure, LC tools, stereo pitch and peak bitrate passed");
     return 0;
 }

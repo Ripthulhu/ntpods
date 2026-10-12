@@ -15,18 +15,23 @@ Neither installer changes Secure Boot, Memory Integrity or Test Mode for you.
 After uninstalling the drivers, turn Test Mode off and restore any Secure Boot
 setting you changed. See [Microsoft's test-signing documentation](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/the-testsigning-boot-configuration-option).
 
-Those packages retain the PC's A2DP playback driver and codec settings. Available
-controls depend on the AirPods model and firmware. Microphone recovery interrupts
-playback, and sustained capture, latency/drift and broader hardware testing remain
-incomplete. Read the [validation record](https://github.com/Ripthulhu/ntpods/blob/main/docs/WINDOWS-VALIDATION.md)
-before testing.
+The packages replace the paired AirPods Pro 1 or Pro 3 playback driver with
+NTPodsAudio. AAC and AAC-ELD share that AirPods output; both offer Best effort and
+Manual kbps settings under **Playback and microphone**. No separate speaker or
+per-app routing is needed. Initial driver replacement may require selecting the
+output again. Codec changes keep the same output.
 
-Both packages include experimental AAC and AAC-ELD playback. In **Playback and
-microphone**, choose a codec, then select **Speakers (NTPods Experimental)** in
-your player. Windows playback remains the default. Native playback temporarily
-releases normal AirPods audio; selecting Windows restores it. Playback, recording
-coexistence and recovery still need hardware testing. See the
-[playback test guide](https://github.com/Ripthulhu/ntpods/blob/main/windows/playback/TESTING.md).
+Keep NTPods running for playback, or enable Start with Windows. If the backend
+stops, playback stops too. Keep the AirPods connected during uninstall to restore
+the previous playback provider. Its package is retained during installation.
+Other models keep their current
+playback driver. Available controls depend on model and firmware.
+
+The new playback driver, microphone coexistence and recovery have not passed
+hardware testing. Existing microphone results used Alternative A2DP and do not
+validate the replacement. See the
+[playback test guide](https://github.com/Ripthulhu/ntpods/blob/main/windows/playback/TESTING.md)
+and [validation record](https://github.com/Ripthulhu/ntpods/blob/main/docs/WINDOWS-VALIDATION.md).
 
 The ACX microphone driver's licensing issue remains unresolved. Retain all bundled
 licenses and notices; see

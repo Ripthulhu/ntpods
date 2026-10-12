@@ -1493,10 +1493,34 @@ The publication review updated the README, design notes and installer wording.
 The microphone license remained unresolved, with no new grant or upstream
 clarification. Binary publishing was disabled for the initial source push.
 
+## Native playback driver and bitrate controls
+
+The playback driver binds the paired AirPods Pro 1 and Pro 3 AudioSink instances.
+It replaces the root virtual speaker used by the earlier playback experiment.
+AAC and AAC-ELD share one output, with separate Best effort and Manual bitrate
+preferences. Other AirPods models keep their current playback provider.
+
+AAC encoder tests cover every 1 kbps step from 96 through 512 with full-scale
+noise, impulses and transients. Seven rates also pass decoded pitch and stereo
+separation checks. AAC-ELD checks cover 128 through 256 kbps headers and decoded
+samples at five rates. Both encoders run in separate processes; a suspended-worker
+test verifies that shutdown kills the worker and releases blocked pipes.
+
+Installer tests cover exact-device binding, original-package backups, failed
+exports, failed restoration, upgrade rollback and restoration after an absent
+pair returns. Read-only checks found compatible drivers for both local pairs;
+no new driver was installed. Sixteen native UI renders cover codec and bitrate
+controls in light/dark themes at desktop and narrow widths.
+
+The replacement driver still needs physical installation, playback, microphone
+coexistence, volume/mute, sleep/resume and uninstall testing. Lower-rate AAC-ELD
+acceptance by the AirPods remains unverified. Prior microphone results used
+Alternative A2DP and do not validate this driver.
+
 ## Production release requirements
 
 Production redistribution is held by the ACX sample licensing discrepancy described
 in `THIRD_PARTY.md`. Author clarification or a compatible replacement is required;
-changing a license label does not resolve it. Normal deployment also requires both
+changing a license label does not resolve it. Normal deployment also requires all three
 driver packages to pass Microsoft's signing process and load with Secure Boot and
 Memory Integrity enabled. The local test-signing installer is not that release path.

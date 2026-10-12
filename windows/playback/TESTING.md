@@ -1,40 +1,48 @@
 # Playback test
 
-Use a Windows 11 x64 test PC with paired AirPods and Test Mode already enabled.
-Test Mode weakens driver-signature checks; do not enable it on a work or everyday
-PC for this experiment. AAC and AAC-ELD playback have not passed hardware testing.
+Use a Windows 11 x64 test PC with paired AirPods Pro 1 or Pro 3 and Test Mode
+already enabled. Test Mode weakens driver-signature checks; do not enable it on
+a work or everyday PC for this experiment. This playback driver has not passed
+hardware testing.
 
 Download **NTPods.msi** from [releases](https://github.com/Ripthulhu/ntpods/releases)
-and install it normally. It includes both codecs and updates both NTPods drivers.
-Restart if setup requests it. The Windows ZIP contains the same files for manual
-installation; see [the installation guide](../README.md).
+and install with drivers selected. Enable Start with Windows or open NTPods after
+login; playback requires its backend. Restart if requested. The ZIP includes the
+same files for [manual installation](../README.md).
 
 ## Check each codec
 
-1. Connect your AirPods and confirm normal music playback works.
-2. Stop recording. In **Playback and microphone**, choose **AAC**.
-3. In your player or Windows Volume mixer, select **Speakers (NTPods Experimental)**
-   for that app. Start at low volume with shared-mode playback.
-4. Check distinct left/right tones, speech pitch, sustained playback, pause/resume,
-   volume and mute. Record with **Microphone (NTPods)** while stereo plays, then
-   stop recording and check both earbuds again.
-5. Select **AAC-ELD** and repeat. Check switching in both directions.
-6. Select **Windows**, choose the usual AirPods output in the player and confirm
-   ordinary playback works again.
+1. Connect the AirPods and open NTPods. Select the AirPods output in Windows Sound.
+   There should be one playback output for the pair, with no NTPods virtual speaker.
+   The first driver replacement may require selecting the output again.
+2. Under **Playback and microphone**, choose **AAC** with **Best effort**. Check
+   system sounds and music at low volume, then distinct left/right tones, speech
+   pitch, sustained playback, pause/resume, volume and mute.
+3. Choose **Manual**, enter a bitrate and Apply. Test 128, 256 and 320 kbps where
+   the peer supports them. Confirm the settings survive restarting NTPods.
+4. Select **AAC-ELD** and repeat with Best effort and Manual 128, 192 and 256 kbps.
+   Check that each codec keeps its own bitrate choice.
+5. Switch codecs in both directions. Windows should retain the same output and
+   default selection. No per-app output change should be needed.
+6. Record with **Microphone (NTPods)** while stereo plays. Stop recording and check
+   both earbuds. Also test removing/reinserting buds during recording.
+7. Keep supported pairs connected, uninstall and confirm playback returns through the previous driver.
+   Reconnect or restart if requested, then test installing again.
 
-The app remembers the selected mode. The experimental endpoint cannot become
-the Windows default, so route each playback app to it. Codec changes are blocked
-while the microphone is active or recovering.
+Also check case closure, Bluetooth disconnect, sleep/resume, AAP control reconnect,
+backend exit/crash, and long playback. Codec/bitrate changes must be blocked while
+the microphone is active or recovering. A failed stream should offer Retry;
+restart NTPods after a crash. The replacement driver cannot play while its backend
+is stopped. Driver Verifier and clean install/upgrade/uninstall remain required.
 
-Also check disconnect/reconnect, case closure, sleep/resume and app exit. After a
-native playback failure, normal audio services should return; use Retry to attempt
-the selected codec again. After a crash, reopen NTPods to restore the saved audio
-services. Keep `playback-restore.json` if restoration fails; it is the recovery
-record, not a cache to clear.
+Record the codec, bitrate setting, AirPods model/firmware, Windows version,
+Bluetooth adapter and failed step. Logs are under `%LOCALAPPDATA%\NTPods`; remove
+personal device identifiers before sharing. Audio payloads are not logged.
 
-Record the codec, AirPods model and firmware, Windows version, Bluetooth adapter
-and the step that failed. Backend logs are under `%LOCALAPPDATA%\NTPods`; remove
-personal device identifiers before sharing them. Audio payloads are not logged.
-The existing A2DP driver package is retained throughout installation and testing.
-
-For source builds and automated checks, see [the playback README](README.md).
+Installation saves previous playback bindings under
+`%ProgramData%\NTPods\audio-original`; failed driver transactions keep recovery
+data under `%ProgramData%\NTPods\driver-rollback`. Do not delete either to bypass a
+restoration error. The previous driver's package is never removed by installation.
+If a pair was absent during uninstall, reconnect it and run `restore-playback.ps1`
+from the extracted Windows ZIP in an administrator PowerShell to finish restoring
+its saved provider. The script also restores playback without uninstalling the app.

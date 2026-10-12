@@ -1,9 +1,7 @@
 //! Core Audio volume, mute and Conversation Awareness for the current output.
 
 use windows::core::{AgileReference, Error, Interface, BSTR};
-use windows::Win32::Devices::FunctionDiscovery::{
-    PKEY_DeviceInterface_FriendlyName, PKEY_Device_FriendlyName,
-};
+use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_InstanceId;
 use windows::Win32::Foundation::{ERROR_NOT_FOUND, E_FAIL};
 use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
 use windows::Win32::Media::Audio::{
@@ -13,7 +11,6 @@ use windows::Win32::Media::Audio::{
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED, STGM_READ,
 };
-use windows::Win32::UI::Shell::PropertiesSystem::PROPERTYKEY;
 
 /// Join the process MTA for the calling thread. Idempotent-safe (a second call
 /// returns S_FALSE). Every daemon thread that touches volume must call this.
@@ -28,11 +25,11 @@ fn output_device() -> windows::core::Result<IMMDevice> {
         let enumerator: IMMDeviceEnumerator =
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
         #[cfg(feature = "experimental-playback")]
-        let experimental = crate::playback::is_active();
+        let address = crate::playback::active_address();
         #[cfg(not(feature = "experimental-playback"))]
-        let experimental = false;
+        let address = None;
         resolve_output(
-            experimental,
+            address.is_some(),
             || enumerator.GetDefaultAudioEndpoint(eRender, eConsole),
             || {
                 let devices = enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)?;
@@ -42,16 +39,14 @@ fn output_device() -> windows::core::Result<IMMDevice> {
                     let Ok(properties) = device.OpenPropertyStore(STGM_READ) else {
                         continue;
                     };
-                    let text = |key: &PROPERTYKEY| {
-                        properties
-                            .GetValue(key)
-                            .ok()
-                            .and_then(|value| BSTR::try_from(&value).ok())
-                            .map(|value| value.to_string())
-                    };
-                    let interface = text(&PKEY_DeviceInterface_FriendlyName);
-                    let friendly = text(&PKEY_Device_FriendlyName);
-                    if is_experimental_endpoint(interface.as_deref(), friendly.as_deref()) {
+                    let instance = properties
+                        .GetValue(&PKEY_Device_InstanceId)
+                        .ok()
+                        .and_then(|value| BSTR::try_from(&value).ok())
+                        .map(|value| value.to_string());
+                    if instance.is_some_and(|id| {
+                        crate::driver::native_endpoint_owner(&id, address.unwrap())
+                    }) {
                         candidates.push(device);
                     }
                 }
@@ -73,23 +68,13 @@ fn resolve_output<T>(
     match matches.len() {
         0 => Err(Error::new(
             windows::core::HRESULT::from_win32(ERROR_NOT_FOUND.0),
-            "Experimental playback endpoint is unavailable",
+            "AirPods playback endpoint is unavailable",
         )),
         1 => Ok(matches.pop().unwrap()),
         _ => Err(Error::new(
             E_FAIL,
-            "Multiple experimental playback endpoints are active",
+            "Multiple AirPods playback endpoints are active",
         )),
-    }
-}
-
-fn is_experimental_endpoint(interface: Option<&str>, friendly: Option<&str>) -> bool {
-    // The interface name comes from our INF and survives endpoint renaming.
-    match interface.filter(|name| !name.is_empty()) {
-        Some(name) => name == "NTPods Experimental",
-        None => friendly.is_some_and(|name| {
-            name == "NTPods Experimental" || name.ends_with(" (NTPods Experimental)")
-        }),
     }
 }
 
@@ -323,34 +308,6 @@ mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
-
-    #[test]
-    fn experimental_identity_accepts_renaming_but_not_similar_devices() {
-        assert!(is_experimental_endpoint(
-            Some("NTPods Experimental"),
-            Some("My output")
-        ));
-        for friendly in [
-            "NTPods Experimental",
-            "Speakers (NTPods Experimental)",
-            "Luidsprekers (NTPods Experimental)",
-        ] {
-            assert!(is_experimental_endpoint(None, Some(friendly)));
-        }
-        for friendly in [
-            "AirPods",
-            "NTPods Microphone",
-            "Speakers (NTPods Experimental 2)",
-            "NTPods Experimental backup",
-        ] {
-            assert!(!is_experimental_endpoint(None, Some(friendly)));
-        }
-        assert!(!is_experimental_endpoint(
-            Some("Other output"),
-            Some("Speakers (NTPods Experimental)")
-        ));
-        assert!(!is_experimental_endpoint(None, None));
-    }
 
     #[test]
     fn output_resolution_never_falls_back_while_experimental_playback_is_owned() {
