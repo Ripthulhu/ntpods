@@ -15,18 +15,13 @@ def parse_stream(data):
     assert frame_samples == 480 and 1 <= asc_length <= 64
     asc = data[12:12 + asc_length]
     assert len(asc) == asc_length
-    bits = "".join(f"{byte:08b}" for byte in asc)
-    assert int(bits[:5], 2) == 31 and int(bits[5:11], 2) + 32 == 39
-    assert int(bits[11:15], 2) == 3  # 48 kHz
-    assert int(bits[15:19], 2) == 2  # stereo
-    assert bits[19] == "1"  # 480-sample granule
-    assert bits[23:25] == "10"  # SBR present, same sample rate
+    assert asc == bytes.fromhex("f8e65000")  # AOT 39, 48 kHz stereo, 480 samples, no SBR
     offset = 12 + asc_length
     sizes = []
     while offset < len(data):
         size, = struct.unpack_from("<H", data, offset)
         offset += 2
-        assert 1 <= size <= 320
+        assert 1 <= size <= 321
         assert len(data) - offset >= size
         offset += size
         sizes.append(size)
@@ -81,17 +76,27 @@ def run():
     random_source = random.Random(20261012)
     noise = b"".join(struct.pack("<h", random_source.randrange(-24000, 24000))
                      for _ in range(48000 * 2 * 2))
-    stress = subprocess.run([BUILD / "ntpods-eld-encoder.exe"], input=noise,
+    transients = b"".join(struct.pack("<hh", 30000 if i % 480 == 0 else 0,
+                                    -30000 if i % 960 == 0 else 0)
+                         for i in range(48000))
+    stress_pcm = noise + transients
+    stress = subprocess.run([BUILD / "ntpods-eld-encoder.exe"], input=stress_pcm,
                             capture_output=True, timeout=30, check=True)
     _, stress_sizes = parse_stream(stress.stdout)
-    assert len(stress_sizes) >= 200 and max(stress_sizes) <= 320
-    for bitrate in (128000, 129000, 192000, 255000, 256000):
+    assert len(stress_sizes) >= 300 and max(stress_sizes) <= 321
+    decode_rates = {128000, 129000, 192000, 255000, 256000}
+    for bitrate in range(128000, 256001, 1000):
         selected = subprocess.run([BUILD / "ntpods-eld-encoder.exe", "--bitrate", str(bitrate)],
-                                  input=noise, capture_output=True, timeout=30, check=True)
+                                  input=stress_pcm, capture_output=True, timeout=30, check=True)
         selected_asc, selected_sizes = parse_stream(selected.stdout)
-        # SBR crossover frequency changes with bitrate; the core format stays fixed.
-        assert selected_asc[:3] == asc[:3]
-        assert len(selected_sizes) >= 200 and max(selected_sizes) <= bitrate // 800
+        assert selected_asc == asc
+        assert len(selected_sizes) >= 300
+        assert max(selected_sizes) <= math.ceil(bitrate / 800) + 1, (bitrate, max(selected_sizes))
+        steady_sizes = selected_sizes[2:198]
+        measured_bitrate = sum(steady_sizes) * 800 / len(steady_sizes)
+        assert abs(measured_bitrate - bitrate) <= 800, (bitrate, measured_bitrate)
+        if bitrate not in decode_rates:
+            continue
         with tempfile.TemporaryDirectory(dir=ROOT / "build") as temporary:
             encoded = Path(temporary) / "rate.bin"
             decoded = Path(temporary) / "rate.f32"
@@ -108,7 +113,7 @@ def run():
         assert rejected.returncode != 0 and not rejected.stdout
     print(f"PASS: ASC {asc.hex()}, {len(sizes)} AUs, peak {max(sizes)} bytes; "
           f"noise peak {max(stress_sizes)} bytes; 48 kHz stereo pitch, "
-          "channel separation and truncated input.")
+          "channel separation, all 129 bitrate budgets, noise/transients and truncated input.")
 
 
 if __name__ == "__main__":

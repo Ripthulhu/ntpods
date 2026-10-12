@@ -8,6 +8,10 @@ use std::time::{Duration, Instant};
 
 pub struct Session {
     driver: Driver,
+    mode: Mode,
+    opened: Instant,
+    media_packets: u64,
+    last_request: u8,
     label: u8,
     seid: u8,
     state: StreamState,
@@ -46,6 +50,10 @@ impl Session {
     ) -> io::Result<Self> {
         let mut session = Self {
             driver,
+            mode,
+            opened: Instant::now(),
+            media_packets: 0,
+            last_request: 0,
             label: 0,
             seid: 0,
             state: StreamState::Idle,
@@ -89,6 +97,12 @@ impl Session {
                 mode.name()
             )));
         }
+        crate::log(&format!(
+            "playback signaling: {} selected endpoint {}, {} bps",
+            mode.name(),
+            session.seid,
+            session.bitrate
+        ));
         let config = session.selected_config.clone();
         if let Err(error) = session.request(SET_CONFIGURATION, &config) {
             // An explicit rejection gives us no ownership of the peer's endpoint.
@@ -101,11 +115,16 @@ impl Session {
         session.request(OPEN, &[session.seid << 2])?;
         session.state = StreamState::Open;
         session.mtu = session.open_channel(address, 1)?;
+        crate::log(&format!(
+            "playback signaling: {} media channel opened, MTU {}",
+            mode.name(),
+            session.mtu
+        ));
         if session.mtu < 48 {
             return Err(invalid("Media MTU is too small for the selected codec"));
         }
         if mode == Mode::Eld {
-            let maximum = ((session.mtu.saturating_sub(24) / 3) * 800).min(256_000) as u32;
+            let maximum = eld_bitrate_limit(session.mtu);
             if session.bitrate > maximum {
                 if !preference.best_effort {
                     return Err(invalid("Media MTU is too small for this bitrate"));
@@ -118,7 +137,6 @@ impl Session {
                 session.selected_config = config;
             }
         }
-        session.start()?;
         Ok(session)
     }
 
@@ -163,6 +181,21 @@ impl Session {
     }
 
     fn request(&mut self, signal: u8, payload: &[u8]) -> io::Result<Vec<u8>> {
+        self.last_request = signal;
+        let started = Instant::now();
+        let result = self.request_inner(signal, payload);
+        crate::log(&format!(
+            "playback signaling: {} {} {}, state {:?}, {} ms",
+            self.mode.name(),
+            signal_name(signal),
+            if result.is_ok() { "accepted" } else { "failed" },
+            self.state,
+            started.elapsed().as_millis()
+        ));
+        result
+    }
+
+    fn request_inner(&mut self, signal: u8, payload: &[u8]) -> io::Result<Vec<u8>> {
         self.check_cancelled()?;
         self.label = (self.label + 1) & 15;
         self.send(0, &command(self.label, signal, payload))?;
@@ -206,6 +239,12 @@ impl Session {
         let Some((reply, action)) = peer_response(packet, self.state, caps)? else {
             return Ok(false);
         };
+        crate::log(&format!(
+            "playback signaling: {} peer {} ({:#04x}), endpoint {:?}, state {:?}, action {:?}, last request {}, {} media packets, {} ms since open",
+            self.mode.name(), signal_name(packet[1]), packet[1],
+            packet.get(2).map(|seid| seid >> 2), self.state, action,
+            signal_name(self.last_request), self.media_packets, self.opened.elapsed().as_millis()
+        ));
         self.send(0, &reply)?;
         match action {
             PeerAction::None => {}
@@ -233,8 +272,18 @@ impl Session {
         Ok(())
     }
 
-    pub fn media(&self, packet: &[u8]) -> io::Result<()> {
-        self.send(1, packet)
+    pub fn media(&mut self, packet: &[u8]) -> io::Result<()> {
+        self.send(1, packet)?;
+        self.media_packets += 1;
+        if self.mode == Mode::Eld && self.media_packets <= 3 {
+            crate::log(&format!(
+                "playback media: AAC-ELD packet {}, {} bytes, RTP {:02x?}",
+                self.media_packets,
+                packet.len(),
+                packet.get(..12).unwrap_or_default()
+            ));
+        }
+        Ok(())
     }
     pub fn suspend(&mut self) -> io::Result<()> {
         if self.state == StreamState::Streaming {
@@ -250,6 +299,29 @@ impl Session {
         self.state = StreamState::Streaming;
         Ok(())
     }
+}
+
+fn signal_name(signal: u8) -> &'static str {
+    match signal {
+        DISCOVER => "DISCOVER",
+        GET_CAPABILITIES => "GET_CAPABILITIES",
+        SET_CONFIGURATION => "SET_CONFIGURATION",
+        GET_CONFIGURATION => "GET_CONFIGURATION",
+        RECONFIGURE => "RECONFIGURE",
+        OPEN => "OPEN",
+        START => "START",
+        CLOSE => "CLOSE",
+        SUSPEND => "SUSPEND",
+        ABORT => "ABORT",
+        GET_ALL_CAPABILITIES => "GET_ALL_CAPABILITIES",
+        _ => "UNKNOWN",
+    }
+}
+
+fn eld_bitrate_limit(mtu: usize) -> u32 {
+    // CBR may use one padding byte per access unit.
+    let au_budget = mtu.saturating_sub(12 + 4 * AUS_PER_PACKET) / AUS_PER_PACKET;
+    au_budget.saturating_sub(1).min(320) as u32 * 800
 }
 
 fn start_if_needed(state: StreamState, request: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
@@ -272,13 +344,26 @@ impl Drop for Session {
             };
             let _ = self.request(signal, &[self.seid << 2]);
         }
-        let _ = self.driver.playback_ioctl(0x811, &[], &mut []);
+        if let Err(error) = self.driver.playback_ioctl(0x811, &[], &mut []) {
+            crate::log(&format!("playback: channel cleanup failed: {error}"));
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn eld_mtu_budget_includes_cbr_padding() {
+        assert_eq!(eld_bitrate_limit(1023), 256000);
+        assert_eq!(eld_bitrate_limit(662), 256000);
+        assert_eq!(eld_bitrate_limit(661), 255200);
+        assert_eq!(eld_bitrate_limit(342), 128000);
+        assert_eq!(eld_bitrate_limit(341), 127200);
+        assert_eq!(eld_bitrate_limit(0), 0);
+        assert_eq!(eld_bitrate_limit(usize::MAX), 256000);
+    }
 
     #[test]
     fn accepted_peer_start_does_not_send_a_second_start() {

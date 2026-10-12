@@ -99,6 +99,7 @@ pub enum MediaPackets {
     Eld {
         writer: protocol::Packetizer,
         pending: Vec<Vec<u8>>,
+        timestamp: u32,
     },
 }
 impl MediaPackets {
@@ -110,28 +111,42 @@ impl MediaPackets {
             }),
             AudioEncoder::Eld(_) => Ok(Self::Eld {
                 writer: protocol::Packetizer::default(),
-                pending: Vec::with_capacity(3),
+                pending: Vec::with_capacity(protocol::AUS_PER_PACKET),
+                timestamp: 0,
             }),
         }
     }
     pub fn clear(&mut self) {
-        if let Self::Eld { pending, .. } = self {
+        if let Self::Eld {
+            writer,
+            pending,
+            timestamp,
+        } = self
+        {
+            writer.reset_audio();
             pending.clear();
+            *timestamp = 0;
         }
     }
-    pub fn push(&mut self, unit: Vec<u8>, elapsed_ms: u32, mtu: usize) -> io::Result<Vec<Vec<u8>>> {
+    pub fn push(&mut self, unit: Vec<u8>, mtu: usize) -> io::Result<Vec<Vec<u8>>> {
         match self {
             Self::Aac { writer, timestamp } => {
                 let packets = writer.packets(&unit, *timestamp, mtu)?;
                 *timestamp = timestamp.wrapping_add(aac_protocol::RTP_TICKS_PER_FRAME);
                 Ok(packets)
             }
-            Self::Eld { writer, pending } => {
+            Self::Eld {
+                writer,
+                pending,
+                timestamp,
+            } => {
                 pending.push(unit);
-                if pending.len() < 3 {
+                if pending.len() < protocol::AUS_PER_PACKET {
                     return Ok(Vec::new());
                 }
-                let packet = writer.packet(pending, elapsed_ms, mtu)?;
+                let packet = writer.packet(pending, *timestamp, mtu)?;
+                *timestamp =
+                    timestamp.wrapping_add((pending.len() * protocol::FRAME_SAMPLES) as u32);
                 pending.clear();
                 Ok(vec![packet])
             }
@@ -155,16 +170,48 @@ mod tests {
             writer: aac_protocol::Packetizer::new(&[0x11, 0x90]).unwrap(),
             timestamp: u32::MAX - 10,
         };
-        let first = packets.push(vec![0; 256], 0, 48).unwrap();
+        let first = packets.push(vec![0; 256], 48).unwrap();
         assert!(first.len() > 1);
         for packet in &first {
             assert_eq!(&packet[4..8], &(u32::MAX - 10).to_be_bytes());
         }
-        let next = packets.push(vec![0; 256], 0, 48).unwrap();
+        let next = packets.push(vec![0; 256], 48).unwrap();
         assert_eq!(
             &next[0][4..8],
             &((u32::MAX - 10).wrapping_add(1920)).to_be_bytes()
         );
+    }
+
+    #[test]
+    fn eld_two_frame_packets_follow_sample_count_and_reset_with_the_encoder() {
+        let mut packets = MediaPackets::Eld {
+            writer: protocol::Packetizer::default(),
+            pending: Vec::new(),
+            timestamp: 0,
+        };
+        let batch = |packets: &mut MediaPackets| {
+            assert!(packets.push(vec![1; 10], 1023).unwrap().is_empty());
+            packets.push(vec![2; 20], 1023).unwrap().remove(0)
+        };
+        let first = batch(&mut packets);
+        assert_eq!(&first[4..8], &0u32.to_be_bytes());
+        assert_eq!(&first[12..14], &[0xb0, 1]);
+        let second = batch(&mut packets);
+        assert_eq!(&second[4..8], &960u32.to_be_bytes());
+        assert_eq!(&second[2..4], &1u16.to_be_bytes());
+        assert_eq!(&second[12..14], &[0xb0, 3]);
+        packets.push(vec![4; 40], 1023).unwrap();
+        packets.clear();
+        let restarted = batch(&mut packets);
+        assert_eq!(&restarted[2..4], &2u16.to_be_bytes());
+        assert_eq!(&restarted[4..], &first[4..]);
+        if let MediaPackets::Eld { timestamp, .. } = &mut packets {
+            *timestamp = u32::MAX - 479;
+        }
+        let before_wrap = batch(&mut packets);
+        assert_eq!(&before_wrap[4..8], &(u32::MAX - 479).to_be_bytes());
+        let wrapped = batch(&mut packets);
+        assert_eq!(&wrapped[4..8], &480u32.to_be_bytes());
     }
 }
 

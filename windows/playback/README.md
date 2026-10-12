@@ -8,8 +8,7 @@ subsequent codec changes keep that endpoint.
 
 The first playback driver targets AirPods Pro 1 and Pro 3. Other models retain
 their existing playback driver. Both codecs are lossy 48 kHz stereo and remain
-experimental: playback, microphone coexistence and driver recovery still need
-hardware testing.
+experimental.
 
 ## Use it
 
@@ -30,10 +29,10 @@ Each codec remembers its own bitrate setting:
 | Best effort | Highest implemented rate within the peer's advertised limit and packet budget. |
 | Manual | Chosen kbps: AAC 96–512; AAC-ELD 128–256. Unsupported rates report an error. |
 
-Best effort does not monitor radio quality or promise a fixed delivered rate.
-The encoders use variable-sized frames; kbps sets a limit, not a guarantee that
-every second contains that many bits. Codec and bitrate changes restart the
-Bluetooth stream without removing the Windows output.
+Best effort does not adapt to radio conditions. AAC targets the selected rate
+within its frame-size limit. AAC-ELD uses constant bitrate; individual frames
+can vary by one byte. Codec and bitrate changes restart the Bluetooth stream
+without removing the Windows output.
 
 A failed stream supplies silence and offers Retry. Closing or crashing the
 backend also stops playback. It cannot fall back to Microsoft's driver while
@@ -71,17 +70,27 @@ of PCM; it clears queued audio when that reader closes.
 
 AAC uses 1024-sample blocks with LATM framing and the 90 kHz RTP clock specified
 by [RFC 6416](https://www.rfc-editor.org/rfc/rfc6416.html). AAC-ELD uses 480-sample
-blocks, three access units per packet, and Apple vendor codec `004C/8001`.
-Its framing follows [USBPods' macOS capture research](https://github.com/wasdwasd0105/USBPods-Pico2W/blob/6286ab1618ec1143d828b1fc377d8e22c449e567/aac-eld-apple.md).
+blocks without SBR, two access units per packet, a 48 kHz sample-count RTP clock,
+and Apple vendor codec `004C/8001`. Its encoder and transport follow the
+[USBPods fork tested on Pro 3](https://github.com/han-um/USBPods-Pico2W-2-way-audio-implement/blob/d18d083bc52de3143d8d922c4abaae865cc0dc28/src/btstack/btstack_avdtp_source.c),
+with bitrate capped at 256 kbps. The fixed RTP source identifier `0x11223344`
+matches that implementation; it is not known to be required by the earbuds.
 Signaling, media, AAP and ATT use separate channels. Audio payloads are not logged.
 
 Microphone recovery restarts the AVDTP stream while this driver owns playback.
 It must never disable the Windows AudioSink service, which would remove the
-playback endpoint. Actual recovery timing and stereo coexistence remain hardware
-test requirements.
+playback endpoint.
 
 Automated checks cover packet validation, cancellation, per-device PCM isolation,
 buffer limits, bitrate settings, and encoder pitch/stereo output. AAC round trips
-use FFmpeg. AAC-ELD round trips use FDK's decoder because the pinned FFmpeg cannot
-decode low-delay SBR. Independent AAC-ELD decoding and acceptance by the AirPods
-remain unverified.
+use FFmpeg; AAC-ELD round trips use FDK's own decoder.
+
+Short hardware checks passed on AirPods Pro 3 (A3063, firmware 9A348) with an
+Intel AX200: AAC at 256 kbps and AAC-ELD at 128, 192 and 256 kbps played separate
+left and right channels. Volume and mute worked, and codec changes kept the same
+Windows output. Stereo stayed correct during 20-second microphone captures and
+after microphone stop and recovery with both codecs.
+
+Long sessions, repeated start/stop and reconnect cycles, sleep/resume, uninstall
+recovery and other models still need testing. See the
+[validation record](../../docs/WINDOWS-VALIDATION.md).

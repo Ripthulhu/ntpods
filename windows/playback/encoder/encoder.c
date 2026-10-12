@@ -17,25 +17,11 @@ static int write_u16(unsigned value) {
     return write_bytes(bytes, sizeof(bytes));
 }
 
-static unsigned asc_bits(const unsigned char *asc, unsigned start, unsigned count) {
-    unsigned result = 0;
-    for (unsigned i = start; i < start + count; ++i) {
-        result = (result << 1) | ((asc[i / 8] >> (7 - i % 8)) & 1);
-    }
-    return result;
-}
-
 static int valid_configuration(const AACENC_InfoStruct *info) {
-    const unsigned char *asc = info->confBuf;
-    // FDK accepts SBR_MODE even when no SBR module was allocated.
+    // AOT 39, 48 kHz stereo, 480 samples, no SBR or error-protection extensions.
+    const unsigned char expected[] = {0xf8, 0xe6, 0x50, 0x00};
     return info->frameLength == FRAME_SAMPLES && info->inputChannels == CHANNELS &&
-        info->confSize >= 4 && info->confSize <= 64 &&
-        // Escape AOT 39, 48 kHz, stereo.
-        asc_bits(asc, 0, 5) == 31 && asc_bits(asc, 5, 6) == 7 &&
-        asc_bits(asc, 11, 4) == 3 && asc_bits(asc, 15, 4) == CHANNELS &&
-        asc_bits(asc, 19, 1) == 1 && asc_bits(asc, 20, 3) == 0 &&
-        // ELD SBR at the core rate, without CRC.
-        asc_bits(asc, 23, 3) == 4;
+        info->confSize == sizeof(expected) && !memcmp(info->confBuf, expected, sizeof(expected));
 }
 
 static int encode(HANDLE_AACENCODER encoder, INT_PCM *pcm, int flushing, unsigned max_au) {
@@ -87,17 +73,16 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Cannot initialize PCM input and binary output.\n");
         return 1;
     }
-    if (aacEncOpen(&encoder, 0x03, CHANNELS) != AACENC_OK) {
+    if (aacEncOpen(&encoder, 0x01, CHANNELS) != AACENC_OK) {
         fprintf(stderr, "Cannot open AAC-ELD encoder.\n");
         return 1;
     }
     const struct { AACENC_PARAM parameter; unsigned value; } parameters[] = {
         {AACENC_AOT, AOT_ER_AAC_ELD}, {AACENC_SAMPLERATE, 48000},
         {AACENC_CHANNELMODE, MODE_2}, {AACENC_GRANULE_LENGTH, FRAME_SAMPLES},
-        {AACENC_SBR_MODE, 1}, {AACENC_SBR_RATIO, 1},
-        {AACENC_BITRATE, bitrate}, {AACENC_BITRATEMODE, 5},
-        // A 10 ms access unit must fit a whole-byte packet budget.
-        {AACENC_PEAK_BITRATE, (bitrate / 800) * 800}, {AACENC_AFTERBURNER, 1},
+        {AACENC_SBR_MODE, 0},
+        {AACENC_BITRATE, bitrate}, {AACENC_BITRATEMODE, 0},
+        {AACENC_PEAK_BITRATE, bitrate}, {AACENC_AFTERBURNER, 0},
         {AACENC_TRANSMUX, TT_MP4_RAW}
     };
     for (size_t i = 0; i < sizeof(parameters) / sizeof(parameters[0]); ++i) {
@@ -107,7 +92,8 @@ int main(int argc, char **argv) {
         }
     }
     if (aacEncEncode(encoder, NULL, NULL, NULL, NULL) != AACENC_OK ||
-        aacEncInfo(encoder, &info) != AACENC_OK || !valid_configuration(&info)) {
+        aacEncInfo(encoder, &info) != AACENC_OK || !valid_configuration(&info) ||
+        aacEncoder_GetParam(encoder, AACENC_BITRATE) != bitrate) {
         fprintf(stderr, "Cannot initialize the 480-sample AAC-ELD configuration.\n");
         goto cleanup;
     }
@@ -116,6 +102,8 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Cannot write encoder configuration.\n");
         goto cleanup;
     }
+    // FDK's CBR frames can exceed the rounded 10 ms byte budget by one byte.
+    const unsigned max_au = (bitrate + 799) / 800 + 1;
     for (;;) {
         size_t count = fread(pcm, 1, sizeof(pcm), stdin);
         if (ferror(stdin) || (count && count != sizeof(pcm))) {
@@ -123,10 +111,10 @@ int main(int argc, char **argv) {
             goto cleanup;
         }
         if (!count) break;
-        if (encode(encoder, pcm, 0, bitrate / 800) < 0) goto cleanup;
+        if (encode(encoder, pcm, 0, max_au) < 0) goto cleanup;
     }
     for (int i = 0; i < 32; ++i) {
-        int result = encode(encoder, pcm, 1, bitrate / 800);
+        int result = encode(encoder, pcm, 1, max_au);
         if (result < 0) goto cleanup;
         if (!result) { exit_code = 0; goto cleanup; }
     }

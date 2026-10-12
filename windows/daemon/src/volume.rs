@@ -6,10 +6,10 @@ use windows::Win32::Foundation::{ERROR_NOT_FOUND, E_FAIL};
 use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
 use windows::Win32::Media::Audio::{
     eConsole, eRender, AudioSessionStateActive, IAudioSessionControl2, IAudioSessionManager2,
-    IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
+    IDeviceTopology, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
 };
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED, STGM_READ,
+    CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL, COINIT_MULTITHREADED, STGM_READ,
 };
 
 /// Join the process MTA for the calling thread. Idempotent-safe (a second call
@@ -36,23 +36,31 @@ fn output_device() -> windows::core::Result<IMMDevice> {
                 let mut candidates = Vec::new();
                 for index in 0..devices.GetCount()? {
                     let device = devices.Item(index)?;
-                    let Ok(properties) = device.OpenPropertyStore(STGM_READ) else {
-                        continue;
-                    };
-                    let instance = properties
-                        .GetValue(&PKEY_Device_InstanceId)
-                        .ok()
-                        .and_then(|value| BSTR::try_from(&value).ok())
-                        .map(|value| value.to_string());
-                    if instance.is_some_and(|id| {
-                        crate::driver::native_endpoint_owner(&id, address.unwrap())
-                    }) {
+                    if adapter_instance(&enumerator, &device)
+                        .is_ok_and(|id| crate::driver::native_endpoint_owner(&id, address.unwrap()))
+                    {
                         candidates.push(device);
                     }
                 }
                 Ok(candidates)
             },
         )
+    }
+}
+
+fn adapter_instance(
+    enumerator: &IMMDeviceEnumerator,
+    endpoint: &IMMDevice,
+) -> windows::core::Result<String> {
+    unsafe {
+        // Endpoint property stores can omit InstanceId; the connected adapter supplies it.
+        let topology: IDeviceTopology = endpoint.Activate(CLSCTX_ALL, None)?;
+        let adapter_id = topology.GetConnector(0)?.GetDeviceIdConnectedTo()?;
+        let adapter = enumerator.GetDevice(adapter_id);
+        CoTaskMemFree(Some(adapter_id.0.cast()));
+        let properties = adapter?.OpenPropertyStore(STGM_READ)?;
+        let instance = properties.GetValue(&PKEY_Device_InstanceId)?;
+        Ok(BSTR::try_from(&instance)?.to_string())
     }
 }
 
@@ -520,5 +528,30 @@ mod tests {
         active.as_mut().unwrap().apply_limit(10);
         restore_duck(&mut active);
         assert_eq!(endpoint.level.get(), 0.4);
+    }
+    #[test]
+    #[ignore = "requires NTPODS_VOLUME_TEST_ENDPOINT and NTPODS_VOLUME_TEST_ADDRESS; read-only"]
+    fn native_adapter_instance_resolves_the_selected_endpoint() {
+        init();
+        let id = std::env::var("NTPODS_VOLUME_TEST_ENDPOINT").unwrap();
+        let address =
+            u64::from_str_radix(&std::env::var("NTPODS_VOLUME_TEST_ADDRESS").unwrap(), 16).unwrap();
+        unsafe {
+            let enumerator: IMMDeviceEnumerator =
+                CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).unwrap();
+            let device = enumerator
+                .GetDevice(windows::core::PCWSTR(crate::wide(&id).as_ptr()))
+                .unwrap();
+            let instance = adapter_instance(&enumerator, &device).unwrap();
+            assert!(crate::driver::native_endpoint_owner(&instance, address));
+            assert!(!crate::driver::native_endpoint_owner(
+                &instance,
+                address ^ 1
+            ));
+            let volume: IAudioEndpointVolume = device.Activate(CLSCTX_ALL, None).unwrap();
+            let scalar = volume.GetMasterVolumeLevelScalar().unwrap();
+            assert!(scalar.is_finite() && (0.0..=1.0).contains(&scalar));
+            assert!(volume.GetMute().is_ok());
+        }
     }
 }

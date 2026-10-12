@@ -384,7 +384,10 @@ fn device_instance_address(instance: &str) -> Option<u64> {
     let device = parts.next()?;
     let address = if let Some(address) = device.strip_prefix("dev_") {
         address
-    } else if device.starts_with("{74ec2172-0bad-4d01-8f77-997b2be0722a}") {
+    } else if matches!(
+        device.split('_').next()?,
+        "{74ec2172-0bad-4d01-8f77-997b2be0722a}" | "{0000110b-0000-1000-8000-00805f9b34fb}"
+    ) {
         let (address, channel) = parts.next()?.rsplit('&').next()?.split_once("_c")?;
         if channel.len() != 8 || !channel.bytes().all(|b| b.is_ascii_hexdigit()) {
             return None;
@@ -402,7 +405,7 @@ fn device_instance_address(instance: &str) -> Option<u64> {
 }
 
 unsafe fn owning_bluetooth_address(mut node: u32) -> Option<u64> {
-    // The interface belongs to an AAP service child of the Bluetooth peer node.
+    // Service nodes may sit directly under the radio, without a DEV_<MAC> ancestor.
     for _ in 0..8 {
         let mut id = [0u16; 512];
         if CM_Get_Device_IDW(node, id.as_mut_ptr(), id.len() as u32, 0) == CR_SUCCESS {
@@ -588,6 +591,28 @@ mod tests {
             r"BTHENUM\DEV_AABBCCDDEEFF0\instance",
             r"BTHENUM\{00000000-0000-0000-0000-000000000000}\7&1&2&AABBCCDDEEFF_C00000000",
             r"BTHENUM\{74ec2172-0bad-4d01-8f77-997b2be0722a}\7&1&2&AABBCCDDEEFF_C0",
+        ] {
+            assert_eq!(device_instance_address(invalid), None, "{invalid}");
+        }
+    }
+
+    #[test]
+    fn audio_sink_instance_contains_its_peer_address_without_a_dev_ancestor() {
+        let sink = r"BTHENUM\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004c_PID&2027\7&1&2&AABBCCDDEEFF_C00000000";
+        assert_eq!(device_instance_address(sink), Some(0xaabbccddeeff));
+        assert_eq!(
+            device_instance_address(&sink.to_lowercase()),
+            Some(0xaabbccddeeff)
+        );
+        for invalid in [
+            r"BTHENUM\{0000110a-0000-1000-8000-00805f9b34fb}\7&1&2&AABBCCDDEEFF_C00000000",
+            r"BTHENUM\{0000110b-0000-1000-8000-00805f9b34fc}\7&1&2&AABBCCDDEEFF_C00000000",
+            r"BTHENUM\{0000110b-0000-1000-8000-00805f9b34fb}junk\7&1&2&AABBCCDDEEFF_C00000000",
+            r"BTHENUM\{0000110b-0000-1000-8000-00805f9b34fb}\7&1&2&000000000000_C00000000",
+            r"BTHENUM\{0000110b-0000-1000-8000-00805f9b34fb}\7&1&2&AABBCCDDEEFG_C00000000",
+            r"BTHENUM\{0000110b-0000-1000-8000-00805f9b34fb}\7&1&2&AABBCCDDEEFF_C0",
+            r"BTHENUM\{0000110b-0000-1000-8000-00805f9b34fb}\7&1&2&AABBCCDDEEFF_C0000000G",
+            r"BTHENUM\{0000110b-0000-1000-8000-00805f9b34fb}\7&1&2&AABBCCDDEEFF_C000000000",
         ] {
             assert_eq!(device_instance_address(invalid), None, "{invalid}");
         }

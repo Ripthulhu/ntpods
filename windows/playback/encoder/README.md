@@ -14,8 +14,7 @@ python windows/playback/encoder/test.py
 
 The test encodes separate 440 Hz and 880 Hz tones, decodes through FDK, and checks
 format, pitch, channel separation and malformed input. It does not play audio or
-open Bluetooth. NTPods' pinned FFmpeg 7.1 decoder does not implement the low-delay
-SBR used here, so this round trip uses the encoder library's own decoder.
+open Bluetooth. This round trip uses the encoder library's own decoder.
 
 Build output and downloaded source stay in ignored `build` and `vendor` folders.
 The executable and `fdk-aac.dll` are in `build/Release`.
@@ -36,14 +35,15 @@ Output starts with this header:
 | AudioSpecificConfig | That many bytes |
 
 Each following record contains a little-endian uint16 length and one raw AAC-ELD
-access unit. Lengths are 1–320 bytes. EOF ends the stream; there is no zero-length
+access unit. Lengths are 1–321 bytes. EOF ends the stream; there is no zero-length
 record. Errors go to stderr and return a nonzero exit code. The caller must check
 the exit code before treating EOF as a normal stop.
 
-The encoder uses AOT 39, 480-sample frames, downsampled SBR and VBR mode 5.
+The encoder uses AOT 39, 480-sample frames and constant bitrate, with SBR disabled.
 `--bitrate <bits-per-second>` accepts 128000–256000 in 1000-bit steps; omitted, it
-uses 256000. The peak budget rounds down to whole bytes per access unit. SBR
-bandwidth may change with bitrate. The worker validates the generated core format
+uses 256000. FDK's CBR frames can vary by one byte. Each access unit is limited to
+`ceil(bitrate / 800) + 1` bytes, at most 321 bytes at 256 kbps.
+The worker validates the requested bitrate, generated core format
 and each encoded packet before sending it.
 This is lossy audio; it does not implement Apple's wireless lossless mode.
 
@@ -66,7 +66,8 @@ processes do not by themselves establish GPL compatibility for a combined produc
 see the [FSF's aggregation guidance](https://www.gnu.org/licenses/gpl-faq.en.html#MereAggregation).
 FDK grants no patent license.
 
-Codec settings follow
-[USBPods' macOS capture research](https://github.com/wasdwasd0105/USBPods-Pico2W/blob/6286ab1618ec1143d828b1fc377d8e22c449e567/aac-eld-apple.md).
+Codec settings follow the no-SBR profile in
+[USBPods' Pro 3 playback implementation](https://github.com/han-um/USBPods-Pico2W-2-way-audio-implement/blob/d18d083bc52de3143d8d922c4abaae865cc0dc28/src/btstack/btstack_avdtp_source.c#L1678-L1724),
+with the selected bitrate capped at 256 kbps.
 Successful local encoding does not establish AirPods playback or coexistence
 with Windows audio.

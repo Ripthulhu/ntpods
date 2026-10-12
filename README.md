@@ -45,7 +45,8 @@ Features vary by model and firmware; see [model support](docs/WINDOWS-MODEL-SUPP
 Microphone recovery briefly interrupts playback. Short recordings and twenty
 start/stop cycles passed; longer recordings, latency, drift, Discord and interrupted
 recovery still need testing. See [test results](docs/WINDOWS-VALIDATION.md).
-The replacement AAC/AAC-ELD playback driver has separate hardware tests pending.
+The replacement AAC/AAC-ELD playback driver passed short Pro 3 stereo checks
+with the microphone active and after it stopped. Longer tests remain pending.
 
 This build uses the Windows 11 ACX microphone driver. Older Windows versions
 are untested. For Android or Linux, use [LibrePods](https://github.com/librepods-org/librepods).

@@ -491,7 +491,6 @@ fn stream(
     mut disconnected: impl FnMut() -> bool,
 ) -> io::Result<()> {
     let _timer = TimerResolution::acquire()?;
-    let origin = Instant::now();
     let mut packets = MediaPackets::new(encoder)?;
     let samples = mode.frame_samples();
     let mut pcm = FrameAssembler::new(samples)?;
@@ -586,7 +585,7 @@ fn stream(
                 break;
             };
             outstanding = outstanding.saturating_sub(1);
-            for packet in packets.push(unit, origin.elapsed().as_millis() as u32, session.mtu)? {
+            for packet in packets.push(unit, session.mtu)? {
                 session.media(&packet)?;
             }
         }

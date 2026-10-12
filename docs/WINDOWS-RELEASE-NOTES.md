@@ -21,15 +21,24 @@ Manual kbps settings under **Playback and microphone**. No separate speaker or
 per-app routing is needed. Initial driver replacement may require selecting the
 output again. Codec changes keep the same output.
 
+AAC-ELD uses plain ELD without SBR, constant bitrate and two access units per
+packet with a 48 kHz RTP clock, following the
+[USBPods fork tested on Pro 3](https://github.com/han-um/USBPods-Pico2W-2-way-audio-implement/blob/d18d083bc52de3143d8d922c4abaae865cc0dc28/src/btstack/btstack_avdtp_source.c).
+Best effort selects the highest supported rate; it does not adapt to radio
+conditions.
+
 Keep NTPods running for playback, or enable Start with Windows. If the backend
 stops, playback stops too. Keep the AirPods connected during uninstall to restore
 the previous playback provider. Its package is retained during installation.
-Other models keep their current
-playback driver. Available controls depend on model and firmware.
+Other models keep their current playback driver. Available controls depend on
+model and firmware.
 
-The new playback driver, microphone coexistence and recovery have not passed
-hardware testing. Existing microphone results used Alternative A2DP and do not
-validate the replacement. See the
+Short tests on AirPods Pro 3 (A3063, firmware 9A348) with Intel AX200 confirmed
+stereo AAC at 256 kbps, AAC-ELD at 128, 192 and 256 kbps, and working volume and
+mute. Both codecs kept stereo playback during 20-second microphone captures
+and after microphone stop and recovery. Codec changes kept the same Windows
+output. Long sessions, repeated lifecycle tests and other models remain untested.
+See the
 [playback test guide](https://github.com/Ripthulhu/ntpods/blob/main/windows/playback/TESTING.md)
 and [validation record](https://github.com/Ripthulhu/ntpods/blob/main/docs/WINDOWS-VALIDATION.md).
 

@@ -14,7 +14,8 @@ pub const GET_ALL_CAPABILITIES: u8 = 12;
 pub const APPLE_ELD: [u8; 14] = [0x4c, 0, 0, 0, 1, 0x80, 0, 0x80, 0, 0x84, 0, 0x83, 0xe8, 0];
 pub const FRAME_SAMPLES: usize = 480;
 pub const PCM_BYTES: usize = FRAME_SAMPLES * 4;
-pub const MAX_AU: usize = 320;
+pub const MAX_AU: usize = 321;
+pub const AUS_PER_PACKET: usize = 2;
 
 pub fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
@@ -246,21 +247,35 @@ pub fn peer_response(
     Ok(Some((reply, action)))
 }
 
-#[derive(Default)]
 pub struct Packetizer {
     sequence: u16,
     au_sequence: u16,
 }
 
+impl Default for Packetizer {
+    fn default() -> Self {
+        Self {
+            sequence: 0,
+            au_sequence: 1,
+        }
+    }
+}
+
 impl Packetizer {
+    pub fn reset_audio(&mut self) {
+        self.au_sequence = 1;
+    }
+
     pub fn packet(
         &mut self,
         units: &[Vec<u8>],
-        milliseconds: u32,
+        timestamp48k: u32,
         mtu: usize,
     ) -> io::Result<Vec<u8>> {
-        if units.len() != 3 || units.iter().any(|au| au.is_empty() || au.len() > MAX_AU) {
-            return Err(invalid("Expected three bounded AAC-ELD frames"));
+        if units.len() != AUS_PER_PACKET
+            || units.iter().any(|au| au.is_empty() || au.len() > MAX_AU)
+        {
+            return Err(invalid("Expected two bounded AAC-ELD frames"));
         }
         let size = 12 + units.iter().map(|au| 4 + au.len()).sum::<usize>();
         if size > mtu {
@@ -269,8 +284,9 @@ impl Packetizer {
         let mut packet = Vec::with_capacity(size);
         packet.extend_from_slice(&[0x80, 0x60]);
         packet.extend_from_slice(&self.sequence.to_be_bytes());
-        packet.extend_from_slice(&milliseconds.to_be_bytes());
-        packet.extend_from_slice(&[0; 4]);
+        packet.extend_from_slice(&timestamp48k.to_be_bytes());
+        // Match the Pro 3-tested USBPods fork's fixed source identifier.
+        packet.extend_from_slice(&0x11223344u32.to_be_bytes());
         for au in units {
             packet.extend_from_slice(&[
                 0xb0 | ((self.au_sequence >> 8) as u8 & 15),
@@ -457,20 +473,22 @@ mod tests {
 
     #[test]
     fn packet_framing_wrap_and_mtu_are_checked_before_state_changes() {
-        let units = vec![vec![0xaa; MAX_AU]; 3];
+        let units = vec![vec![0xaa; MAX_AU]; AUS_PER_PACKET];
         let mut writer = Packetizer {
             sequence: u16::MAX,
             au_sequence: 4095,
         };
-        assert!(writer.packet(&units, 1234, 983).is_err());
-        let packet = writer.packet(&units, 1234, 984).unwrap();
+        assert!(writer.packet(&units[..1], 1234, 1023).is_err());
+        assert!(writer.packet(&vec![vec![0; 1]; 3], 1234, 1023).is_err());
+        assert!(writer.packet(&units, 1234, 661).is_err());
+        let packet = writer.packet(&units, 1234, 662).unwrap();
         assert_eq!(
             &packet[..12],
-            &[0x80, 0x60, 0xff, 0xff, 0, 0, 4, 0xd2, 0, 0, 0, 0]
+            &[0x80, 0x60, 0xff, 0xff, 0, 0, 4, 0xd2, 0x11, 0x22, 0x33, 0x44]
         );
-        assert_eq!(&packet[12..16], &[0xbf, 0xff, 0x11, 0x40]);
-        assert_eq!(&packet[336..340], &[0xb0, 0, 0x11, 0x40]);
+        assert_eq!(&packet[12..16], &[0xbf, 0xff, 0x11, 0x41]);
+        assert_eq!(&packet[337..341], &[0xb0, 0, 0x11, 0x41]);
         assert_eq!(writer.sequence, 0);
-        assert_eq!(writer.au_sequence, 2);
+        assert_eq!(writer.au_sequence, 1);
     }
 }

@@ -34,9 +34,10 @@ fn read_header(stream: &mut impl Read, mode: Mode) -> io::Result<Vec<u8>> {
     stream.read_exact(&mut asc)?;
     let valid = match mode {
         Mode::Aac => asc == [0x11, 0x90, 0x56, 0xe5, 0],
-        // SBR bandwidth changes at lower rates; core format stays fixed.
+        // Plain ELD or downsampled SBR, both 480 samples at 48 kHz stereo.
         Mode::Eld => {
-            asc == [0xf8, 0xe6, 0x51, 0x3a, 0xe0, 0x9e, 0]
+            asc == [0xf8, 0xe6, 0x50, 0]
+                || asc == [0xf8, 0xe6, 0x51, 0x3a, 0xe0, 0x9e, 0]
                 || asc == [0xf8, 0xe6, 0x51, 0x36, 0xe0, 0x9e, 0]
         }
     };
@@ -59,7 +60,7 @@ fn maximum_au(mode: Mode, bitrate: u32) -> io::Result<usize> {
     }
     Ok(match mode {
         Mode::Aac => bitrate as usize * 1024 / (48000 * 8) - 8,
-        Mode::Eld => bitrate as usize / 800,
+        Mode::Eld => (bitrate as usize).div_ceil(800) + 1,
     })
 }
 
@@ -212,9 +213,34 @@ mod tests {
         }
         assert_eq!(maximum_au(Mode::Aac, 96000).unwrap(), 248);
         assert_eq!(maximum_au(Mode::Aac, 512000).unwrap(), 1357);
-        assert_eq!(maximum_au(Mode::Eld, 129000).unwrap(), 161);
+        assert_eq!(maximum_au(Mode::Eld, 128000).unwrap(), 161);
+        assert_eq!(maximum_au(Mode::Eld, 129000).unwrap(), 163);
+        assert_eq!(maximum_au(Mode::Eld, 256000).unwrap(), 321);
         assert!(maximum_au(Mode::Aac, 95999).is_err());
         assert!(maximum_au(Mode::Eld, 257000).is_err());
+    }
+
+    #[test]
+    fn plain_eld_header_keeps_rate_channels_and_frame_length_fixed() {
+        let header = [
+            b"NPELD001".as_slice(),
+            &[0xe0, 1, 4, 0, 0xf8, 0xe6, 0x50, 0],
+        ]
+        .concat();
+        assert_eq!(
+            read_header(&mut header.as_slice(), Mode::Eld).unwrap(),
+            [0xf8, 0xe6, 0x50, 0]
+        );
+        assert!(read_header(&mut header.as_slice(), Mode::Aac).is_err());
+        for (index, value) in [(13, 0xe8), (14, 0x30), (14, 0x40), (15, 1)] {
+            let mut bad = header.clone();
+            bad[index] = value;
+            assert!(read_header(&mut bad.as_slice(), Mode::Eld).is_err());
+        }
+        let mut trailing = header;
+        trailing[10] = 5;
+        trailing.push(0);
+        assert!(read_header(&mut trailing.as_slice(), Mode::Eld).is_err());
     }
 
     #[test]

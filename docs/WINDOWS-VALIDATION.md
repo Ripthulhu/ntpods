@@ -1502,20 +1502,41 @@ preferences. Other AirPods models keep their current playback provider.
 
 AAC encoder tests cover every 1 kbps step from 96 through 512 with full-scale
 noise, impulses and transients. Seven rates also pass decoded pitch and stereo
-separation checks. AAC-ELD checks cover 128 through 256 kbps headers and decoded
-samples at five rates. Both encoders run in separate processes; a suspended-worker
-test verifies that shutdown kills the worker and releases blocked pipes.
+separation checks. AAC-ELD tests cover every rate from 128 through 256 kbps with
+noise and transients, bounded frame sizes, and decoded samples at five rates.
+Both encoders run in separate processes; a suspended-worker test verifies that
+shutdown kills the worker and releases blocked pipes.
 
 Installer tests cover exact-device binding, original-package backups, failed
 exports, failed restoration, upgrade rollback and restoration after an absent
-pair returns. Read-only checks found compatible drivers for both local pairs;
-no new driver was installed. Sixteen native UI renders cover codec and bitrate
-controls in light/dark themes at desktop and narrow widths.
+pair returns. Sixteen native UI renders cover codec and bitrate controls in
+light/dark themes at desktop and narrow widths.
 
-The replacement driver still needs physical installation, playback, microphone
-coexistence, volume/mute, sleep/resume and uninstall testing. Lower-rate AAC-ELD
-acceptance by the AirPods remains unverified. Prior microphone results used
-Alternative A2DP and do not validate this driver.
+On 2026-10-12, the native driver was installed and tested after a reboot on
+Windows 11 with an Intel AX200 and AirPods Pro 3 (A3063, firmware 9A348):
+
+- AAC at 256 kbps and AAC-ELD at 128, 192 and 256 kbps played clean, alternating
+  left/right tones, confirmed by the listener. AAC also negotiated manual 192 kbps.
+- Codec and bitrate changes retained the same Windows output and all three
+  default audio roles. Volume changes and mute reached that output; the final
+  volume was 24% and unmuted.
+- Each codec played stereo during a 20-second NTPods microphone capture and
+  again after microphone shutdown and recovery. The listener confirmed both
+  earbuds. First microphone PCM arrived in 363 ms with AAC and 338 ms with
+  AAC-ELD. Both runs reported zero malformed microphone packets and ended with
+  capture and uplink inactive. Recovery took 1.76 seconds with AAC and
+  1.84 seconds with AAC-ELD.
+
+AAC-ELD uses plain ELD without SBR, two access units per packet and a 48 kHz
+sample clock, following the Pro 3-tested USBPods fork linked in the
+[playback documentation](../windows/playback/README.md). The earlier SBR profile
+and packet timing produced no sound and were rejected by the earbuds.
+
+These were short playback and capture checks. Long playback, speech quality,
+drift, repeated capture cycles, removal/reinsertion, case closure, Bluetooth
+toggle, sleep/resume, Pro 1 playback, Driver Verifier and hardware uninstall
+remain untested with the native playback driver. Earlier microphone results
+used Alternative A2DP.
 
 ## Production release requirements
 

@@ -14,7 +14,7 @@ int main(int argc, char **argv) {
     FILE *output = fopen(argv[2], "wb");
     HANDLE_AACDECODER decoder = NULL;
     int result = 1, frames = 0;
-    unsigned char magic[8], asc[64], au[320];
+    unsigned char magic[8], asc[64], au[321];
     INT_PCM pcm[4096];
     if (!input || !output || fread(magic, 1, 8, input) != 8 ||
         memcmp(magic, "NPELD001", 8) || read_u16(input) != 480) goto cleanup;
@@ -32,7 +32,7 @@ int main(int argc, char **argv) {
         int second = fgetc(input);
         if (second == EOF) goto cleanup;
         int length = first | second << 8;
-        if (length < 1 || length > 320 || fread(au, 1, (size_t)length, input) != (size_t)length) goto cleanup;
+        if (length < 1 || length > (int)sizeof(au) || fread(au, 1, (size_t)length, input) != (size_t)length) goto cleanup;
         unsigned char *au_pointer = au;
         unsigned au_length = (unsigned)length, remaining = au_length;
         if (aacDecoder_Fill(decoder, &au_pointer, &au_length, &remaining) != AAC_DEC_OK || remaining ||

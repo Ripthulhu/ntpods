@@ -2,8 +2,9 @@
 
 Use a Windows 11 x64 test PC with paired AirPods Pro 1 or Pro 3 and Test Mode
 already enabled. Test Mode weakens driver-signature checks; do not enable it on
-a work or everyday PC for this experiment. This playback driver has not passed
-hardware testing.
+a work or everyday PC for this experiment. Short Pro 3 playback checks have
+passed; full hardware validation is still pending. See the
+[validation record](../../docs/WINDOWS-VALIDATION.md#native-playback-driver-and-bitrate-controls).
 
 Download **NTPods.msi** from [releases](https://github.com/Ripthulhu/ntpods/releases)
 and install with drivers selected. Enable Start with Windows or open NTPods after
