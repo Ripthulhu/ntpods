@@ -46,7 +46,7 @@
                       Name="SystemStartOptions" Type="raw" />
     </Property>
     <Launch Condition="Installed OR (BOOTOPTIONS ~&gt;&lt; &quot;TESTSIGNING&quot;)"
-            Message="Test Mode is not on, so Windows would refuse to load the NTPods drivers.&#13;&#10;&#13;&#10;1. If BitLocker is on, save your recovery key first (https://aka.ms/myrecoverykey or: manage-bde -protectors -get C:). Changing Secure Boot or Test Mode can make Windows ask for it at the next boot.&#13;&#10;2. Turn off Secure Boot in your firmware/BIOS.&#13;&#10;3. In an admin terminal run:  bcdedit /set testsigning on&#13;&#10;4. Reboot (&quot;Test Mode&quot; shows in the bottom-right corner) and run this installer again." />
+            Message="Test Mode is required. These drivers are not Microsoft production-signed. Test Mode weakens Windows' driver-signature checks: enabling it on your everyday or work PC is a bad idea. Use a dedicated test PC.&#13;&#10;&#13;&#10;On that test PC:&#13;&#10;1. Save your BitLocker recovery key first (https://aka.ms/myrecoverykey). Changing boot settings can trigger recovery.&#13;&#10;2. If Secure Boot blocks Test Mode, turn it off in your firmware/BIOS.&#13;&#10;3. In an admin terminal run: bcdedit /set testsigning on&#13;&#10;4. Reboot and run this installer again. Setup does not change boot settings." />
 
     <!-- The ACX mic driver only loads on Windows 11 22H2 (build 22621) or newer, so
          the "ACX microphone" feature below only exists there. VersionNT/WindowsBuild

@@ -1,5 +1,13 @@
 # NTPods for Windows
 
+> [!WARNING]
+> Installation requires Windows **Test Mode (test signing)**. Setup signs these
+> experimental drivers with a local test certificate; they are not Microsoft
+> production-signed. Test Mode weakens normal driver-signature enforcement.
+> Do not enable it on your everyday or work PC for NTPods. Use a dedicated test PC.
+> Secure Boot can block Test Mode. Save your BitLocker recovery key before
+> changing boot settings.
+
 This checkout builds on NTPods `188e45d` for **Windows 11 x64, Intel AX200, and
 AirPods Pro 3 / firmware 9A348**. It retains the Rust daemon and WinUI interface,
 with the native AAP Bluetooth driver and ACX virtual microphone. Windows continues
@@ -36,10 +44,13 @@ for reference and is outside this build's supported scope.
 - `installer`: Program Files installation, account-bound driver policy, narrow
   helper tasks and explicit cleanup.
 
-No production-signed packages are available from this local build. Development
-installation requires a separately prepared test setup; building does not change
-Secure Boot, Memory Integrity or boot settings. Do not use the upstream nightly
-or old driver-only scripts as substitutes for this hardened source build.
+No production-signed packages are available. Both MSI and ZIP installations
+require a separately prepared test setup; building and installing do not change
+Secure Boot, Memory Integrity or Test Mode. See the
+[release notes](../docs/WINDOWS-RELEASE-NOTES.md) for package choices and limits,
+and [Microsoft's test-signing documentation](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/the-testsigning-boot-configuration-option)
+for the boot policy. Do not use the upstream nightly or old driver-only scripts
+as substitutes for this fork's build.
 
 [Third-party notices and redistribution gates](../THIRD_PARTY.md) include the
 Microsoft ACX sample's MS-PL terms and the verified FFmpeg LGPL-3.0-or-later

@@ -1,9 +1,31 @@
 # Build only: this never installs drivers, trusts certificates, or changes boot options.
 [CmdletBinding()]
-param([string]$Out = (Join-Path $PSScriptRoot 'build-output'))
+param(
+    [string]$Out = (Join-Path $PSScriptRoot 'build-output'),
+    [ValidateScript({
+        if ($_ -notmatch '\A[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,5}\z') {
+            throw 'Version must contain three numeric parts: major.minor.build.'
+        }
+        $value = [version]$_
+        if ($value.Major -gt 255 -or $value.Minor -gt 255 -or $value.Build -gt 65535) {
+            throw 'Version exceeds the Windows Installer limits: 255.255.65535.'
+        }
+        $true
+    })]
+    [string]$Version
+)
 $ErrorActionPreference = 'Stop'
+& (Join-Path $PSScriptRoot 'tests\test-build-version.ps1')
 $repo = Split-Path -Parent $PSScriptRoot
 $Out = [IO.Path]::GetFullPath($Out)
+$uiVersionArguments = @()
+$msiVersionArguments = @{}
+if ($Version) {
+    # AssemblyVersion reserves 65535; keep the full MSI build number in FileVersion.
+    $assemblyVersion = ([version]$Version).ToString(2) + '.0.0'
+    $uiVersionArguments = @("-p:Version=$Version", "-p:FileVersion=$Version.0", "-p:AssemblyVersion=$assemblyVersion")
+    $msiVersionArguments.Version = $Version
+}
 function Run([string]$tool, [string[]]$arguments) {
     & $tool @arguments
     if ($LASTEXITCODE) { throw "$tool failed ($LASTEXITCODE)." }
@@ -71,7 +93,7 @@ try {
             Run (Join-Path $tests 'aap-inf-target.exe') @((Join-Path $package 'NTPodsAAP.inf'))
         }
     }
-    Run $uiBuild @('windows/winui/NTPods.WinUI/NTPods.WinUI.csproj', '-restore', '-t:Build', '-p:Configuration=Release', '-p:Platform=x64', '-p:VisualStudioVersion=18.0', '-p:RestorePackagesWithLockFile=true', '-p:RestoreLockedMode=true', '-nr:false', '-v:minimal')
+    Run $uiBuild (@('windows/winui/NTPods.WinUI/NTPods.WinUI.csproj', '-restore', '-t:Build', '-p:Configuration=Release', '-p:Platform=x64', '-p:VisualStudioVersion=18.0', '-p:RestorePackagesWithLockFile=true', '-p:RestoreLockedMode=true', '-nr:false', '-v:minimal') + $uiVersionArguments)
     $ui = Get-ChildItem 'windows/winui/NTPods.WinUI/bin/x64/Release' -Recurse -Filter ntpods-winui.exe | Where-Object { $_.FullName -notmatch '\\publish\\' } | Select-Object -First 1
     if (-not $ui) { throw 'Missing built WinUI executable.' }
     & windows/installer/test-setup.ps1
@@ -80,7 +102,7 @@ try {
     Run "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'windows/installer/test-driver-rollback.ps1')
     & windows/installer/make-dist.ps1 -Out (Join-Path $Out 'dist') -DaemonExe windows/daemon/target/release/ntpodsd.exe -WinUIDir $ui.Directory.FullName -DriverPackages $packages
     $env:PATH = "$env:USERPROFILE\.dotnet\tools;$env:PATH"
-    & windows/installer/msi/build-msi.ps1 -Dist (Join-Path $Out 'dist') -Out (Join-Path $Out 'NTPods-experimental.msi')
+    & windows/installer/msi/build-msi.ps1 -Dist (Join-Path $Out 'dist') -Out (Join-Path $Out 'NTPods-experimental.msi') @msiVersionArguments
     & windows/installer/msi/test-startup.ps1 -Msi (Join-Path $Out 'NTPods-experimental.msi')
     $manifest = [ordered]@{
         baseline = '188e45df20259b616ce155be812086259d1a2488'
@@ -90,6 +112,7 @@ try {
         dotnet = (& dotnet --version)
         sdkWdk = '10.0.26100.0'
         signing = 'unsigned-development-package'
+        msi = @{ path = 'NTPods-experimental.msi'; sha256 = (Get-FileHash -LiteralPath (Join-Path $Out 'NTPods-experimental.msi') -Algorithm SHA256).Hash }
         sources = @(& git -c core.quotePath=false ls-files --cached --others --exclude-standard | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | ForEach-Object { @{ path = $_; sha256 = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash } })
         files = @(Get-ChildItem (Join-Path $Out 'dist') -Recurse -File | ForEach-Object { @{ path = $_.FullName.Substring($Out.Length + 1); sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash } })
     }

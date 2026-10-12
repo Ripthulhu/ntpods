@@ -2,6 +2,14 @@
 
 # NTPods
 
+> [!WARNING]
+> These experimental builds require Windows **Test Mode (test signing)**. The
+> drivers are not Microsoft production-signed; setup signs them locally with a
+> test certificate. Test Mode weakens Windows' normal driver-signature checks.
+> Enabling it for an everyday or work PC is a bad idea. Use a dedicated test PC.
+> Secure Boot can block Test Mode, and changing either setting can trigger
+> BitLocker recovery. Save your recovery key before changing boot settings.
+
 NTPods brings AirPods controls, battery information and a virtual microphone to
 Windows. This is [Ripthulhu's fork](https://github.com/Ripthulhu/ntpods) of
 [arctumn/NTPods](https://github.com/arctumn/ntpods), based on commit
@@ -46,18 +54,20 @@ use [LibrePods](https://github.com/librepods-org/librepods).
 
 ## Installing on Windows
 
-Build this experimental branch using the [build instructions](docs/BUILD-WINDOWS.md).
-Its drivers require a prepared Windows test setup. Read the
+Read the [release notes](docs/WINDOWS-RELEASE-NOTES.md),
 [Windows README](windows/README.md) and [validation record](docs/WINDOWS-VALIDATION.md)
-before installing. Public binary distribution is on hold; upstream nightly builds
-do not include this branch's changes.
+before installing. Public binary uploads remain disabled while the licensing
+issue is unresolved. The build workflow can publish experimental MSI and ZIP
+packages once a maintainer enables it; see the
+[build instructions](docs/BUILD-WINDOWS.md). Upstream nightly builds do not include
+this fork's changes.
 
 ## What's in the repo
 
 - `windows/`: the two drivers (AAP channel and virtual mic), the daemon (Rust), the
   WinUI app (C#) and the installer
 - `docs/` and `AAP Definitions.md`: notes on the AirPods protocol
-- `.github/workflows/ci-windows.yml`: builds and tests without publishing binaries
+- `.github/workflows/ci-windows.yml`: builds, tests and opt-in experimental packages
 
 ## Credits
 

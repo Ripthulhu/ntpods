@@ -31,6 +31,7 @@ $dest = Join-Path $env:ProgramFiles 'NTPods'
 $sid = Get-CurrentUserSid
 
 # ---- 0. preflight: fail BEFORE touching certificates or drivers -------------
+Write-Warning 'NTPods requires Test Mode, which weakens Windows driver-signature checks. These experimental drivers are not Microsoft production-signed. Do not enable Test Mode on your everyday or work PC for NTPods; use a dedicated test PC.'
 if (-not (Test-Admin)) { throw 'Run this from an ADMINISTRATOR PowerShell.' }
 Assert-UserSid $sid
 $MicDriver = Resolve-MicDriver $MicDriver

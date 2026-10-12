@@ -1,5 +1,12 @@
 # Experimental Windows build
 
+> [!WARNING]
+> Running these drivers requires Windows **Test Mode (test signing)**, which
+> weakens normal driver-signature enforcement. They are not Microsoft
+> production-signed; the installer signs them locally. Enabling Test Mode on an
+> everyday or work PC is a bad idea. Use a dedicated test PC. Save your BitLocker
+> recovery key before changing Test Mode or Secure Boot.
+
 Baseline: `188e45df20259b616ce155be812086259d1a2488`, Windows 11 x64 / ACX only.
 The current source version is `0.1.26`. The installed version is tracked in
 `WINDOWS-VALIDATION.md`.
@@ -44,6 +51,24 @@ replacement and its reboot request while preserving driver removal on uninstall.
 The flag has no effect on fresh installs or repairs. Verify driver package hashes
 and the installed drivers before choosing this path.
 
+## Publishing experimental builds
+
+Binary uploads are off by default. The repository variable
+`NTPODS_PUBLISH_BUILDS` must equal `true` before the Windows workflow can upload
+binary artifacts or publish a release. Keep it off while the licensing issue in
+`THIRD_PARTY.md` is unresolved. Tests and compilation still run with uploads off.
+
+When publishing is enabled, the workflow packages the MSI, a ZIP for manual
+installation, checksums and build metadata. Every release starts with
+[`WINDOWS-RELEASE-NOTES.md`](WINDOWS-RELEASE-NOTES.md), which is also included in
+the ZIP. Keep its Test Mode warning visible when sharing download links.
+
+Nightlies reserve versions `0.2.<github.run_number>` so each new run can upgrade
+the previous build. A rerun retains its original run number. Versioned release
+tags use `windows-vX.Y.Z`; start at `windows-v0.3.0` or higher so the MSI version
+sorts after every `0.2.x` nightly. These are experimental builds regardless of
+whether they came from a branch or a version tag.
+
 ## Development installation
 
 Use a test setup already configured for test-signed drivers. This installer does
@@ -51,6 +76,12 @@ not change Secure Boot, Memory Integrity, or Test Mode. Both MSI and ZIP install
 executables and elevated helpers under `%ProgramFiles%\NTPods`. The installing
 account's SID is bound to both driver control devices; SYSTEM is also allowed.
 This build accepts ordinary local/domain account SIDs, not Entra-only SIDs.
+
+Test Mode must remain enabled while using the NTPods drivers. Secure Boot can
+prevent enabling it, and changing boot settings can prompt for a BitLocker
+recovery key. See [Microsoft's test-signing documentation](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/the-testsigning-boot-configuration-option).
+After uninstalling the drivers, turn Test Mode off and restore any Secure Boot
+setting you changed. Uninstalling NTPods does not reset boot settings.
 
 The ACX hardware ID is `ROOT\NTPodsMicACX` (service `NTPodsMicACX`), avoiding the
 generic Microsoft sample device identity. PortCls is not shipped by this build.

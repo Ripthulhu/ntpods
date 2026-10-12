@@ -1,19 +1,40 @@
 name: Experimental Windows build
 
 on:
+  push:
+    branches: [main]
+    tags: ['windows-v*']
+    paths: ['windows/**', 'licenses/**', 'THIRD_PARTY.md', 'docs/WINDOWS-RELEASE-NOTES.md', 'global.json', 'rust-toolchain.toml', '.github/workflows/ci-windows.yml']
   pull_request:
-    paths: ['windows/**', 'licenses/**', 'THIRD_PARTY.md', 'global.json', 'rust-toolchain.toml', '.github/workflows/ci-windows.yml']
+    paths: ['windows/**', 'licenses/**', 'THIRD_PARTY.md', 'docs/WINDOWS-RELEASE-NOTES.md', 'global.json', 'rust-toolchain.toml', '.github/workflows/ci-windows.yml']
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build:
     runs-on: windows-2022
+    timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
-      - uses: Cyberboss/install-winget@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Select package version
+        shell: pwsh
+        run: |
+          $version = "0.2.$env:GITHUB_RUN_NUMBER"
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            if ($env:GITHUB_REF_NAME -notmatch '^windows-v(\d+\.\d+\.\d+)$') { throw 'Expected windows-vX.Y.Z tag.' }
+            $version = $Matches[1]
+            if ([version]$version -lt [version]'0.3.0') { throw 'Tagged releases must be 0.3.0 or later, above the 0.2 nightly series.' }
+          }
+          "NTPODS_BUILD_VERSION=$version" >> $env:GITHUB_ENV
+      - uses: Cyberboss/install-winget@1c6f189175e9f015bf1aa113cd1cc6c73efb9d47 # v1
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Install pinned SDK, WDK, and WinUI tools
@@ -30,14 +51,17 @@ jobs:
           if ($LASTEXITCODE -and $LASTEXITCODE -ne -1978335189) { throw "WinUI tool installation failed ($LASTEXITCODE)" }
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $vs2022 = & $vswhere -latest -products '*' -version '[17.0,18.0)' -property installationPath
+          if (-not $vs2022) { throw 'VS2022 is required to build the kernel drivers.' }
           $installer = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
-          $p = Start-Process $installer -WindowStyle Hidden -Wait -PassThru -ArgumentList @('modify', '--installPath', "`"$vs2022`"", '--add', 'Microsoft.Windows.DriverKit', '--quiet', '--norestart')
+          $p = Start-Process $installer -WindowStyle Hidden -Wait -PassThru -ArgumentList @('modify', '--installPath', "`"$vs2022`"", '--add', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', '--add', 'Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre', '--add', 'Microsoft.Windows.DriverKit', '--quiet', '--norestart')
           if ($p.ExitCode -notin 0, 3010) { throw "WDK integration failed ($($p.ExitCode))" }
-      - uses: dtolnay/rust-toolchain@1.95.0
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+        with:
+          toolchain: '1.95.0'
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: windows/daemon -> target
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           dotnet-version: '10.0.401'
       - name: Install WiX
@@ -47,5 +71,65 @@ jobs:
           wix extension add -g WixToolset.UI.wixext/5.0.2 WixToolset.Util.wixext/5.0.2
       - name: Build and test current source
         shell: pwsh
-        run: ./windows/build.ps1
-      # No binary upload/publication: hardware, signing and THIRD_PARTY.md gates remain.
+        run: |
+          ./windows/tests/test-release-package.ps1
+          ./windows/build.ps1 -Version $env:NTPODS_BUILD_VERSION
+      - name: Package downloads
+        shell: pwsh
+        run: ./windows/package-release.ps1
+      # Binary distribution remains an explicit opt-in while THIRD_PARTY.md is unresolved.
+      - name: Upload experimental downloads
+        if: vars.NTPODS_PUBLISH_BUILDS == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ntpods-windows-${{ github.run_number }}
+          path: windows/build-output/downloads/*
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    needs: build
+    if: >-
+      vars.NTPODS_PUBLISH_BUILDS == 'true' &&
+      github.repository == 'Ripthulhu/ntpods' &&
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/windows-v'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ntpods-windows-${{ github.run_number }}
+          path: downloads
+      - name: Publish experimental release
+        working-directory: downloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum --check SHA256SUMS.txt
+          tag="$GITHUB_REF_NAME"
+          title="NTPods $tag (experimental)"
+          if [[ "$GITHUB_REF_TYPE" != tag ]]; then
+            main_sha=$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)
+            if [[ "$main_sha" != "$GITHUB_SHA" ]]; then
+              echo 'A newer commit is on main; keeping its nightly.'
+              exit 0
+            fi
+            tag=nightly
+            title="NTPods nightly 0.2.$GITHUB_RUN_NUMBER (experimental)"
+            if gh release view "$tag" >/dev/null 2>&1; then
+              previous=$(gh release view "$tag" --json name --jq .name)
+              if [[ "$previous" =~ nightly\ 0\.2\.([0-9]+) ]] && (( BASH_REMATCH[1] >= GITHUB_RUN_NUMBER )); then
+                echo 'This nightly or a newer build is already published.'
+                exit 0
+              fi
+              gh release delete "$tag" --cleanup-tag --yes
+            fi
+          fi
+          gh release create "$tag" NTPods.msi NTPods-Windows.zip NTPods-source.zip build-manifest.json RELEASE-NOTES.md SHA256SUMS.txt \
+            --target "$GITHUB_SHA" --prerelease --latest=false --title "$title" --notes-file RELEASE-NOTES.md
