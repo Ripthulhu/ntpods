@@ -15,14 +15,20 @@ Neither installer changes Secure Boot, Memory Integrity or Test Mode for you.
 After uninstalling the drivers, turn Test Mode off and restore any Secure Boot
 setting you changed. See [Microsoft's test-signing documentation](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/the-testsigning-boot-configuration-option).
 
-The packages replace the paired AirPods Pro 1 or Pro 3 playback driver with
-NTPodsAudio. AAC and AAC-ELD share that AirPods output; both offer Best effort and
+The packages replace the playback driver for AirPods 1–4, Pro 1–3 and the original
+Max (Lightning and USB-C), using verified Apple AudioSink IDs. Pro 1 and Pro 3
+have passed short hardware checks; the other models are available to test.
+AAC and AAC-ELD share that AirPods output; both offer Best effort and
 Manual kbps settings under **Playback and microphone**. No separate speaker or
 per-app routing is needed. Initial driver replacement may require selecting the
 output again. Codec changes keep the same output.
 
 An initial connection rejection now gets two automatic retries. Disconnecting
 or changing the selected pair cancels the wait.
+
+AAC remains the default. A pair without a supported AAC-ELD profile uses AAC
+with its saved bitrate setting. NTPods reports the active codec and retains the
+preferred codec for future connections. Stream failures still report errors.
 
 AAC-ELD uses plain ELD without SBR, constant bitrate and two access units per
 packet with a 48 kHz RTP clock, following the
@@ -33,8 +39,10 @@ conditions.
 Keep NTPods running for playback, or enable Start with Windows. If the backend
 stops, playback stops too. Keep the AirPods connected during uninstall to restore
 the previous playback provider. Its package is retained during installation.
-Other models keep their current playback driver. Available controls depend on
-model and firmware.
+A pair first connected after installation may bind automatically; without a
+saved prior binding, uninstall restores Microsoft's Bluetooth audio driver.
+Unlisted models keep their current provider. Available controls depend on model
+and firmware; see the [model list](https://github.com/Ripthulhu/ntpods/blob/main/docs/WINDOWS-MODEL-SUPPORT.md#native-playback).
 
 Short tests on AirPods Pro 3 (A3063, firmware 9A348) with Intel AX200 confirmed
 stereo AAC at 256 kbps, AAC-ELD at 128, 192 and 256 kbps, and working volume and

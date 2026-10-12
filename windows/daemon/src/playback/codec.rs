@@ -46,6 +46,12 @@ impl Mode {
             ntpods_ipc::PlaybackMode::AacEld => Some(Self::Eld),
         }
     }
+    pub fn selection(self) -> ntpods_ipc::PlaybackMode {
+        match self {
+            Self::Aac => ntpods_ipc::PlaybackMode::Aac,
+            Self::Eld => ntpods_ipc::PlaybackMode::AacEld,
+        }
+    }
     pub fn frame_samples(self) -> usize {
         match self {
             Self::Aac => aac_protocol::FRAME_SAMPLES,
@@ -163,6 +169,8 @@ mod tests {
         assert_eq!(Mode::from_selection(PlaybackMode::default()), None);
         assert_eq!(Mode::from_selection(PlaybackMode::Aac), Some(Mode::Aac));
         assert_eq!(Mode::from_selection(PlaybackMode::AacEld), Some(Mode::Eld));
+        assert_eq!(Mode::Aac.selection(), PlaybackMode::Aac);
+        assert_eq!(Mode::Eld.selection(), PlaybackMode::AacEld);
     }
     #[test]
     fn aac_fragments_share_a_timestamp_and_advance_once_per_frame() {

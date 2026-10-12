@@ -11,6 +11,8 @@ $helper = Join-Path $root 'tools\audio-binding.exe'
 $audioInf = Join-Path $root 'driver-audio\NTPodsAudio.inf'
 $pro1 = 'BTHENUM\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&200E'
 $pro3 = 'BTHENUM\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&2027'
+$products = @('2002', '200A', '200E', '200F', '2013', '2014', '2019', '201B', '201F', '2024', '2027')
+$supportedIds = @($products | ForEach-Object { 'BTHENUM\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&' + $_ })
 
 function Assert-True($condition, [string]$message) { if (-not $condition) { throw $message } }
 function Assert-Fails([scriptblock]$body, [string]$message) {
@@ -105,7 +107,7 @@ try {
         param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
         Assert-True ($Arguments[0] -in '--bind', '--check') 'Unexpected audio helper operation.'
         $device = @($script:devices | Where-Object InstanceId -eq $Arguments[1])
-        Assert-True ($device.Count -eq 1 -and @($device[0].HardwareID | Where-Object { $_ -in $pro1, $pro3 }).Count -gt 0) 'Binding selected an unrelated device.'
+        Assert-True ($device.Count -eq 1 -and @($device[0].HardwareID | Where-Object { $_ -in $supportedIds }).Count -gt 0) 'Binding selected an unrelated device.'
         if ($script:requireBackup) {
             Assert-True (@(Read-NativeAudioBackup | Where-Object InstanceId -eq $device[0].InstanceId).Count -eq 1) 'Binding happened before the original driver was saved.'
         }
@@ -116,6 +118,73 @@ try {
         $package = Package-ForInf $Arguments[2]
         $device[0].Service = $package.Service; $device[0].Published = $package.Driver
     }
+
+    $inf = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\drivers\audio\NTPodsAudio.inf') -Raw
+    $infIds = @([regex]::Matches($inf, '(?m)^%Device%=Audio,([^\r\n]+)') | ForEach-Object { $_.Groups[1].Value })
+    $bindingSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'audio-binding.cpp') -Raw
+    $bindingList = [regex]::Match($bindingSource, '(?s)supported_ids\[\]\s*=\s*\{(.*?)\};').Groups[1].Value
+    $bindingIds = @([regex]::Matches($bindingList, 'L"([^"]+)"') | ForEach-Object { $_.Groups[1].Value.Replace('\\', '\') })
+    $scriptIds = @([regex]::Matches((Get-Command Get-NativeAudioDevices).Definition, "'([^']+)'" ) | ForEach-Object { $_.Groups[1].Value })
+    $expectedIds = ($supportedIds | Sort-Object) -join "`n"
+    foreach ($list in @(@{ Name = 'INF'; Ids = $infIds }, @{ Name = 'helper'; Ids = $bindingIds }, @{ Name = 'installer'; Ids = $scriptIds })) {
+        Assert-True ((@($list.Ids | Sort-Object) -join "`n") -ieq $expectedIds) "$($list.Name) playback targets differ from the tested models."
+    }
+    Write-Host 'PASS INF, helper and installer target lists match'
+
+    foreach ($id in $supportedIds) {
+        Reset-Fixture ('model-' + $id.Substring($id.Length - 4))
+        $script:devices = @(
+            [pscustomobject]@{ InstanceId = "$id\external"; HardwareID = @($id.ToLowerInvariant()); Present = $true; Published = 'oem90.inf'; Service = 'AltA2DP'; Problem = 0 },
+            [pscustomobject]@{ InstanceId = "$id\inbox"; HardwareID = @($id); Present = $true; Published = 'microsoft_bluetooth_a2dp_src.inf'; Service = 'BthA2dp'; Problem = 0 },
+            [pscustomobject]@{ InstanceId = "$id\absent"; HardwareID = @($id); Present = $false; Published = 'oem90.inf'; Service = 'AltA2DP'; Problem = 0 }
+        )
+        Assert-NativeAudioInstance "$($id.ToLowerInvariant())\lowercase"
+        Assert-True (@(Get-NativeAudioDevices).Count -eq 3) "A supported model was omitted: $id"
+        Save-NativeAudioOriginals
+        Assert-True (@(Read-NativeAudioBackup).Count -eq 3) "Original providers were not saved for $id"
+        $script:requireBackup = $true
+        Install-NativeAudioDriver $root $audioInf
+        Assert-True ($script:devices[0].Service -eq 'NTPodsAudio' -and $script:devices[1].Service -eq 'NTPodsAudio') "A present model did not bind: $id"
+        Assert-True ($script:devices[2].Service -eq 'AltA2DP') 'Install bound an absent device.'
+        Save-NativeAudioOriginals
+        Assert-True (@(Read-NativeAudioBackup | Where-Object Published -eq 'oem90.inf').Count -eq 2) 'Upgrade replaced the original external provider.'
+        $script:requireBackup = $false
+        $script:devices[2].Service = 'NTPodsAudio'; $script:devices[2].Published = 'oem1.inf'
+        Uninstall-NativeAudioDriver $root
+        Assert-True ($script:devices[0].Service -eq 'AltA2DP' -and $script:devices[1].Service -eq 'BthA2dp') "Uninstall lost the original providers for $id"
+        Assert-True (Test-Path -LiteralPath (Get-NativeAudioBackupPath)) 'Absent device lost its original-provider backup.'
+        $script:devices[2].Present = $true
+        Uninstall-NativeAudioDriver $root
+        Assert-True ($script:devices[2].Service -eq 'AltA2DP') 'Reconnect did not restore the absent device.'
+        Assert-True (-not (Test-Path -LiteralPath (Get-NativeAudioBackupPath))) 'Completed restore retained its backup.'
+
+        Reset-Fixture ('unbacked-' + $id.Substring($id.Length - 4))
+        $script:devices = @([pscustomobject]@{ InstanceId = "$id\later-paired"; HardwareID = @($id); Present = $true; Published = 'oem1.inf'; Service = 'NTPodsAudio'; Problem = 0 })
+        Uninstall-NativeAudioDriver $root
+        Assert-True ($script:devices[0].Service -eq 'BthA2dp') "A later-paired model did not return to Windows playback: $id"
+    }
+    Write-Host "PASS backup, install, upgrade and restore for all $($supportedIds.Count) model IDs"
+
+    Reset-Fixture 'invalid-targets'
+    $invalidIds = @(
+        'BTHENUM\{0000110b-0000-1000-8000-00805f9b34fb}',
+        $pro3.Replace('0000110b', '0000111e'),
+        $pro3.Replace('0001004C', '00010000'),
+        $pro3.Replace('0001004C', '0002004C'),
+        $pro3.Replace('2027', 'FFFF'),
+        $pro3.Replace('2027', '200B'),
+        ($pro3 + '-extra')
+    )
+    $script:devices = @($invalidIds | ForEach-Object { [pscustomobject]@{ InstanceId = "$_\other"; HardwareID = @($_); Present = $true; Published = 'oem91.inf'; Service = 'OtherAudio'; Problem = 0 } })
+    Assert-True (@(Get-NativeAudioDevices).Count -eq 0) 'An unsupported hardware ID was accepted.'
+    foreach ($badId in $invalidIds) { Assert-Fails { Assert-NativeAudioInstance "$badId\other" } 'An unsupported saved instance was accepted.' }
+    foreach ($suffix in @('', 'two\parts', 'has space', "has`ttab", "has`nnewline", "has$([char]0)null")) {
+        Assert-Fails { Assert-NativeAudioInstance "$pro3\$suffix" } 'An invalid instance suffix was accepted.'
+    }
+    Save-NativeAudioOriginals
+    Install-NativeAudioDriver $root $audioInf
+    Assert-True ($script:calls.Count -eq 0) 'An unsupported device reached a driver operation.'
+    Write-Host 'PASS unrelated services, vendors, products and invalid suffixes are rejected'
 
     Reset-Fixture 'install-uninstall'
     Assert-True (@(Get-NativeAudioDevices).Count -eq 3) 'Hardware-ID matching included another device or omitted a supported one.'

@@ -10,7 +10,7 @@ use windows_sys::Win32::Foundation::ERROR_REQ_NOT_ACCEP;
 
 pub struct Session {
     driver: Driver,
-    mode: Mode,
+    pub mode: Mode,
     opened: Instant,
     media_packets: u64,
     last_request: u8,
@@ -46,7 +46,7 @@ impl Session {
         driver: Driver,
         address: u64,
         mode: Mode,
-        preference: ntpods_ipc::PlaybackBitrate,
+        bitrates: [ntpods_ipc::PlaybackBitrate; 2],
         cancel: Arc<AtomicBool>,
         interrupted: impl Fn() -> bool + 'static,
     ) -> io::Result<Self> {
@@ -93,36 +93,34 @@ impl Session {
                 Ok(())
             },
         )?;
-        let endpoints = sinks(&session.request(DISCOVER, &[])?)?;
+        let mut endpoints = sinks(&session.request(DISCOVER, &[])?)?.into_iter();
         let deadline = Instant::now() + Duration::from_secs(15);
-        for seid in endpoints {
+        let selected = select_configuration(mode, bitrates, || loop {
+            session.check_cancelled()?;
+            let Some(seid) = endpoints.next() else {
+                return Ok(None);
+            };
             if Instant::now() >= deadline {
-                break;
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "Playback capability discovery timed out",
+                ));
             }
             let caps = match session.request(GET_CAPABILITIES, &[seid << 2]) {
                 Ok(caps) => caps,
                 Err(error) if error.kind() == io::ErrorKind::Unsupported => continue,
                 Err(error) => return Err(error),
             };
-            let config = match mode {
-                Mode::Aac => aac_protocol::select_codec_at(&caps, preference)?
-                    .map(|(codec, bitrate)| (aac_protocol::configuration(seid, codec), bitrate)),
-                Mode::Eld => select_apple_eld(&caps, preference)?
-                    .map(|bitrate| (configuration_at(seid, bitrate), bitrate)),
-            };
-            if let Some((config, bitrate)) = config {
-                session.seid = seid;
-                session.selected_config = config;
-                session.bitrate = bitrate;
-                break;
-            }
-        }
-        if session.seid == 0 {
-            return Err(invalid(&format!(
-                "AirPods did not offer {} stereo",
-                mode.name()
-            )));
-        }
+            return Ok(Some((seid, caps)));
+        })?;
+        session.check_cancelled()?;
+        session.mode = selected.mode;
+        session.source_caps = selected.mode.source_configuration()[2..].to_vec();
+        session.seid = selected.seid;
+        session.selected_config = selected.config;
+        session.bitrate = selected.bitrate;
+        let mode = session.mode;
+        let preference = bitrates[usize::from(mode == Mode::Eld)];
         crate::log(&format!(
             "playback signaling: {} selected endpoint {}, {} bps",
             mode.name(),
@@ -344,6 +342,70 @@ fn signal_name(signal: u8) -> &'static str {
     }
 }
 
+#[derive(Debug)]
+struct Configuration {
+    mode: Mode,
+    seid: u8,
+    config: Vec<u8>,
+    bitrate: u32,
+}
+
+fn select_configuration(
+    requested: Mode,
+    bitrates: [ntpods_ipc::PlaybackBitrate; 2],
+    mut next: impl FnMut() -> io::Result<Option<(u8, Vec<u8>)>>,
+) -> io::Result<Configuration> {
+    let mut fallback = Vec::new();
+    let mut eld_offered = false;
+    while let Some((seid, caps)) = next()? {
+        let selected = match requested {
+            Mode::Aac => aac_protocol::select_codec_at(&caps, bitrates[0])?
+                .map(|(codec, bitrate)| (aac_protocol::configuration(seid, codec), bitrate)),
+            Mode::Eld => {
+                eld_offered |=
+                    select_apple_eld(&caps, ntpods_ipc::PlaybackBitrate::default())?.is_some();
+                let selected = select_apple_eld(&caps, bitrates[1])?
+                    .map(|bitrate| (configuration_at(seid, bitrate), bitrate));
+                if selected.is_none() {
+                    fallback.push((seid, caps));
+                }
+                selected
+            }
+        };
+        if let Some((config, bitrate)) = selected {
+            return Ok(Configuration {
+                mode: requested,
+                seid,
+                config,
+                bitrate,
+            });
+        }
+    }
+    if requested == Mode::Eld {
+        if eld_offered {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "The AirPods cannot use this AAC-ELD bitrate.",
+            ));
+        }
+        // Fall back only after all endpoints were checked, before configuring any of them.
+        for (seid, caps) in fallback {
+            if let Some((codec, bitrate)) = aac_protocol::select_codec_at(&caps, bitrates[0])? {
+                return Ok(Configuration {
+                    mode: Mode::Aac,
+                    seid,
+                    config: aac_protocol::configuration(seid, codec),
+                    bitrate,
+                });
+            }
+        }
+    }
+    Err(invalid(&format!(
+        "AirPods did not offer {} stereo",
+        requested.name()
+    )))
+}
+
 fn eld_bitrate_limit(mtu: usize) -> u32 {
     // CBR may use one padding byte per access unit.
     let au_budget = mtu.saturating_sub(12 + 4 * AUS_PER_PACKET) / AUS_PER_PACKET;
@@ -398,6 +460,124 @@ impl Drop for Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ntpods_ipc::PlaybackBitrate;
+
+    fn aac_caps() -> Vec<u8> {
+        aac_protocol::configuration(1, aac_protocol::AAC_CAPABILITIES)[2..].to_vec()
+    }
+
+    #[test]
+    fn eld_takes_precedence_and_fallback_uses_the_aac_preference() {
+        let requested = Mode::Eld;
+        let preferences = [
+            PlaybackBitrate {
+                best_effort: false,
+                kbps: 129,
+            },
+            PlaybackBitrate::default(),
+        ];
+        let mut caps = vec![(3, aac_caps())].into_iter();
+        let selected = select_configuration(requested, preferences, || Ok(caps.next())).unwrap();
+        assert_eq!(selected.mode, Mode::Aac);
+        assert_eq!(selected.seid, 3);
+        assert_eq!(selected.bitrate, 129000);
+        assert_eq!(selected.config[0], 3 << 2);
+        assert_eq!(&selected.config[6..8], &[0, 2]);
+
+        let mut caps = vec![(1, aac_caps()), (2, configuration(2)[2..].to_vec())].into_iter();
+        let selected = select_configuration(requested, preferences, || Ok(caps.next())).unwrap();
+        assert_eq!(selected.mode, Mode::Eld);
+        assert_eq!(selected.seid, 2);
+        assert_eq!(selected.bitrate, 256000);
+    }
+
+    #[test]
+    fn unsupported_eld_profile_can_fall_back_but_a_manual_bitrate_cannot() {
+        let mut unsupported = configuration(2);
+        unsupported[17] = 4; // Apple codec without the implemented 48 kHz profile.
+        for eld in [
+            unsupported[2..].to_vec(),
+            configuration_at(2, 96000)[2..].to_vec(),
+        ] {
+            let mut caps = vec![(1, aac_caps()), (2, eld)].into_iter();
+            let selected = select_configuration(Mode::Eld, [PlaybackBitrate::default(); 2], || {
+                Ok(caps.next())
+            })
+            .unwrap();
+            assert_eq!(selected.mode, Mode::Aac);
+            assert_eq!(selected.bitrate, 512000);
+        }
+        let mut caps = vec![
+            (1, aac_caps()),
+            (2, configuration_at(2, 192000)[2..].to_vec()),
+        ]
+        .into_iter();
+        let preferences = [
+            PlaybackBitrate::default(),
+            PlaybackBitrate {
+                best_effort: false,
+                kbps: 256,
+            },
+        ];
+        let error = select_configuration(Mode::Eld, preferences, || Ok(caps.next())).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert!(error.to_string().contains("bitrate"));
+    }
+
+    #[test]
+    fn fallback_does_not_hide_bad_capabilities_or_discovery_errors() {
+        let mut malformed_aac = aac_caps();
+        malformed_aac[3] = 7;
+        malformed_aac.pop();
+        for invalid_caps in [vec![7, 16, 0, 0xff], malformed_aac] {
+            let mut caps = vec![(1, invalid_caps)].into_iter();
+            assert_eq!(
+                select_configuration(Mode::Eld, [PlaybackBitrate::default(); 2], || Ok(
+                    caps.next()
+                ))
+                .unwrap_err()
+                .kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
+        for kind in [
+            io::ErrorKind::Interrupted,
+            io::ErrorKind::NotConnected,
+            io::ErrorKind::TimedOut,
+        ] {
+            let mut candidate = Some((1, aac_caps()));
+            let error = select_configuration(Mode::Eld, [PlaybackBitrate::default(); 2], || {
+                candidate
+                    .take()
+                    .map_or_else(|| Err(io::Error::from(kind)), |caps| Ok(Some(caps)))
+            })
+            .unwrap_err();
+            assert_eq!(error.kind(), kind);
+        }
+    }
+
+    #[test]
+    fn aac_never_falls_forward_to_eld_and_fallback_obeys_aac_bitrate_limits() {
+        let mut caps = vec![(2, configuration(2)[2..].to_vec())].into_iter();
+        assert!(
+            select_configuration(Mode::Aac, [PlaybackBitrate::default(); 2], || Ok(
+                caps.next()
+            ))
+            .is_err()
+        );
+        let mut aac = aac_caps();
+        let end = aac.len();
+        aac[end - 3..].copy_from_slice(&[0x01, 0xf4, 0]); // 128 kbps ceiling.
+        let mut caps = vec![(1, aac)].into_iter();
+        let preferences = [
+            PlaybackBitrate {
+                best_effort: false,
+                kbps: 129,
+            },
+            PlaybackBitrate::default(),
+        ];
+        assert!(select_configuration(Mode::Eld, preferences, || Ok(caps.next())).is_err());
+    }
 
     #[test]
     fn initial_signaling_rejection_retries_then_succeeds() {

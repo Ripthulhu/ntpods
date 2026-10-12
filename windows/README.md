@@ -13,11 +13,12 @@ AirPods Pro 3 / firmware 9A348**. It retains the Rust daemon and WinUI interface
 with the AAP Bluetooth driver, ACX virtual microphone and an experimental
 AudioSink playback driver. Windows continues to own the Bluetooth adapter.
 
-The MSI and ZIP include AAC and AAC-ELD playback for Pro 1 and Pro 3. Choose the
-codec and Best effort or Manual kbps under **Playback and microphone**. Both use
-the paired AirPods output; NTPods must remain running. The replacement playback
-driver has not been tested on AirPods. See the
-[playback test guide](playback/TESTING.md).
+The MSI and ZIP include experimental AAC and AAC-ELD playback for the
+[listed AirPods models](../docs/WINDOWS-MODEL-SUPPORT.md#native-playback). Choose
+the codec and Best effort or Manual kbps under **Playback and microphone**.
+Both use the paired AirPods output; NTPods must remain running. Pro 1 and Pro 3
+have passed short playback checks. Other models are available to test using the
+[playback guide](playback/TESTING.md).
 
 The app includes native three-band EQ, a local automatic-pause preference and
 additional AirPods settings for stem controls, accessibility and charging.
@@ -29,10 +30,12 @@ have passed the checks listed in the validation record. The microphone retains
 stereo playback during capture. A sustained capture ran for about 21 minutes, but
 stopping it left only one earbud playing until a manual reconnect. Since version
 0.1.7, NTPods restores the audio services automatically after capture stops.
-Twenty repeated capture/stop cycles
+Using Alternative A2DP, twenty repeated capture/stop cycles
 passed, with both channels confirmed afterward and AAC stereo preserved at
 48 kHz / 256 kbps. Recovery interrupts playback for about 17 seconds. Another
-sustained recording and broader recovery checks remain pending. See the
+sustained recording and broader recovery checks remain pending. Short checks
+with the native NTPods playback driver recovered in about two seconds on Pro 3;
+its longer capture and lifecycle checks remain pending. See the
 [hardware results](../docs/WINDOWS-VALIDATION.md).
 
 See [build and installation instructions](../docs/BUILD-WINDOWS.md) for the pinned

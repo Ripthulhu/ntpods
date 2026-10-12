@@ -1495,10 +1495,11 @@ clarification. Binary publishing was disabled for the initial source push.
 
 ## Native playback driver and bitrate controls
 
-The playback driver binds the paired AirPods Pro 1 and Pro 3 AudioSink instances.
+The playback driver binds the exact Apple AudioSink IDs in the
+[playback model list](WINDOWS-MODEL-SUPPORT.md#native-playback).
 It replaces the root virtual speaker used by the earlier playback experiment.
 AAC and AAC-ELD share one output, with separate Best effort and Manual bitrate
-preferences. Other AirPods models keep their current playback provider.
+preferences. Unlisted models keep their current playback provider.
 
 AAC encoder tests cover every 1 kbps step from 96 through 512 with full-scale
 noise, impulses and transients. Seven rates also pass decoded pitch and stereo
@@ -1511,6 +1512,23 @@ Installer tests cover exact-device binding, original-package backups, failed
 exports, failed restoration, upgrade rollback and restoration after an absent
 pair returns. Sixteen native UI renders cover codec and bitrate controls in
 light/dark themes at desktop and narrow widths.
+
+The matching tests now cover eleven verified SDP product IDs across AirPods 1–4,
+Pro 1–3 and the original Max variants. The C++ binding and INF tests passed, as
+did mocked installer tests in PowerShell 5.1 and 7. Each ID is checked for
+backup-before-bind, retained providers across upgrades, restoration of absent
+pairs, and Microsoft-driver restoration for later-paired devices without a
+saved provider. Generic AudioSink IDs, other vendors, unknown products and
+malformed instance IDs are rejected. These checks did not install drivers or
+establish playback on the additional models.
+
+Focused playback checks passed 53 tests after adding AAC fallback; two external
+encoder worker tests were skipped in this run. The new cases cover ELD preference when both
+codecs are available, AAC fallback when ELD is absent or unsupported, separate
+bitrate preferences, and rejection of malformed capabilities, transport errors
+and invalid manual rates. Bitrate edits during fallback respect microphone
+use and restart the stream when needed. The fallback has not been checked on an
+AAC-only pair; Pro 1 and Pro 3 both advertise AAC-ELD.
 
 On 2026-10-12, the native driver was installed and tested after a reboot on
 Windows 11 with an Intel AX200 and AirPods Pro 3 (A3063, firmware 9A348):

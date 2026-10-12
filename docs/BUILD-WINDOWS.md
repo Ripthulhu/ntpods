@@ -105,14 +105,17 @@ Bluetooth radio, and rename only this virtual input without resetting Windows
 audio services.
 
 The AAP INF binds Apple's dedicated service UUID. The playback INF binds only
-Apple-qualified AudioSink IDs for Pro 1 and Pro 3. Setup saves the previous playback
-provider under `%ProgramData%\NTPods\audio-original`, then binds NTPodsAudio to
-each supported device instance. The prior provider's package is retained for
+the Apple-qualified AudioSink IDs in the [playback model list](WINDOWS-MODEL-SUPPORT.md#native-playback).
+Setup saves the previous playback provider under
+`%ProgramData%\NTPods\audio-original`, then binds NTPodsAudio to each supported
+device instance. The prior provider's package is retained for
 uninstall; unrelated Bluetooth audio devices are excluded. Initial replacement
 may create a new Windows output ID. Codec changes keep NTPods' output ID.
 Keep supported pairs connected during uninstall. For an absent pair with a pending
 restore, reconnect it and run `restore-playback.ps1` from the extracted Windows ZIP
 as administrator. This helper can also restore playback while keeping the app.
+Pairs first connected after installation may bind automatically. Without a saved
+prior binding, restoration uses Microsoft's Bluetooth audio driver.
 
 Remove MSI installations through Windows Settings > Apps. ZIP installations
 include an elevated `uninstall.ps1`, which removes programs, tasks, driver-store

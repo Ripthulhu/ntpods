@@ -9,12 +9,8 @@ listening-mode, automatic-pause and native AAC/AAC-ELD playback checks on that
 adapter. Additional checks are
 recorded in WINDOWS-VALIDATION.md; other models remain unverified on hardware.
 
-The native playback driver currently binds only Pro 1 and Pro 3. Codec selection
-uses each pair's advertised AVDTP endpoints and bitrate limits. Both pairs passed
-AAC at 256 kbps and AAC-ELD at 128, 192 and 256 kbps, including a continuous
-70-second AAC-ELD run. Other models keep their existing playback driver until
-their native playback support can be checked. Playback support does not enable
-the high-quality microphone on older models.
+Native playback is available for the [models listed below](#native-playback).
+Playback support does not enable the high-quality microphone on older models.
 
 | Models | Listening modes | Live movement | High-quality microphone / custom EQ |
 | --- | --- | --- | --- |
@@ -116,6 +112,47 @@ case variant each ID denotes; BLE IDs do not select case-specific capabilities.
 The proposed Max 2 ID `0x2D20` and Powerbeats Pro 2 SDP product ID `0x201D` do not
 provide captured BLE battery-layout evidence, so neither is added to the BLE
 decoder. Powerbeats battery reports over an active AAP connection remain usable.
+
+## Native playback
+
+The experimental playback driver binds these exact Apple Bluetooth SDP product
+IDs on the AudioSink service. Codec selection uses the pair's advertised AVDTP
+endpoints and bitrate limits. Adding a model to this list makes it available for
+owners to test; it does not establish that both codecs work on that model.
+
+| Model | SDP product ID | NTPods playback checks |
+| --- | --- | --- |
+| AirPods 1 | `2002` | Untested |
+| AirPods 2 | `200F` | Untested |
+| AirPods 3 | `2013` | Untested |
+| AirPods 4 | `2019` | Untested |
+| AirPods 4 with ANC | `201B` | Untested |
+| AirPods Pro 1 | `200E` | AAC and AAC-ELD passed short stereo checks |
+| AirPods Pro 2, Lightning | `2014` | Untested |
+| AirPods Pro 2, USB-C | `2024` | Untested |
+| AirPods Pro 3 | `2027` | AAC and AAC-ELD passed short stereo and microphone coexistence checks |
+| AirPods Max 1, Lightning | `200A` | Untested |
+| AirPods Max 1, USB-C | `201F` | Untested |
+
+The additional IDs come from [SoundStage's Windows driver bindings](https://github.com/capriqqw/soundstage-for-airpods/blob/114143c27670275a5ef6336b91047d84b8a16eb5/driver/SoundStageKmdf/soundstage-airpods4-anc.inf#L25-L35)
+and the [Bluetooth Battery Meter SDP compatibility reports](https://github.com/maniacx/Bluetooth-Battery-Meter/issues/65).
+Pro 1 and Pro 3 IDs were also checked locally. AirPods 5, Max 2, Beats and unknown
+models retain their current playback provider until their Windows IDs are
+verified. BLE battery identifiers alone are insufficient for driver matching.
+
+AAC is the default. If a pair has no supported AAC-ELD profile, NTPods uses AAC
+with its saved bitrate setting and reports AAC as the active codec. The preferred
+codec remains saved for the next pair. A rejected stream or invalid manual
+bitrate still reports an error.
+
+Pro 1 and Pro 3 passed AAC at 256 kbps and AAC-ELD at 128, 192 and 256 kbps,
+including continuous 70-second AAC-ELD runs. Other models can use the
+[playback test guide](../windows/playback/TESTING.md) to report results with their
+model, firmware and adapter. Microphone and sensor support retain separate gates.
+
+Setup saves existing playback providers before binding. A pair first connected
+after installation may bind automatically; without a saved prior binding,
+uninstall restores Microsoft's Bluetooth audio driver for that pair.
 
 ## First-generation Pro check
 

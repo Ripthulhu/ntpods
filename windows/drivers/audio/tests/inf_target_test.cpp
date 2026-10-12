@@ -38,11 +38,20 @@ int wmain(int argc, wchar_t** argv)
     assert(!selected(inf, PROCESSOR_ARCHITECTURE_INTEL, 26200));
 
     const wchar_t* models = L"Models.NTamd64.10.0...22000";
-    assert(SetupGetLineCountW(inf, models) == 2);
     const wchar_t* expected[] = {
-        L"BTHENUM\\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&2027",
-        L"BTHENUM\\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&200E"
+        L"BTHENUM\\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&2002",
+        L"BTHENUM\\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&200A",
+        L"BTHENUM\\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&200E",
+        L"BTHENUM\\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&200F",
+        L"BTHENUM\\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&2013",
+        L"BTHENUM\\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&2014",
+        L"BTHENUM\\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&2019",
+        L"BTHENUM\\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&201B",
+        L"BTHENUM\\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&201F",
+        L"BTHENUM\\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&2024",
+        L"BTHENUM\\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&2027"
     };
+    assert(SetupGetLineCountW(inf, models) == static_cast<LONG>(ARRAYSIZE(expected)));
     for (unsigned index = 0; index < ARRAYSIZE(expected); ++index) {
         INFCONTEXT line;
         assert(SetupGetLineByIndexW(inf, models, index, &line));

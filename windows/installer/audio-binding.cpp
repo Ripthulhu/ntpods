@@ -7,9 +7,25 @@
 #include <stdio.h>
 #include <wchar.h>
 
+static const wchar_t* const supported_ids[] = {
+    L"BTHENUM\\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&2002",
+    L"BTHENUM\\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&200A",
+    L"BTHENUM\\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&200E",
+    L"BTHENUM\\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&200F",
+    L"BTHENUM\\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&2013",
+    L"BTHENUM\\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&2014",
+    L"BTHENUM\\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&2019",
+    L"BTHENUM\\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&201B",
+    L"BTHENUM\\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&201F",
+    L"BTHENUM\\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&2024",
+    L"BTHENUM\\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&2027"
+};
+
 static bool supported_id(const wchar_t* id) {
-    return _wcsicmp(id, L"BTHENUM\\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&200E") == 0 ||
-        _wcsicmp(id, L"BTHENUM\\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&2027") == 0;
+    for (const wchar_t* supported : supported_ids) {
+        if (_wcsicmp(id, supported) == 0) return true;
+    }
+    return false;
 }
 
 static int failed(const wchar_t* action) {
@@ -20,11 +36,22 @@ static int failed(const wchar_t* action) {
 
 int wmain(int argc, wchar_t** argv) {
     if (argc == 2 && wcscmp(argv[1], L"--self-test") == 0) {
+        for (const wchar_t* id : supported_ids) {
+            wchar_t lowercase[256] = {};
+            wcscpy_s(lowercase, id);
+            _wcslwr_s(lowercase);
+            if (!supported_id(id) || !supported_id(lowercase)) return 1;
+            wcscat_s(lowercase, L"extra");
+            if (supported_id(lowercase)) return 1;
+        }
         if (!supported_id(L"bthenum\\{0000110b-0000-1000-8000-00805f9b34fb}_vid&0001004c_pid&2027") ||
             !supported_id(L"BTHENUM\\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&200E") ||
             supported_id(L"BTHENUM\\{0000110b-0000-1000-8000-00805f9b34fb}") ||
             supported_id(L"BTHENUM\\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&2027extra") ||
-            supported_id(L"BTHENUM\\{0000110b-0000-1000-8000-00805f9b34fb}_VID&00010000_PID&2027")) return 1;
+            supported_id(L"BTHENUM\\{0000110b-0000-1000-8000-00805f9b34fb}_VID&00010000_PID&2027") ||
+            supported_id(L"BTHENUM\\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0002004C_PID&2027") ||
+            supported_id(L"BTHENUM\\{0000111e-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&2027") ||
+            supported_id(L"BTHENUM\\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&FFFF")) return 1;
         puts("Audio binding target checks passed.");
         return 0;
     }

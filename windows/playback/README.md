@@ -6,9 +6,10 @@ There is no extra virtual playback device or per-app routing requirement.
 The initial driver replacement may make Windows create a new endpoint ID;
 subsequent codec changes keep that endpoint.
 
-The first playback driver targets AirPods Pro 1 and Pro 3. Other models retain
-their existing playback driver. Both codecs are lossy 48 kHz stereo and remain
-experimental.
+The playback driver targets AirPods 1–4, Pro 1–3 and the original Max, using the
+exact IDs in the [model list](../../docs/WINDOWS-MODEL-SUPPORT.md#native-playback).
+Pro 1 and Pro 3 have passed short hardware checks; the other listed models are
+available to test. Both codecs are lossy 48 kHz stereo and remain experimental.
 
 ## Use it
 
@@ -21,6 +22,10 @@ after login. Select the AirPods in Windows Sound as usual, then choose AAC or
 AAC-ELD under **Playback and microphone**. AAC is the initial choice. Stop
 recording before changing codecs or bitrate. Use shared-mode playback; exclusive
 mode bypasses Windows software volume and mute.
+
+If the pair does not advertise a supported AAC-ELD profile, NTPods uses AAC with
+its saved bitrate setting. The active codec reports AAC; the preferred codec
+remains saved. Stream failures and invalid manual bitrates still report errors.
 
 Each codec remembers its own bitrate setting:
 
@@ -38,7 +43,9 @@ A failed stream supplies silence and offers Retry. Closing or crashing the
 backend also stops playback. It cannot fall back to Microsoft's driver while
 NTPods owns the AudioSink. Keep supported pairs connected during uninstall so
 setup can restore their previous playback driver. Its package is retained and
-backed up during installation. Restart Windows if setup requests it.
+backed up during installation. Pairs first connected after installation may bind
+automatically; without a saved prior binding, uninstall restores Microsoft's
+Bluetooth audio driver. Restart Windows if setup requests it.
 
 To restore playback alone, connect the AirPods and run `restore-playback.ps1`
 from the installed folder or the extracted Windows ZIP in an administrator

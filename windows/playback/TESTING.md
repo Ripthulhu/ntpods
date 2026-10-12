@@ -1,9 +1,10 @@
 # Playback test
 
-Use a Windows 11 x64 test PC with paired AirPods Pro 1 or Pro 3 and Test Mode
-already enabled. Test Mode weakens driver-signature checks; do not enable it on
-a work or everyday PC for this experiment. Short Pro 3 playback checks have
-passed; full hardware validation is still pending. See the
+Use a Windows 11 x64 test PC with a pair in the
+[playback model list](../../docs/WINDOWS-MODEL-SUPPORT.md#native-playback) and Test
+Mode already enabled. Test Mode weakens driver-signature checks; do not enable
+it on a work or everyday PC for this experiment. Short Pro 1 and Pro 3 playback
+checks have passed; other models are available for owners to test. See the
 [validation record](../../docs/WINDOWS-VALIDATION.md#native-playback-driver-and-bitrate-controls).
 
 Download **NTPods.msi** from [releases](https://github.com/Ripthulhu/ntpods/releases)
@@ -22,12 +23,16 @@ same files for [manual installation](../README.md).
 3. Choose **Manual**, enter a bitrate and Apply. Test 128, 256 and 320 kbps where
    the peer supports them. Confirm the settings survive restarting NTPods.
 4. Select **AAC-ELD** and repeat with Best effort and Manual 128, 192 and 256 kbps.
+   Check the active codec: a pair without a supported AAC-ELD profile should use
+   AAC with its saved bitrate. Record that as AAC fallback, not an AAC-ELD pass.
    Check that each codec keeps its own bitrate choice.
 5. Switch codecs in both directions. Windows should retain the same output and
    default selection. No per-app output change should be needed.
-6. Record with **Microphone (NTPods)** while stereo plays. Stop recording and check
-   both earbuds. Also test removing/reinserting buds during recording.
-7. Keep supported pairs connected, uninstall and confirm playback returns through the previous driver.
+6. On models with NTPods microphone support, record with **Microphone (NTPods)**
+   while stereo plays. Stop recording and check both earbuds. Also test
+   removing/reinserting buds during recording.
+7. Keep supported pairs connected, uninstall and confirm playback returns through
+   the saved driver, or Windows playback when no prior binding was saved.
    Reconnect or restart if requested, then test installing again.
 
 Also check case closure, Bluetooth disconnect, sleep/resume, AAP control reconnect,
@@ -47,3 +52,5 @@ restoration error. The previous driver's package is never removed by installatio
 If a pair was absent during uninstall, reconnect it and run `restore-playback.ps1`
 from the extracted Windows ZIP in an administrator PowerShell to finish restoring
 its saved provider. The script also restores playback without uninstalling the app.
+Pairs first connected after installation can bind automatically. With no saved
+prior binding, restoration uses Microsoft's Bluetooth audio driver.

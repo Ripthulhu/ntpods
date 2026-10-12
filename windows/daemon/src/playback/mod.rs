@@ -70,11 +70,13 @@ pub fn set_bitrate(ctx: &Ctx, mode: PlaybackMode, bitrate: PlaybackBitrate) {
             ctx.capture_active.load(Ordering::Acquire),
             ctx.mic_on.load(Ordering::Acquire),
         );
-        match selected.change_bitrate(mode, bitrate, busy, selection::save_bitrates) {
+        let active = (state.playback_state == "ready").then_some(state.playback_mode);
+        let affects_playback = selected.uses_bitrate(mode, active);
+        match selected.change_bitrate(mode, bitrate, active, busy, selection::save_bitrates) {
             Ok(changed) => {
                 state.playback_aac_bitrate = selected.bitrates[0];
                 state.playback_aac_eld_bitrate = selected.bitrates[1];
-                if changed && mode == selected.mode {
+                if changed && affects_playback {
                     state.playback_error = None;
                     state.playback_bitrate_kbps = None;
                     state.playback_state = if selected.cancel.is_some() {
@@ -96,7 +98,9 @@ pub fn set_mode(ctx: &Ctx, mode: Option<PlaybackMode>) {
         let _preference = ctx.mic_preference.lock().unwrap();
         let mut selected = ctx.playback_selection.lock().unwrap();
         let mut state = ctx.state.lock().unwrap();
-        let retry = mode.is_none() || state.playback_state == "error";
+        let retry = mode.is_none()
+            || state.playback_state == "error"
+            || mode.is_some_and(|mode| mode != state.playback_mode);
         let mode = mode.unwrap_or(selected.mode);
         let busy = selection::microphone_busy(
             &state,
@@ -153,7 +157,7 @@ fn publish(
     intent: u64,
     name: &str,
     error: Option<String>,
-    bitrate: Option<u32>,
+    active: Option<(Mode, u32)>,
 ) {
     let current = {
         let selected = ctx.playback_selection.lock().unwrap();
@@ -169,7 +173,10 @@ fn publish(
         } else {
             state.playback_state = name.into();
             state.playback_error = error;
-            state.playback_bitrate_kbps = bitrate;
+            state.playback_bitrate_kbps = active.map(|(_, bitrate)| bitrate);
+            if let Some((mode, _)) = active {
+                state.playback_mode = mode.selection();
+            }
             true
         }
     };
@@ -269,16 +276,18 @@ fn manage(ctx: &Ctx) {
                 attempted = Some((selected.revision, intent));
                 state.playback_state = "starting".into();
                 state.playback_error = None;
+                state.playback_mode = selected.mode;
+                state.playback_bitrate_kbps = None;
                 Some((
                     selected.revision,
                     selected.mode,
-                    selected.bitrate(selected.mode),
+                    selected.bitrates,
                     cancel,
                     intent,
                 ))
             }
         };
-        let Some((revision, mode, bitrate, cancel, intent)) = request else {
+        let Some((revision, mode, bitrates, cancel, intent)) = request else {
             thread::sleep(Duration::from_millis(50));
             continue;
         };
@@ -299,10 +308,18 @@ fn manage(ctx: &Ctx) {
                 render,
                 cancel,
                 mode,
-                bitrate,
+                bitrates,
                 intent,
-                |kbps| {
-                    publish(ctx, address, revision, intent, "ready", None, Some(kbps));
+                |mode, kbps| {
+                    publish(
+                        ctx,
+                        address,
+                        revision,
+                        intent,
+                        "ready",
+                        None,
+                        Some((mode, kbps)),
+                    );
                 },
                 || publish(ctx, address, revision, intent, "stopping", None, None),
             )
@@ -376,9 +393,9 @@ fn run(
     render: &Render,
     stop: Arc<AtomicBool>,
     mode: Mode,
-    bitrate: PlaybackBitrate,
+    bitrates: [PlaybackBitrate; 2],
     intent: u64,
-    ready: impl FnOnce(u32),
+    ready: impl FnOnce(Mode, u32),
     stopping: impl FnOnce(),
 ) -> io::Result<()> {
     if stop.load(Ordering::Acquire) {
@@ -387,7 +404,7 @@ fn run(
     session::driver_ready(&driver, address)?;
     render.set_ready(false)?;
     let session_ctx = ctx.clone();
-    let mut session = Session::open(driver, address, mode, bitrate, stop.clone(), move || {
+    let mut session = Session::open(driver, address, mode, bitrates, stop.clone(), move || {
         shutdown_complete(
             session_ctx.shutting_down.load(Ordering::Acquire),
             session_ctx.receiver_done.load(Ordering::Acquire),
@@ -395,6 +412,7 @@ fn run(
             || session_ctx.mac() != address
             || !bt::audio_request_is_current(intent)
     })?;
+    let mode = session.mode;
     session.suspend()?;
     let mut encoder = AudioEncoder::new(mode, session.bitrate)?;
     let (reset, requests) = mpsc::sync_channel(1);
@@ -412,7 +430,7 @@ fn run(
     }
     let _registered = Registration;
     render.set_ready(true)?;
-    ready(session.bitrate / 1000);
+    ready(mode, session.bitrate / 1000);
     let mut next_connection_check = Instant::now();
     let result = stream(
         &mut session,

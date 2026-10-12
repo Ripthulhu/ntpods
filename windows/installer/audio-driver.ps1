@@ -1,7 +1,16 @@
 # AudioSink replacement is limited to the models listed in NTPodsAudio.inf.
 function Get-NativeAudioDevices {
     $ids = @(
+        'BTHENUM\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&2002',
+        'BTHENUM\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&200A',
         'BTHENUM\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&200E',
+        'BTHENUM\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&200F',
+        'BTHENUM\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&2013',
+        'BTHENUM\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&2014',
+        'BTHENUM\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&2019',
+        'BTHENUM\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&201B',
+        'BTHENUM\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&201F',
+        'BTHENUM\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&2024',
         'BTHENUM\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&2027'
     )
     @(Get-PnpDevice -ErrorAction Stop | Where-Object {
@@ -34,7 +43,7 @@ function Save-NativeAudioJson([string]$path, [object[]]$entries) {
 }
 
 function Assert-NativeAudioInstance([string]$instanceId) {
-    if ($instanceId -notmatch '\ABTHENUM\\\{0000110b-0000-1000-8000-00805f9b34fb\}_VID&0001004C_PID&(200E|2027)\\[^\\\x00-\x20]+\z') {
+    if ($instanceId -notmatch '\ABTHENUM\\\{0000110b-0000-1000-8000-00805f9b34fb\}_VID&0001004C_PID&(2002|200A|200E|200F|2013|2014|2019|201B|201F|2024|2027)\\[^\\\x00-\x20]+\z') {
         throw 'Invalid AirPods playback instance.'
     }
 }

@@ -62,11 +62,14 @@ drivers and require Test Mode. Source archives and checksums are included.
 See the [installation guide](windows/README.md) and [release notes](docs/WINDOWS-RELEASE-NOTES.md).
 Upstream nightly builds do not include this fork's changes.
 
-Both downloads include an experimental playback driver for AirPods Pro 1 and Pro 3.
+Both downloads include an experimental playback driver for AirPods 1–4,
+Pro 1–3 and the original Max (Lightning and USB-C). See the
+[playback model list](docs/WINDOWS-MODEL-SUPPORT.md#native-playback) for test status.
 It replaces the paired AirPods output driver, with AAC/AAC-ELD and Best effort or
 Manual kbps settings under **Playback and microphone**. NTPods must stay running
 for playback. No extra speaker or per-app routing is needed. Keep the AirPods
-connected during uninstall to restore their previous driver; see the
+connected during uninstall to restore their saved driver, or Windows playback
+when no prior binding was saved; see the
 [playback test guide](windows/playback/TESTING.md).
 
 ## Contributing

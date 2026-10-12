@@ -68,14 +68,17 @@ impl Selection {
                     && !matches!(state.mic_state.as_str(), "starting" | "capturing" | "stopping" | "recovering")))
     }
 
-    pub fn bitrate(&self, mode: PlaybackMode) -> PlaybackBitrate {
-        self.bitrates[usize::from(mode == PlaybackMode::AacEld)]
+    pub fn uses_bitrate(&self, mode: PlaybackMode, active: Option<PlaybackMode>) -> bool {
+        mode == self.mode
+            || active == Some(mode)
+            || (active.is_none() && self.mode == PlaybackMode::AacEld && mode == PlaybackMode::Aac)
     }
 
     pub fn change_bitrate(
         &mut self,
         mode: PlaybackMode,
         bitrate: PlaybackBitrate,
+        active: Option<PlaybackMode>,
         busy: bool,
         persist: impl FnOnce([PlaybackBitrate; 2]) -> io::Result<()>,
     ) -> io::Result<bool> {
@@ -84,7 +87,8 @@ impl Selection {
         if self.bitrates[index] == bitrate {
             return Ok(false);
         }
-        if busy && mode == self.mode {
+        let affects_playback = self.uses_bitrate(mode, active);
+        if busy && affects_playback {
             return Err(io::Error::other(
                 "Stop the microphone before changing playback.",
             ));
@@ -93,7 +97,7 @@ impl Selection {
         next[index] = bitrate;
         persist(next)?;
         self.bitrates = next;
-        if mode == self.mode {
+        if affects_playback {
             self.stop();
             self.revision = self.revision.wrapping_add(1);
         }
@@ -206,7 +210,7 @@ mod tests {
             kbps: 128,
         };
         assert!(selected
-            .change_bitrate(PlaybackMode::AacEld, manual, true, |values| {
+            .change_bitrate(PlaybackMode::AacEld, manual, None, true, |values| {
                 assert_eq!(values[0], PlaybackBitrate::default());
                 assert_eq!(values[1], manual);
                 Ok(())
@@ -215,25 +219,26 @@ mod tests {
         assert_eq!(selected.revision, 0);
         assert!(!cancel.load(Ordering::Acquire));
         assert!(selected
-            .change_bitrate(PlaybackMode::Aac, manual, true, |_| panic!("recording"))
+            .change_bitrate(PlaybackMode::Aac, manual, None, true, |_| panic!(
+                "recording"
+            ))
             .is_err());
         assert!(selected
-            .change_bitrate(PlaybackMode::Aac, manual, false, |_| Err(io::Error::other(
-                "disk full"
-            )))
+            .change_bitrate(PlaybackMode::Aac, manual, None, false, |_| Err(
+                io::Error::other("disk full")
+            ))
             .is_err());
-        assert_eq!(
-            selected.bitrate(PlaybackMode::Aac),
-            PlaybackBitrate::default()
-        );
+        assert_eq!(selected.bitrates[0], PlaybackBitrate::default());
         assert!(!cancel.load(Ordering::Acquire));
         assert!(selected
-            .change_bitrate(PlaybackMode::Aac, manual, false, |_| Ok(()))
+            .change_bitrate(PlaybackMode::Aac, manual, None, false, |_| Ok(()))
             .unwrap());
         assert_eq!(selected.revision, 1);
         assert!(cancel.load(Ordering::Acquire));
         assert!(!selected
-            .change_bitrate(PlaybackMode::Aac, manual, false, |_| panic!("unchanged"))
+            .change_bitrate(PlaybackMode::Aac, manual, None, false, |_| panic!(
+                "unchanged"
+            ))
             .unwrap());
         for (mode, kbps) in [
             (PlaybackMode::Windows, 256),
@@ -251,6 +256,44 @@ mod tests {
             )
             .is_err());
         }
+    }
+
+    #[test]
+    fn fallback_bitrate_edits_preserve_recording_and_invalidate_pending_preferences() {
+        let manual = PlaybackBitrate {
+            best_effort: false,
+            kbps: 192,
+        };
+        for active in [None, Some(PlaybackMode::Aac)] {
+            let mut selected = Selection::new(PlaybackMode::AacEld);
+            let cancel = Arc::new(AtomicBool::new(false));
+            selected.cancel = Some(cancel.clone());
+            assert!(selected
+                .change_bitrate(PlaybackMode::Aac, manual, active, true, |_| panic!(
+                    "recording"
+                ))
+                .is_err());
+            assert_eq!(selected.bitrates[0], PlaybackBitrate::default());
+            assert_eq!(selected.revision, 0);
+            assert!(!cancel.load(Ordering::Acquire));
+            assert!(selected
+                .change_bitrate(PlaybackMode::Aac, manual, active, false, |_| Ok(()))
+                .unwrap());
+            assert_eq!(selected.mode, PlaybackMode::AacEld);
+            assert_eq!(selected.revision, 1);
+            assert!(cancel.load(Ordering::Acquire));
+        }
+        let mut selected = Selection::new(PlaybackMode::AacEld);
+        assert!(selected
+            .change_bitrate(
+                PlaybackMode::Aac,
+                manual,
+                Some(PlaybackMode::AacEld),
+                true,
+                |_| Ok(())
+            )
+            .unwrap());
+        assert_eq!(selected.revision, 0);
     }
 
     #[test]
