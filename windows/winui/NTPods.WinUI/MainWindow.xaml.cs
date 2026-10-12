@@ -71,6 +71,7 @@ public sealed partial class MainWindow : Window
         // absurdly narrow (no app is usable at ~100px). Clamp on resize.
         AppWindow.Changed += (sender, e) =>
         {
+            if (e.DidVisibilityChange && !sender.IsVisible) DevicePageView.CancelShortcutCapture();
             if (!e.DidSizeChange) return;
             const int minW = 420, minH = 540;
             var sz = sender.Size;

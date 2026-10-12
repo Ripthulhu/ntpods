@@ -213,6 +213,11 @@ public sealed class SetMicManualActiveCmd
     [JsonPropertyName("active")] public bool Active { get; init; }
 }
 
+public sealed class ToggleMicManualCmd
+{
+    [JsonPropertyName("cmd")] public string Cmd => "toggle_mic_manual";
+}
+
 public sealed class SetFeatureCmd
 {
     [JsonPropertyName("cmd")] public string Cmd => "set_feature";

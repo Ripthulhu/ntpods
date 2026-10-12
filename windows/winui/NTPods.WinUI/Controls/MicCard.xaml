@@ -3,6 +3,13 @@
     x:Class="NTPods.WinUI.Controls.MicCard"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <UserControl.Resources>
+        <Style x:Key="ShortcutErrorStyle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+            <Setter Property="Foreground" Value="{ThemeResource SystemFillColorCriticalBrush}" />
+        </Style>
+    </UserControl.Resources>
     <Expander x:Name="MicExpander" Style="{StaticResource GroupExpander}">
         <Expander.Header>
             <StackPanel Spacing="4">
@@ -37,6 +44,24 @@
                            FontSize="13" Foreground="{ThemeResource AppleSecondaryBrush}" />
             </StackPanel>
             <Button x:Name="ManualButton" Click="Manual_Click" HorizontalAlignment="Stretch" Visibility="Collapsed" />
+            <Border Style="{StaticResource InsetDivider}" Margin="0" />
+            <StackPanel Spacing="8">
+                <TextBlock Text="{Binding [Mic_Shortcut], Source={StaticResource Loc}}" TextWrapping="Wrap" FontSize="16" />
+                <Grid ColumnSpacing="8">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <Button x:Name="ShortcutButton" Click="Shortcut_Click" HorizontalAlignment="Stretch"
+                            AutomationProperties.HelpText="{Binding [Mic_ShortcutHelp], Source={StaticResource Loc}}"
+                            ToolTipService.ToolTip="{Binding [Mic_ShortcutHelp], Source={StaticResource Loc}}">
+                        <TextBlock x:Name="ShortcutValue" TextWrapping="Wrap" />
+                    </Button>
+                    <Button x:Name="ClearShortcutButton" Grid.Column="1" Click="ClearShortcut_Click"
+                            Visibility="Collapsed"
+                            Content="{Binding [Mic_ClearShortcut], Source={StaticResource Loc}}"
+                            AutomationProperties.Name="{Binding [Mic_ClearShortcutName], Source={StaticResource Loc}}" />
+                </Grid>
+                <TextBlock x:Name="ShortcutError" Style="{StaticResource ShortcutErrorStyle}" Visibility="Collapsed"
+                           AutomationProperties.LiveSetting="Polite" />
+            </StackPanel>
         </StackPanel>
     </Expander>
 </UserControl>

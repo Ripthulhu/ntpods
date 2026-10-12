@@ -14,6 +14,7 @@
     <Compile Include="../../winui/NTPods.WinUI/Controls/VolumeEditState.cs" Link="VolumeEditState.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Popup/TrayMenuLayout.cs" Link="TrayMenuLayout.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Popup/IslandPresence.cs" Link="IslandPresence.cs" />
+    <Compile Include="../../winui/NTPods.WinUI/Popup/MicrophoneNotifications.cs" Link="MicrophoneNotifications.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Controls/EqualizerEditState.cs" Link="EqualizerEditState.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Controls/DeviceSettingStatus.cs" Link="DeviceSettingStatus.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Controls/RenameRequest.cs" Link="RenameRequest.cs" />

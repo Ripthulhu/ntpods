@@ -30,6 +30,7 @@ public sealed partial class IslandView : UserControl
         _connectionMessage = true;
         DeviceName.Text = DeviceModels.DisplayName(s, Localize.Get("Device_DefaultName"));
         ModeIcon.Visibility = Visibility.Collapsed;
+        MicIcon.Visibility = Visibility.Collapsed;
         SetMessage(Localize.Get(BatteryPresentation.StatusKey(s)), now, animate);
         UpdateSnapshot(s, now, animate);
     }
@@ -51,6 +52,13 @@ public sealed partial class IslandView : UserControl
             _ => null
         };
         ModeIcon.Visibility = icon is null ? Visibility.Collapsed : Visibility.Visible;
+        bool micOff = body == Localize.Get("Mic_Off") || body == Localize.Get("Mic_Disabled");
+        bool micMessage = micOff || body == Localize.Get("Mic_Ready") || body == Localize.Get("Mic_Enabled") ||
+            body == Localize.Get("Mic_Starting") || body == Localize.Get("Mic_ShortcutUnavailable") ||
+            body == Localize.Get("Mic_ConnectFirst") || body == Localize.Get("Mic_RecoveringShort") ||
+            body == Localize.Get("Mic_NeedsAttention");
+        MicIcon.Visibility = micMessage ? Visibility.Visible : Visibility.Collapsed;
+        MicOffSlash.Visibility = micOff ? Visibility.Visible : Visibility.Collapsed;
         if (icon is not null && icon != _modeIcon)
         {
             ModeIcon.UriSource = new Uri("ms-appx:///Assets/" + icon);
@@ -116,7 +124,7 @@ public sealed partial class IslandView : UserControl
         MessageBody.Text = body;
         _messageStarted = now;
         _messageAnimating = animate && !string.IsNullOrEmpty(PreviousMessage.Text);
-        if (!_messageAnimating) { PreviousMessage.Opacity = 0; MessageBody.Opacity = ModeIcon.Opacity = 1; MessageOffset.X = 0; }
+        if (!_messageAnimating) { PreviousMessage.Opacity = 0; MessageBody.Opacity = ModeIcon.Opacity = MicIcon.Opacity = 1; MessageOffset.X = 0; }
     }
 
     public void RenderFrame(double now, double headerOpacity, double batteryOpacity)
@@ -130,7 +138,7 @@ public sealed partial class IslandView : UserControl
             double t = Math.Clamp((now - _messageStarted) / 180, 0, 1);
             double eased = 1 - Math.Pow(1 - t, 3);
             PreviousMessage.Opacity = 1 - eased;
-            MessageBody.Opacity = ModeIcon.Opacity = eased;
+            MessageBody.Opacity = ModeIcon.Opacity = MicIcon.Opacity = eased;
             MessageOffset.X = 7 * (1 - eased);
             _messageAnimating = t < 1;
         }
@@ -145,7 +153,7 @@ public sealed partial class IslandView : UserControl
         foreach (var gauge in _gauges) gauge.Finish();
         _messageAnimating = false;
         PreviousMessage.Opacity = 0;
-        MessageBody.Opacity = ModeIcon.Opacity = 1;
+        MessageBody.Opacity = ModeIcon.Opacity = MicIcon.Opacity = 1;
         MessageOffset.X = 0;
     }
 

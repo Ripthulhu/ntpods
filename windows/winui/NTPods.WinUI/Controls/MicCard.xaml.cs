@@ -1,9 +1,12 @@
 using System;
 using NTPods.WinUI.Ipc;
 using NTPods.WinUI.Services;
+using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Windows.System;
+using Windows.UI.Core;
 
 namespace NTPods.WinUI.Controls;
 
@@ -12,6 +15,7 @@ public sealed partial class MicCard : UserControl
 {
     public DaemonClient? Client { get; set; }
     private bool _applying;
+    private ContentDialog? _shortcutDialog;
     private Snapshot _snapshot = new();
     private readonly MicPolicyState _policy = new();
     private readonly DispatcherTimer _debounce = new() { Interval = TimeSpan.FromMilliseconds(350) };
@@ -22,7 +26,12 @@ public sealed partial class MicCard : UserControl
         InitializeComponent();
         _debounce.Tick += (_, _) => SendPolicy();
         _timeout.Tick += (_, _) => { _timeout.Stop(); _policy.Cancel(); Render(); Client?.RequestState(); };
-        Unloaded += (_, _) => { if (_debounce.IsEnabled) SendPolicy(); };
+        Loaded += (_, _) => RenderShortcut();
+        Unloaded += (_, _) =>
+        {
+            if (_debounce.IsEnabled) SendPolicy();
+            CancelShortcutCapture();
+        };
     }
 
     public void Update(Snapshot s)
@@ -75,6 +84,7 @@ public sealed partial class MicCard : UserControl
             ManualButton.IsEnabled = Client?.IsReady == true && _policy.PendingPolicy is null && _policy.PendingManual is null &&
                 (MicPolicyState.CanStart(s) || MicPolicyState.CanStop(s));
             ModeHelp.Text = Localize.Get(mode == "keep_active" ? "Mic_KeepActiveHelp" : mode == "manual" ? "Mic_ManualHelp" : "Mic_AutomaticHelp");
+            RenderShortcut();
         }
         finally { _applying = false; }
     }
@@ -123,4 +133,131 @@ public sealed partial class MicCard : UserControl
         _timeout.Start();
         Render();
     }
+
+    private void RenderShortcut()
+    {
+        var saved = AppSettings.MicHotkey;
+        ShortcutValue.Text = saved?.ToString() ?? Localize.Get("Mic_SetShortcut");
+        AutomationProperties.SetName(ShortcutButton, Localize.Get("Mic_Shortcut") + ": " + ShortcutValue.Text);
+        ClearShortcutButton.Visibility = saved is null ? Visibility.Collapsed : Visibility.Visible;
+        var app = (App)Application.Current;
+        var error = app.MicHotkey?.Current == saved ? 0 : app.MicHotkeyError;
+        ShortcutError.Text = error == 0 ? "" : ShortcutErrorText(error);
+        ShortcutError.Visibility = error == 0 ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private static string ShortcutErrorText(int error) => Localize.Get(error == 1409
+        ? "Mic_ShortcutConflict" : "Mic_ShortcutFailed");
+
+    private void ClearShortcut_Click(object sender, RoutedEventArgs e)
+    {
+        ((App)Application.Current).SetMicHotkey(null);
+        RenderShortcut();
+        ShortcutButton.Focus(FocusState.Programmatic);
+    }
+
+    public void CancelShortcutCapture() => _shortcutDialog?.Hide();
+
+    private async void Shortcut_Click(object sender, RoutedEventArgs e)
+    {
+        var app = (App)Application.Current;
+        if (_shortcutDialog is not null) return;
+        if (app.MicHotkey is not { } hotkey)
+        {
+            ShortcutError.Text = Localize.Get("Mic_ShortcutFailed");
+            ShortcutError.Visibility = Visibility.Visible;
+            return;
+        }
+
+        HotkeyGesture? selected = AppSettings.MicHotkey;
+        var input = new TextBox
+        {
+            IsReadOnly = true,
+            Text = selected?.ToString() ?? "",
+            PlaceholderText = Localize.Get("Mic_PressShortcut"),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+        };
+        AutomationProperties.SetName(input, Localize.Get("Mic_Shortcut"));
+        AutomationProperties.SetHelpText(input, Localize.Get("Mic_ShortcutInstructions"));
+        var errorText = new TextBlock
+        {
+            Style = (Style)Resources["ShortcutErrorStyle"],
+            Visibility = Visibility.Collapsed,
+        };
+        AutomationProperties.SetLiveSetting(errorText, Microsoft.UI.Xaml.Automation.Peers.AutomationLiveSetting.Polite);
+        var content = new StackPanel { Spacing = 12 };
+        content.Children.Add(new TextBlock { Text = Localize.Get("Mic_ShortcutHelp"), TextWrapping = TextWrapping.Wrap });
+        content.Children.Add(new TextBlock { Text = Localize.Get("Mic_ShortcutInstructions"), TextWrapping = TextWrapping.Wrap });
+        content.Children.Add(input);
+        content.Children.Add(errorText);
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            RequestedTheme = ActualTheme,
+            Title = Localize.Get("Mic_Shortcut"),
+            Content = content,
+            PrimaryButtonText = Localize.Get("Action_Save"),
+            CloseButtonText = Localize.Get("Action_Cancel"),
+            IsPrimaryButtonEnabled = selected is { IsValid: true },
+        };
+
+        void SelectGesture(HotkeyGesture gesture)
+        {
+            selected = gesture.IsValid ? gesture : null;
+            input.Text = selected?.ToString() ?? "";
+            dialog.IsPrimaryButtonEnabled = selected is not null;
+            errorText.Text = selected is null ? Localize.Get("Mic_ShortcutInvalid") : "";
+            errorText.Visibility = selected is null ? Visibility.Visible : Visibility.Collapsed;
+        }
+        void CaptureRegistered(HotkeyGesture gesture)
+        {
+            if (input.FocusState != FocusState.Unfocused) SelectGesture(gesture);
+        }
+        input.PreviewKeyDown += (_, args) =>
+        {
+            if (args.Key is VirtualKey.Tab or VirtualKey.Escape) return;
+            args.Handled = true;
+            if (HotkeyGesture.IsModifierKey((uint)args.Key)) return;
+            uint modifiers = 0;
+            if (IsKeyDown(VirtualKey.Control)) modifiers |= HotkeyGesture.Control;
+            if (IsKeyDown(VirtualKey.Menu)) modifiers |= HotkeyGesture.Alt;
+            if (IsKeyDown(VirtualKey.Shift)) modifiers |= HotkeyGesture.Shift;
+            if (IsKeyDown(VirtualKey.LeftWindows) || IsKeyDown(VirtualKey.RightWindows)) modifiers |= HotkeyGesture.Windows;
+            SelectGesture(new HotkeyGesture(modifiers, (uint)args.Key));
+        };
+        dialog.Opened += (_, _) => input.Focus(FocusState.Programmatic);
+        dialog.PrimaryButtonClick += (_, args) =>
+        {
+            if (selected is null || !app.SetMicHotkey(selected))
+            {
+                args.Cancel = true;
+                errorText.Text = selected is null ? Localize.Get("Mic_ShortcutInvalid") : ShortcutErrorText(app.MicHotkeyError);
+                errorText.Visibility = Visibility.Visible;
+                input.Focus(FocusState.Programmatic);
+            }
+        };
+
+        _shortcutDialog = dialog;
+        hotkey.IsSuspended = true;
+        hotkey.Captured += CaptureRegistered;
+        try { await dialog.ShowAsync(); }
+        catch (Exception)
+        {
+            ShortcutError.Text = Localize.Get("Mic_ShortcutFailed");
+            ShortcutError.Visibility = Visibility.Visible;
+            ShortcutButton.Focus(FocusState.Programmatic);
+            return;
+        }
+        finally
+        {
+            hotkey.Captured -= CaptureRegistered;
+            hotkey.IsSuspended = false;
+            _shortcutDialog = null;
+        }
+        RenderShortcut();
+        ShortcutButton.Focus(FocusState.Programmatic);
+    }
+
+    private static bool IsKeyDown(VirtualKey key) =>
+        (InputKeyboardSource.GetKeyStateForCurrentThread(key) & CoreVirtualKeyStates.Down) != 0;
 }

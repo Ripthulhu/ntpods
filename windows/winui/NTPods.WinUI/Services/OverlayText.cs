@@ -23,6 +23,11 @@ public static class OverlayText
         ["Hi-res microphone on"] = "Overlay_MicOn",
         ["Microphone in use — hi-res on"] = "Overlay_MicInUse",
         ["Microphone released — restoring stereo…"] = "Overlay_MicReleasing",
+        ["Microphone ready — high quality"] = "Mic_Ready",
+        ["Microphone unavailable"] = "Mic_ShortcutUnavailable",
+        ["Connect AirPods to start the microphone"] = "Mic_ConnectFirst",
+        ["Microphone is recovering"] = "Mic_RecoveringShort",
+        ["Microphone needs attention"] = "Mic_NeedsAttention",
         ["Stereo restored"] = "Overlay_StereoRestored",
     };
 

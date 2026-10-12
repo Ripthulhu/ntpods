@@ -390,4 +390,22 @@
   <data name="DeviceControls.Reversed" xml:space="preserve"><value>Reversed</value></data>
   <data name="LoudSoundReduction.Title" xml:space="preserve"><value>Loud Sound Reduction</value></data>
   <data name="Navigation.Back" xml:space="preserve"><value>Back</value></data>
+  <data name="Mic_Shortcut" xml:space="preserve"><value>Keyboard shortcut</value></data>
+  <data name="Mic_SetShortcut" xml:space="preserve"><value>Set shortcut</value></data>
+  <data name="Mic_ClearShortcut" xml:space="preserve"><value>Clear</value></data>
+  <data name="Mic_ClearShortcutName" xml:space="preserve"><value>Clear microphone shortcut</value></data>
+  <data name="Mic_ShortcutHelp" xml:space="preserve"><value>Starts or stops the mic in Manual mode. Stopping briefly interrupts playback.</value></data>
+  <data name="Mic_PressShortcut" xml:space="preserve"><value>Press a shortcut</value></data>
+  <data name="Mic_ShortcutInstructions" xml:space="preserve"><value>Hold Ctrl or Alt, then press a key.</value></data>
+  <data name="Mic_ShortcutInvalid" xml:space="preserve"><value>Use Ctrl or Alt with a key. Windows keys and F12 are unavailable.</value></data>
+  <data name="Mic_ShortcutConflict" xml:space="preserve"><value>This shortcut is in use. Choose another.</value></data>
+  <data name="Mic_ShortcutFailed" xml:space="preserve"><value>Could not set this shortcut. Try again or choose another.</value></data>
+  <data name="Mic_Enabled" xml:space="preserve"><value>Microphone enabled</value></data>
+  <data name="Mic_Disabled" xml:space="preserve"><value>Microphone disabled</value></data>
+  <data name="Mic_Off" xml:space="preserve"><value>Microphone off</value></data>
+  <data name="Mic_Ready" xml:space="preserve"><value>Microphone on</value></data>
+  <data name="Mic_ShortcutUnavailable" xml:space="preserve"><value>Microphone unavailable</value></data>
+  <data name="Mic_ConnectFirst" xml:space="preserve"><value>Connect AirPods to start the microphone</value></data>
+  <data name="Mic_RecoveringShort" xml:space="preserve"><value>Microphone is recovering</value></data>
+  <data name="Mic_NeedsAttention" xml:space="preserve"><value>Microphone needs attention</value></data>
 </root>

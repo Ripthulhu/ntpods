@@ -16,6 +16,9 @@ Pro 3 / 9A348.
 | [NTPods upstream](https://github.com/arctumn/ntpods/tree/188e45df20259b616ce155be812086259d1a2488) | `188e45df20259b616ce155be812086259d1a2488` | Baseline used for this fork. |
 | [FFmpeg native AAC implementation](https://github.com/FFmpeg/FFmpeg/blob/n7.1/libavcodec/aac/aacdec.c) | `n7.1` | Decoder frame format, ELD frame length, and flush behavior. |
 
+Rechecked on 2026-10-12: NTPods main, Android rewrite and PR 655 still use the
+revisions above. PR 655 remains open.
+
 The most-starred LibrePods fork inventory was refreshed through GitHub's fork
 API. The leaders remain hexarch (29), beidaoc (17), Tblob18 (15), Chrisbattarbee
 (13), and yicareful (13). Their earlier review is in
@@ -95,13 +98,19 @@ Do not store AU data or microphone recordings in normal diagnostics.
 ## Stereo coexistence and recovery
 
 PR 655's
-[lifecycle](https://github.com/LuanAdemi/librepods/blob/99b0e580a93f2a26647f89816895ca1e5f70a3ec/linux-rust/src/audio/hires_mic.rs)
+[lifecycle](https://github.com/LuanAdemi/librepods/blob/99b0e580a93f2a26647f89816895ca1e5f70a3ec/linux-rust/src/audio/hires_mic.rs#L221-L260)
 starts a persistent virtual source, watches recording clients, and keeps that
 source present when the feature is disabled during capture. It restarts capture
 after two seconds without SDUs. It also schedules an A2DP reset 800 ms after start
 and resets after stop. Its restart loop is not bounded in the way NTPods' recovery
 must be. Its Linux profile reset and asynchronous scheduling are not a safe
 Windows drop-in.
+
+Android rewrite also
+[sends STOP and reconnects A2DP](https://github.com/librepods-org/librepods/blob/34076c85f0fc2eaf32ad1d5cad1bb7315df9c89c/android/app/src/main/kotlin/me/kavishdevar/librepods/devices/AppleDevice.kt#L209-L212).
+Its [profile reconnect](https://github.com/librepods-org/librepods/blob/34076c85f0fc2eaf32ad1d5cad1bb7315df9c89c/android/app/src/main/kotlin/me/kavishdevar/librepods/devices/Device.kt#L311-L336)
+disconnects A2DP, waits 500 ms and reconnects. Neither implementation supplies a
+different STOP packet or an acknowledgement that confirms stereo playback.
 
 PR 774's author
 [reports](https://github.com/librepods-org/librepods/pull/774)
@@ -128,6 +137,31 @@ and resampler on ear changes did **not** fix reinsertion static. Packets continu
 and decode errors remained zero. Stopping when both buds were out, recovering
 playback, then starting a fresh stream restored clean speech in the reinsertion
 test. Finite, successfully decoded PCM can still be acoustically wrong.
+
+The same validation record shows why quiet uplink cannot replace playback
+recovery. After the 21-minute recording, STOP reached quiet in 753 ms but only
+the right bud played. Repairing AAP did not help; resetting the audio services
+restored both buds. Earlier AudioSink-only reset attempts returned 0/87, and
+scoped KS endpoint reconnect attempts returned 0/1460, including an eight-second
+wait. The later full service reset passed 21 ordinary stops with an audible gap.
+
+The current [Windows reset](../windows/daemon/src/bt.rs) disables and enables
+AudioSink and Handsfree, with waits of 1,000 and 1,500 ms.
+[BluetoothSetServiceState](https://learn.microsoft.com/en-us/windows/win32/api/bluetoothapis/nf-bluetoothapis-bluetoothsetservicestate)
+removes and installs service drivers. Recorded recovery took about 15.6 seconds,
+including those 2.5 seconds of waits. Shortening the waits would leave most of
+the delay and has no verified success here. Existing logs separate each service
+call from time waiting for the audio-operation lock; check those timings on the
+test system before changing the sequence.
+
+The next experiment should reconnect only the paired AirPods' A2DP transport,
+leaving its service driver installed. First establish that the playback driver
+supports that operation; the previous KS attempt failed. In an opt-in test,
+silence PCM, send STOP, confirm the uplink drains, then reconnect that transport
+once. Retain the full service reset on failure. Check separate left/right tones
+after repeated short captures and a long recording, and verify no microphone
+packets remain. Endpoint availability and its reported stereo format cannot
+confirm sound reaches both buds. Keep the current recovery until that test passes.
 
 ## Conversation Awareness during capture
 
@@ -214,13 +248,9 @@ change. Capture polling still runs every 100 ms and an outstanding receive is
 not interrupted. This removes one avoidable scheduling delay; the improvement
 has not been measured on hardware.
 
-Starting during a previous capture's recovery is a different case. The same log
-shows roughly 16.7–17.1 seconds from STOP through stereo recovery. The service
-reset itself takes about 15.6 seconds, including 2.5 seconds of explicit waits.
-The candidate now records each Windows service call's duration and time waiting
-for the audio-operation lock, without device identifiers or audio. This should
-locate the remaining delay before changing recovery. The proven recovery sequence
-and its waits remain unchanged.
+Starting during a previous capture's recovery also waits for stereo recovery.
+The same log shows roughly 16.7–17.1 seconds from STOP through recovery; see
+[Stereo coexistence and recovery](#stereo-coexistence-and-recovery).
 
 ### Capture reliability
 

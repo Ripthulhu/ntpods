@@ -58,3 +58,12 @@ also checks rename byte limits and reply correlation, real heart-rate timestamps
 unchanged BPM samples, stale readings, and gaps without invented samples.
 Microphone policy checks cover the unchanged automatic default, delay bounds,
 pending versus confirmed choices, manual demand, the permission toggle and recovery.
+They also check microphone notifications for repeated snapshots, reconnects,
+manual stops and changes between capture policies.
+
+## Global microphone shortcut
+
+`dotnet run --project windows/tests/Hotkey --configuration Release` checks allowed
+key combinations and modifier handling. Add `-- --native` on Windows to check
+registration conflicts, replacement, capture suppression and cleanup with hidden
+test windows. It briefly reserves Ctrl+Alt+Shift+F23/F24 and injects no keyboard input.

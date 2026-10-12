@@ -82,6 +82,12 @@
             </StackPanel>
             <BitmapIcon x:Name="ModeIcon" Grid.Column="2" Width="28" Height="28" ShowAsMonochrome="True"
                         Foreground="{ThemeResource IslandForeground}" Visibility="Collapsed" AutomationProperties.AccessibilityView="Raw" />
+            <Grid x:Name="MicIcon" Grid.Column="2" Width="28" Height="28" Visibility="Collapsed"
+                  AutomationProperties.AccessibilityView="Raw">
+                <FontIcon Glyph="&#xE720;" FontSize="24" Foreground="{ThemeResource IslandForeground}" />
+                <Path x:Name="MicOffSlash" Data="M 3,3 L 25,25" StrokeThickness="2"
+                      Stroke="{ThemeResource IslandForeground}" Visibility="Collapsed" />
+            </Grid>
         </Grid>
         <StackPanel x:Name="BatteryPanel" Grid.Row="1" Spacing="8">
             <StackPanel.RenderTransform><TranslateTransform x:Name="BatteryOffset" /></StackPanel.RenderTransform>

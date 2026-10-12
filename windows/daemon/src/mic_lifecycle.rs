@@ -29,6 +29,23 @@ impl Demand {
         self.manual_active = self.mode == MicMode::Manual && active;
     }
 
+    pub fn toggle_manual(
+        &mut self,
+        now: u64,
+        enabled: bool,
+        capture: bool,
+        stream_active: bool,
+        start_allowed: Result<(), &'static str>,
+    ) -> Result<bool, &'static str> {
+        let active = !(self.wanted(now, enabled, capture, true) || stream_active);
+        if active {
+            start_allowed?;
+        }
+        self.configure(MicMode::Manual, self.stop_delay_secs);
+        self.set_manual(active);
+        Ok(active)
+    }
+
     pub fn clear(&mut self) {
         self.manual_active = false;
         self.captured = false;
@@ -404,6 +421,81 @@ mod tests {
         assert!(demand.wanted(3_600_001, true, true, true));
         demand.clear(); // session closed or both earbuds removed
         assert!(!demand.wanted(3_600_002, true, true, true));
+    }
+
+    #[test]
+    fn shortcut_starts_manual_without_clients_and_retains_only_preferences() {
+        let mut demand = Demand::default();
+        demand.configure(MicMode::Automatic, 30);
+        assert_eq!(
+            demand.toggle_manual(0, false, false, false, Ok(())),
+            Ok(true)
+        );
+        assert_eq!(demand.mode, MicMode::Manual);
+        assert!(demand.wanted(1, true, false, true));
+        let restored = Demand::from_preferences_json(&demand.preferences_json()).unwrap();
+        assert_eq!(restored.mode, MicMode::Manual);
+        assert_eq!(restored.stop_delay_secs, 30);
+        assert!(!restored.manual_active);
+        assert_eq!(
+            demand.toggle_manual(2, true, false, false, Ok(())),
+            Ok(false)
+        );
+        assert!(!demand.wanted(3, true, true, true));
+    }
+
+    #[test]
+    fn shortcut_stops_every_policy_and_armed_stream_despite_start_rejection() {
+        for mode in [MicMode::Automatic, MicMode::KeepActive, MicMode::Manual] {
+            let mut demand = Demand::default();
+            demand.configure(mode, 30);
+            demand.set_manual(true);
+            assert_eq!(
+                demand.toggle_manual(0, true, true, false, Err("disconnected")),
+                Ok(false)
+            );
+            assert_eq!(demand.mode, MicMode::Manual);
+            assert!(!demand.wanted(1, true, true, true));
+        }
+        let mut demand = Demand::default();
+        assert_eq!(
+            demand.toggle_manual(0, false, false, true, Err("unsupported")),
+            Ok(false)
+        );
+        assert!(!demand.manual_active);
+        assert_eq!(
+            demand.toggle_manual(1, true, false, false, Err("recovering")),
+            Err("recovering")
+        );
+        assert!(!demand.manual_active);
+    }
+
+    #[test]
+    fn shortcut_stops_an_automatic_idle_hold_without_restarting_for_capture() {
+        let mut demand = Demand::default();
+        demand.configure(MicMode::Automatic, 30);
+        demand.observe_capture(0, true);
+        demand.observe_capture(1, false);
+        assert_eq!(
+            demand.toggle_manual(2, true, false, false, Ok(())),
+            Ok(false)
+        );
+        for now in [3, 30_002, 3_600_000] {
+            assert!(!demand.wanted(now, true, true, true));
+        }
+    }
+
+    #[test]
+    fn rejected_shortcut_start_does_not_change_policy() {
+        let mut demand = Demand::default();
+        demand.configure(MicMode::Automatic, 30);
+        assert_eq!(
+            demand.toggle_manual(0, false, false, false, Err("unavailable")),
+            Err("unavailable")
+        );
+        assert_eq!(demand.mode, MicMode::Automatic);
+        assert_eq!(demand.stop_delay_secs, 30);
+        assert!(!demand.manual_active);
     }
 
     #[test]

@@ -234,8 +234,8 @@ fn main() {
             let lines: Vec<_> = text.lines().collect();
             assert_eq!(
                 lines.len(),
-                states.len() + 24,
-                "C# states, legacy state and twenty-three commands expected"
+                states.len() + 25,
+                "C# states, legacy state and twenty-four commands expected"
             );
             for (line, expected) in lines.iter().zip(&states) {
                 let Event::State(actual) = from_line::<Event>(line).expect("C# event must parse")
@@ -354,6 +354,10 @@ fn main() {
                 assert!(matches!(from_line::<Command>(line),
                     Some(Command::SetLoudSoundReduction { on }) if on == expected));
             }
+            assert!(matches!(
+                from_line::<Command>(commands[23]),
+                Some(Command::ToggleMicManual)
+            ));
             println!("Rust: C# state, microphone and device-setting command roundtrips passed");
         }
         _ => panic!("expected emit or check"),

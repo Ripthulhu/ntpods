@@ -66,6 +66,7 @@ try {
     Run 'dotnet' @('run', '--project', 'windows/tests/DeviceSettings/DeviceSettings.csproj', '--configuration', 'Release')
     Run 'dotnet' @('run', '--project', 'windows/tests/ClientSession/ClientSession.csproj', '--configuration', 'Release')
     Run 'dotnet' @('run', '--project', 'windows/tests/IslandMotion/IslandMotion.csproj', '--configuration', 'Release')
+    Run 'dotnet' @('run', '--project', 'windows/tests/Hotkey/Hotkey.csproj', '--configuration', 'Release')
     Run $cargo @('test', '--locked', '--manifest-path', 'windows/daemon/Cargo.toml')
     $oldRustFlags = $env:RUSTFLAGS
     try {

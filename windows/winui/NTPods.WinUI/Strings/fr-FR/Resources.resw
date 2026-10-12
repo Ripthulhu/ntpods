@@ -254,4 +254,22 @@
   <data name="LoudSoundReduction.Title" xml:space="preserve"><value>Réduction des sons forts</value></data>
   <data name="DeviceSetting.Unknown" xml:space="preserve"><value>L’appareil n’a pas encore transmis ce réglage.</value></data>
   <data name="Navigation.Back" xml:space="preserve"><value>Retour</value></data>
+  <data name="Mic_Shortcut" xml:space="preserve"><value>Raccourci clavier</value></data>
+  <data name="Mic_SetShortcut" xml:space="preserve"><value>Définir un raccourci</value></data>
+  <data name="Mic_ClearShortcut" xml:space="preserve"><value>Effacer</value></data>
+  <data name="Mic_ClearShortcutName" xml:space="preserve"><value>Effacer le raccourci du microphone</value></data>
+  <data name="Mic_ShortcutHelp" xml:space="preserve"><value>Démarre ou arrête le microphone en mode Manuel. L’arrêt interrompt brièvement la lecture.</value></data>
+  <data name="Mic_PressShortcut" xml:space="preserve"><value>Appuyez sur un raccourci</value></data>
+  <data name="Mic_ShortcutInstructions" xml:space="preserve"><value>Maintenez Ctrl ou Alt, puis appuyez sur une touche.</value></data>
+  <data name="Mic_ShortcutInvalid" xml:space="preserve"><value>Utilisez Ctrl ou Alt avec une touche. Les touches Windows et F12 ne sont pas disponibles.</value></data>
+  <data name="Mic_ShortcutConflict" xml:space="preserve"><value>Ce raccourci est déjà utilisé. Choisissez-en un autre.</value></data>
+  <data name="Mic_ShortcutFailed" xml:space="preserve"><value>Impossible de définir ce raccourci. Réessayez ou choisissez-en un autre.</value></data>
+  <data name="Mic_Enabled" xml:space="preserve"><value>Microphone activé</value></data>
+  <data name="Mic_Disabled" xml:space="preserve"><value>Microphone désactivé</value></data>
+  <data name="Mic_Off" xml:space="preserve"><value>Microphone arrêté</value></data>
+  <data name="Mic_Ready" xml:space="preserve"><value>Microphone en marche</value></data>
+  <data name="Mic_ShortcutUnavailable" xml:space="preserve"><value>Microphone indisponible</value></data>
+  <data name="Mic_ConnectFirst" xml:space="preserve"><value>Connectez les AirPods pour démarrer le microphone</value></data>
+  <data name="Mic_RecoveringShort" xml:space="preserve"><value>Récupération du microphone en cours</value></data>
+  <data name="Mic_NeedsAttention" xml:space="preserve"><value>Le microphone nécessite une intervention</value></data>
 </root>

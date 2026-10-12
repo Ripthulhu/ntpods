@@ -34,7 +34,7 @@ Based on [arctumn/NTPods](https://github.com/arctumn/ntpods) and
 - Three-band EQ, Conversation Awareness and Personalized Volume.
 - Automatic pause when you remove an earbud. Manually paused audio stays paused.
 - A 48 kHz mono microphone while playback stays stereo, with automatic,
-  timed, always-active and manual controls.
+  timed, always-active and manual controls, plus a configurable global shortcut.
 - Live head tracking and heart rate on supported models.
 - A Dynamic Island popup and Start with Windows.
 

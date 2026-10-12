@@ -229,5 +229,6 @@ foreach (bool on in new[] { false, true })
 output.Add(Wire.ToLine(new GetLoudSoundReductionCmd()).TrimEnd('\n'));
 foreach (bool on in new[] { false, true })
     output.Add(Wire.ToLine(new SetLoudSoundReductionCmd { On = on }).TrimEnd('\n'));
+output.Add(Wire.ToLine(new ToggleMicManualCmd()).TrimEnd('\n'));
 File.WriteAllLines(args[1], output);
 Console.WriteLine($"C#: {lines.Length} production/legacy events and {malformed.Length + malformedPresence.Length} malformed inputs passed");

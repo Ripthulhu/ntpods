@@ -20,6 +20,9 @@ public partial class App : Application
     // Reuse one island window and show connection notifications on false-to-true transitions.
     private IslandWindow? _island;
     private readonly IslandPresence _islandPresence = new();
+    private readonly MicrophoneNotifications _micNotifications = new();
+    internal GlobalHotkey? MicHotkey { get; private set; }
+    internal int MicHotkeyError { get; private set; }
     private Snapshot? _latestSnapshot;
     // Last-seen model number (from the 0x1D metadata), so message-mode island
     // popups can show the right device render even without a full Snapshot.
@@ -47,6 +50,15 @@ public partial class App : Application
 
         // The main window is created hidden; closing it hides back to the tray.
         _window = new MainWindow(Daemon);
+        try
+        {
+            MicHotkey = new GlobalHotkey(WinRT.Interop.WindowNative.GetWindowHandle(_window));
+            MicHotkey.Pressed += ToggleMicrophone;
+            MicHotkey.TrySet(AppSettings.MicHotkey, out int error);
+            MicHotkeyError = error;
+        }
+        catch (InvalidOperationException) { MicHotkeyError = -1; }
+        _window.Closed += (_, _) => MicHotkey?.Dispose();
 
         _tray = new TrayController(
             onOpen: () => _window.ShowFromTray(),
@@ -68,6 +80,7 @@ public partial class App : Application
             if (!connected) _window.DispatcherQueue.TryEnqueue(() =>
             {
                 _latestSnapshot = null;
+                _micNotifications.Reset();
                 _tray?.UpdateSnapshot(new Snapshot());
                 _island?.UpdateSnapshot(new Snapshot());
             });
@@ -86,7 +99,10 @@ public partial class App : Application
                     _lastModel = s.Model;
                     AppSettings.SetLastModel(s.Model, s.DeviceId); // survive restarts for this device's connect island
                 }
-                if (_islandPresence.Update(s, sessionReady)) ShowIsland(s);
+                bool connectionMessage = _islandPresence.Update(s, sessionReady);
+                string? micMessage = _micNotifications.Update(s, sessionReady);
+                if (micMessage is not null) ShowIslandMessage(s.DevName, Localize.Get(micMessage));
+                else if (connectionMessage) ShowIsland(s);
                 else _island?.UpdateSnapshot(s);
             });
         };
@@ -99,6 +115,22 @@ public partial class App : Application
         bool startHidden = Array.IndexOf(argv, "--tray") >= 0
                         || Array.IndexOf(argv, "--minimized") >= 0;
         if (!startHidden) _window.ShowFromTray();
+    }
+
+    internal bool SetMicHotkey(HotkeyGesture? gesture)
+    {
+        if (MicHotkey is null) { MicHotkeyError = -1; return false; }
+        bool registered = MicHotkey.TrySet(gesture, out int error);
+        MicHotkeyError = error;
+        if (registered) AppSettings.SetMicHotkey(gesture);
+        return registered;
+    }
+
+    private void ToggleMicrophone()
+    {
+        if (_quitting) return;
+        if (!Daemon.Send(new ToggleMicManualCmd()))
+            ShowIslandMessage(_latestSnapshot?.DevName ?? "", Localize.Get("Mic_ShortcutUnavailable"));
     }
 
     /// Show the connection popup on the UI thread, containing window-creation failures.
@@ -167,6 +199,7 @@ public partial class App : Application
             return;
         }
         _tray?.Dispose();
+        MicHotkey?.Dispose();
         await Daemon.DisposeAsync();
         Exit();
     }

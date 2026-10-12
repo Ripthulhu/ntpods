@@ -23,6 +23,7 @@ public static class AppSettings
         // Cache model 0x1D metadata for island artwork before the next session reports it.
         public string LastModel { get; set; } = "";
         public string LastDeviceId { get; set; } = "";
+        public HotkeyGesture? MicHotkey { get; set; }
     }
 
     private static readonly object _gate = new();
@@ -115,6 +116,15 @@ public static class AppSettings
 
     /// The saved UI language override (BCP-47, e.g. "pt-PT"); "" = follow the system.
     public static string LanguageTag => Load().LanguageTag ?? "";
+
+    public static HotkeyGesture? MicHotkey => Load().MicHotkey is { IsValid: true } gesture ? gesture : null;
+
+    public static void SetMicHotkey(HotkeyGesture? gesture)
+    {
+        var m = Load();
+        m.MicHotkey = gesture is { IsValid: true } ? gesture : null;
+        Save(m);
+    }
 
     /// Persist the chosen UI language override (takes effect on restart).
     public static void SetLanguageTag(string tag)

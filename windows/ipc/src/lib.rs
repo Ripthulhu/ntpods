@@ -379,6 +379,8 @@ pub enum Command {
     SetMicManualActive {
         active: bool,
     },
+    /// Toggle the stream and enter Manual mode in one operation.
+    ToggleMicManual,
     /// Toggle an AAP control-command setting (see the `feature` module).
     SetFeature {
         feature: u8,
@@ -601,6 +603,14 @@ mod tests {
         assert!(matches!(
             from_line::<Command>(&to_line(&Command::Ping)),
             Some(Command::Ping)
+        ));
+        assert_eq!(
+            to_line(&Command::ToggleMicManual),
+            "{\"cmd\":\"toggle_mic_manual\"}\n"
+        );
+        assert!(matches!(
+            from_line::<Command>(&to_line(&Command::ToggleMicManual)),
+            Some(Command::ToggleMicManual)
         ));
         for mode in [MicMode::Automatic, MicMode::KeepActive, MicMode::Manual] {
             for delay in [0, 30, 3600] {

@@ -49,6 +49,8 @@ public sealed partial class DevicePage : UserControl
     /// cards appear/disappear without an app restart).
     public void RefreshExperimentalVisibility() => ApplyExperimentalVisibility();
 
+    internal void CancelShortcutCapture() => MicCard.CancelShortcutCapture();
+
     /// Show/hide every experimental card from the single experimental opt-in.
     private void ApplyExperimentalVisibility()
     {

@@ -676,6 +676,10 @@ fn set_microphone_policy(ctx: &Ctx, mode: ntpods_ipc::MicMode, stop_delay_secs: 
         ctx.mic_on.store(false, Ordering::Release);
         ctx.pipe.revoke_stream();
     }
+    persist_microphone_policy(preferences);
+}
+
+fn persist_microphone_policy(preferences: String) {
     if let Ok(base) = std::env::var("LOCALAPPDATA") {
         if std::fs::write(
             format!("{base}\\NTPods\\microphone-policy.json"),
@@ -686,6 +690,65 @@ fn set_microphone_policy(ctx: &Ctx, mode: ntpods_ipc::MicMode, stop_delay_secs: 
             log("mic: could not persist microphone policy");
         }
     }
+}
+
+fn manual_microphone_start_allowed(
+    state: &Snapshot,
+    available: bool,
+    connection_requested: bool,
+) -> Result<(), &'static str> {
+    if !device_models::microphone(state) || !available {
+        Err("Microphone unavailable")
+    } else if !state.connected || state.link_stale || !connection_requested {
+        Err("Connect AirPods to start the microphone")
+    } else if matches!(state.mic_state.as_str(), "stopping" | "recovering") {
+        Err("Microphone is recovering")
+    } else if state.mic_state == "error" {
+        Err("Microphone needs attention")
+    } else {
+        Ok(())
+    }
+}
+
+fn toggle_microphone_manual(ctx: &Ctx) -> Result<bool, &'static str> {
+    let _preference = ctx.mic_preference.lock().unwrap();
+    let available = ctx.pipe.is_open();
+    let (allowed, stream_active) = {
+        let state = ctx.state.lock().unwrap();
+        let connection_requested = ctx.connect_requested.load(Ordering::Acquire)
+            && !ctx.user_disconnected.load(Ordering::Acquire)
+            && !ctx.wants_reconnect.load(Ordering::Acquire)
+            && !ctx.shutting_down.load(Ordering::Acquire);
+        (
+            manual_microphone_start_allowed(&state, available, connection_requested),
+            ctx.mic_on.load(Ordering::Acquire)
+                || state.mic_uplink_active
+                || matches!(state.mic_state.as_str(), "starting" | "capturing"),
+        )
+    };
+    let (active, preferences) = {
+        let mut demand = ctx.mic_demand.lock().unwrap();
+        let active = demand.toggle_manual(
+            ctx.mic_clock.elapsed().as_millis() as u64,
+            ctx.auto_mode.load(Ordering::Acquire),
+            ctx.capture_active.load(Ordering::Acquire),
+            stream_active,
+            allowed,
+        )?;
+        if active {
+            ctx.pipe.set_feature_enabled(true);
+            ctx.auto_mode.store(true, Ordering::Release);
+        } else {
+            ctx.mic_on.store(false, Ordering::Release);
+            ctx.pipe.revoke_stream();
+        }
+        (active, demand.preferences_json())
+    };
+    if active {
+        persist_microphone_enabled(true);
+    }
+    persist_microphone_policy(preferences);
+    Ok(active)
 }
 
 fn set_microphone_manual(ctx: &Ctx, active: bool) {
@@ -798,8 +861,10 @@ fn service_mic(
 ) -> bool {
     use mic_lifecycle::{Action, Phase};
     let previous_phase = mic.phase;
-    let permitted = microphone_permitted(ctx);
     let (wanted, manual_cleared) = {
+        // Read permission and intent together when a shortcut changes both.
+        let _preference = ctx.mic_preference.lock().unwrap();
+        let permitted = microphone_permitted(ctx);
         let mut demand = ctx.mic_demand.lock().unwrap();
         let was_manual = demand.manual_active;
         let wanted = demand.wanted(
@@ -1736,6 +1801,13 @@ fn apply_command(ctx: &Ctx, cmd: Command) {
         Command::SetMicManualActive { active } => {
             set_microphone_manual(ctx, active);
             ctx.push_state();
+        }
+        Command::ToggleMicManual => {
+            let result = toggle_microphone_manual(ctx);
+            ctx.push_state();
+            if let Err(message) = result {
+                ctx.overlay(message);
+            }
         }
         Command::SetFeature { feature, on } => {
             if device_settings::is_toggle(feature) {
@@ -2699,8 +2771,9 @@ fn run_receiver(ctx: Ctx) {
                                 }
                                 mic.pcm_received(clock.elapsed().as_millis() as u64);
                                 publish_mic(&ctx, &mic, mic_ears.allows_capture());
-                                // Announce only after an application actually receives PCM.
-                                if delivered && !mic_announced {
+                                // Decoded PCM confirms readiness even without a recording client.
+                                let _preference = ctx.mic_preference.lock().unwrap();
+                                if !mic_announced && ctx.mic_on.load(Ordering::Acquire) {
                                     mic_announced = true;
                                     ctx.overlay("Microphone ready — high quality");
                                 }
@@ -3552,6 +3625,38 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shortcut_starts_only_with_a_healthy_supported_connection() {
+        let mut state = ntpods_ipc::Snapshot {
+            model: "A3063".into(),
+            firmware: "9A348".into(),
+            connected: true,
+            mic_state: "idle".into(),
+            ..Default::default()
+        };
+        assert!(super::manual_microphone_start_allowed(&state, true, true).is_ok());
+        assert!(super::manual_microphone_start_allowed(&state, false, true).is_err());
+        assert!(super::manual_microphone_start_allowed(&state, true, false).is_err());
+        state.connected = false;
+        assert!(super::manual_microphone_start_allowed(&state, true, true).is_err());
+        state.connected = true;
+        state.link_stale = true;
+        assert!(super::manual_microphone_start_allowed(&state, true, true).is_err());
+        state.link_stale = false;
+        for phase in ["stopping", "recovering", "error"] {
+            state.mic_state = phase.into();
+            assert!(super::manual_microphone_start_allowed(&state, true, true).is_err());
+        }
+        state.mic_state = "idle".into();
+        for model in ["", "A2084"] {
+            state.model = model.into();
+            assert!(super::manual_microphone_start_allowed(&state, true, true).is_err());
+        }
+        state.model = "A3063".into();
+        state.firmware = "7B20".into();
+        assert!(super::manual_microphone_start_allowed(&state, true, true).is_err());
+    }
+
     #[test]
     fn quiet_connected_control_link_remains_usable_without_echoes() {
         let mut link = super::ControlLinkStatus::default();
