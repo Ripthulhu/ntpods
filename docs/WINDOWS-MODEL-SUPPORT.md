@@ -5,8 +5,16 @@ NTPods can offer. Rust and WinUI read the same file. Listed models have not all
 been tested on hardware.
 The recorded Windows hardware checks used AirPods Pro 3, firmware 9A348, and an
 Intel AX200. First-generation Pro A2084 has also passed connection, battery,
-listening-mode and automatic-pause checks on that adapter. Additional checks are
+listening-mode, automatic-pause and native AAC/AAC-ELD playback checks on that
+adapter. Additional checks are
 recorded in WINDOWS-VALIDATION.md; other models remain unverified on hardware.
+
+The native playback driver currently binds only Pro 1 and Pro 3. Codec selection
+uses each pair's advertised AVDTP endpoints and bitrate limits. Both pairs passed
+AAC at 256 kbps and AAC-ELD at 128, 192 and 256 kbps, including a continuous
+70-second AAC-ELD run. Other models keep their existing playback driver until
+their native playback support can be checked. Playback support does not enable
+the high-quality microphone on older models.
 
 | Models | Listening modes | Live movement | High-quality microphone / custom EQ |
 | --- | --- | --- | --- |

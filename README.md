@@ -32,6 +32,7 @@ Based on [arctumn/NTPods](https://github.com/arctumn/ntpods) and
 - Listening-mode controls with an adjustable Adaptive slider.
 - Earbud and case battery levels, including nearby charging updates.
 - Three-band EQ, Conversation Awareness and Personalized Volume.
+- AAC and AAC-ELD playback through one AirPods output, with separate bitrate settings.
 - Automatic pause when you remove an earbud. Manually paused audio stays paused.
 - A 48 kHz mono microphone while playback stays stereo, with automatic,
   timed, always-active and manual controls, plus a configurable global shortcut.
@@ -39,14 +40,16 @@ Based on [arctumn/NTPods](https://github.com/arctumn/ntpods) and
 - A Dynamic Island popup and Start with Windows.
 
 Tested with an Intel AX200 and AirPods Pro 3 on firmware 9A348. First-generation
-AirPods Pro also passed battery, listening-mode and automatic-pause checks.
+AirPods Pro also passed battery, listening-mode, automatic-pause and native
+AAC/AAC-ELD playback checks.
 Features vary by model and firmware; see [model support](docs/WINDOWS-MODEL-SUPPORT.md).
 
 Microphone recovery briefly interrupts playback. Short recordings and twenty
 start/stop cycles passed; longer recordings, latency, drift, Discord and interrupted
 recovery still need testing. See [test results](docs/WINDOWS-VALIDATION.md).
-The replacement AAC/AAC-ELD playback driver passed short Pro 3 stereo checks
-with the microphone active and after it stopped. Longer tests remain pending.
+The replacement AAC/AAC-ELD playback driver passed short Pro 1 and Pro 3 stereo
+checks, including playback during and after microphone capture on Pro 3.
+Longer tests remain pending.
 
 This build uses the Windows 11 ACX microphone driver. Older Windows versions
 are untested. For Android or Linux, use [LibrePods](https://github.com/librepods-org/librepods).

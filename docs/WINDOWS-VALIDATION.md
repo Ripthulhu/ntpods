@@ -1532,9 +1532,20 @@ sample clock, following the Pro 3-tested USBPods fork linked in the
 [playback documentation](../windows/playback/README.md). The earlier SBR profile
 and packet timing produced no sound and were rejected by the earbuds.
 
+The installed 0.2.12 app also passed AAC at 256 kbps and AAC-ELD at 128, 192 and
+256 kbps on first-generation AirPods Pro (A2084, firmware 6F21), using the same
+AX200. The listener confirmed clean stereo at each rate. Both models completed
+continuous 70-second AAC-ELD tests at 256 kbps without audible dropouts, crossing
+the 12-bit access-unit counter wrap. Pro 1's high-quality microphone remained
+disabled. Switching to Pro 1 initially hit a signaling-channel connection
+rejection; a manual retry negotiated playback successfully.
+The backend now retries that initial Windows error twice, after one and two
+seconds, with cancellation and disconnect checks. Automated tests cover the
+limit and cancellation; those retry timings still need a hardware reproduction.
+
 These were short playback and capture checks. Long playback, speech quality,
 drift, repeated capture cycles, removal/reinsertion, case closure, Bluetooth
-toggle, sleep/resume, Pro 1 playback, Driver Verifier and hardware uninstall
+toggle, sleep/resume, other models, Driver Verifier and hardware uninstall
 remain untested with the native playback driver. Earlier microphone results
 used Alternative A2DP.
 

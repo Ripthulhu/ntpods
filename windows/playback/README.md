@@ -91,6 +91,11 @@ left and right channels. Volume and mute worked, and codec changes kept the same
 Windows output. Stereo stayed correct during 20-second microphone captures and
 after microphone stop and recovery with both codecs.
 
+First-generation AirPods Pro (A2084, firmware 6F21) passed the same AAC and
+AAC-ELD bitrate checks on that adapter. Both models also completed continuous
+70-second AAC-ELD runs at 256 kbps without audible dropouts. Pro 1's high-quality
+microphone remains disabled.
+
 Long sessions, repeated start/stop and reconnect cycles, sleep/resume, uninstall
 recovery and other models still need testing. See the
 [validation record](../../docs/WINDOWS-VALIDATION.md).

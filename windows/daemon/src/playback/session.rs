@@ -4,7 +4,9 @@ use crate::driver::Driver;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::thread;
 use std::time::{Duration, Instant};
+use windows_sys::Win32::Foundation::ERROR_REQ_NOT_ACCEP;
 
 pub struct Session {
     driver: Driver,
@@ -66,7 +68,31 @@ impl Session {
             mtu: 0,
             bitrate: 0,
         };
-        session.open_channel(address, 0)?;
+        open_signaling_with_retry(
+            || session.open_channel(address, 0),
+            |delay| {
+                crate::log(&format!(
+                    "playback signaling: initial channel rejected, retrying in {} ms",
+                    delay.as_millis()
+                ));
+                let deadline = Instant::now() + delay;
+                while Instant::now() < deadline {
+                    session.check_cancelled()?;
+                    thread::sleep(
+                        Duration::from_millis(50)
+                            .min(deadline.saturating_duration_since(Instant::now())),
+                    );
+                }
+                session.check_cancelled()?;
+                if !crate::bt::is_connected(address) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotConnected,
+                        "AirPods disconnected before playback could start",
+                    ));
+                }
+                Ok(())
+            },
+        )?;
         let endpoints = sinks(&session.request(DISCOVER, &[])?)?;
         let deadline = Instant::now() + Duration::from_secs(15);
         for seid in endpoints {
@@ -324,6 +350,25 @@ fn eld_bitrate_limit(mtu: usize) -> u32 {
     au_budget.saturating_sub(1).min(320) as u32 * 800
 }
 
+fn open_signaling_with_retry(
+    mut open: impl FnMut() -> io::Result<usize>,
+    mut wait: impl FnMut(Duration) -> io::Result<()>,
+) -> io::Result<usize> {
+    // Retry before any signaling or endpoint ownership; later failures need explicit recovery.
+    let mut retries = 0;
+    loop {
+        match open() {
+            Err(error)
+                if error.raw_os_error() == Some(ERROR_REQ_NOT_ACCEP as i32) && retries < 2 =>
+            {
+                retries += 1;
+                wait(Duration::from_secs(retries))?;
+            }
+            result => return result,
+        }
+    }
+}
+
 fn start_if_needed(state: StreamState, request: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
     match state {
         StreamState::Streaming => Ok(()),
@@ -353,6 +398,74 @@ impl Drop for Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn initial_signaling_rejection_retries_then_succeeds() {
+        assert_eq!(
+            open_signaling_with_retry(|| Ok(1023), |_| panic!("successful open must not wait"))
+                .unwrap(),
+            1023
+        );
+        let mut attempts = 0;
+        let mut waits = Vec::new();
+        let mtu = open_signaling_with_retry(
+            || {
+                attempts += 1;
+                if attempts < 3 {
+                    Err(io::Error::from_raw_os_error(ERROR_REQ_NOT_ACCEP as i32))
+                } else {
+                    Ok(1023)
+                }
+            },
+            |delay| {
+                waits.push(delay);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(mtu, 1023);
+        assert_eq!(attempts, 3);
+        assert_eq!(waits, [Duration::from_secs(1), Duration::from_secs(2)]);
+    }
+
+    #[test]
+    fn initial_signaling_retry_is_bounded_and_specific() {
+        for (code, expected_attempts) in [(71, 3), (5, 1), (995, 1), (1167, 1), (1460, 1)] {
+            let mut attempts = 0;
+            let error = open_signaling_with_retry(
+                || {
+                    attempts += 1;
+                    Err(io::Error::from_raw_os_error(code))
+                },
+                |_| Ok(()),
+            )
+            .unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(code));
+            assert_eq!(attempts, expected_attempts);
+        }
+        assert!(open_signaling_with_retry(
+            || Err(invalid("Invalid playback channel response")),
+            |_| panic!("protocol errors must not retry")
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn cancellation_or_disconnect_during_wait_stops_signaling_retry() {
+        for kind in [io::ErrorKind::Interrupted, io::ErrorKind::NotConnected] {
+            let mut attempts = 0;
+            let error = open_signaling_with_retry(
+                || {
+                    attempts += 1;
+                    Err(io::Error::from_raw_os_error(ERROR_REQ_NOT_ACCEP as i32))
+                },
+                |_| Err(io::Error::from(kind)),
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), kind);
+            assert_eq!(attempts, 1);
+        }
+    }
 
     #[test]
     fn eld_mtu_budget_includes_cbr_padding() {

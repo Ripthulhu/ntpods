@@ -21,6 +21,9 @@ Manual kbps settings under **Playback and microphone**. No separate speaker or
 per-app routing is needed. Initial driver replacement may require selecting the
 output again. Codec changes keep the same output.
 
+An initial connection rejection now gets two automatic retries. Disconnecting
+or changing the selected pair cancels the wait.
+
 AAC-ELD uses plain ELD without SBR, constant bitrate and two access units per
 packet with a 48 kHz RTP clock, following the
 [USBPods fork tested on Pro 3](https://github.com/han-um/USBPods-Pico2W-2-way-audio-implement/blob/d18d083bc52de3143d8d922c4abaae865cc0dc28/src/btstack/btstack_avdtp_source.c).
@@ -37,8 +40,13 @@ Short tests on AirPods Pro 3 (A3063, firmware 9A348) with Intel AX200 confirmed
 stereo AAC at 256 kbps, AAC-ELD at 128, 192 and 256 kbps, and working volume and
 mute. Both codecs kept stereo playback during 20-second microphone captures
 and after microphone stop and recovery. Codec changes kept the same Windows
-output. Long sessions, repeated lifecycle tests and other models remain untested.
-See the
+output.
+
+First-generation AirPods Pro (A2084, firmware 6F21) also passed AAC at 256 kbps
+and AAC-ELD at 128, 192 and 256 kbps. Both models completed continuous 70-second
+AAC-ELD tests without audible dropouts. Pro 1's high-quality microphone remains
+disabled. Long sessions, repeated lifecycle tests and other models remain
+untested. See the
 [playback test guide](https://github.com/Ripthulhu/ntpods/blob/main/windows/playback/TESTING.md)
 and [validation record](https://github.com/Ripthulhu/ntpods/blob/main/docs/WINDOWS-VALIDATION.md).
 
