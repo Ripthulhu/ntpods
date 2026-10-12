@@ -201,6 +201,9 @@ pub struct Snapshot {
     pub muted: bool,
     #[serde(default)]
     pub playback_mode: PlaybackMode,
+    /// Saved codec preference; playback_mode is the active or attempted codec.
+    #[serde(default)]
+    pub playback_preferred_mode: Option<PlaybackMode>,
     /// windows, disconnected, starting, ready, stopping, or error.
     #[serde(default = "default_playback_state")]
     pub playback_state: String,
@@ -350,6 +353,7 @@ impl Default for Snapshot {
             volume: 0,
             muted: false,
             playback_mode: PlaybackMode::Windows,
+            playback_preferred_mode: None,
             playback_state: default_playback_state(),
             playback_error: None,
             playback_available: false,
@@ -611,6 +615,7 @@ mod tests {
                 Some(Command::SetPlaybackMode { mode: actual }) if actual == mode));
             let state = Snapshot {
                 playback_mode: mode,
+                playback_preferred_mode: Some(PlaybackMode::AacEld),
                 playback_state: "error".into(),
                 playback_error: Some("Playback failed".into()),
                 playback_available: true,
@@ -635,6 +640,7 @@ mod tests {
         let mut old = serde_json::to_value(Snapshot::default()).unwrap();
         for key in [
             "playback_mode",
+            "playback_preferred_mode",
             "playback_state",
             "playback_error",
             "playback_available",
@@ -644,9 +650,23 @@ mod tests {
         }
         let state: Snapshot = serde_json::from_value(old).unwrap();
         assert_eq!(state.playback_mode, PlaybackMode::Windows);
+        assert_eq!(state.playback_preferred_mode, None);
         assert_eq!(state.playback_state, "windows");
         assert!(!state.playback_available && state.playback_error.is_none());
         assert!(!state.playback_native_driver);
+    }
+
+    #[test]
+    fn preferred_playback_mode_accepts_null_but_rejects_invalid_codecs() {
+        let mut value = serde_json::to_value(Snapshot::default()).unwrap();
+        assert!(serde_json::from_value::<Snapshot>(value.clone())
+            .unwrap()
+            .playback_preferred_mode
+            .is_none());
+        for invalid in ["true", "0", "\"eld\"", "\"lossless\"", "\"AAC\""] {
+            value["playback_preferred_mode"] = serde_json::from_str(invalid).unwrap();
+            assert!(serde_json::from_value::<Snapshot>(value.clone()).is_err());
+        }
     }
 
     #[test]

@@ -286,4 +286,6 @@
   <data name="Playback.ApplyBitrate" xml:space="preserve"><value>Appliquer le débit</value></data>
   <data name="Playback.BitrateRange" xml:space="preserve"><value>Saisissez un nombre entier entre {0} et {1}.</value></data>
   <data name="Playback.CurrentBitrate" xml:space="preserve"><value>Débit actuel : {0} kbps.</value></data>
+  <data name="Playback.CurrentCodec" xml:space="preserve"><value>Codec actuel : {0}.</value></data>
+  <data name="Playback.BitrateCodec" xml:space="preserve"><value>Les réglages du débit s’appliquent à {0}.</value></data>
 </root>

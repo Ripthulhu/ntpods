@@ -1530,6 +1530,17 @@ and invalid manual rates. Bitrate edits during fallback respect microphone
 use and restart the stream when needed. The fallback has not been checked on an
 AAC-only pair; Pro 1 and Pro 3 both advertise AAC-ELD.
 
+Regression tests cover saving AAC during fallback, acknowledging the saved
+preference independently of the active codec, and correcting a rejected AAC
+bitrate. Cross-language tests cover the new optional preference field and older
+snapshots. Installer tests in PowerShell 5.1 and 7 cover restoring the prior
+original-provider manifest after failed upgrades, retaining expanded records
+when recovery fails, and keeping new records after a successful upgrade.
+The full Windows build passed, including 242 backend tests, 13 Rust IPC tests,
+122 malformed IPC inputs, the real encoder-worker test, UI checks, all three
+drivers, and MSI startup and driver-preservation checks. Physical MSI rollback
+remains untested.
+
 On 2026-10-12, the native driver was installed and tested after a reboot on
 Windows 11 with an Intel AX200 and AirPods Pro 3 (A3063, firmware 9A348):
 

@@ -23,8 +23,9 @@ same files for [manual installation](../README.md).
 3. Choose **Manual**, enter a bitrate and Apply. Test 128, 256 and 320 kbps where
    the peer supports them. Confirm the settings survive restarting NTPods.
 4. Select **AAC-ELD** and repeat with Best effort and Manual 128, 192 and 256 kbps.
-   Check the active codec: a pair without a supported AAC-ELD profile should use
-   AAC with its saved bitrate. Record that as AAC fallback, not an AAC-ELD pass.
+   Check the codec tooltip: a pair without a supported AAC-ELD profile should use
+   AAC with its saved bitrate while the menu keeps your AAC-ELD preference.
+   Record that as AAC fallback, not an AAC-ELD pass.
    Check that each codec keeps its own bitrate choice.
 5. Switch codecs in both directions. Windows should retain the same output and
    default selection. No per-app output change should be needed.

@@ -11,6 +11,7 @@ UiInteractionChecks.Run(Check);
 HeadTrackingChecks.Run(Check);
 ModelCompatibilityChecks.Run(Check);
 MicrophoneNotificationChecks.Run(Check);
+PlaybackModeChecks.Run(Check);
 
 var recommended = new Equalizer { Mode = 1, Low = 50, Mid = 50, High = 50 };
 var custom = new Equalizer { Mode = 2, Low = 20, Mid = 60, High = 100 };

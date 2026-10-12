@@ -51,6 +51,7 @@ pub fn start(ctx: Ctx) {
         let mut state = ctx.state.lock().unwrap();
         state.playback_available = bound;
         state.playback_native_driver = bound;
+        state.playback_preferred_mode = Some(selected.mode);
         state.playback_aac_bitrate = selected.bitrates[0];
         state.playback_aac_eld_bitrate = selected.bitrates[1];
     }
@@ -116,6 +117,7 @@ pub fn set_mode(ctx: &Ctx, mode: Option<PlaybackMode>) {
         } {
             Ok(true) => {
                 state.playback_mode = mode;
+                state.playback_preferred_mode = Some(mode);
                 state.playback_error = None;
                 state.playback_state = if selected.cancel.is_some() {
                     "stopping"
@@ -157,7 +159,7 @@ fn publish(
     intent: u64,
     name: &str,
     error: Option<String>,
-    active: Option<(Mode, u32)>,
+    active: Option<(Mode, Option<u32>)>,
 ) {
     let current = {
         let selected = ctx.playback_selection.lock().unwrap();
@@ -173,7 +175,7 @@ fn publish(
         } else {
             state.playback_state = name.into();
             state.playback_error = error;
-            state.playback_bitrate_kbps = active.map(|(_, bitrate)| bitrate);
+            state.playback_bitrate_kbps = active.and_then(|(_, bitrate)| bitrate);
             if let Some((mode, _)) = active {
                 state.playback_mode = mode.selection();
             }
@@ -316,7 +318,7 @@ fn manage(ctx: &Ctx) {
                         address,
                         revision,
                         intent,
-                        "ready",
+                        if kbps.is_some() { "ready" } else { "starting" },
                         None,
                         Some((mode, kbps)),
                     );
@@ -395,7 +397,7 @@ fn run(
     mode: Mode,
     bitrates: [PlaybackBitrate; 2],
     intent: u64,
-    ready: impl FnOnce(Mode, u32),
+    report_codec: impl Fn(Mode, Option<u32>),
     stopping: impl FnOnce(),
 ) -> io::Result<()> {
     if stop.load(Ordering::Acquire) {
@@ -404,14 +406,22 @@ fn run(
     session::driver_ready(&driver, address)?;
     render.set_ready(false)?;
     let session_ctx = ctx.clone();
-    let mut session = Session::open(driver, address, mode, bitrates, stop.clone(), move || {
-        shutdown_complete(
-            session_ctx.shutting_down.load(Ordering::Acquire),
-            session_ctx.receiver_done.load(Ordering::Acquire),
-        ) || session_ctx.user_disconnected.load(Ordering::Acquire)
-            || session_ctx.mac() != address
-            || !bt::audio_request_is_current(intent)
-    })?;
+    let mut session = Session::open(
+        driver,
+        address,
+        mode,
+        bitrates,
+        stop.clone(),
+        move || {
+            shutdown_complete(
+                session_ctx.shutting_down.load(Ordering::Acquire),
+                session_ctx.receiver_done.load(Ordering::Acquire),
+            ) || session_ctx.user_disconnected.load(Ordering::Acquire)
+                || session_ctx.mac() != address
+                || !bt::audio_request_is_current(intent)
+        },
+        |mode| report_codec(mode, None),
+    )?;
     let mode = session.mode;
     session.suspend()?;
     let mut encoder = AudioEncoder::new(mode, session.bitrate)?;
@@ -430,7 +440,7 @@ fn run(
     }
     let _registered = Registration;
     render.set_ready(true)?;
-    ready(mode, session.bitrate / 1000);
+    report_codec(mode, Some(session.bitrate / 1000));
     let mut next_connection_check = Instant::now();
     let result = stream(
         &mut session,

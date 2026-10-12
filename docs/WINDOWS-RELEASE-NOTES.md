@@ -27,8 +27,13 @@ An initial connection rejection now gets two automatic retries. Disconnecting
 or changing the selected pair cancels the wait.
 
 AAC remains the default. A pair without a supported AAC-ELD profile uses AAC
-with its saved bitrate setting. NTPods reports the active codec and retains the
-preferred codec for future connections. Stream failures still report errors.
+with its saved bitrate setting. The codec menu keeps the saved preference, and
+its tooltip shows the codec in use. Bitrate controls follow the active or
+attempted codec, so a rejected AAC bitrate can be corrected during fallback.
+Stream failures and invalid manual bitrates still report errors.
+
+Failed upgrades also restore the original driver-backup records, so the previous
+installer can still repair or uninstall the app.
 
 AAC-ELD uses plain ELD without SBR, constant bitrate and two access units per
 packet with a 48 kHz RTP clock, following the

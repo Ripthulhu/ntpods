@@ -7,6 +7,7 @@ if (-not $testRoot.StartsWith($tempRoot + '\', [StringComparison]::OrdinalIgnore
 $oldProgramData = $env:ProgramData
 $root = Join-Path $testRoot 'dist'
 $devconPath = Join-Path $root 'tools\devcon.exe'
+$inboxInf = Join-Path $env:SystemRoot 'INF\microsoft_bluetooth_a2dp_src.inf'
 $sid = 'S-1-5-21-123-456-789-1001'
 $oldSid = 'S-1-5-21-123-456-789-1000'
 
@@ -23,10 +24,15 @@ function Assert-TestPath([string]$path) {
     if (-not $full.StartsWith($testRoot + '\', [StringComparison]::OrdinalIgnoreCase)) { throw "Test escaped its directory: $path" }
 }
 function Assert-TrustedInstallEntry([string]$path) { Assert-TestPath $path }
+function Test-Path { param($Path, $LiteralPath, $PathType, $ErrorAction)
+    if ($LiteralPath -eq $inboxInf -or $Path -eq $inboxInf) { return $true }
+    Microsoft.PowerShell.Management\Test-Path @PSBoundParameters
+}
 function Test-MicSupported { $true }
 function Start-Sleep { param($Seconds, $Milliseconds) }
 function Get-WindowsDriver { param([switch]$Online, $ErrorAction) $script:packages }
 function Get-NTPodsCertificates { $script:certificates }
+function Get-NativeAudioBindings { $script:audioBindings }
 function Get-NTPodsSigningCertificate {
     foreach ($store in 'My', 'Root', 'TrustedPublisher') {
         $script:certificates += [pscustomobject]@{ Store = $store; Thumbprint = 'NEW-CERT' }
@@ -37,6 +43,7 @@ function Set-NTPodsPackageSignature([string]$path, $cert) {
     Assert-TestPath $path
     Assert-True (Test-Path -LiteralPath $path) 'Signing input is missing.'
     Assert-True ($cert.Thumbprint -eq 'NEW-CERT') 'Unexpected signing certificate.'
+    if (Fail-Once 'signing') { throw 'Injected signing failure.' }
 }
 function Remove-NTPodsCertificate([string]$storeName, [string]$thumbprint) {
     $script:certificates = @($script:certificates | Where-Object { $_.Store -ne $storeName -or $_.Thumbprint -ne $thumbprint })
@@ -140,6 +147,7 @@ function Reset-Fixture([string[]]$failures) {
     $script:micProblemCode = 0; $script:newMicProblemCode = 0
     $script:micInstallExitCode = 0; $script:pnputilInstallExitCode = 0
     $script:calls = @(); $script:faults = @($failures)
+    $script:audioBindings = @()
 }
 function Assert-Restored {
     Assert-True (($script:packages.Payload | Sort-Object) -join ',' -ceq 'a2dp,old-aap,old-mic,other-mic') 'Previous packages were not restored exactly.'
@@ -149,6 +157,36 @@ function Assert-Restored {
     Assert-True ($script:policy.NTPodsAAP -eq $oldSid -and $script:policy.NTPodsMicACX -eq $oldSid) 'Driver SID policy was not restored.'
     Assert-True ($script:certificates.Count -eq 1 -and $script:certificates[0].Thumbprint -eq 'OLD-CERT') 'Rollback removed an old certificate or kept a new one.'
     Assert-True (-not (Test-Path -LiteralPath (Get-DriverCheckpointPath))) 'Successful rollback left a backup.'
+}
+
+function Reset-AudioUpgradeFixture([bool]$existingManifest, [string[]]$failures) {
+    Reset-Fixture $failures
+    $path = Get-NativeAudioBackupPath
+    Assert-TestPath $path
+    New-Item -ItemType Directory -Path $path -Force | Out-Null
+    $manifest = Join-Path $path 'bindings.json'
+    if (Test-Path -LiteralPath $manifest) { Remove-Item -LiteralPath $manifest -Force }
+    if ($existingManifest) {
+        Save-NativeAudioJson $manifest @([pscustomobject]@{
+            InstanceId = 'BTHENUM\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&200E\previous'
+            Published = 'microsoft_bluetooth_a2dp_src.inf'; Inf = $null
+        })
+    }
+    # This paired Pro 2 is absent, so setup saves its provider without binding it.
+    $script:audioBindings = @([pscustomobject]@{
+        InstanceId = 'BTHENUM\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&2014\new-model'
+        Published = 'microsoft_bluetooth_a2dp_src.inf'; Service = 'BthA2dp'
+    })
+}
+
+function Read-LegacyAudioBackup {
+    # The preceding release accepted only these two model IDs.
+    function Assert-NativeAudioInstance([string]$instanceId) {
+        if ($instanceId -notmatch '\ABTHENUM\\\{0000110b-0000-1000-8000-00805f9b34fb\}_VID&0001004C_PID&(200E|2027)\\[^\\\x00-\x20]+\z') {
+            throw 'Invalid AirPods playback instance.'
+        }
+    }
+    Read-NativeAudioBackup
 }
 
 try {
@@ -256,6 +294,67 @@ try {
     Assert-True (($script:packages.Payload | Sort-Object) -join ',' -ceq 'a2dp,new-aap,new-audio,new-mic,other-mic') 'Commit changed the installed packages.'
     Assert-True (-not (Test-Path -LiteralPath (Get-DriverCheckpointPath))) 'Commit left the backup.'
     Write-Host 'PASS commit removes only its own backup'
+
+    foreach ($existingManifest in $true, $false) {
+        Reset-AudioUpgradeFixture $existingManifest @('signing')
+        $transaction = "audio-signing-$existingManifest"
+        Assert-Fails { Install-NTPodsDrivers $root (Join-Path $testRoot $transaction) 'acx' $sid $transaction } 'Signing failure did not stop the upgrade.'
+        Assert-True ($script:faults.Count -eq 0) 'Signing failure was not reached.'
+        Assert-Restored
+        Assert-True ((Test-Path -LiteralPath (Join-Path (Get-NativeAudioBackupPath) 'bindings.json')) -eq $existingManifest) 'Rollback changed whether an original-provider manifest existed.'
+        Assert-True (@(Read-LegacyAudioBackup).Count -eq [int]$existingManifest) 'The previous installer cannot read the restored manifest.'
+        Restore-NTPodsDriverCheckpoint $root $transaction
+        Assert-True (@(Read-LegacyAudioBackup).Count -eq [int]$existingManifest) 'Repeated rollback changed the restored manifest.'
+    }
+    Write-Host 'PASS failed model expansion restores the previous manifest or its absence'
+
+    Reset-AudioUpgradeFixture $true @('install-new-mic', 'restore-aap')
+    Assert-Fails { Install-NTPodsDrivers $root (Join-Path $testRoot 'audio-recovery') 'acx' $sid 'audio-recovery' } 'Expected upgrade recovery failure.'
+    Assert-True ($script:faults.Count -eq 0) 'Upgrade recovery failure was not reached.'
+    Assert-True (@(Read-NativeAudioBackup).Count -eq 2) 'Failed recovery discarded the new model backup.'
+    Assert-Fails { Read-LegacyAudioBackup } 'The fixture did not reproduce prior-version rejection.'
+    Restore-NTPodsDriverCheckpoint $root 'audio-recovery'
+    Assert-Restored
+    Assert-True (@(Read-LegacyAudioBackup).Count -eq 1) 'Recovery retry did not restore the previous manifest.'
+    Write-Host 'PASS failed recovery retains expanded records until recovery succeeds'
+
+    Reset-AudioUpgradeFixture $true @()
+    $manifest = Join-Path (Get-NativeAudioBackupPath) 'bindings.json'
+    Set-Content -LiteralPath $manifest -Value '[{"InstanceId":"ROOT\\OTHER\\test","Published":"oem90.inf","Inf":null}]'
+    Assert-Fails { Install-NTPodsDrivers $root (Join-Path $testRoot 'audio-invalid-source') 'acx' $sid 'audio-invalid-source' } 'Invalid original-provider data was checkpointed.'
+    Assert-Restored
+    Assert-True ((Get-Content -LiteralPath $manifest -Raw) -match 'ROOT') 'Failed checkpoint creation overwrote the invalid manifest.'
+    Write-Host 'PASS invalid original-provider data leaves no partial checkpoint'
+
+    Reset-AudioUpgradeFixture $true @()
+    Save-NTPodsDriverCheckpoint 'audio-invalid-checkpoint'
+    $checkpoint = Join-Path (Get-DriverCheckpointPath) 'checkpoint.json'
+    $originalCheckpoint = Get-Content -LiteralPath $checkpoint -Raw
+    $before = $script:calls.Count
+    foreach ($invalid in @(
+        { param($saved) $saved.AudioOriginalsPresent = 'true' },
+        { param($saved) $saved.AudioOriginalsPresent = $false },
+        { param($saved) $saved.AudioOriginals = $null },
+        { param($saved) $saved.AudioOriginals += $saved.AudioOriginals[0] },
+        { param($saved) $saved.AudioOriginals[0].Inf = '..\outside.inf' }
+    )) {
+        $saved = $originalCheckpoint | ConvertFrom-Json
+        & $invalid $saved
+        $saved | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $checkpoint -Encoding UTF8
+        Assert-Fails { Restore-NTPodsDriverCheckpoint $root 'audio-invalid-checkpoint' } 'Malformed original-provider checkpoint reached recovery.'
+        Assert-True ($script:calls.Count -eq $before) 'Malformed original-provider checkpoint touched a driver.'
+        Assert-True (@(Read-LegacyAudioBackup).Count -eq 1) 'Malformed checkpoint replaced the original-provider manifest.'
+    }
+    Set-Content -LiteralPath $checkpoint -Value $originalCheckpoint -Encoding UTF8
+    Complete-NTPodsDriverTransaction 'audio-invalid-checkpoint'
+    Write-Host 'PASS malformed original-provider checkpoints fail before recovery'
+
+    Reset-AudioUpgradeFixture $true @()
+    Install-NTPodsDrivers $root (Join-Path $testRoot 'audio-commit') 'acx' $sid 'audio-commit'
+    Complete-NTPodsDriverTransaction 'audio-commit'
+    Assert-True (@(Read-NativeAudioBackup).Count -eq 2) 'Commit discarded the new model backup.'
+    Assert-Fails { Read-LegacyAudioBackup } 'Commit restored the previous manifest instead of keeping the expanded one.'
+    Write-Host 'PASS successful model expansion keeps its original-provider records'
 } finally {
     Remove-Item -LiteralPath ('Function:\' + $devconPath) -ErrorAction SilentlyContinue
     $env:ProgramData = $oldProgramData

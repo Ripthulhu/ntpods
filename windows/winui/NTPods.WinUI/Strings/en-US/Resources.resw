@@ -422,4 +422,6 @@
   <data name="Playback.ApplyBitrate" xml:space="preserve"><value>Apply bitrate</value></data>
   <data name="Playback.BitrateRange" xml:space="preserve"><value>Enter a whole number from {0} to {1}.</value></data>
   <data name="Playback.CurrentBitrate" xml:space="preserve"><value>Current bitrate: {0} kbps.</value></data>
+  <data name="Playback.CurrentCodec" xml:space="preserve"><value>Current codec: {0}.</value></data>
+  <data name="Playback.BitrateCodec" xml:space="preserve"><value>Bitrate settings apply to {0}.</value></data>
 </root>

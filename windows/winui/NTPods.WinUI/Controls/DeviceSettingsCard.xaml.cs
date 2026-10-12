@@ -19,12 +19,12 @@ public sealed partial class DeviceSettingsCard : UserControl
     private bool _refreshCoolingDown;
     private bool _deviceChanged;
     private bool _loudSoundReductionRead;
-    private string? _playbackRequested;
+    private readonly PlaybackModeRequest _playbackMode = new();
     private SetPlaybackBitrateCmd? _bitrateRequested;
     private string? _playbackErrorAtRequest;
     private string? _bitrateShownMode;
     private bool _bitrateDirty;
-    private bool PlaybackPending => _playbackRequested is not null || _bitrateRequested is not null;
+    private bool PlaybackPending => _playbackMode.Requested is not null || _bitrateRequested is not null;
     private readonly List<(StackPanel Panel, FrameworkElement Row, Border? Divider, byte Id)> _rows = new();
     private readonly DispatcherTimer _refreshCooldown = new() { Interval = TimeSpan.FromSeconds(5) };
     private readonly DispatcherTimer _playbackTimeout = new() { Interval = TimeSpan.FromSeconds(5) };
@@ -35,13 +35,13 @@ public sealed partial class DeviceSettingsCard : UserControl
         _playbackTimeout.Tick += (_, _) =>
         {
             _playbackTimeout.Stop();
-            _playbackRequested = null;
+            _playbackMode.Cancel();
             _bitrateRequested = null;
             _bitrateDirty = false;
             Update(_snapshot);
             Client?.RequestState();
         };
-        Unloaded += (_, _) => { _playbackTimeout.Stop(); _playbackRequested = null; _bitrateRequested = null; };
+        Unloaded += (_, _) => { _playbackTimeout.Stop(); _playbackMode.Cancel(); _bitrateRequested = null; };
         ComfortExpander.Expanding += (_, _) => ReadLoudSoundReduction();
         _refreshCooldown.Tick += (_, _) =>
         {
@@ -294,12 +294,12 @@ public sealed partial class DeviceSettingsCard : UserControl
         if (_deviceChanged || Client?.IsReady != true || !s.PlaybackNativeDriver || !s.PlaybackAvailable ||
             PlaybackPending && s.PlaybackError != _playbackErrorAtRequest && !string.IsNullOrEmpty(s.PlaybackError))
         {
-            _playbackRequested = null;
+            _playbackMode.Cancel();
             _bitrateRequested = null;
             _bitrateDirty = false;
         }
-        if (s.PlaybackMode == _playbackRequested) _playbackRequested = null;
-        if (_bitrateRequested is { } requested && BitrateFor(s, requested.Mode) == new PlaybackBitrate { BestEffort = requested.BestEffort, Kbps = requested.Kbps })
+        _playbackMode.Update(s);
+        if (_bitrateRequested is { } requested && PlaybackModeRequest.BitrateFor(s, requested.Mode) == new PlaybackBitrate { BestEffort = requested.BestEffort, Kbps = requested.Kbps })
             _bitrateRequested = null;
         if (!PlaybackPending) _playbackTimeout.Stop();
         if (_deviceChanged || !s.Connected || s.LinkStale) _loudSoundReductionRead = false;
@@ -357,14 +357,13 @@ public sealed partial class DeviceSettingsCard : UserControl
     private static bool MicrophoneBusy(Snapshot s) => s.MicCaptureActive || s.MicUplinkActive ||
         s.MicState is "starting" or "capturing" or "stopping" or "recovering";
 
-    private static PlaybackBitrate BitrateFor(Snapshot s, string mode) => mode == "aac_eld" ? s.PlaybackAacEldBitrate : s.PlaybackAacBitrate;
-
     private void UpdatePlayback(Snapshot s)
     {
-        string mode = _playbackRequested ?? s.PlaybackMode;
+        string preferred = _playbackMode.DisplayedMode(s);
+        string mode = _playbackMode.BitrateMode(s);
         bool native = s.PlaybackAvailable && s.PlaybackNativeDriver;
         PlaybackRouteRow.Visibility = s.PlaybackNativeDriver || s.PlaybackState == "unavailable" ? Visibility.Visible : Visibility.Collapsed;
-        PlaybackPicker.SelectedIndex = native ? mode switch { "aac" => 0, "aac_eld" => 1, _ => -1 } : -1;
+        PlaybackPicker.SelectedIndex = native ? preferred switch { "aac" => 0, "aac_eld" => 1, _ => -1 } : -1;
         bool enabled = native && Client?.IsReady == true && !MicrophoneBusy(s) && !PlaybackPending;
         PlaybackPicker.IsEnabled = enabled;
         string help = Localize.Get(!native ? "Playback.DriverUnavailable" : MicrophoneBusy(s) ? "Playback.StopRecording" : PlaybackPending ? "Playback.Starting" : s.PlaybackState switch
@@ -374,11 +373,13 @@ public sealed partial class DeviceSettingsCard : UserControl
             "disconnected" => "DeviceSetting.Disconnected",
             _ => "Playback.Help"
         });
+        if (native && s.PlaybackState == "ready")
+            help += " " + Localize.Get("Playback.CurrentCodec", s.PlaybackMode == "aac_eld" ? "AAC-ELD" : "AAC");
         if (s.PlaybackBitrateKbps is uint actual) help += " " + Localize.Get("Playback.CurrentBitrate", actual);
         AutomationProperties.SetHelpText(PlaybackPicker, help);
         ToolTipService.SetToolTip(PlaybackRouteRow, help);
         var bitrate = _bitrateRequested is { } pending && pending.Mode == mode
-            ? new PlaybackBitrate { BestEffort = pending.BestEffort, Kbps = pending.Kbps } : BitrateFor(s, mode);
+            ? new PlaybackBitrate { BestEffort = pending.BestEffort, Kbps = pending.Kbps } : PlaybackModeRequest.BitrateFor(s, mode);
         if (_bitrateShownMode != mode) _bitrateDirty = false;
         _bitrateShownMode = mode;
         PlaybackQualityRow.Visibility = native ? Visibility.Visible : Visibility.Collapsed;
@@ -389,7 +390,10 @@ public sealed partial class DeviceSettingsCard : UserControl
         PlaybackKbps.Maximum = mode == "aac_eld" ? 256 : 512;
         if (!_bitrateDirty) PlaybackKbps.Value = bitrate.Kbps;
         PlaybackKbps.IsEnabled = enabled;
-        string bitrateHelp = Localize.Get("Playback.BitrateRange", PlaybackKbps.Minimum, PlaybackKbps.Maximum);
+        string codecHelp = Localize.Get("Playback.BitrateCodec", mode == "aac_eld" ? "AAC-ELD" : "AAC");
+        AutomationProperties.SetHelpText(PlaybackQualityPicker, codecHelp);
+        ToolTipService.SetToolTip(PlaybackQualityPicker, codecHelp);
+        string bitrateHelp = codecHelp + " " + Localize.Get("Playback.BitrateRange", PlaybackKbps.Minimum, PlaybackKbps.Maximum);
         AutomationProperties.SetHelpText(PlaybackKbps, bitrateHelp);
         ToolTipService.SetToolTip(PlaybackKbps, bitrateHelp);
         PlaybackBitrateApply.IsEnabled = enabled && _bitrateDirty && ValidBitrate();
@@ -403,12 +407,11 @@ public sealed partial class DeviceSettingsCard : UserControl
     private void Playback_Changed(object sender, SelectionChangedEventArgs e)
     {
         if (_applying || !PlaybackPicker.IsEnabled || PlaybackPicker.SelectedItem is not ComboBoxItem { Tag: string mode }) return;
-        if (mode != (_playbackRequested ?? _snapshot.PlaybackMode) && _snapshot.PlaybackAvailable && _snapshot.PlaybackNativeDriver)
+        if (_snapshot.PlaybackAvailable && _snapshot.PlaybackNativeDriver && _playbackMode.Begin(_snapshot, mode) is { } command)
         {
-            _playbackRequested = mode;
             _playbackErrorAtRequest = _snapshot.PlaybackError;
-            if (Client?.Send(new SetPlaybackModeCmd { Mode = mode }) == true) StartPlaybackTimeout();
-            else _playbackRequested = null;
+            if (Client?.Send(command) == true) StartPlaybackTimeout();
+            else _playbackMode.Cancel();
         }
         _applying = true;
         UpdatePlayback(_snapshot);
@@ -427,14 +430,14 @@ public sealed partial class DeviceSettingsCard : UserControl
     private void PlaybackQuality_Changed(object sender, SelectionChangedEventArgs e)
     {
         if (_applying || !PlaybackQualityPicker.IsEnabled || PlaybackQualityPicker.SelectedIndex < 0) return;
-        var saved = BitrateFor(_snapshot, _snapshot.PlaybackMode);
+        var saved = PlaybackModeRequest.BitrateFor(_snapshot, _playbackMode.BitrateMode(_snapshot));
         SendBitrate(PlaybackQualityPicker.SelectedIndex == 0, saved.Kbps);
     }
 
     private void PlaybackKbps_Changed(NumberBox sender, NumberBoxValueChangedEventArgs args)
     {
         if (_applying || !PlaybackKbps.IsEnabled) return;
-        _bitrateDirty = args.NewValue != BitrateFor(_snapshot, _snapshot.PlaybackMode).Kbps;
+        _bitrateDirty = args.NewValue != PlaybackModeRequest.BitrateFor(_snapshot, _playbackMode.BitrateMode(_snapshot)).Kbps;
         PlaybackBitrateApply.IsEnabled = _bitrateDirty && ValidBitrate();
     }
 
@@ -445,7 +448,7 @@ public sealed partial class DeviceSettingsCard : UserControl
 
     private void SendBitrate(bool bestEffort, uint kbps)
     {
-        _bitrateRequested = new SetPlaybackBitrateCmd { Mode = _snapshot.PlaybackMode, BestEffort = bestEffort, Kbps = kbps };
+        _bitrateRequested = new SetPlaybackBitrateCmd { Mode = _playbackMode.BitrateMode(_snapshot), BestEffort = bestEffort, Kbps = kbps };
         _playbackErrorAtRequest = _snapshot.PlaybackError;
         _bitrateDirty = false;
         if (Client?.Send(_bitrateRequested) == true) StartPlaybackTimeout();

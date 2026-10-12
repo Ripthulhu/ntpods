@@ -280,6 +280,11 @@ function Read-NTPodsDriverCheckpoint([string]$transactionId) {
     if (-not [string]::Equals($saved.TransactionId, $transactionId, [StringComparison]::Ordinal)) {
         throw "The driver backup belongs to another transaction and has been retained: $path"
     }
+    if ('AudioOriginalsPresent' -in $saved.PSObject.Properties.Name -or 'AudioOriginals' -in $saved.PSObject.Properties.Name) {
+        if ($saved.AudioOriginalsPresent -isnot [bool] -or $saved.AudioOriginals -isnot [array] -or
+            (-not $saved.AudioOriginalsPresent -and $saved.AudioOriginals.Count)) { throw 'Invalid original playback checkpoint.' }
+        Assert-NativeAudioBackup $saved.AudioOriginals
+    }
     $saved
 }
 
@@ -316,7 +321,10 @@ function Save-NTPodsDriverCheckpoint([string]$transactionId) {
             if ($sid) { Assert-UserSid $sid }
             [pscustomobject]@{ Service = $service; Sid = $sid }
         })
-        [pscustomobject]@{ TransactionId = $transactionId; Packages = $packages; Devices = $devices; AudioBindings = @(Get-NativeAudioBindings); Policy = $policy; Certificates = @(Get-NTPodsCertificates) } |
+        $audioOriginals = @(Read-NativeAudioBackup)
+        $audioOriginalsPresent = Test-Path -LiteralPath (Join-Path (Get-NativeAudioBackupPath) 'bindings.json') -PathType Leaf
+        [pscustomobject]@{ TransactionId = $transactionId; Packages = $packages; Devices = $devices; AudioBindings = @(Get-NativeAudioBindings);
+            AudioOriginals = $audioOriginals; AudioOriginalsPresent = $audioOriginalsPresent; Policy = $policy; Certificates = @(Get-NTPodsCertificates) } |
             ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $path 'checkpoint.json') -Encoding UTF8
     } catch {
         # No driver or certificate has changed before this checkpoint is complete.
@@ -364,6 +372,18 @@ function Restore-NTPodsDriverCheckpoint([string]$root, [string]$transactionId) {
     foreach ($cert in Get-NTPodsCertificates) {
         if (-not @($saved.Certificates | Where-Object { $_.Store -eq $cert.Store -and $_.Thumbprint -eq $cert.Thumbprint }).Count) {
             Remove-NTPodsCertificate $cert.Store $cert.Thumbprint
+        }
+    }
+    # The previous installer may reject model IDs added by the failed upgrade.
+    if ($null -ne $saved.AudioOriginalsPresent) {
+        $originalPath = Get-NativeAudioBackupPath
+        if (Test-Path -LiteralPath $originalPath) { @(Get-InstallTree $originalPath) | Out-Null }
+        $manifest = Join-Path $originalPath 'bindings.json'
+        if ($saved.AudioOriginalsPresent) {
+            New-Item -ItemType Directory -Path $originalPath -Force | Out-Null
+            Save-NativeAudioJson $manifest @($saved.AudioOriginals)
+        } elseif (Test-Path -LiteralPath $manifest) {
+            Remove-Item -LiteralPath $manifest -Force
         }
     }
     Complete-NTPodsDriverTransaction $transactionId

@@ -19,11 +19,12 @@ for (var index = 0; index < lines.Length; ++index)
     var s = evt!.Snapshot;
     using var raw = JsonDocument.Parse(lines[index]);
     Check(s.PlaybackMode == (raw.RootElement.TryGetProperty("playback_mode", out var playbackMode) ? playbackMode.GetString() : "windows") &&
+        s.PlaybackPreferredMode == (raw.RootElement.TryGetProperty("playback_preferred_mode", out var preferredMode) ? preferredMode.GetString() : null) &&
         s.PlaybackState == (raw.RootElement.TryGetProperty("playback_state", out var playbackState) ? playbackState.GetString() : "windows") &&
         s.PlaybackAvailable == (raw.RootElement.TryGetProperty("playback_available", out var playbackAvailable) && playbackAvailable.GetBoolean()) &&
         s.PlaybackNativeDriver == (raw.RootElement.TryGetProperty("playback_native_driver", out var nativeDriver) && nativeDriver.GetBoolean()) &&
         s.PlaybackError == (raw.RootElement.TryGetProperty("playback_error", out var playbackError) && playbackError.ValueKind != JsonValueKind.Null ? playbackError.GetString() : null),
-        "Playback selection, actual route state and errors must remain separate across IPC.");
+        "Playback preference, active codec, route state and errors must remain separate across IPC.");
     foreach (var (key, bitrate) in new[] { ("playback_aac_bitrate", s.PlaybackAacBitrate), ("playback_aac_eld_bitrate", s.PlaybackAacEldBitrate) })
     {
         var expected = raw.RootElement.TryGetProperty(key, out var value) ? value.Deserialize<PlaybackBitrate>() : new PlaybackBitrate();
@@ -96,7 +97,7 @@ for (var index = 0; index < lines.Length; ++index)
         Check(!s.BatteryLive && s.BatteryTimestampMs is null && s.BatterySource == "", "Legacy snapshots must not invent report metadata.");
         Check(s.BatteryFreshness is null, "Legacy snapshots must not invent per-component report metadata.");
         Check(!s.BleScanWhileConnected, "Legacy snapshots must keep playback BLE scanning disabled.");
-        Check(s.PlaybackMode == "windows" && s.PlaybackState == "windows" && !s.PlaybackAvailable && !s.PlaybackNativeDriver && s.PlaybackError is null,
+        Check(s.PlaybackPreferredMode is null && s.PlaybackMode == "windows" && s.PlaybackState == "windows" && !s.PlaybackAvailable && !s.PlaybackNativeDriver && s.PlaybackError is null,
             "Legacy snapshots must keep Windows playback and must not claim native playback support.");
         Check(s.PlaybackAacBitrate == new PlaybackBitrate() && s.PlaybackAacEldBitrate == new PlaybackBitrate() && s.PlaybackBitrateKbps is null,
             "Missing bitrate preferences default to Best effort without inventing a current bitrate.");
@@ -124,6 +125,9 @@ string[] malformed = ["", " ", "{", "null", "true", "12", "\"text\"", "[]", "[{}
     "{\"event\":\"state\",\"playback_mode\":null}",
     "{\"event\":\"state\",\"playback_mode\":\"unknown\"}",
     "{\"event\":\"state\",\"playback_mode\":1}",
+    "{\"event\":\"state\",\"playback_preferred_mode\":\"unknown\"}",
+    "{\"event\":\"state\",\"playback_preferred_mode\":\"\"}",
+    "{\"event\":\"state\",\"playback_preferred_mode\":1}",
     "{\"event\":\"state\",\"playback_state\":null}",
     "{\"event\":\"state\",\"playback_state\":\"playing\"}",
     "{\"event\":\"state\",\"playback_available\":1}",

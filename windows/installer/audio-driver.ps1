@@ -58,17 +58,21 @@ function Read-NativeAudioBackup {
             if (-not $json.TrimStart().StartsWith('[')) { throw 'Playback backup must contain an array.' }
             $parsed = ConvertFrom-Json -InputObject $json
             $entries = @($parsed)
-            $seen = @{}
-            foreach ($entry in $entries) {
-                if (($entry.PSObject.Properties.Name | Sort-Object) -join ',' -cne 'Inf,InstanceId,Published') { throw 'Invalid playback backup record.' }
-                Assert-NativeAudioInstance $entry.InstanceId
-                if ($seen.ContainsKey($entry.InstanceId)) { throw 'Duplicate playback backup record.' }
-                $seen[$entry.InstanceId] = $true
-                if ($entry.Published -notmatch '\A(oem\d+|microsoft_bluetooth_a2dp_src)\.inf\z') { throw 'Invalid playback backup package.' }
-                Get-NativeAudioRestoreInf $entry | Out-Null
-            }
+            Assert-NativeAudioBackup $entries
             $entries
         }
+    }
+}
+
+function Assert-NativeAudioBackup([object[]]$entries) {
+    $seen = @{}
+    foreach ($entry in $entries) {
+        if (($entry.PSObject.Properties.Name | Sort-Object) -join ',' -cne 'Inf,InstanceId,Published') { throw 'Invalid playback backup record.' }
+        Assert-NativeAudioInstance $entry.InstanceId
+        if ($seen.ContainsKey($entry.InstanceId)) { throw 'Duplicate playback backup record.' }
+        $seen[$entry.InstanceId] = $true
+        if ($entry.Published -notmatch '\A(oem\d+|microsoft_bluetooth_a2dp_src)\.inf\z') { throw 'Invalid playback backup package.' }
+        Get-NativeAudioRestoreInf $entry | Out-Null
     }
 }
 

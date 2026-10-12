@@ -24,8 +24,10 @@ recording before changing codecs or bitrate. Use shared-mode playback; exclusive
 mode bypasses Windows software volume and mute.
 
 If the pair does not advertise a supported AAC-ELD profile, NTPods uses AAC with
-its saved bitrate setting. The active codec reports AAC; the preferred codec
-remains saved. Stream failures and invalid manual bitrates still report errors.
+its saved bitrate setting. The codec menu keeps your preference; its tooltip
+shows the codec being used. Bitrate controls follow the active or attempted
+codec, so a rejected AAC bitrate can be corrected even when AAC-ELD is preferred.
+Stream failures and invalid manual bitrates still report errors.
 
 Each codec remembers its own bitrate setting:
 

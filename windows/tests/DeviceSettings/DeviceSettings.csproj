@@ -18,6 +18,7 @@
     <Compile Include="../../winui/NTPods.WinUI/Controls/EqualizerEditState.cs" Link="EqualizerEditState.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Controls/DeviceSettingStatus.cs" Link="DeviceSettingStatus.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Controls/RenameRequest.cs" Link="RenameRequest.cs" />
+    <Compile Include="../../winui/NTPods.WinUI/Controls/PlaybackModeRequest.cs" Link="PlaybackModeRequest.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Controls/HeartRateLiveState.cs" Link="HeartRateLiveState.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Controls/MicPolicyState.cs" Link="MicPolicyState.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Services/BatteryPresentation.cs" Link="BatteryPresentation.cs" />

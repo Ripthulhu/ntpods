@@ -49,6 +49,7 @@ impl Session {
         bitrates: [ntpods_ipc::PlaybackBitrate; 2],
         cancel: Arc<AtomicBool>,
         interrupted: impl Fn() -> bool + 'static,
+        on_mode: impl FnOnce(Mode),
     ) -> io::Result<Self> {
         let mut session = Self {
             driver,
@@ -95,24 +96,29 @@ impl Session {
         )?;
         let mut endpoints = sinks(&session.request(DISCOVER, &[])?)?.into_iter();
         let deadline = Instant::now() + Duration::from_secs(15);
-        let selected = select_configuration(mode, bitrates, || loop {
-            session.check_cancelled()?;
-            let Some(seid) = endpoints.next() else {
-                return Ok(None);
-            };
-            if Instant::now() >= deadline {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "Playback capability discovery timed out",
-                ));
-            }
-            let caps = match session.request(GET_CAPABILITIES, &[seid << 2]) {
-                Ok(caps) => caps,
-                Err(error) if error.kind() == io::ErrorKind::Unsupported => continue,
-                Err(error) => return Err(error),
-            };
-            return Ok(Some((seid, caps)));
-        })?;
+        let selected = select_configuration(
+            mode,
+            bitrates,
+            || loop {
+                session.check_cancelled()?;
+                let Some(seid) = endpoints.next() else {
+                    return Ok(None);
+                };
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "Playback capability discovery timed out",
+                    ));
+                }
+                let caps = match session.request(GET_CAPABILITIES, &[seid << 2]) {
+                    Ok(caps) => caps,
+                    Err(error) if error.kind() == io::ErrorKind::Unsupported => continue,
+                    Err(error) => return Err(error),
+                };
+                return Ok(Some((seid, caps)));
+            },
+            on_mode,
+        )?;
         session.check_cancelled()?;
         session.mode = selected.mode;
         session.source_caps = selected.mode.source_configuration()[2..].to_vec();
@@ -354,13 +360,20 @@ fn select_configuration(
     requested: Mode,
     bitrates: [ntpods_ipc::PlaybackBitrate; 2],
     mut next: impl FnMut() -> io::Result<Option<(u8, Vec<u8>)>>,
+    on_mode: impl FnOnce(Mode),
 ) -> io::Result<Configuration> {
     let mut fallback = Vec::new();
     let mut eld_offered = false;
+    let mut aac_offered = false;
     while let Some((seid, caps)) = next()? {
         let selected = match requested {
-            Mode::Aac => aac_protocol::select_codec_at(&caps, bitrates[0])?
-                .map(|(codec, bitrate)| (aac_protocol::configuration(seid, codec), bitrate)),
+            Mode::Aac => {
+                aac_offered |=
+                    aac_protocol::select_codec_at(&caps, ntpods_ipc::PlaybackBitrate::default())?
+                        .is_some();
+                aac_protocol::select_codec_at(&caps, bitrates[0])?
+                    .map(|(codec, bitrate)| (aac_protocol::configuration(seid, codec), bitrate))
+            }
             Mode::Eld => {
                 eld_offered |=
                     select_apple_eld(&caps, ntpods_ipc::PlaybackBitrate::default())?.is_some();
@@ -373,6 +386,7 @@ fn select_configuration(
             }
         };
         if let Some((config, bitrate)) = selected {
+            on_mode(requested);
             return Ok(Configuration {
                 mode: requested,
                 seid,
@@ -383,6 +397,7 @@ fn select_configuration(
     }
     if requested == Mode::Eld {
         if eld_offered {
+            on_mode(Mode::Eld);
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "The AirPods cannot use this AAC-ELD bitrate.",
@@ -390,7 +405,11 @@ fn select_configuration(
         }
         // Fall back only after all endpoints were checked, before configuring any of them.
         for (seid, caps) in fallback {
+            aac_offered |=
+                aac_protocol::select_codec_at(&caps, ntpods_ipc::PlaybackBitrate::default())?
+                    .is_some();
             if let Some((codec, bitrate)) = aac_protocol::select_codec_at(&caps, bitrates[0])? {
+                on_mode(Mode::Aac);
                 return Ok(Configuration {
                     mode: Mode::Aac,
                     seid,
@@ -399,6 +418,13 @@ fn select_configuration(
                 });
             }
         }
+    }
+    if aac_offered {
+        on_mode(Mode::Aac);
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "The AirPods cannot use this AAC bitrate.",
+        ));
     }
     Err(invalid(&format!(
         "AirPods did not offer {} stereo",
@@ -461,6 +487,14 @@ impl Drop for Session {
 mod tests {
     use super::*;
     use ntpods_ipc::PlaybackBitrate;
+
+    fn select_configuration(
+        requested: Mode,
+        bitrates: [PlaybackBitrate; 2],
+        next: impl FnMut() -> io::Result<Option<(u8, Vec<u8>)>>,
+    ) -> io::Result<Configuration> {
+        super::select_configuration(requested, bitrates, next, |_| {})
+    }
 
     fn aac_caps() -> Vec<u8> {
         aac_protocol::configuration(1, aac_protocol::AAC_CAPABILITIES)[2..].to_vec()
@@ -546,11 +580,16 @@ mod tests {
             io::ErrorKind::TimedOut,
         ] {
             let mut candidate = Some((1, aac_caps()));
-            let error = select_configuration(Mode::Eld, [PlaybackBitrate::default(); 2], || {
-                candidate
-                    .take()
-                    .map_or_else(|| Err(io::Error::from(kind)), |caps| Ok(Some(caps)))
-            })
+            let error = super::select_configuration(
+                Mode::Eld,
+                [PlaybackBitrate::default(); 2],
+                || {
+                    candidate
+                        .take()
+                        .map_or_else(|| Err(io::Error::from(kind)), |caps| Ok(Some(caps)))
+                },
+                |_| panic!("failed discovery must not select a codec"),
+            )
             .unwrap_err();
             assert_eq!(error.kind(), kind);
         }
@@ -568,15 +607,43 @@ mod tests {
         let mut aac = aac_caps();
         let end = aac.len();
         aac[end - 3..].copy_from_slice(&[0x01, 0xf4, 0]); // 128 kbps ceiling.
-        let mut caps = vec![(1, aac)].into_iter();
-        let preferences = [
+        let mut preferences = [
             PlaybackBitrate {
                 best_effort: false,
                 kbps: 129,
             },
             PlaybackBitrate::default(),
         ];
-        assert!(select_configuration(Mode::Eld, preferences, || Ok(caps.next())).is_err());
+        for requested in [Mode::Aac, Mode::Eld] {
+            let mut attempted = requested;
+            let mut caps = vec![(1, aac.clone())].into_iter();
+            let error = super::select_configuration(
+                requested,
+                preferences,
+                || Ok(caps.next()),
+                |mode| attempted = mode,
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+            assert_eq!(
+                error.to_string(),
+                "The AirPods cannot use this AAC bitrate."
+            );
+            assert_eq!(attempted, Mode::Aac);
+        }
+        preferences[0].kbps = 128;
+        let mut attempted = Mode::Eld;
+        let mut caps = vec![(1, aac)].into_iter();
+        let selected = super::select_configuration(
+            Mode::Eld,
+            preferences,
+            || Ok(caps.next()),
+            |mode| attempted = mode,
+        )
+        .unwrap();
+        assert_eq!(attempted, Mode::Aac);
+        assert_eq!(selected.mode, attempted);
+        assert_eq!(selected.bitrate, 128000);
     }
 
     #[test]

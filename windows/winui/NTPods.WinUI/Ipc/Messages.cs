@@ -85,6 +85,7 @@ public sealed class Snapshot
     [JsonPropertyName("mic_stop_delay_secs")] public uint MicStopDelaySecs { get; set; }
     [JsonPropertyName("mic_manual_active")] public bool MicManualActive { get; set; }
     [JsonPropertyName("playback_mode")] public string PlaybackMode { get; set; } = "windows";
+    [JsonPropertyName("playback_preferred_mode")] public string? PlaybackPreferredMode { get; set; }
     [JsonPropertyName("playback_state")] public string PlaybackState { get; set; } = "windows";
     [JsonPropertyName("playback_error")] public string? PlaybackError { get; set; }
     [JsonPropertyName("playback_available")] public bool PlaybackAvailable { get; set; }
@@ -450,6 +451,7 @@ public static class Wire
                         snap.DeviceControls is null || snap.DeviceControlsPending is null ||
                         snap.MicMode is not ("automatic" or "keep_active" or "manual") || snap.MicStopDelaySecs > 3600 ||
                         snap.PlaybackMode is not ("windows" or "aac" or "aac_eld") ||
+                        snap.PlaybackPreferredMode is not (null or "windows" or "aac" or "aac_eld") ||
                         snap.PlaybackState is not ("windows" or "unavailable" or "disconnected" or "starting" or "ready" or "stopping" or "error") ||
                         snap.PlaybackAacBitrate is null || !snap.PlaybackAacBitrate.IsValidFor("aac") ||
                         snap.PlaybackAacEldBitrate is null || !snap.PlaybackAacEldBitrate.IsValidFor("aac_eld") ||

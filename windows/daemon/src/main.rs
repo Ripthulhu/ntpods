@@ -2404,6 +2404,7 @@ fn reset_pair_snapshot(state: &mut Snapshot, mac: u64, name: &str) {
         volume: state.volume,
         muted: state.muted,
         playback_mode: state.playback_mode,
+        playback_preferred_mode: state.playback_preferred_mode,
         playback_aac_bitrate: state.playback_aac_bitrate,
         playback_aac_eld_bitrate: state.playback_aac_eld_bitrate,
         playback_available: false,
@@ -3560,6 +3561,7 @@ fn main() {
             mic_available: pipe.is_open(),
             mic_state: "idle".into(),
             playback_mode,
+            playback_preferred_mode: Some(playback_mode),
             playback_available: false,
             playback_state: if playback_mode == ipc::PlaybackMode::Windows {
                 "windows"
@@ -3934,7 +3936,8 @@ mod tests {
             battery_live: true,
             battery_timestamp_ms: Some(100),
             volume: 43,
-            playback_mode: ntpods_ipc::PlaybackMode::AacEld,
+            playback_mode: ntpods_ipc::PlaybackMode::Aac,
+            playback_preferred_mode: Some(ntpods_ipc::PlaybackMode::AacEld),
             playback_available: true,
             playback_state: "ready".into(),
             ..Default::default()
@@ -3947,7 +3950,11 @@ mod tests {
         assert_eq!(state.mic_mode, ntpods_ipc::MicMode::KeepActive);
         assert_eq!(state.mic_stop_delay_secs, 30);
         assert_eq!(state.volume, 43);
-        assert_eq!(state.playback_mode, ntpods_ipc::PlaybackMode::AacEld);
+        assert_eq!(state.playback_mode, ntpods_ipc::PlaybackMode::Aac);
+        assert_eq!(
+            state.playback_preferred_mode,
+            Some(ntpods_ipc::PlaybackMode::AacEld)
+        );
         assert!(!state.playback_available);
         assert_eq!(state.playback_state, "disconnected");
         assert!(!state.connected);

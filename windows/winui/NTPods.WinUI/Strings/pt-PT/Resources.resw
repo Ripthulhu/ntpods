@@ -286,4 +286,6 @@
   <data name="Playback.ApplyBitrate" xml:space="preserve"><value>Aplicar taxa de bits</value></data>
   <data name="Playback.BitrateRange" xml:space="preserve"><value>Introduza um número inteiro entre {0} e {1}.</value></data>
   <data name="Playback.CurrentBitrate" xml:space="preserve"><value>Taxa de bits atual: {0} kbps.</value></data>
+  <data name="Playback.CurrentCodec" xml:space="preserve"><value>Codec atual: {0}.</value></data>
+  <data name="Playback.BitrateCodec" xml:space="preserve"><value>As definições de taxa de bits aplicam-se a {0}.</value></data>
 </root>

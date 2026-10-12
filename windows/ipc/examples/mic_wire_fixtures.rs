@@ -23,6 +23,11 @@ fn snapshots() -> Vec<Snapshot> {
             "capturing" => PlaybackMode::AacEld,
             _ => PlaybackMode::Aac,
         },
+        playback_preferred_mode: match phase {
+            "idle" => Some(PlaybackMode::Windows),
+            "unavailable" => None,
+            _ => Some(PlaybackMode::AacEld),
+        },
         playback_state: match phase {
             "idle" => "windows",
             "starting" => "starting",
@@ -32,11 +37,12 @@ fn snapshots() -> Vec<Snapshot> {
             _ => "ready",
         }
         .into(),
-        playback_error: (phase == "error").then(|| "Playback failed".into()),
+        playback_error: (phase == "error")
+            .then(|| "The AirPods cannot use this AAC bitrate.".into()),
         playback_available: phase != "unavailable",
         playback_native_driver: phase != "unavailable",
         playback_aac_bitrate: PlaybackBitrate {
-            best_effort: phase != "capturing",
+            best_effort: !matches!(phase, "capturing" | "error"),
             kbps: 320,
         },
         playback_aac_eld_bitrate: PlaybackBitrate {
@@ -215,6 +221,7 @@ fn main() {
                 "head_tracking_state",
                 "head_tracking_error",
                 "playback_mode",
+                "playback_preferred_mode",
                 "playback_state",
                 "playback_error",
                 "playback_available",
