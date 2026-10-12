@@ -53,15 +53,21 @@ and the installed drivers before choosing this path.
 
 ## Publishing experimental builds
 
-Binary uploads are off by default. The repository variable
+Binary uploads are opt-in. The repository variable
 `NTPODS_PUBLISH_BUILDS` must equal `true` before the Windows workflow can upload
-binary artifacts or publish a release. Keep it off while the licensing issue in
-`THIRD_PARTY.md` is unresolved. Tests and compilation still run with uploads off.
+binary artifacts or publish a release. This fork has enabled experimental
+downloads; the licensing issue in `THIRD_PARTY.md` remains unresolved and is
+disclosed in every release. Tests and compilation still run with uploads off.
 
 When publishing is enabled, the workflow packages the MSI, a ZIP for manual
 installation, checksums and build metadata. Every release starts with
 [`WINDOWS-RELEASE-NOTES.md`](WINDOWS-RELEASE-NOTES.md), which is also included in
 the ZIP. Keep its Test Mode warning visible when sharing download links.
+
+To prepare the same downloads from a clean local build, run
+`windows/package-release.ps1`, then `windows/fetch-release-sources.ps1`.
+The latter fetches and verifies the matching FFmpeg source and BtbN build recipes;
+see [source archive notes](FFMPEG-SOURCES.md) for their scope.
 
 Nightlies reserve versions `0.2.<github.run_number>` so each new run can upgrade
 the previous build. A rerun retains its original run number. Versioned release

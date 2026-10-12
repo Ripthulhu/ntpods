@@ -1,4 +1,4 @@
-# Third-party provenance and distribution gate
+# Third-party provenance and redistribution notes
 
 This experimental Windows build starts from NTPods commit
 `188e45df20259b616ce155be812086259d1a2488`. NTPods and its LibrePods-derived
@@ -84,8 +84,9 @@ The license status of the combined driver remains unresolved. Adding the
 Microsoft notice does not grant permission to relicense NTPods' contributions.
 Resolution needs the relevant authors' permission or replacement of the affected
 implementation. No such permission has been obtained, and publication of this
-fork's source does not establish it. Local builds remain experimental;
-automatic binary publishing is disabled.
+fork's source does not establish it. The maintainer has enabled experimental
+binary publishing with this issue disclosed; that decision does not resolve
+the license conflict or establish redistribution permission.
 
 ## FFmpeg
 
@@ -94,10 +95,13 @@ the BtbN monthly build `autobuild-2026-07-31-14-10`, source revision
 `n7.1.5-12-g1fdbca85aa`, and archive SHA-256
 `0f376f96fb38554ccefb1b2ae9c7c6a7b351f0e60a372b38262c320e8392c5d0`.
 `windows/daemon/fetch-ffmpeg.sh` verifies the archive and cached extracted files.
-The distribution retains FFmpeg's LGPL text, bundle license/build notes, and
-this notice. Keep the DLLs replaceable and supply the exact corresponding FFmpeg
+The distribution retains FFmpeg's LGPL text and this notice.
+Keep the DLLs replaceable and supply the exact corresponding FFmpeg
 source and build scripts when distributing binaries; source-retrieval pointers
 alone are not a claim of complete license compliance.
+Experimental downloads include the exact FFmpeg source and matching BtbN build
+recipes, with pinned hashes. Dependency source archives are not bundled; see
+[source archive notes](docs/FFMPEG-SOURCES.md) for the contents and limitations.
 
 ## Other dependencies and assets
 

@@ -21,6 +21,21 @@ This fork targets Windows 11 x64 and remains experimental. The
 Production signing and hardware acceptance also remain incomplete. See the
 [validation record](docs/WINDOWS-VALIDATION.md) for completed checks and open gates.
 
+## Preview
+
+Rendered from the current Windows UI with sample data; no AirPods were connected.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/images/app-light.png">
+    <img src="docs/images/app-dark.png" alt="NTPods settings with AirPods artwork, individual battery readings and the Adaptive listening-mode slider" width="640">
+  </picture>
+</p>
+
+The Dynamic Island shows listening-mode changes and individual battery levels.
+
+<p align="center"><img src="docs/images/dynamic-island.png" alt="NTPods Dynamic Island with AirPods artwork and separate left, right and case battery levels" width="440"></p>
+
 ## Features in this fork
 
 - A focused settings page with continuous listening-mode and Adaptive controls,
@@ -54,13 +69,17 @@ use [LibrePods](https://github.com/librepods-org/librepods).
 
 ## Installing on Windows
 
+Download the experimental **MSI** or **ZIP** from this fork's
+[releases](https://github.com/Ripthulhu/ntpods/releases). The MSI includes a setup
+wizard; the ZIP includes the same app and drivers for manual installation.
+
 Read the [release notes](docs/WINDOWS-RELEASE-NOTES.md),
 [Windows README](windows/README.md) and [validation record](docs/WINDOWS-VALIDATION.md)
-before installing. Public binary uploads remain disabled while the licensing
-issue is unresolved. The build workflow can publish experimental MSI and ZIP
-packages once a maintainer enables it; see the
-[build instructions](docs/BUILD-WINDOWS.md). Upstream nightly builds do not include
-this fork's changes.
+before installing. **Test Mode must already be enabled.** These downloads are
+experimental, and the licensing issue described above remains unresolved.
+Source archives and checksums accompany each release. See the
+[build instructions](docs/BUILD-WINDOWS.md) to build locally. Upstream nightly
+builds do not include this fork's changes.
 
 ## What's in the repo
 

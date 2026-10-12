@@ -4,9 +4,9 @@ on:
   push:
     branches: [main]
     tags: ['windows-v*']
-    paths: ['windows/**', 'licenses/**', 'THIRD_PARTY.md', 'docs/WINDOWS-RELEASE-NOTES.md', 'global.json', 'rust-toolchain.toml', '.github/workflows/ci-windows.yml']
+    paths: ['windows/**', 'licenses/**', 'THIRD_PARTY.md', 'docs/WINDOWS-RELEASE-NOTES.md', 'docs/FFMPEG-SOURCES.md', 'global.json', 'rust-toolchain.toml', '.github/workflows/ci-windows.yml']
   pull_request:
-    paths: ['windows/**', 'licenses/**', 'THIRD_PARTY.md', 'docs/WINDOWS-RELEASE-NOTES.md', 'global.json', 'rust-toolchain.toml', '.github/workflows/ci-windows.yml']
+    paths: ['windows/**', 'licenses/**', 'THIRD_PARTY.md', 'docs/WINDOWS-RELEASE-NOTES.md', 'docs/FFMPEG-SOURCES.md', 'global.json', 'rust-toolchain.toml', '.github/workflows/ci-windows.yml']
   workflow_dispatch:
 
 permissions:
@@ -21,6 +21,10 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 90
     steps:
+      # Checkout clears the bootstrap action's leftover downloads before building.
+      - uses: Cyberboss/install-winget@1c6f189175e9f015bf1aa113cd1cc6c73efb9d47 # v1
+        with:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
@@ -34,9 +38,6 @@ jobs:
             if ([version]$version -lt [version]'0.3.0') { throw 'Tagged releases must be 0.3.0 or later, above the 0.2 nightly series.' }
           }
           "NTPODS_BUILD_VERSION=$version" >> $env:GITHUB_ENV
-      - uses: Cyberboss/install-winget@1c6f189175e9f015bf1aa113cd1cc6c73efb9d47 # v1
-        with:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Install pinned SDK, WDK, and WinUI tools
         shell: pwsh
         run: |
@@ -76,7 +77,9 @@ jobs:
           ./windows/build.ps1 -Version $env:NTPODS_BUILD_VERSION
       - name: Package downloads
         shell: pwsh
-        run: ./windows/package-release.ps1
+        run: |
+          ./windows/package-release.ps1
+          ./windows/fetch-release-sources.ps1
       # Binary distribution remains an explicit opt-in while THIRD_PARTY.md is unresolved.
       - name: Upload experimental downloads
         if: vars.NTPODS_PUBLISH_BUILDS == 'true'
@@ -132,4 +135,5 @@ jobs:
             fi
           fi
           gh release create "$tag" NTPods.msi NTPods-Windows.zip NTPods-source.zip build-manifest.json RELEASE-NOTES.md SHA256SUMS.txt \
+            FFmpeg-source.zip FFmpeg-build-recipes.zip FFmpeg-SOURCE-NOTES.md \
             --target "$GITHUB_SHA" --prerelease --latest=false --title "$title" --notes-file RELEASE-NOTES.md
