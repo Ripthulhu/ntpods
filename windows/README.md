@@ -11,12 +11,12 @@
 This checkout builds on NTPods `188e45d` for **Windows 11 x64, Intel AX200, and
 AirPods Pro 3 / firmware 9A348**. It retains the Rust daemon and WinUI interface,
 with the native AAP Bluetooth driver and ACX virtual microphone. Windows continues
-to own the Bluetooth adapter and ordinary audio playback in the normal build.
+to own the Bluetooth adapter and, by default, ordinary audio playback.
 
-The separate `NTPods-Native-AAC.zip` download adds an experimental stereo playback
-endpoint. It requires replacing both NTPods drivers and has not been tested on
-AirPods. Follow its [installation and rollback procedure](playback/TESTING.md);
-the normal MSI and Windows ZIP do not enable it.
+The MSI and ZIP also include experimental AAC and AAC-ELD playback. Choose the
+codec under **Playback and microphone**, then select **Speakers (NTPods Experimental)**
+in your player. These modes have not been tested on AirPods. See the
+[playback test guide](playback/TESTING.md).
 
 The app includes native three-band EQ, a local automatic-pause preference and
 additional AirPods settings for stem controls, accessibility and charging.
@@ -41,8 +41,8 @@ hardened ACX microphone is packaged. The older PortCls source remains available
 for reference and is outside this build's supported scope.
 
 - `drivers/aap`: a KMDF profile driver opening AACP L2CAP PSM `0x1001`.
-- `drivers/mic`: a capture-only ACX endpoint, `ROOT\NTPodsMicACX`, with bounded
-  48 kHz mono 16-bit PCM input from the daemon.
+- `drivers/mic`: an ACX device, `ROOT\NTPodsMicACX`, with bounded 48 kHz mono
+  microphone input and an optional stereo playback path.
 - `daemon`: Bluetooth protocol, AAC-ELD decoding, microphone lifecycle, state and
   user-restricted named-pipe IPC.
 - `winui`: tray and settings interface using that IPC.

@@ -180,7 +180,7 @@ Return Value:
     // device context. These circuits will be added to the device when the
     // prepare hardware callback is called. 
     //
-    // Normal builds expose only the microphone.
+    // The render endpoint is optional for builds without playback support.
     RETURN_NTSTATUS_IF_FAILED(CodecC_AddStaticCapture(device, &CODEC_CAPTURE_COMPONENT_GUID, &MIC_CUSTOM_NAME, &captureCircuitName));
 #if NTPODS_EXPERIMENTAL_PLAYBACK
     RenderPipeInit();

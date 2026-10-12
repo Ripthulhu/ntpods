@@ -28,7 +28,24 @@
                 </Grid>
             </Border>
             <Expander x:Name="PlaybackExpander" Style="{StaticResource GroupExpander}" Header="{Binding [DeviceControls_Playback], Source={StaticResource Loc}}">
-                <StackPanel x:Name="PlaybackPanel" />
+                <StackPanel>
+                    <StackPanel x:Name="PlaybackRouteRow" Spacing="8" Margin="0,14" Visibility="Collapsed">
+                        <TextBlock Text="{Binding [Playback_Title], Source={StaticResource Loc}}" Style="{StaticResource DeviceLabel}" />
+                        <ComboBox x:Name="PlaybackPicker" HorizontalAlignment="Stretch" SelectionChanged="Playback_Changed"
+                                  AutomationProperties.Name="{Binding [Playback_Title], Source={StaticResource Loc}}">
+                            <ComboBoxItem Tag="windows" Content="{Binding [Playback_Windows], Source={StaticResource Loc}}" />
+                            <ComboBoxItem Tag="aac" Content="AAC" />
+                            <ComboBoxItem Tag="aac_eld" Content="AAC-ELD" />
+                        </ComboBox>
+                        <TextBlock x:Name="PlaybackRoutingHint" Text="{Binding [Playback_RoutingHint], Source={StaticResource Loc}}"
+                                   Style="{StaticResource DeviceStatus}" Visibility="Collapsed" />
+                        <TextBlock x:Name="PlaybackError" Style="{StaticResource DeviceStatus}" Visibility="Collapsed"
+                                   AutomationProperties.LiveSetting="Polite" />
+                        <Button x:Name="PlaybackRetry" Content="{Binding [Playback_Retry], Source={StaticResource Loc}}"
+                                Click="PlaybackRetry_Click" Visibility="Collapsed" />
+                    </StackPanel>
+                    <StackPanel x:Name="PlaybackPanel" />
+                </StackPanel>
             </Expander>
             <Expander x:Name="StemExpander" Style="{StaticResource GroupExpander}" Header="{Binding [DeviceControls_Stem], Source={StaticResource Loc}}">
                 <StackPanel x:Name="StemPanel" />

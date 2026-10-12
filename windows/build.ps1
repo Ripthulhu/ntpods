@@ -63,6 +63,10 @@ try {
     $env:PATH = "$(Join-Path $repo 'windows\daemon\vendor\ffmpeg\bin');$env:PATH"
     Run 'cl.exe' @('/nologo', '/W4', '/WX', '/TC', '/external:Iwindows/daemon/vendor/ffmpeg/include', '/external:W0', "/Fe:$tests\eld-shim.exe", "/Fo:$tests\eld-shim.obj", 'windows/daemon/tests/eld_shim_test.c', '/link', '/LIBPATH:windows/daemon/vendor/ffmpeg/lib', 'avcodec.lib', 'avutil.lib', 'swresample.lib')
     Run (Join-Path $tests 'eld-shim.exe') @()
+    Run 'cl.exe' @('/nologo', '/W4', '/WX', '/std:c11', '/MD', '/O2', '/external:W0', '/external:Iwindows/daemon/vendor/ffmpeg/include', "/Fe:$tests\aac-shim.exe", "/Fo:$tests\aac-shim.obj", 'windows/daemon/tests/aac_shim_test.c', '/link', '/LIBPATH:windows/daemon/vendor/ffmpeg/lib', 'avcodec.lib', 'avutil.lib')
+    Run (Join-Path $tests 'aac-shim.exe') @()
+    & windows/playback/encoder/build.ps1
+    Run 'python.exe' @('windows/playback/encoder/test.py')
     Run $cargo @('test', '--locked', '--manifest-path', 'windows/ipc/Cargo.toml')
     & windows/tests/test-ipc.ps1
     Run 'dotnet' @('run', '--project', 'windows/tests/Startup/Startup.csproj', '--configuration', 'Release')
@@ -71,14 +75,19 @@ try {
     Run 'dotnet' @('run', '--project', 'windows/tests/ClientSession/ClientSession.csproj', '--configuration', 'Release')
     Run 'dotnet' @('run', '--project', 'windows/tests/IslandMotion/IslandMotion.csproj', '--configuration', 'Release')
     Run 'dotnet' @('run', '--project', 'windows/tests/Hotkey/Hotkey.csproj', '--configuration', 'Release')
-    Run $cargo @('test', '--locked', '--manifest-path', 'windows/daemon/Cargo.toml')
+    Run $cargo @('test', '--locked', '--manifest-path', 'windows/daemon/Cargo.toml', '--features', 'experimental-playback')
+    $oldEncoderTestPath = $env:NTPODS_ELD_ENCODER_TEST_PATH
+    try {
+        $env:NTPODS_ELD_ENCODER_TEST_PATH = Join-Path $repo 'windows/playback/encoder/build/Release/ntpods-eld-encoder.exe'
+        Run $cargo @('test', '--locked', '--manifest-path', 'windows/daemon/Cargo.toml', '--features', 'experimental-playback', 'playback::encoder::tests::streams_real_worker_and_drops_it', '--', '--ignored', '--exact')
+    } finally { $env:NTPODS_ELD_ENCODER_TEST_PATH = $oldEncoderTestPath }
     $oldRustFlags = $env:RUSTFLAGS
     try {
         $env:RUSTFLAGS = '-C target-feature=+crt-static'
-        Run $cargo @('build', '--release', '--locked', '--manifest-path', 'windows/daemon/Cargo.toml')
+        Run $cargo @('build', '--release', '--locked', '--manifest-path', 'windows/daemon/Cargo.toml', '--features', 'experimental-playback')
     } finally { $env:RUSTFLAGS = $oldRustFlags }
     foreach ($project in 'windows/drivers/aap/NTPodsAAP.vcxproj', 'windows/drivers/mic/AudioCodec/Driver/AudioCodec.sln') {
-        Run $driverBuild @($project, '/p:Configuration=Release', '/p:Platform=x64', '/p:WindowsTargetPlatformVersion=10.0.26100.0', '/p:EnableInf2cat=false', '/p:SignMode=Off', '/m', '/nr:false', '/v:minimal')
+        Run $driverBuild @($project, '/p:Configuration=Release', '/p:Platform=x64', '/p:WindowsTargetPlatformVersion=10.0.26100.0', '/p:NTPodsExperimentalPlayback=true', '/p:EnableInf2cat=false', '/p:SignMode=Off', '/m', '/nr:false', '/v:minimal')
     }
     $packages = Join-Path $Out 'driver-packages'
     foreach ($driver in @(

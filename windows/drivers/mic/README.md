@@ -31,7 +31,8 @@ changes need the Windows checks below before deployment:
 - The complete installer provisions the intended user's SID, signs the test
   package, and creates `ROOT\NTPodsMicACX`. The old single-driver `install.ps1`
   refuses to run because it bypassed that setup.
-- Normal builds expose only the microphone.
+- The Windows build exposes the microphone and an experimental stereo playback
+  endpoint. The app defaults to the existing Windows playback path.
 - **PCM bridge**: `Common/MicPipe.{h,cpp}` provides a spin-locked ring buffer and a
   control device `\\.\NTPodsMic` with `IOCTL_NTPODS_MIC_WRITE_PCM`
   (`0x0022A000`). `StreamEngine::ProcessPacket` drains the ring instead of the
@@ -147,8 +148,9 @@ and [pin stream limit](https://learn.microsoft.com/en-us/windows-hardware/driver
 
 ## Experimental playback
 
-Build `AudioCodec.sln` with `/p:NTPodsExperimentalPlayback=true` to enable
-`NTPODS_EXPERIMENTAL_PLAYBACK=1` in both driver projects. The default is off.
+`windows/build.ps1` passes `/p:NTPodsExperimentalPlayback=true` to enable
+`NTPODS_EXPERIMENTAL_PLAYBACK=1` in both driver projects. Direct solution builds
+default to off unless given that property.
 This adds `Speakers (NTPods Experimental)`, a 48 kHz PCM16 stereo endpoint.
 Select it inside a playback application; its interface is marked
 `NeverSetAsDefaultEndpoint` so Windows cannot replace the normal system output.

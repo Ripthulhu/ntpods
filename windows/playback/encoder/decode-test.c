@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #include <aacdecoder_lib.h>
 #include <stdio.h>
 #include <string.h>

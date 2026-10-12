@@ -19,12 +19,23 @@ public sealed partial class DeviceSettingsCard : UserControl
     private bool _refreshCoolingDown;
     private bool _deviceChanged;
     private bool _loudSoundReductionRead;
+    private string? _playbackRequested;
+    private string? _playbackErrorAtRequest;
     private readonly List<(StackPanel Panel, FrameworkElement Row, Border? Divider, byte Id)> _rows = new();
     private readonly DispatcherTimer _refreshCooldown = new() { Interval = TimeSpan.FromSeconds(5) };
+    private readonly DispatcherTimer _playbackTimeout = new() { Interval = TimeSpan.FromSeconds(5) };
 
     public DeviceSettingsCard()
     {
         InitializeComponent();
+        _playbackTimeout.Tick += (_, _) =>
+        {
+            _playbackTimeout.Stop();
+            _playbackRequested = null;
+            Update(_snapshot);
+            Client?.RequestState();
+        };
+        Unloaded += (_, _) => { _playbackTimeout.Stop(); _playbackRequested = null; };
         ComfortExpander.Expanding += (_, _) => ReadLoudSoundReduction();
         _refreshCooldown.Tick += (_, _) =>
         {
@@ -274,6 +285,10 @@ public sealed partial class DeviceSettingsCard : UserControl
     public void Update(Snapshot s)
     {
         _deviceChanged = s.DeviceId != _snapshot.DeviceId;
+        if (_deviceChanged || Client?.IsReady != true || s.PlaybackMode == _playbackRequested ||
+            s.PlaybackError != _playbackErrorAtRequest && !string.IsNullOrEmpty(s.PlaybackError))
+            _playbackRequested = null;
+        if (_playbackRequested is null) _playbackTimeout.Stop();
         if (_deviceChanged || !s.Connected || s.LinkStale) _loudSoundReductionRead = false;
         _snapshot = s;
         _applying = true;
@@ -290,6 +305,7 @@ public sealed partial class DeviceSettingsCard : UserControl
                 s.MicState == "idle" && !s.MicCaptureActive && !s.MicUplinkActive;
             ErrorBar.IsOpen = !string.IsNullOrWhiteSpace(s.DeviceSettingsError);
             ErrorBar.Message = s.DeviceSettingsError ?? "";
+            UpdatePlayback(s);
             StemExpander.Header = Localize.Get(headphone ? "DeviceControls.Buttons" : "DeviceControls.Stem");
             bool reduction = DeviceModels.Find(s.Model).LoudSoundReduction;
             LoudSoundReductionRow.Visibility = reduction ? Visibility.Visible : Visibility.Collapsed;
@@ -307,7 +323,7 @@ public sealed partial class DeviceSettingsCard : UserControl
             foreach (var update in _updates) update(s);
             foreach (var panel in new[] { PlaybackPanel, StemPanel, ComfortPanel })
             {
-                bool any = false;
+                bool any = panel == PlaybackPanel && PlaybackRouteRow.Visibility == Visibility.Visible;
                 foreach (var row in _rows.Where(row => row.Panel == panel))
                 {
                     bool visible = DeviceModels.SupportsControl(s, row.Id);
@@ -323,6 +339,60 @@ public sealed partial class DeviceSettingsCard : UserControl
         }
         finally { _applying = false; }
         if (ComfortExpander.IsExpanded) ReadLoudSoundReduction();
+    }
+
+    private static bool MicrophoneBusy(Snapshot s) => s.MicCaptureActive || s.MicUplinkActive ||
+        s.MicState is "starting" or "capturing" or "stopping" or "recovering";
+
+    private void UpdatePlayback(Snapshot s)
+    {
+        string mode = _playbackRequested ?? s.PlaybackMode;
+        bool native = mode != "windows";
+        PlaybackRouteRow.Visibility = s.PlaybackAvailable || native ? Visibility.Visible : Visibility.Collapsed;
+        PlaybackPicker.SelectedIndex = mode switch { "aac" => 1, "aac_eld" => 2, _ => 0 };
+        PlaybackPicker.IsEnabled = !MicrophoneBusy(s) && _playbackRequested is null;
+        for (int index = 1; index < PlaybackPicker.Items.Count; index++)
+            ((ComboBoxItem)PlaybackPicker.Items[index]).IsEnabled = s.PlaybackAvailable;
+        string help = Localize.Get(MicrophoneBusy(s) ? "Playback.StopRecording" : _playbackRequested is not null ? "Playback.Starting" : s.PlaybackState switch
+        {
+            "starting" => "Playback.Starting",
+            "stopping" => "Playback.Stopping",
+            "disconnected" => "DeviceSetting.Disconnected",
+            _ => "Playback.Help"
+        });
+        AutomationProperties.SetHelpText(PlaybackPicker, help);
+        ToolTipService.SetToolTip(PlaybackRouteRow, help);
+        PlaybackRoutingHint.Visibility = native ? Visibility.Visible : Visibility.Collapsed;
+        PlaybackError.Text = s.PlaybackError ?? "";
+        bool failed = _playbackRequested is null && !string.IsNullOrWhiteSpace(s.PlaybackError);
+        PlaybackError.Visibility = failed ? Visibility.Visible : Visibility.Collapsed;
+        PlaybackRetry.Visibility = failed && s.PlaybackState == "error" ? Visibility.Visible : Visibility.Collapsed;
+        PlaybackRetry.IsEnabled = !MicrophoneBusy(s);
+    }
+
+    private void Playback_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (_applying || !PlaybackPicker.IsEnabled || PlaybackPicker.SelectedItem is not ComboBoxItem { Tag: string mode }) return;
+        if (mode != (_playbackRequested ?? _snapshot.PlaybackMode) && (mode == "windows" || _snapshot.PlaybackAvailable))
+        {
+            _playbackRequested = mode;
+            _playbackErrorAtRequest = _snapshot.PlaybackError;
+            if (Client?.Send(new SetPlaybackModeCmd { Mode = mode }) == true)
+            {
+                _playbackTimeout.Stop();
+                _playbackTimeout.Start();
+            }
+            else _playbackRequested = null;
+        }
+        _applying = true;
+        UpdatePlayback(_snapshot);
+        _applying = false;
+    }
+
+    private void PlaybackRetry_Click(object sender, RoutedEventArgs e)
+    {
+        if (!MicrophoneBusy(_snapshot) && _snapshot.PlaybackState == "error" && Client?.Send(new RetryPlaybackCmd()) == true)
+            PlaybackRetry.IsEnabled = false;
     }
 
     private void ReadLoudSoundReduction()

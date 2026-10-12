@@ -181,7 +181,8 @@ first ATT send and closes with AAP on disconnect or handle cleanup.
 ## Experimental playback transport
 
 `/p:NTPodsExperimentalPlayback=true` adds separate AVDTP signaling and media
-channels. Normal builds exclude this code. Existing AAP/ATT IOCTLs are unchanged.
+channels. The Windows build enables it; channels open only when native playback
+is selected. Existing AAP/ATT IOCTLs are unchanged.
 Both channels use PSM `0x0019`, the paired device belonging to this PDO, and an
 authenticated, encrypted link. There is no caller-supplied PSM.
 

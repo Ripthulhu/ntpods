@@ -1,89 +1,48 @@
 # Experimental playback
 
-This development build adds `Speakers (NTPods Experimental)`, a 48 kHz stereo
-playback endpoint. It sends standard AAC or Apple AAC-ELD through its own AVDTP
-connection, without Alternative A2DP. The normal build still uses Windows' existing
-playback driver.
+NTPods includes Windows, AAC and AAC-ELD playback options under **Playback and
+microphone**. Windows is the default. AAC and AAC-ELD send 48 kHz stereo through
+NTPods' own AVDTP connection, without Alternative A2DP. Both codecs are lossy.
+Playback on AirPods, microphone coexistence and recovery still need hardware testing.
 
-Playback on AirPods, microphone coexistence and recovery are not yet validated.
-Both codecs are lossy. Standard AAC uses the FFmpeg library already shipped with
-NTPods. AAC-ELD needs a separate encoder whose redistribution licensing remains
-unresolved; see [the encoder README](https://github.com/Ripthulhu/ntpods/blob/main/windows/playback/encoder/README.md). The normal MSI and Windows
-ZIP keep the existing playback path.
-
-Download `NTPods-Native-AAC.zip` from
-[releases](https://github.com/Ripthulhu/ntpods/releases) for the AAC test build.
-It includes both experimental drivers and requires a working NTPods installation
-on a test PC. Start with [TESTING.md](TESTING.md) to install and later restore the
-original drivers. AAC-ELD binaries are excluded from this download.
+Install the MSI or Windows ZIP from [releases](https://github.com/Ripthulhu/ntpods/releases).
+Both contain the app, matching drivers and both encoders. Start with
+[TESTING.md](TESTING.md) for the laptop test procedure.
 
 ## Build
 
-Use the [Windows build prerequisites](https://github.com/Ripthulhu/ntpods/blob/main/docs/BUILD-WINDOWS.md). From the
-repository root:
+Use the [Windows build prerequisites](../../docs/BUILD-WINDOWS.md), including
+Visual Studio 2022 CMake tools and Python 3. From the repository root:
 
 ```powershell
-pwsh -File windows/playback/build.ps1
+pwsh -File windows/build.ps1
 ```
 
-The script tests and builds both optional drivers, the AAC encoder and the backend.
-Output goes to `windows/build-output/native-playback`, separate from the normal
-build. It does not sign or install drivers or change Windows settings.
+The normal build tests both codecs and creates `windows/build-output/NTPods-experimental.msi`.
+It does not install drivers or change Windows settings. FFmpeg supplies AAC-LC;
+a separate [FDK worker](encoder/README.md) supplies AAC-ELD. The package includes
+FDK's notice and complete pinned source archive.
 
-From a clean commit, run `pwsh -File windows/playback/package.ps1` after the build
-to create the test ZIP. The packager checks that the binaries match the build
-manifest and includes unsigned catalogs, installer helpers and checksums.
+## Use it
 
-To also build AAC-ELD, install the Visual Studio 2022 CMake tools and Python 3,
-then add `-IncludeEld`. That build goes to `windows/build-output/experimental-playback`
-and includes the separate FDK encoder. The default AAC build does not need FDK.
+Stop recording before changing playback. Choose AAC or AAC-ELD in NTPods, then
+select **Speakers (NTPods Experimental)** in your player or Windows Volume mixer.
+The endpoint cannot become the Windows default; choose it for each playback app.
+Use shared mode, since exclusive mode bypasses Windows software volume and mute.
+NTPods volume, mute and Conversation Awareness control the experimental endpoint
+while native playback is active.
 
-| Folder | Contents |
-| --- | --- |
-| `runtime` | Backend and required DLLs; optional AAC-ELD worker |
-| `driver` | Experimental Bluetooth driver, unsigned |
-| `driver-mic-acx` | Experimental capture/render driver, unsigned |
+The app remembers your choice. To return to normal playback, select Windows in
+NTPods and select the usual AirPods output in your player. Changing codecs stops
+the previous session before starting another. A failed native session restores
+normal audio services and shows an error with Retry.
 
-The drivers require development signing and Test Mode, as described in the
-main [README](https://github.com/Ripthulhu/ntpods#ntpods). Use the [test installation and rollback procedure](TESTING.md)
-to keep the previous working driver packages. Installing just the backend does
-not enable this feature.
-
-## Try it
-
-After installing the matching development drivers:
-
-1. Connect the AirPods with normal playback working, and stop any recording.
-2. Quit NTPods, including its tray process, so the backend releases the driver.
-3. Run `runtime/ntpodsd.exe --experimental-playback=aac` from the output folder.
-   Use `--experimental-playback=eld` for AAC-ELD when built with `-IncludeEld`.
-4. Open NTPods again for controls. In the player or Windows Volume mixer, select
-   `Speakers (NTPods Experimental)` for that app and start at low volume.
-
-The endpoint cannot become the Windows default. While experimental playback is
-active, NTPods volume, mute and Conversation Awareness control that endpoint.
-Use shared-mode playback; exclusive mode bypasses Windows software volume and
-mute. Starting the backend without the flag leaves the normal playback driver
-in control. Each flagged process attempts one playback session; restarting it
-is required after a failure or disconnect.
-
-Before switching audio services, the backend checks the render interface,
-Bluetooth driver and encoder. It saves the enabled services, then releases the
-AirPods' normal audio services while the experiment runs. An error or normal
-exit closes the AVDTP channels and restores those services. A newer Disconnect
-request stays disconnected.
-
-After a crash, launching this updated backend, with or without the flag, restores
-the saved services from
-`%LOCALAPPDATA%/NTPods/playback-restore.json`. The file is removed only after
-successful restoration or an explicit Disconnect. Do not delete it to work
-around a restoration error. Older installed backends do not perform this recovery.
-Details are in the normal backend log. Windows'
+Before releasing normal AirPods audio, the backend checks the render interface,
+Bluetooth driver and encoder, then saves the enabled services. After a crash,
+the updated backend restores that saved state on its next launch from
+`%LOCALAPPDATA%/NTPods/playback-restore.json`. Do not delete this file to bypass a
+restoration error. A newer Disconnect request stays disconnected. Windows'
 Bluetooth service operations have no cancellation API and can delay cleanup.
-
-To return to normal playback, quit the experimental backend, start the installed
-app normally, and select the AirPods' normal output in the player. The render
-endpoint remains present until the original capture-only driver is restored.
 
 ## Transport and checks
 

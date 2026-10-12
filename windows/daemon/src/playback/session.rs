@@ -2,6 +2,8 @@ use super::protocol::*;
 use super::{aac_protocol, codec::Mode};
 use crate::driver::Driver;
 use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub struct Session {
@@ -12,6 +14,8 @@ pub struct Session {
     peer_ended: bool,
     source_caps: Vec<u8>,
     selected_config: Vec<u8>,
+    cancel: Arc<AtomicBool>,
+    closing: bool,
     pub mtu: usize,
 }
 
@@ -30,7 +34,12 @@ pub fn driver_ready(driver: &Driver, address: u64) -> io::Result<()> {
 }
 
 impl Session {
-    pub fn open(driver: Driver, address: u64, mode: Mode) -> io::Result<Self> {
+    pub fn open(
+        driver: Driver,
+        address: u64,
+        mode: Mode,
+        cancel: Arc<AtomicBool>,
+    ) -> io::Result<Self> {
         let mut session = Self {
             driver,
             label: 0,
@@ -39,6 +48,8 @@ impl Session {
             peer_ended: false,
             source_caps: mode.source_configuration()[2..].to_vec(),
             selected_config: Vec::new(),
+            cancel,
+            closing: false,
             mtu: 0,
         };
         session.open_channel(address, 0)?;
@@ -90,6 +101,7 @@ impl Session {
     }
 
     fn open_channel(&self, address: u64, channel: u32) -> io::Result<usize> {
+        self.check_cancelled()?;
         let input = [
             1u32.to_le_bytes().as_slice(),
             channel.to_le_bytes().as_slice(),
@@ -129,10 +141,12 @@ impl Session {
     }
 
     fn request(&mut self, signal: u8, payload: &[u8]) -> io::Result<Vec<u8>> {
+        self.check_cancelled()?;
         self.label = (self.label + 1) & 15;
         self.send(0, &command(self.label, signal, payload))?;
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline {
+            self.check_cancelled()?;
             let reply = self.receive(100)?;
             if reply.is_empty() {
                 continue;
@@ -148,6 +162,17 @@ impl Session {
             io::ErrorKind::TimedOut,
             "AirPods did not acknowledge the playback request",
         ))
+    }
+
+    fn check_cancelled(&self) -> io::Result<()> {
+        if !self.closing && self.cancel.load(Ordering::Acquire) {
+            Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Playback selection changed",
+            ))
+        } else {
+            Ok(())
+        }
     }
 
     fn peer_command(&mut self, packet: &[u8]) -> io::Result<bool> {
@@ -215,6 +240,7 @@ fn start_if_needed(state: StreamState, request: impl FnOnce() -> io::Result<()>)
 
 impl Drop for Session {
     fn drop(&mut self) {
+        self.closing = true;
         let _ = self.suspend();
         if self.seid != 0 && !self.peer_ended {
             let signal = if matches!(self.state, StreamState::Open | StreamState::Streaming) {

@@ -272,4 +272,12 @@
   <data name="Mic_ConnectFirst" xml:space="preserve"><value>Conecta los AirPods para iniciar el micrófono</value></data>
   <data name="Mic_RecoveringShort" xml:space="preserve"><value>El micrófono se está recuperando</value></data>
   <data name="Mic_NeedsAttention" xml:space="preserve"><value>El micrófono necesita atención</value></data>
+  <data name="Playback.Title" xml:space="preserve"><value>Reproducción</value></data>
+  <data name="Playback.Windows" xml:space="preserve"><value>Windows</value></data>
+  <data name="Playback.Help" xml:space="preserve"><value>AAC y AAC-ELD usan reproducción experimental. El cambio interrumpe el audio.</value></data>
+  <data name="Playback.RoutingHint" xml:space="preserve"><value>Selecciona «Speakers (NTPods Experimental)» en tu reproductor.</value></data>
+  <data name="Playback.Retry" xml:space="preserve"><value>Volver a intentar</value></data>
+  <data name="Playback.StopRecording" xml:space="preserve"><value>Espera a que el micrófono se detenga antes de cambiar la reproducción.</value></data>
+  <data name="Playback.Starting" xml:space="preserve"><value>Cambiando la reproducción…</value></data>
+  <data name="Playback.Stopping" xml:space="preserve"><value>Restaurando el audio de Windows…</value></data>
 </root>

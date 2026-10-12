@@ -14,6 +14,18 @@ if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $expectedHas
     throw 'FDK source archive hash does not match.'
 }
 # Re-extract the verified source so edits in the vendor cache cannot enter a build.
+$vendorRoot = [IO.Path]::GetFullPath($vendor).TrimEnd('\')
+$source = [IO.Path]::GetFullPath((Join-Path $vendorRoot "fdk-aac-$revision"))
+if (-not $source.StartsWith($vendorRoot + '\', [StringComparison]::OrdinalIgnoreCase) -or
+    (Split-Path -Leaf $source) -ne "fdk-aac-$revision" -or
+    ((Get-Item -LiteralPath $vendorRoot -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+    throw 'Unsafe encoder source path.'
+}
+if (Test-Path -LiteralPath $source) {
+    $entries = @((Get-Item -LiteralPath $source -Force)) + @(Get-ChildItem -LiteralPath $source -Recurse -Force)
+    if ($entries | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }) { throw 'Encoder source contains a reparse point.' }
+    Remove-Item -LiteralPath $source -Recurse -Force
+}
 Expand-Archive -LiteralPath $archive -DestinationPath $vendor -Force
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 $cmake = & $vswhere -latest -products '*' -version '[17.0,18.0)' -find 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe' | Select-Object -First 1
@@ -23,4 +35,4 @@ $build = Join-Path $PSScriptRoot 'build'
 if ($LASTEXITCODE) { throw "CMake configuration failed ($LASTEXITCODE)." }
 & $cmake --build $build --config Release --parallel
 if ($LASTEXITCODE) { throw "Encoder build failed ($LASTEXITCODE)." }
-Write-Host "Local development encoder: $build\Release\ntpods-eld-encoder.exe"
+Write-Host "AAC-ELD encoder: $build\Release\ntpods-eld-encoder.exe"

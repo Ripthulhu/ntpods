@@ -72,6 +72,10 @@ public sealed class Snapshot
     [JsonPropertyName("mic_mode")] public string MicMode { get; set; } = "automatic";
     [JsonPropertyName("mic_stop_delay_secs")] public uint MicStopDelaySecs { get; set; }
     [JsonPropertyName("mic_manual_active")] public bool MicManualActive { get; set; }
+    [JsonPropertyName("playback_mode")] public string PlaybackMode { get; set; } = "windows";
+    [JsonPropertyName("playback_state")] public string PlaybackState { get; set; } = "windows";
+    [JsonPropertyName("playback_error")] public string? PlaybackError { get; set; }
+    [JsonPropertyName("playback_available")] public bool PlaybackAvailable { get; set; }
     [JsonPropertyName("conversational_awareness")] public bool ConversationalAwareness { get; set; }
     [JsonPropertyName("conversational_awareness_pending")] public bool? ConversationalAwarenessPending { get; set; }
     [JsonPropertyName("conversation_volume")] public byte ConversationVolume { get; set; } = 25;
@@ -216,6 +220,17 @@ public sealed class SetMicManualActiveCmd
 public sealed class ToggleMicManualCmd
 {
     [JsonPropertyName("cmd")] public string Cmd => "toggle_mic_manual";
+}
+
+public sealed class SetPlaybackModeCmd
+{
+    [JsonPropertyName("cmd")] public string Cmd => "set_playback_mode";
+    [JsonPropertyName("mode")] public string Mode { get; init; } = "windows";
+}
+
+public sealed class RetryPlaybackCmd
+{
+    [JsonPropertyName("cmd")] public string Cmd => "retry_playback";
 }
 
 public sealed class SetFeatureCmd
@@ -410,6 +425,8 @@ public static class Wire
                     if (snap.Battery is null || snap.BatterySource is null || snap.BatteryFreshness is { IsValid: false } ||
                         snap.DeviceControls is null || snap.DeviceControlsPending is null ||
                         snap.MicMode is not ("automatic" or "keep_active" or "manual") || snap.MicStopDelaySecs > 3600 ||
+                        snap.PlaybackMode is not ("windows" or "aac" or "aac_eld") ||
+                        snap.PlaybackState is not ("windows" or "disconnected" or "starting" or "ready" or "stopping" or "error") ||
                         snap.HeadTrackingState is not ("idle" or "starting" or "streaming" or "error" or "waiting_for_ear") ||
                         snap.AdaptiveStrengthRequested is > 100 || snap.ConversationVolume > 100 ||
                         snap.Eq is { IsValid: false } || snap.EqPending is { IsValid: false }) return null;

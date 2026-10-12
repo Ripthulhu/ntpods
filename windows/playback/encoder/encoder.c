@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #include <aacenc_lib.h>
 #include <fcntl.h>
 #include <io.h>

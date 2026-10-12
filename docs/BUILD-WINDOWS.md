@@ -15,14 +15,15 @@ are required before production deployment. See `THIRD_PARTY.md` for licensing is
 
 ## Toolchain
 
-- Visual Studio 2022 Build Tools 17.14.41, C++ workload, x64 Spectre libraries,
+- Visual Studio 2022 Build Tools 17.14.41, C++ workload, CMake tools, x64 Spectre libraries,
   and **Component.Microsoft.Windows.DriverKit.BuildTools**. For full VS2022 the
   integration component is **Microsoft.Windows.DriverKit**.
 - Windows SDK 26100.4188 and WDK 26100.6584, both exposing build directory `10.0.26100.0`.
 - Visual Studio 2026 Build Tools 18.10.2, WinUI build workload
   **Microsoft.VisualStudio.Workload.UniversalBuildTools**. .NET 10 requires
   MSBuild 18; VS2022 is retained for the 26100 driver toolset.
-- .NET SDK 10.0.401 (`global.json`), Rust 1.95.0 (`rust-toolchain.toml`), Git Bash.
+- .NET SDK 10.0.401 (`global.json`), Rust 1.95.0 (`rust-toolchain.toml`), Git Bash
+  and Python 3 (standard library only).
 - WiX 5.0.2 and `WixToolset.UI.wixext/5.0.2`, `WixToolset.Util.wixext/5.0.2`.
 
 The hosted Windows runner may retain a newer installed SDK patch instead of
@@ -37,12 +38,17 @@ wix extension add -g WixToolset.UI.wixext/5.0.2 WixToolset.Util.wixext/5.0.2
 .\windows\build.ps1
 ```
 
-The script verifies FFmpeg, uses locked Rust/NuGet dependencies, runs unit tests,
-builds both drivers from source, generates catalogs, builds WinUI, and assembles
+The script verifies FFmpeg and FDK-AAC, uses locked Rust/NuGet dependencies, runs
+unit tests and encoder round trips, builds both drivers and the AAC-ELD worker
+from source, generates catalogs, builds WinUI, and assembles
 `windows/build-output/NTPods-experimental.msi`. It never takes driver binaries
 from committed `prebuilt` folders. The manifest records artifact hashes and
 whether local source modifications were included. Package dependencies are
 pinned; hosted toolchain patches and generated timestamps can change output hashes.
+
+The MSI includes both playback codecs, the FDK notice and its complete pinned
+source archive. Windows playback remains the default; users choose AAC or AAC-ELD
+in the app. See [playback testing](../windows/playback/TESTING.md).
 
 Startup checks use a private temporary registry key and a restricted MSI session
 that cannot install files or run setup scripts. New MSI installs leave startup

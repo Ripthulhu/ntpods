@@ -408,4 +408,12 @@
   <data name="Mic_ConnectFirst" xml:space="preserve"><value>Connect AirPods to start the microphone</value></data>
   <data name="Mic_RecoveringShort" xml:space="preserve"><value>Microphone is recovering</value></data>
   <data name="Mic_NeedsAttention" xml:space="preserve"><value>Microphone needs attention</value></data>
+  <data name="Playback.Title" xml:space="preserve"><value>Playback</value></data>
+  <data name="Playback.Windows" xml:space="preserve"><value>Windows</value></data>
+  <data name="Playback.Help" xml:space="preserve"><value>AAC and AAC-ELD use experimental playback. Switching interrupts audio.</value></data>
+  <data name="Playback.RoutingHint" xml:space="preserve"><value>Choose “Speakers (NTPods Experimental)” in your player.</value></data>
+  <data name="Playback.Retry" xml:space="preserve"><value>Try again</value></data>
+  <data name="Playback.StopRecording" xml:space="preserve"><value>Wait for the microphone to stop before changing playback.</value></data>
+  <data name="Playback.Starting" xml:space="preserve"><value>Switching playback…</value></data>
+  <data name="Playback.Stopping" xml:space="preserve"><value>Restoring Windows audio…</value></data>
 </root>

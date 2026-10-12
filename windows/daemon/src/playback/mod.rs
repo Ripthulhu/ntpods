@@ -6,12 +6,15 @@ mod encoder;
 mod pcm;
 mod protocol;
 mod render;
+mod selection;
 mod session;
 
-use crate::{bt, driver::Driver};
+use crate::{bt, driver::Driver, Ctx};
 use codec::{AudioEncoder, MediaPackets, Mode};
+use ntpods_ipc::PlaybackMode;
 use pcm::{FrameAssembler, FrameClock, MAX_READ_BYTES};
 use render::Render;
+pub use selection::{load as load_selection, Selection};
 use session::Session;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,53 +31,184 @@ struct Control {
     stop: Arc<AtomicBool>,
 }
 static CONTROL: Mutex<Option<Control>> = Mutex::new(None);
-static ATTEMPTED: AtomicBool = AtomicBool::new(false);
+static OWNED: AtomicBool = AtomicBool::new(false);
 
 pub fn is_active() -> bool {
-    CONTROL.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+    OWNED.load(Ordering::Acquire)
+}
+
+struct Ownership;
+impl Drop for Ownership {
+    fn drop(&mut self) {
+        OWNED.store(false, Ordering::Release);
+    }
 }
 
 pub struct Worker {
     stop: Arc<AtomicBool>,
+    selection: Arc<Mutex<Selection>>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl Worker {
-    pub fn start(driver: Driver, address: u64) -> Option<Self> {
-        let mode = match Mode::requested(std::env::args()) {
-            Ok(Some(mode)) => mode,
-            Ok(None) => return None,
-            Err(error) => {
-                crate::log(&format!("experimental playback: {error}"));
-                return None;
-            }
-        };
-        if ATTEMPTED.swap(true, Ordering::AcqRel) {
-            return None;
-        }
+    pub fn start(ctx: Ctx, driver: Driver, address: u64) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
-        let cancelled = stop.clone();
-        let thread = thread::spawn(move || {
-            let result = run(driver, address, cancelled, mode);
-            match result {
-                Ok(()) => crate::log("experimental playback: stopped"),
-                Err(error) => crate::log(&format!("experimental playback: {error}")),
-            }
-        });
-        Some(Self {
+        let disconnected = stop.clone();
+        let selection = ctx.playback_selection.clone();
+        let thread = thread::spawn(move || manage(ctx, driver, address, disconnected));
+        Self {
             stop,
+            selection,
             thread: Some(thread),
-        })
+        }
     }
 }
 
 impl Drop for Worker {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
+        self.selection.lock().unwrap().stop();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
     }
+}
+
+pub fn set_mode(ctx: &Ctx, mode: Option<PlaybackMode>) {
+    let result = {
+        let _preference = ctx.mic_preference.lock().unwrap();
+        let mut selected = ctx.playback_selection.lock().unwrap();
+        let mut state = ctx.state.lock().unwrap();
+        let retry = mode.is_none() || state.playback_state == "error";
+        let mode = mode.unwrap_or(selected.mode);
+        let busy = selection::microphone_busy(
+            &state,
+            ctx.capture_active.load(Ordering::Acquire),
+            ctx.mic_on.load(Ordering::Acquire),
+        );
+        match selected.change(mode, retry, busy, selection::save) {
+            Ok(true) => {
+                state.playback_mode = mode;
+                state.playback_error = None;
+                state.playback_state = if selected.cancel.is_some() {
+                    "stopping"
+                } else if mode == PlaybackMode::Windows {
+                    "windows"
+                } else if state.connected {
+                    "starting"
+                } else {
+                    "disconnected"
+                }
+                .into();
+                Ok(())
+            }
+            Ok(false) => Ok(()),
+            Err(error) => {
+                state.playback_error = Some(error.to_string());
+                Err(error)
+            }
+        }
+    };
+    ctx.push_state();
+    if let Err(error) = result {
+        crate::log(&format!("playback selection: {error}"));
+    }
+}
+
+fn publish(ctx: &Ctx, revision: u64, name: &str, error: Option<String>) {
+    let current = {
+        let selected = ctx.playback_selection.lock().unwrap();
+        if selected.revision != revision {
+            false
+        } else {
+            let mut state = ctx.state.lock().unwrap();
+            state.playback_state = name.into();
+            state.playback_error = error;
+            true
+        }
+    };
+    if current {
+        ctx.push_state();
+    }
+}
+
+fn manage(ctx: Ctx, driver: Driver, address: u64, disconnected: Arc<AtomicBool>) {
+    let mut attempted = None;
+    while !disconnected.load(Ordering::Acquire) && !ctx.shutting_down.load(Ordering::Acquire) {
+        let request = {
+            let _preference = ctx.mic_preference.lock().unwrap();
+            let mut selected = ctx.playback_selection.lock().unwrap();
+            let mut state = ctx.state.lock().unwrap();
+            if !selected.should_attempt(
+                attempted,
+                disconnected.load(Ordering::Acquire) || ctx.shutting_down.load(Ordering::Acquire),
+                &state,
+                ctx.capture_active.load(Ordering::Acquire),
+                ctx.mic_on.load(Ordering::Acquire),
+            ) {
+                None
+            } else {
+                let cancel = Arc::new(AtomicBool::new(false));
+                selected.cancel = Some(cancel.clone());
+                attempted = Some(selected.revision);
+                state.playback_state = if selected.mode == PlaybackMode::Windows {
+                    "stopping"
+                } else {
+                    "starting"
+                }
+                .into();
+                state.playback_error = None;
+                Some((selected.revision, selected.mode, cancel))
+            }
+        };
+        let Some((revision, mode, cancel)) = request else {
+            thread::sleep(Duration::from_millis(50));
+            continue;
+        };
+        ctx.push_state();
+        let result = match Mode::from_selection(mode) {
+            Some(mode) => run(
+                driver.clone(),
+                address,
+                cancel.clone(),
+                mode,
+                || publish(&ctx, revision, "ready", None),
+                || publish(&ctx, revision, "stopping", None),
+            ),
+            None => bt::restore_experimental_audio(),
+        };
+        {
+            let mut selected = ctx.playback_selection.lock().unwrap();
+            selected.cancel = None;
+        }
+        let (name, error) = match result {
+            Err(error) if error.kind() != io::ErrorKind::Interrupted => {
+                crate::log(&format!("playback: {error}"));
+                ("error", Some(error.to_string()))
+            }
+            _ if mode == PlaybackMode::Windows => ("windows", None),
+            _ => ("disconnected", None),
+        };
+        publish(&ctx, revision, name, error);
+    }
+    let revision = ctx.playback_selection.lock().unwrap().revision;
+    let (mode, failed) = {
+        let state = ctx.state.lock().unwrap();
+        (state.playback_mode, state.playback_state == "error")
+    };
+    if failed {
+        return;
+    }
+    publish(
+        &ctx,
+        revision,
+        if mode == PlaybackMode::Windows {
+            "windows"
+        } else {
+            "disconnected"
+        },
+        None,
+    );
 }
 
 struct Registration;
@@ -106,16 +240,30 @@ pub fn reset_if_active(address: u64, intent: u64) -> Option<(u32, u32)> {
     }
 }
 
-fn run(driver: Driver, address: u64, stop: Arc<AtomicBool>, mode: Mode) -> io::Result<()> {
+fn run(
+    driver: Driver,
+    address: u64,
+    stop: Arc<AtomicBool>,
+    mode: Mode,
+    ready: impl FnOnce(),
+    stopping: impl FnOnce(),
+) -> io::Result<()> {
+    bt::restore_experimental_audio()?;
+    if stop.load(Ordering::Acquire) {
+        return Ok(());
+    }
     session::driver_ready(&driver, address)?;
     let render = Render::open()?;
     let mut encoder = AudioEncoder::new(mode)?;
     let intent = bt::playback_intent();
+    // Keep volume on our endpoint until normal audio services are restored.
+    OWNED.store(true, Ordering::Release);
+    let _owned = Ownership;
     bt::with_experimental_playback(address, intent, || {
         if stop.load(Ordering::Acquire) {
             return Ok(());
         }
-        let mut session = Session::open(driver, address, mode)?;
+        let mut session = Session::open(driver, address, mode, stop.clone())?;
         session.suspend()?;
         let (reset, requests) = mpsc::sync_channel(1);
         {
@@ -135,7 +283,8 @@ fn run(driver: Driver, address: u64, stop: Arc<AtomicBool>, mode: Mode) -> io::R
             "experimental playback: {} ready on Speakers (NTPods Experimental)",
             mode.name()
         ));
-        stream(
+        ready();
+        let result = stream(
             &mut session,
             &render,
             &mut encoder,
@@ -143,7 +292,9 @@ fn run(driver: Driver, address: u64, stop: Arc<AtomicBool>, mode: Mode) -> io::R
             intent,
             &requests,
             mode,
-        )
+        );
+        stopping();
+        result
     })
 }
 

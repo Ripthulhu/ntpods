@@ -119,6 +119,8 @@ struct Ctx {
     settings_pending: Arc<Mutex<device_settings::PendingSettings>>,
     settings_write: Arc<Mutex<()>>,
     mic_preference: Arc<Mutex<()>>,
+    #[cfg(feature = "experimental-playback")]
+    playback_selection: Arc<Mutex<playback::Selection>>,
     mic_demand: Arc<Mutex<mic_lifecycle::Demand>>,
     mic_clock: Instant,
     hr_commands: Arc<Mutex<()>>,
@@ -703,6 +705,8 @@ fn manual_microphone_start_allowed(
         Err("Microphone unavailable")
     } else if !state.connected || state.link_stale || !connection_requested {
         Err("Connect AirPods to start the microphone")
+    } else if matches!(state.playback_state.as_str(), "starting" | "stopping") {
+        Err("Playback is changing")
     } else if matches!(state.mic_state.as_str(), "stopping" | "recovering") {
         Err("Microphone is recovering")
     } else if state.mic_state == "error" {
@@ -756,7 +760,9 @@ fn toggle_microphone_manual(ctx: &Ctx) -> Result<bool, &'static str> {
 fn set_microphone_manual(ctx: &Ctx, active: bool) {
     let connected = {
         let state = ctx.state.lock().unwrap();
-        state.connected && device_models::microphone(&state)
+        state.connected
+            && device_models::microphone(&state)
+            && !matches!(state.playback_state.as_str(), "starting" | "stopping")
     };
     let _preference = ctx.mic_preference.lock().unwrap();
     let permitted = ctx.auto_mode.load(Ordering::Acquire)
@@ -833,7 +839,9 @@ fn microphone_permitted(ctx: &Ctx) -> bool {
         && !ctx.shutting_down.load(Ordering::Acquire)
         && {
             let state = ctx.state.lock().unwrap();
-            state.connected && device_models::microphone(&state)
+            state.connected
+                && device_models::microphone(&state)
+                && !matches!(state.playback_state.as_str(), "starting" | "stopping")
         }
 }
 
@@ -907,6 +915,8 @@ fn service_mic(
                     granted = ctx.pipe.set_enabled(true);
                     if granted == Ok(true) {
                         mic.start_attempted();
+                        // Reserve the stream before releasing the preference lock.
+                        ctx.state.lock().unwrap().mic_state = "starting".into();
                     }
                 },
             );
@@ -1773,8 +1783,15 @@ fn send_name_request(
     send().map_err(|_| "Could not send the name. Check the AirPods connection.")
 }
 
-fn shutdown_exit_code(receiver_done: bool, audio_done: bool, cleanup_failed: bool) -> i32 {
-    i32::from(!receiver_done || !audio_done || cleanup_failed)
+fn shutdown_exit_code(
+    receiver_done: bool,
+    audio_done: bool,
+    cleanup_failed: bool,
+    playback_restore_pending: io::Result<bool>,
+) -> i32 {
+    i32::from(
+        !receiver_done || !audio_done || cleanup_failed || playback_restore_pending.unwrap_or(true),
+    )
 }
 
 fn apply_command(ctx: &Ctx, cmd: Command) {
@@ -1809,6 +1826,27 @@ fn apply_command(ctx: &Ctx, cmd: Command) {
             ctx.push_state();
             if let Err(message) = result {
                 ctx.overlay(message);
+            }
+        }
+        Command::SetPlaybackMode { mode } => {
+            #[cfg(feature = "experimental-playback")]
+            playback::set_mode(ctx, Some(mode));
+            #[cfg(not(feature = "experimental-playback"))]
+            {
+                let _ = mode;
+                ctx.state.lock().unwrap().playback_error =
+                    Some("Playback codecs are unavailable in this build.".into());
+                ctx.push_state();
+            }
+        }
+        Command::RetryPlayback => {
+            #[cfg(feature = "experimental-playback")]
+            playback::set_mode(ctx, None);
+            #[cfg(not(feature = "experimental-playback"))]
+            {
+                ctx.state.lock().unwrap().playback_error =
+                    Some("Playback codecs are unavailable in this build.".into());
+                ctx.push_state();
             }
         }
         Command::SetFeature { feature, on } => {
@@ -2130,10 +2168,15 @@ fn apply_command(ctx: &Ctx, cmd: Command) {
             if !receiver_done || !audio_done {
                 log("shutdown: recovery deadline expired; closing process handles");
             }
+            let playback_pending = bt::playback_restore_pending();
+            if !matches!(playback_pending, Ok(false)) {
+                log("shutdown: playback restoration is still pending");
+            }
             std::process::exit(shutdown_exit_code(
                 receiver_done,
                 audio_done,
                 ctx.shutdown_cleanup_failed.load(Ordering::Acquire),
+                playback_pending,
             ));
         }
     }
@@ -2295,6 +2338,14 @@ fn reset_pair_snapshot(state: &mut Snapshot, mac: u64, name: &str) {
         mic_stop_delay_secs: state.mic_stop_delay_secs,
         volume: state.volume,
         muted: state.muted,
+        playback_mode: state.playback_mode,
+        playback_available: state.playback_available,
+        playback_state: if state.playback_mode == ipc::PlaybackMode::Windows {
+            "windows"
+        } else {
+            "disconnected"
+        }
+        .into(),
         ..Snapshot::default()
     };
 }
@@ -2570,7 +2621,7 @@ fn run_receiver(ctx: Ctx) {
         let head_worker =
             HeadTrackingWorker::start(ctx.clone(), driver.clone(), mic_ears.allows_capture());
         #[cfg(feature = "experimental-playback")]
-        let playback_worker = playback::Worker::start(driver.clone(), ctx.mac());
+        let playback_worker = playback::Worker::start(ctx.clone(), driver.clone(), ctx.mac());
 
         let mut we_paused: Option<(u64, media::PausedSession)> = None;
         let mut prev_ear = [false; 2]; // last [primary, secondary] in-ear state
@@ -3415,6 +3466,10 @@ fn main() {
         })
         .is_some_and(|value| value.trim() == "true");
     let pipe = Arc::new(micpipe::MicPipeCell::new());
+    #[cfg(feature = "experimental-playback")]
+    let playback_mode = playback::load_selection();
+    #[cfg(not(feature = "experimental-playback"))]
+    let playback_mode = ipc::PlaybackMode::Windows;
     pipe.set_feature_enabled(microphone_enabled);
     log(&format!("mic pipe opened: {}", pipe.is_open()));
     log(&format!("mic driver: {}", micpipe::driver_kind()));
@@ -3434,12 +3489,22 @@ fn main() {
             ble_scan_while_connected,
             mic_available: pipe.is_open(),
             mic_state: "idle".into(),
+            playback_mode,
+            playback_available: cfg!(feature = "experimental-playback"),
+            playback_state: if playback_mode == ipc::PlaybackMode::Windows {
+                "windows"
+            } else {
+                "disconnected"
+            }
+            .into(),
             ..Default::default()
         })),
         clients: Arc::new(Mutex::new(Vec::new())),
         settings_pending: Arc::new(Mutex::new(device_settings::PendingSettings::default())),
         settings_write: Arc::new(Mutex::new(())),
         mic_preference: Arc::new(Mutex::new(())),
+        #[cfg(feature = "experimental-playback")]
+        playback_selection: Arc::new(Mutex::new(playback::Selection::new(playback_mode))),
         mic_demand: Arc::new(Mutex::new(mic_demand)),
         mic_clock: Instant::now(),
         hr_commands: Arc::new(Mutex::new(())),
@@ -3657,6 +3722,12 @@ mod tests {
             assert!(super::manual_microphone_start_allowed(&state, true, true).is_err());
         }
         state.mic_state = "idle".into();
+        for phase in ["starting", "stopping"] {
+            state.playback_state = phase.into();
+            assert!(super::manual_microphone_start_allowed(&state, true, true).is_err());
+        }
+        state.playback_state = "ready".into();
+        assert!(super::manual_microphone_start_allowed(&state, true, true).is_ok());
         for model in ["", "A2084"] {
             state.model = model.into();
             assert!(super::manual_microphone_start_allowed(&state, true, true).is_err());
@@ -3729,6 +3800,9 @@ mod tests {
             battery_live: true,
             battery_timestamp_ms: Some(100),
             volume: 43,
+            playback_mode: ntpods_ipc::PlaybackMode::AacEld,
+            playback_available: true,
+            playback_state: "ready".into(),
             ..Default::default()
         };
         super::reset_pair_snapshot(&mut state, 0xaabbccddeeff, "Second pair");
@@ -3739,6 +3813,9 @@ mod tests {
         assert_eq!(state.mic_mode, ntpods_ipc::MicMode::KeepActive);
         assert_eq!(state.mic_stop_delay_secs, 30);
         assert_eq!(state.volume, 43);
+        assert_eq!(state.playback_mode, ntpods_ipc::PlaybackMode::AacEld);
+        assert!(state.playback_available);
+        assert_eq!(state.playback_state, "disconnected");
         assert!(!state.connected);
         assert!(!super::device_models::microphone(&state));
         assert!(state.model.is_empty() && state.firmware.is_empty() && state.serial.is_empty());
@@ -3758,12 +3835,55 @@ mod tests {
             for audio_done in [false, true] {
                 for failed in [false, true] {
                     assert_eq!(
-                        super::shutdown_exit_code(receiver_done, audio_done, failed) == 0,
+                        super::shutdown_exit_code(receiver_done, audio_done, failed, Ok(false))
+                            == 0,
                         receiver_done && audio_done && !failed
                     );
                 }
             }
         }
+    }
+
+    #[test]
+    fn shutdown_fails_with_a_retained_or_unreadable_playback_journal() {
+        use std::io::Write;
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "ntpods-shutdown-{}-{unique}.json",
+            std::process::id()
+        ));
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(br#"{"address":1,"sink":true,"handsfree":true}"#)
+            .unwrap();
+        drop(file);
+        assert_eq!(
+            super::shutdown_exit_code(true, true, false, path.try_exists()),
+            1
+        );
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            super::shutdown_exit_code(true, true, false, path.try_exists()),
+            0
+        );
+        assert_eq!(
+            super::shutdown_exit_code(
+                true,
+                true,
+                false,
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "unreadable journal"
+                ))
+            ),
+            1
+        );
     }
 
     #[test]

@@ -54,7 +54,7 @@ jobs:
           $vs2022 = & $vswhere -latest -products '*' -version '[17.0,18.0)' -property installationPath
           if (-not $vs2022) { throw 'VS2022 is required to build the kernel drivers.' }
           $installer = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
-          $p = Start-Process $installer -WindowStyle Hidden -Wait -PassThru -ArgumentList @('modify', '--installPath', "`"$vs2022`"", '--add', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', '--add', 'Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre', '--add', 'Microsoft.Windows.DriverKit', '--quiet', '--norestart')
+          $p = Start-Process $installer -WindowStyle Hidden -Wait -PassThru -ArgumentList @('modify', '--installPath', "`"$vs2022`"", '--add', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', '--add', 'Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre', '--add', 'Microsoft.VisualStudio.Component.VC.CMake.Project', '--add', 'Microsoft.Windows.DriverKit', '--quiet', '--norestart')
           if ($p.ExitCode -notin 0, 3010) { throw "WDK integration failed ($($p.ExitCode))" }
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
@@ -80,12 +80,6 @@ jobs:
         run: |
           ./windows/package-release.ps1
           ./windows/fetch-release-sources.ps1
-      - name: Build and package native AAC experiment
-        shell: pwsh
-        run: |
-          ./windows/tests/test-playback-package.ps1
-          ./windows/playback/build.ps1
-          ./windows/playback/package.ps1
       # Binary distribution remains an explicit opt-in while THIRD_PARTY.md is unresolved.
       - name: Upload experimental downloads
         if: vars.NTPODS_PUBLISH_BUILDS == 'true'
@@ -140,6 +134,6 @@ jobs:
               gh release delete "$tag" --cleanup-tag --yes
             fi
           fi
-          gh release create "$tag" NTPods.msi NTPods-Windows.zip NTPods-Native-AAC.zip NTPods-source.zip build-manifest.json RELEASE-NOTES.md SHA256SUMS.txt \
+          gh release create "$tag" NTPods.msi NTPods-Windows.zip NTPods-source.zip build-manifest.json RELEASE-NOTES.md SHA256SUMS.txt \
             FFmpeg-source.zip FFmpeg-build-recipes.zip FFmpeg-SOURCE-NOTES.md \
             --target "$GITHUB_SHA" --prerelease --latest=false --title "$title" --notes-file RELEASE-NOTES.md

@@ -28,9 +28,8 @@ The UI displays that state and sends commands; it does not open the drivers.
 The microphone driver receives PCM from the backend. Windows keeps control of
 normal Bluetooth playback.
 
-The [playback experiment](windows/playback/README.md) has a separate build and
-download, `NTPods-Native-AAC.zip`. The normal MSI and Windows ZIP keep the existing
-playback driver. AAC-ELD encoding remains a local development option.
+The normal build includes optional [AAC and AAC-ELD playback](windows/playback/README.md).
+Windows playback remains the default; users select a native codec in the app.
 
 ## Build and test
 
@@ -69,7 +68,7 @@ For backend tests, use VS2022 Developer PowerShell after fetching FFmpeg:
 ```powershell
 bash windows/daemon/fetch-ffmpeg.sh
 $env:PATH = "$(Resolve-Path windows/daemon/vendor/ffmpeg/bin);$env:PATH"
-cargo test --locked --manifest-path windows/daemon/Cargo.toml
+cargo test --locked --features experimental-playback --manifest-path windows/daemon/Cargo.toml
 ```
 
 [windows/tests/README.md](windows/tests/README.md) describes the checks.

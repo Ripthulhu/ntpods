@@ -18,6 +18,11 @@ for (var index = 0; index < lines.Length; ++index)
     Check(evt is not null, $"Rust fixture {index} did not parse as a flattened state");
     var s = evt!.Snapshot;
     using var raw = JsonDocument.Parse(lines[index]);
+    Check(s.PlaybackMode == (raw.RootElement.TryGetProperty("playback_mode", out var playbackMode) ? playbackMode.GetString() : "windows") &&
+        s.PlaybackState == (raw.RootElement.TryGetProperty("playback_state", out var playbackState) ? playbackState.GetString() : "windows") &&
+        s.PlaybackAvailable == (raw.RootElement.TryGetProperty("playback_available", out var playbackAvailable) && playbackAvailable.GetBoolean()) &&
+        s.PlaybackError == (raw.RootElement.TryGetProperty("playback_error", out var playbackError) && playbackError.ValueKind != JsonValueKind.Null ? playbackError.GetString() : null),
+        "Playback selection, actual route state and errors must remain separate across IPC.");
     Check(s.BleScanWhileConnected == (raw.RootElement.TryGetProperty("ble_scan_while_connected", out var scanDuringPlayback) && scanDuringPlayback.GetBoolean()),
         "Playback battery scan preference changed across IPC");
     Check(s.BatteryLive == (raw.RootElement.TryGetProperty("battery_live", out var liveBattery) && liveBattery.GetBoolean()),
@@ -83,6 +88,8 @@ for (var index = 0; index < lines.Length; ++index)
         Check(!s.BatteryLive && s.BatteryTimestampMs is null && s.BatterySource == "", "Legacy snapshots must not invent report metadata.");
         Check(s.BatteryFreshness is null, "Legacy snapshots must not invent per-component report metadata.");
         Check(!s.BleScanWhileConnected, "Legacy snapshots must keep playback BLE scanning disabled.");
+        Check(s.PlaybackMode == "windows" && s.PlaybackState == "windows" && !s.PlaybackAvailable && s.PlaybackError is null,
+            "Legacy snapshots must keep Windows playback and must not claim native playback support.");
         Check(s.MicRecording, "Legacy fixture must exercise an old recording=true state");
         Check(s.ConversationalAwarenessPending is null, "Legacy fixture cannot claim a pending setting");
         Check(s.AdaptiveStrengthRequested is null, "Legacy fixture cannot claim a sent strength");
@@ -104,6 +111,14 @@ for (var index = 0; index < lines.Length; ++index)
 }
 
 string[] malformed = ["", " ", "{", "null", "true", "12", "\"text\"", "[]", "[{}]", "{}",
+    "{\"event\":\"state\",\"playback_mode\":null}",
+    "{\"event\":\"state\",\"playback_mode\":\"unknown\"}",
+    "{\"event\":\"state\",\"playback_mode\":1}",
+    "{\"event\":\"state\",\"playback_state\":null}",
+    "{\"event\":\"state\",\"playback_state\":\"playing\"}",
+    "{\"event\":\"state\",\"playback_available\":1}",
+    "{\"event\":\"state\",\"playback_available\":null}",
+    "{\"event\":\"state\",\"playback_error\":false}",
     "{\"event\":\"state\",\"loud_sound_reduction\":1}",
     "{\"event\":\"state\",\"loud_sound_reduction\":\"true\"}",
     "{\"event\":\"state\",\"loud_sound_reduction_pending\":null}",
@@ -230,5 +245,8 @@ output.Add(Wire.ToLine(new GetLoudSoundReductionCmd()).TrimEnd('\n'));
 foreach (bool on in new[] { false, true })
     output.Add(Wire.ToLine(new SetLoudSoundReductionCmd { On = on }).TrimEnd('\n'));
 output.Add(Wire.ToLine(new ToggleMicManualCmd()).TrimEnd('\n'));
+foreach (string mode in new[] { "windows", "aac", "aac_eld" })
+    output.Add(Wire.ToLine(new SetPlaybackModeCmd { Mode = mode }).TrimEnd('\n'));
+output.Add(Wire.ToLine(new RetryPlaybackCmd()).TrimEnd('\n'));
 File.WriteAllLines(args[1], output);
 Console.WriteLine($"C#: {lines.Length} production/legacy events and {malformed.Length + malformedPresence.Length} malformed inputs passed");

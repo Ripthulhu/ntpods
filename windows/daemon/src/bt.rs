@@ -51,6 +51,10 @@ fn validate_playback_record(record: &PlaybackRestore) -> std::io::Result<()> {
     Ok(())
 }
 
+pub fn playback_restore_pending() -> std::io::Result<bool> {
+    playback_journal()?.try_exists()
+}
+
 fn restore_playback(record: &PlaybackRestore, intent: u64) -> std::io::Result<()> {
     validate_playback_record(record)?;
     if !AUDIO_INTENT.allows_recovery(intent) {

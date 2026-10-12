@@ -1,4 +1,6 @@
 cmake_minimum_required(VERSION 3.15)
+cmake_policy(SET CMP0091 NEW)
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 project(ntpods_eld_encoder C)
 set(CMAKE_SKIP_INSTALL_RULES TRUE)
 
@@ -21,4 +23,4 @@ add_executable(verify-eld decode-test.c)
 target_link_libraries(verify-eld PRIVATE fdk-aac)
 target_compile_definitions(verify-eld PRIVATE _CRT_SECURE_NO_WARNINGS)
 target_compile_options(verify-eld PRIVATE /W4 /WX)
-# No install target: the worker is excluded from NTPods releases and MSI builds.
+# The Windows packager copies the worker and its separate FDK library together.

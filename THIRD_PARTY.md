@@ -104,11 +104,14 @@ recipes, with pinned hashes. Dependency source archives are not bundled; see
 
 ## Optional AAC-ELD playback encoder
 
-The local AAC-ELD playback experiment uses a separate FDK-AAC 2.0.3 worker.
-Its pinned source, license and redistribution restrictions are documented in
-[the encoder README](windows/playback/encoder/README.md). Published playback
-builds include only the FFmpeg AAC-LC encoder; they exclude the FDK worker and
-library.
+AAC-ELD playback uses a separate worker linked to FDK-AAC 2.0.3. The worker's
+original code is MIT-licensed; FDK retains its own license. Packages include
+`licenses/LICENSE-encoder.txt`, `licenses/NOTICE-FDK.txt` and the complete pinned
+source archive, `licenses/FDK-AAC-source.zip`. The GPL backend exchanges audio
+with the worker through pipes and does not link FDK. This separation does not
+establish definitive GPL compatibility, and FDK grants no patent license.
+See [the encoder README](windows/playback/encoder/README.md) for the revision,
+hash and licensing references.
 
 AAC-ELD packet framing follows
 [USBPods' macOS capture research](https://github.com/wasdwasd0105/USBPods-Pico2W/blob/6286ab1618ec1143d828b1fc377d8e22c449e567/aac-eld-apple.md).

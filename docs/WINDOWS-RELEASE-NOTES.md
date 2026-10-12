@@ -21,12 +21,12 @@ playback, and sustained capture, latency/drift and broader hardware testing rema
 incomplete. Read the [validation record](https://github.com/Ripthulhu/ntpods/blob/main/docs/WINDOWS-VALIDATION.md)
 before testing.
 
-**NTPods-Native-AAC.zip** adds a separate experimental 48 kHz stereo AAC playback
-endpoint. It needs an existing working NTPods installation on Windows 11 x64
-with Test Mode active. It replaces both NTPods drivers, keeps a rollback copy and
-temporarily releases normal AirPods audio while running. Playback, recording
-coexistence and recovery still need hardware testing. Follow the included
-`TESTING.md` before installing it. AAC-ELD encoder binaries are excluded.
+Both packages include experimental AAC and AAC-ELD playback. In **Playback and
+microphone**, choose a codec, then select **Speakers (NTPods Experimental)** in
+your player. Windows playback remains the default. Native playback temporarily
+releases normal AirPods audio; selecting Windows restores it. Playback, recording
+coexistence and recovery still need hardware testing. See the
+[playback test guide](https://github.com/Ripthulhu/ntpods/blob/main/windows/playback/TESTING.md).
 
 The ACX microphone driver's licensing issue remains unresolved. Retain all bundled
 licenses and notices; see

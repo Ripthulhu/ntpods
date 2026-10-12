@@ -18,6 +18,15 @@ pub enum MicMode {
     Manual,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaybackMode {
+    #[default]
+    Windows,
+    Aac,
+    AacEld,
+}
+
 fn deserialize_stop_delay<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
     let seconds = u32::deserialize(d)?;
     if seconds <= 3600 {
@@ -176,6 +185,15 @@ pub struct Snapshot {
     pub volume: u8,
     /// The output is muted.
     pub muted: bool,
+    #[serde(default)]
+    pub playback_mode: PlaybackMode,
+    /// windows, disconnected, starting, ready, stopping, or error.
+    #[serde(default = "default_playback_state")]
+    pub playback_state: String,
+    #[serde(default)]
+    pub playback_error: Option<String>,
+    #[serde(default)]
+    pub playback_available: bool,
     /// Latest validated heart-rate BPM (AirPods Pro 3 RTBuddy). `None` when HR
     /// monitoring is off or no sample has been decoded yet. Opt-in (drains battery).
     pub heart_rate: Option<u16>,
@@ -213,6 +231,10 @@ fn default_auto_pause() -> bool {
 
 fn default_head_tracking_state() -> String {
     "idle".into()
+}
+
+fn default_playback_state() -> String {
+    "windows".into()
 }
 
 fn default_conversation_volume() -> u8 {
@@ -305,6 +327,10 @@ impl Default for Snapshot {
             auto_pause: true,
             volume: 0,
             muted: false,
+            playback_mode: PlaybackMode::Windows,
+            playback_state: default_playback_state(),
+            playback_error: None,
+            playback_available: false,
             heart_rate: None,
             heart_rate_enabled: false,
             heart_rate_timestamp_ms: None,
@@ -381,6 +407,10 @@ pub enum Command {
     },
     /// Toggle the stream and enter Manual mode in one operation.
     ToggleMicManual,
+    SetPlaybackMode {
+        mode: PlaybackMode,
+    },
+    RetryPlayback,
     /// Toggle an AAP control-command setting (see the `feature` module).
     SetFeature {
         feature: u8,
@@ -537,6 +567,54 @@ pub fn from_line<T: for<'de> Deserialize<'de>>(line: &str) -> Option<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn playback_selection_is_bounded_and_legacy_state_uses_windows() {
+        for mode in [
+            PlaybackMode::Windows,
+            PlaybackMode::Aac,
+            PlaybackMode::AacEld,
+        ] {
+            let command = Command::SetPlaybackMode { mode };
+            assert!(matches!(from_line::<Command>(&to_line(&command)),
+                Some(Command::SetPlaybackMode { mode: actual }) if actual == mode));
+            let state = Snapshot {
+                playback_mode: mode,
+                playback_state: "error".into(),
+                playback_error: Some("Playback failed".into()),
+                playback_available: true,
+                ..Default::default()
+            };
+            let Event::State(actual) = from_line(&to_line(&Event::State(state.clone()))).unwrap()
+            else {
+                panic!("state")
+            };
+            assert_eq!(actual, state);
+        }
+        assert!(matches!(
+            from_line::<Command>(&to_line(&Command::RetryPlayback)),
+            Some(Command::RetryPlayback)
+        ));
+        for mode in ["null", "true", "0", "\"eld\"", "\"lossless\"", "\"AAC\""] {
+            assert!(from_line::<Command>(&format!(
+                r#"{{"cmd":"set_playback_mode","mode":{mode}}}"#
+            ))
+            .is_none());
+        }
+        let mut old = serde_json::to_value(Snapshot::default()).unwrap();
+        for key in [
+            "playback_mode",
+            "playback_state",
+            "playback_error",
+            "playback_available",
+        ] {
+            old.as_object_mut().unwrap().remove(key);
+        }
+        let state: Snapshot = serde_json::from_value(old).unwrap();
+        assert_eq!(state.playback_mode, PlaybackMode::Windows);
+        assert_eq!(state.playback_state, "windows");
+        assert!(!state.playback_available && state.playback_error.is_none());
+    }
 
     #[test]
     fn component_presence_preserves_unknown_and_explicit_absence() {

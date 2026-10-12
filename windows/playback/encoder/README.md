@@ -1,8 +1,7 @@
-# AAC-ELD development encoder
+# AAC-ELD encoder
 
 This worker encodes 48 kHz stereo PCM for the Apple AAC-ELD playback experiment.
-It is a local development tool. The normal build, MSI and release packages do
-not build or include it.
+The normal build includes the worker and its separate FDK library in the MSI and ZIP.
 
 ## Build and check
 
@@ -55,12 +54,14 @@ The build verifies the source archive's SHA-256:
 1b572fcb5e2a81aa0447a92ca95bfe4979f3edfc09918e0627b726bcd0165ff1
 ```
 
-Its license is retained in [NOTICE-FDK.txt](NOTICE-FDK.txt).
+The worker's original code uses the [MIT license](LICENSE). FDK's license is
+retained in [NOTICE-FDK.txt](NOTICE-FDK.txt). Packages include both notices and
+the complete pinned FDK source archive in `licenses/FDK-AAC-source.zip`.
 [FFmpeg identifies FDK's license as incompatible with GPL v2 and v3](https://ffmpeg.org/doxygen/trunk/md_LICENSE.html).
-Running a separate process does not by itself resolve the licensing of a
-combined product. Keep this worker out of published binaries until that is
-resolved. FDK's license also requires its complete source to accompany binary
-distribution or be made available to recipients; it grants no patent license.
+The GPL backend communicates through pipes and does not link FDK. Separate
+processes do not by themselves establish GPL compatibility for a combined product;
+see the [FSF's aggregation guidance](https://www.gnu.org/licenses/gpl-faq.en.html#MereAggregation).
+FDK grants no patent license.
 
 Codec settings follow
 [USBPods' macOS capture research](https://github.com/wasdwasd0105/USBPods-Pico2W/blob/6286ab1618ec1143d828b1fc377d8e22c449e567/aac-eld-apple.md).

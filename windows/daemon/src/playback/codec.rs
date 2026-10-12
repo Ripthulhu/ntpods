@@ -8,23 +8,12 @@ pub enum Mode {
 }
 
 impl Mode {
-    pub fn requested(args: impl Iterator<Item = String>) -> io::Result<Option<Self>> {
-        let mut mode = None;
-        for arg in args.filter(|arg| arg.starts_with("--experimental-playback")) {
-            let selected = match arg.as_str() {
-                "--experimental-playback" | "--experimental-playback=aac" => Self::Aac,
-                "--experimental-playback=eld" => Self::Eld,
-                _ => {
-                    return Err(protocol::invalid(
-                        "Use --experimental-playback=aac or --experimental-playback=eld",
-                    ))
-                }
-            };
-            if mode.replace(selected).is_some() {
-                return Err(protocol::invalid("Choose one playback codec"));
-            }
+    pub fn from_selection(mode: ntpods_ipc::PlaybackMode) -> Option<Self> {
+        match mode {
+            ntpods_ipc::PlaybackMode::Windows => None,
+            ntpods_ipc::PlaybackMode::Aac => Some(Self::Aac),
+            ntpods_ipc::PlaybackMode::AacEld => Some(Self::Eld),
         }
-        Ok(mode)
     }
     pub fn frame_samples(self) -> usize {
         match self {
@@ -122,22 +111,12 @@ impl MediaPackets {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn parse(args: &[&str]) -> io::Result<Option<Mode>> {
-        Mode::requested(args.iter().map(|s| s.to_string()))
-    }
     #[test]
-    fn normal_aac_is_the_explicit_playback_default() {
-        assert_eq!(parse(&[]).unwrap(), None);
-        assert_eq!(
-            parse(&["--experimental-playback"]).unwrap(),
-            Some(Mode::Aac)
-        );
-        assert_eq!(
-            parse(&["--experimental-playback=eld"]).unwrap(),
-            Some(Mode::Eld)
-        );
-        assert!(parse(&["--experimental-playback=lossless"]).is_err());
-        assert!(parse(&["--experimental-playback=aac", "--experimental-playback=eld"]).is_err());
+    fn windows_default_leaves_codec_ownership_to_windows() {
+        use ntpods_ipc::PlaybackMode;
+        assert_eq!(Mode::from_selection(PlaybackMode::default()), None);
+        assert_eq!(Mode::from_selection(PlaybackMode::Aac), Some(Mode::Aac));
+        assert_eq!(Mode::from_selection(PlaybackMode::AacEld), Some(Mode::Eld));
     }
     #[test]
     fn aac_fragments_share_a_timestamp_and_advance_once_per_frame() {
