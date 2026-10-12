@@ -116,7 +116,7 @@ The settings page title uses `page-title`; the centered device name uses `device
 
 ## Layout
 
-Both pages use one vertical scroll area with a 688 DIP maximum outer width and 24 DIP side padding, leaving at most 640 DIP for controls. Device sections have 24 DIP gaps; app settings sections have 28 DIP gaps. The device page starts with 20 DIP top padding; app settings uses 24 DIP. Both end with 48 DIP padding. Current source retains the same side padding as the window narrows; it has no padding breakpoint.
+Both pages use a full-width vertical scroll area so the side margins accept scrolling and the scrollbar sits at the window's right edge. The centered content column has a 688 DIP maximum outer width and 24 DIP side padding, leaving at most 640 DIP for controls. Device sections have 24 DIP gaps; app settings sections have 28 DIP gaps. The device page starts with 20 DIP top padding; app settings uses 24 DIP. Both end with 48 DIP padding. Current source retains the same side padding as the window narrows; it has no padding breakpoint.
 
 Grouped rows place wrapping text on the left and the control on the right. Repeated feature rows have a 64 DIP minimum height, 20 DIP horizontal padding, 16 DIP vertical padding and a 16 DIP gap before the switch. Standard inset dividers stop 16 DIP short of each side. Expanders use 20 DIP horizontal and 16 DIP vertical header padding; expanded content uses 20 DIP side and bottom padding with 8 DIP at the top.
 

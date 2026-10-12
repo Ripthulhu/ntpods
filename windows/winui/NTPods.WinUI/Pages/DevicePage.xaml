@@ -3,9 +3,9 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:controls="using:NTPods.WinUI.Controls">
-    <ScrollViewer x:Name="PageScrollViewer" MaxWidth="688" HorizontalAlignment="Stretch" VerticalScrollBarVisibility="Auto"
+    <ScrollViewer x:Name="PageScrollViewer" Background="Transparent" HorizontalAlignment="Stretch" VerticalScrollBarVisibility="Auto"
                   HorizontalScrollBarVisibility="Disabled" HorizontalScrollMode="Disabled" HorizontalContentAlignment="Stretch">
-        <StackPanel x:Name="DeviceRoot" Padding="24,20,24,48" Spacing="24" HorizontalAlignment="Stretch">
+        <StackPanel x:Name="DeviceRoot" MaxWidth="688" Padding="24,20,24,48" Spacing="24" HorizontalAlignment="Stretch">
             <controls:DeviceHeader x:Name="Header" />
             <ContentControl x:Name="DeviceBody" IsTabStop="False" HorizontalContentAlignment="Stretch">
                 <StackPanel Spacing="24">
