@@ -25,6 +25,9 @@ remain separate gates. Read `THIRD_PARTY.md` before distributing anything.
 - .NET SDK 10.0.401 (`global.json`), Rust 1.95.0 (`rust-toolchain.toml`), Git Bash.
 - WiX 5.0.2 and `WixToolset.UI.wixext/5.0.2`, `WixToolset.Util.wixext/5.0.2`.
 
+The hosted Windows runner may retain a newer installed SDK patch instead of
+downgrading to 26100.4188. The build still targets the `10.0.26100.0` directory.
+
 Install development tools through their official installers. No boot setting,
 test certificate, or NTPods driver is needed to compile.
 
@@ -38,8 +41,8 @@ The script verifies FFmpeg, uses locked Rust/NuGet dependencies, runs unit tests
 builds both drivers from source, generates catalogs, builds WinUI, and assembles
 `windows/build-output/NTPods-experimental.msi`. It never takes driver binaries
 from committed `prebuilt` folders. The manifest records artifact hashes and
-whether local source modifications were included. Build inputs are pinned;
-generated timestamps can still change output hashes.
+whether local source modifications were included. Package dependencies are
+pinned; hosted toolchain patches and generated timestamps can change output hashes.
 
 Startup checks use a private temporary registry key and a restricted MSI session
 that cannot install files or run setup scripts. New MSI installs leave startup
