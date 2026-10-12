@@ -35,6 +35,9 @@ NTSTATUS LpEvtDevicePrepareHardware(WDFDEVICE Device, WDFCMRESLIST ResourcesRaw,
         return NT_SUCCESS(status) ? STATUS_DEVICE_NOT_READY : status;
     }
     ctx->DeviceAddress = info.address;
+#if NTPODS_EXPERIMENTAL_PLAYBACK
+    ctx->Playback.Paired = (info.flags & BDIF_PAIRED) != 0;
+#endif
     InterlockedExchange(&ctx->Removed, 0);
     InterlockedExchange(&ctx->Ready, 1);
     InterlockedExchange(&ctx->Stopping, 0);
@@ -48,6 +51,9 @@ VOID LpStopChannels(PDEVICE_CONTEXT Ctx)
     if (Ctx->OperationLock == NULL) return;
     /* In-flight BRBs notice Stopping before we acquire their operation lock. */
     WdfWaitLockAcquire(Ctx->OperationLock, NULL);
+#if NTPODS_EXPERIMENTAL_PLAYBACK
+    LpPlaybackClose(Ctx);
+#endif
     LpDisconnect(Ctx);
     WdfWaitLockRelease(Ctx->OperationLock);
 }
@@ -90,6 +96,10 @@ NTSTATUS LpEvtDeviceReleaseHardware(WDFDEVICE Device, WDFCMRESLIST ResourcesTran
     UNREFERENCED_PARAMETER(ResourcesTranslated);
     InterlockedExchange(&ctx->Ready, 0);
     LpStopChannels(ctx);
+#if NTPODS_EXPERIMENTAL_PLAYBACK
+    if (ctx->Playback.DisconnectWork) WdfWorkItemFlush(ctx->Playback.DisconnectWork);
+    ctx->Playback.Paired = FALSE;
+#endif
     if (ctx->HasBthInterface) {
         ctx->BthInterface.Interface.InterfaceDereference(ctx->BthInterface.Interface.Context);
         ctx->HasBthInterface = FALSE;

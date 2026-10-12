@@ -63,6 +63,11 @@ VOID LpEvtIoDispatch(WDFQUEUE Queue, WDFREQUEST Request, size_t OutputBufferLeng
     if (IoControlCode == IOCTL_LP_RECEIVE) destination = ctx->AapReceiveQueue;
     else if (IoControlCode == IOCTL_LP_ATT_RECEIVE) destination = ctx->AttReceiveQueue;
     else if (IoControlCode == IOCTL_LP_GET_STATUS) destination = ctx->StatusQueue;
+#if NTPODS_EXPERIMENTAL_PLAYBACK
+    else if (IoControlCode == IOCTL_LP_PLAYBACK_SEND ||
+             IoControlCode == IOCTL_LP_PLAYBACK_RECEIVE ||
+             IoControlCode == IOCTL_LP_PLAYBACK_STATUS) destination = ctx->Playback.Queue;
+#endif
     status = WdfRequestForwardToIoQueue(Request, destination);
     if (!NT_SUCCESS(status)) WdfRequestComplete(Request, status);
 }
@@ -83,6 +88,12 @@ LpEvtIoDeviceControl(
     PVOID           inBuf, outBuf;
     size_t          sz;
 
+#if NTPODS_EXPERIMENTAL_PLAYBACK
+    if (IoControlCode == IOCTL_LP_PLAYBACK_OPEN || IoControlCode == IOCTL_LP_PLAYBACK_CLOSE) {
+        LpEvtPlaybackIoctl(Queue, Request, OutputBufferLength, InputBufferLength, IoControlCode);
+        return;
+    }
+#endif
     WdfWaitLockAcquire(ctx->OperationLock, NULL);
     if (InterlockedCompareExchange(&ctx->Stopping, 0, 0) || !ctx->HasBthInterface) {
         status = STATUS_DEVICE_NOT_READY;

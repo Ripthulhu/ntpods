@@ -55,6 +55,10 @@ try {
     Run (Join-Path $tests 'aap-inf-target.exe') @('windows/drivers/aap/NTPodsAAP.inf')
     Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', "/Fe:$tests\mic-bridge.exe", "/Fo:$tests\mic-bridge.obj", 'windows/drivers/mic/tests/mic_bridge_test.cpp')
     Run (Join-Path $tests 'mic-bridge.exe') @()
+    Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', "/Fe:$tests\render-bridge.exe", "/Fo:$tests\render-bridge.obj", 'windows/drivers/mic/tests/render_bridge_test.cpp')
+    Run (Join-Path $tests 'render-bridge.exe') @()
+    Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', "/Fe:$tests\aap-playback.exe", "/Fo:$tests\aap-playback.obj", 'windows/drivers/aap/tests/playback_transport_test.cpp')
+    Run (Join-Path $tests 'aap-playback.exe') @()
     Run $bash @('windows/daemon/fetch-ffmpeg.sh')
     $env:PATH = "$(Join-Path $repo 'windows\daemon\vendor\ffmpeg\bin');$env:PATH"
     Run 'cl.exe' @('/nologo', '/W4', '/WX', '/TC', '/external:Iwindows/daemon/vendor/ffmpeg/include', '/external:W0', "/Fe:$tests\eld-shim.exe", "/Fo:$tests\eld-shim.obj", 'windows/daemon/tests/eld_shim_test.c', '/link', '/LIBPATH:windows/daemon/vendor/ffmpeg/lib', 'avcodec.lib', 'avutil.lib', 'swresample.lib')

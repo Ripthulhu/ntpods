@@ -27,6 +27,220 @@ const HANDSFREE: GUID = GUID {
     data4: [0x80, 0x00, 0x00, 0x80, 0x5f, 0x9b, 0x34, 0xfb],
 };
 
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlaybackRestore {
+    address: u64,
+    sink: bool,
+    handsfree: bool,
+}
+
+fn playback_journal() -> std::io::Result<std::path::PathBuf> {
+    Ok(std::path::PathBuf::from(
+        std::env::var_os("LOCALAPPDATA")
+            .ok_or_else(|| std::io::Error::other("Local app data is unavailable"))?,
+    )
+    .join("NTPods")
+    .join("playback-restore.json"))
+}
+
+fn validate_playback_record(record: &PlaybackRestore) -> std::io::Result<()> {
+    if record.address == 0 || record.address > 0xffff_ffff_ffff || !record.sink {
+        return Err(std::io::Error::other("Invalid playback restoration record"));
+    }
+    Ok(())
+}
+
+fn restore_playback(record: &PlaybackRestore, intent: u64) -> std::io::Result<()> {
+    validate_playback_record(record)?;
+    if !AUDIO_INTENT.allows_recovery(intent) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "Playback restoration was superseded",
+        ));
+    }
+    let (sink, handsfree) = set_audio_services(record.address, true, !record.handsfree, intent);
+    if sink != 0 || (record.handsfree && handsfree != 0) {
+        return Err(std::io::Error::other(format!(
+            "Playback restoration failed ({sink}/{handsfree})"
+        )));
+    }
+    Ok(())
+}
+
+fn finish_playback_restore(
+    intent: &AudioIntent,
+    token: u64,
+    restore: impl FnOnce(u64) -> std::io::Result<()>,
+    remove_journal: impl FnOnce() -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let result = if intent.allows_recovery(token) {
+        restore(token)
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "Playback restoration was superseded",
+        ))
+    };
+    // Keep journal removal atomic with respect to a newer Connect or Disconnect.
+    let state = intent.0.lock().unwrap_or_else(|error| error.into_inner());
+    if state.token & 1 == 0 {
+        return remove_journal();
+    }
+    if state.token != token {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "Playback restoration was superseded",
+        ));
+    }
+    result?;
+    remove_journal()
+}
+
+/// A crashed experimental build may have left the normal audio service disabled.
+pub fn restore_experimental_audio() -> std::io::Result<()> {
+    use std::io::Read;
+    let path = playback_journal()?;
+    let file = match std::fs::File::open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if file.metadata()?.len() > 1024 {
+        return Err(std::io::Error::other("Invalid playback restoration record"));
+    }
+    let record: PlaybackRestore = serde_json::from_reader(file.take(1025))?;
+    let _gate = AUDIO_GATE
+        .enter(&AUDIO_INTENT, true)
+        .ok_or_else(|| std::io::Error::other("Audio is shutting down"))?;
+    finish_playback_restore(
+        &AUDIO_INTENT,
+        AUDIO_INTENT.snapshot(),
+        |token| restore_playback(&record, token),
+        || std::fs::remove_file(path),
+    )
+}
+
+#[cfg(feature = "experimental-playback")]
+fn installed_playback_services(address: u64) -> std::io::Result<PlaybackRestore> {
+    use windows_sys::Win32::Devices::Bluetooth::BluetoothEnumerateInstalledServices;
+    unsafe {
+        let mut params: BLUETOOTH_FIND_RADIO_PARAMS = zeroed();
+        params.dwSize = size_of::<BLUETOOTH_FIND_RADIO_PARAMS>() as u32;
+        let mut radio: HANDLE = std::ptr::null_mut();
+        let found = BluetoothFindFirstRadio(&params, &mut radio);
+        if found.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        let result = loop {
+            let mut device: BLUETOOTH_DEVICE_INFO = zeroed();
+            device.dwSize = size_of::<BLUETOOTH_DEVICE_INFO>() as u32;
+            device.Address.Anonymous.ullLong = address;
+            if BluetoothGetDeviceInfo(radio, &mut device) == 0
+                && device.fAuthenticated != 0
+                && device.fRemembered != 0
+            {
+                let mut services: [GUID; 64] = zeroed();
+                let mut count = services.len() as u32;
+                let status = BluetoothEnumerateInstalledServices(
+                    radio,
+                    &device,
+                    &mut count,
+                    services.as_mut_ptr(),
+                );
+                CloseHandle(radio);
+                if status != 0 || count > services.len() as u32 {
+                    break Err(std::io::Error::other(
+                        "Cannot determine the installed audio services",
+                    ));
+                }
+                let contains = |wanted: &GUID| {
+                    services[..count as usize].iter().any(|id| {
+                        id.data1 == wanted.data1
+                            && id.data2 == wanted.data2
+                            && id.data3 == wanted.data3
+                            && id.data4 == wanted.data4
+                    })
+                };
+                break Ok(PlaybackRestore {
+                    address,
+                    sink: contains(&AUDIO_SINK),
+                    handsfree: contains(&HANDSFREE),
+                });
+            }
+            CloseHandle(radio);
+            radio = std::ptr::null_mut();
+            if BluetoothFindNextRadio(found, &mut radio) == 0 {
+                break Err(std::io::Error::other("Paired AirPods are unavailable"));
+            }
+        };
+        BluetoothFindRadioClose(found);
+        result
+    }
+}
+
+#[cfg(feature = "experimental-playback")]
+pub fn playback_intent() -> u64 {
+    AUDIO_INTENT.snapshot()
+}
+
+#[cfg(feature = "experimental-playback")]
+pub fn with_experimental_playback(
+    address: u64,
+    intent: u64,
+    run: impl FnOnce() -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    use std::io::Write;
+    let _gate = AUDIO_GATE
+        .enter(&AUDIO_INTENT, false)
+        .ok_or_else(|| std::io::Error::other("Audio is shutting down"))?;
+    if !AUDIO_INTENT.allows_recovery(intent) {
+        return Err(std::io::Error::other("Connection request changed"));
+    }
+    let record = installed_playback_services(address)?;
+    if !record.sink {
+        return Err(std::io::Error::other(
+            "Normal playback must be installed before the experiment",
+        ));
+    }
+    let path = playback_journal()?;
+    let mut journal = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)?;
+    if let Err(error) = journal
+        .write_all(&serde_json::to_vec(&record)?)
+        .and_then(|_| journal.sync_all())
+    {
+        drop(journal);
+        let _ = std::fs::remove_file(path);
+        return Err(error);
+    }
+    drop(journal);
+    let (sink, handsfree) = set_audio_services(address, false, !record.handsfree, intent);
+    let result = if sink == 0
+        && (!record.handsfree || handsfree == 0)
+        && AUDIO_INTENT.allows_recovery(intent)
+    {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).unwrap_or_else(|_| {
+            Err(std::io::Error::other(
+                "Experimental playback worker stopped unexpectedly",
+            ))
+        })
+    } else {
+        Err(std::io::Error::other(format!(
+            "Cannot release normal playback ({sink}/{handsfree})"
+        )))
+    };
+    finish_playback_restore(
+        &AUDIO_INTENT,
+        AUDIO_INTENT.snapshot(),
+        |token| restore_playback(&record, token),
+        || std::fs::remove_file(path),
+    )?;
+    result
+}
+
 unsafe fn set_service(radio: HANDLE, mac: u64, service: &GUID, flags: u32) -> u32 {
     let mut device: BLUETOOTH_DEVICE_INFO = zeroed();
     device.dwSize = size_of::<BLUETOOTH_DEVICE_INFO>() as u32;
@@ -279,6 +493,24 @@ pub fn reset_audio_services_for_user_request(mac: u64, sink_only: bool, intent: 
 
 fn reset_audio_services_inner(mac: u64, sink_only: bool, intent: u64, cleanup: bool) -> (u32, u32) {
     let waiting = Instant::now();
+    #[cfg(feature = "experimental-playback")]
+    let _gate = loop {
+        if !AUDIO_INTENT.allows_recovery(intent) || (!cleanup && !AUDIO_INTENT.accepts_requests()) {
+            return (1223, 1223);
+        }
+        if let Some(result) = crate::playback::reset_if_active(mac, intent) {
+            return result;
+        }
+        match AUDIO_GATE.0.try_lock() {
+            Ok(guard) if !*guard => break guard,
+            Ok(_) => return (1223, 1223),
+            Err(TryLockError::Poisoned(_)) => return (1223, 1223),
+            Err(TryLockError::WouldBlock) => {
+                std::thread::sleep(std::time::Duration::from_millis(10))
+            }
+        }
+    };
+    #[cfg(not(feature = "experimental-playback"))]
     let Some(_gate) = AUDIO_GATE.enter(&AUDIO_INTENT, cleanup) else {
         return (1223, 1223);
     };
@@ -308,9 +540,145 @@ mod audio_intent_tests {
     use std::sync::{mpsc, Arc};
 
     #[test]
+    fn playback_restore_requires_a_bounded_address_and_saved_audio_service() {
+        let valid = super::PlaybackRestore {
+            address: 1,
+            sink: true,
+            handsfree: false,
+        };
+        assert!(super::validate_playback_record(&valid).is_ok());
+        for address in [0, 0x1_0000_0000_0000] {
+            assert!(
+                super::validate_playback_record(&super::PlaybackRestore { address, ..valid })
+                    .is_err()
+            );
+        }
+        assert!(super::validate_playback_record(&super::PlaybackRestore {
+            sink: false,
+            ..valid
+        })
+        .is_err());
+        assert!(serde_json::from_str::<super::PlaybackRestore>(
+            r#"{"address":1,"sink":true,"handsfree":false,"other":true}"#
+        )
+        .is_err());
+    }
+
+    #[test]
     fn windows_connected_audio_can_recover_before_any_ui_request() {
         let intent = AudioIntent::new();
         assert!(intent.allows_recovery(intent.snapshot()));
+    }
+
+    #[test]
+    fn disconnect_between_restore_capture_and_service_call_never_enables_audio() {
+        use std::cell::Cell;
+        let intent = AudioIntent::new();
+        let captured = intent.snapshot();
+        intent.reserve(false).unwrap();
+        let removed = Cell::new(false);
+        super::finish_playback_restore(
+            &intent,
+            captured,
+            |_| panic!("Disconnect must not authorize an enable"),
+            || {
+                removed.set(true);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(removed.get());
+    }
+
+    #[test]
+    fn disconnect_during_service_restore_removes_the_stale_journal() {
+        use std::cell::Cell;
+        let intent = AudioIntent::new();
+        let captured = intent.snapshot();
+        let removed = Cell::new(false);
+        super::finish_playback_restore(
+            &intent,
+            captured,
+            |token| {
+                assert_eq!(token, captured);
+                intent.reserve(false).unwrap();
+                assert!(!intent.allows_recovery(token));
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "cancelled",
+                ))
+            },
+            || {
+                removed.set(true);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(removed.get());
+    }
+
+    #[test]
+    fn newer_connect_keeps_the_restore_journal_even_if_old_service_calls_succeed() {
+        let intent = AudioIntent::new();
+        let captured = intent.snapshot();
+        intent.reserve(true).unwrap();
+        assert!(super::finish_playback_restore(
+            &intent,
+            captured,
+            |_| panic!("stale restore must not run"),
+            || panic!("newer Connect still needs the journal")
+        )
+        .is_err());
+        for succeeded in [false, true] {
+            let captured = intent.snapshot();
+            let error = super::finish_playback_restore(
+                &intent,
+                captured,
+                |token| {
+                    assert_eq!(token, captured);
+                    intent.reserve(true).unwrap();
+                    if succeeded {
+                        Ok(())
+                    } else {
+                        Err(std::io::Error::other("service failed"))
+                    }
+                },
+                || panic!("newer Connect still needs the journal"),
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+        }
+    }
+
+    #[test]
+    fn restore_failure_keeps_the_journal_and_success_reports_removal_errors() {
+        let intent = AudioIntent::new();
+        let token = intent.snapshot();
+        let error = super::finish_playback_restore(
+            &intent,
+            token,
+            |_| Err(std::io::Error::other("service failed")),
+            || panic!("failed restoration must retain the journal"),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
+        let error = super::finish_playback_restore(
+            &intent,
+            token,
+            |passed| {
+                assert_eq!(passed, token);
+                Ok(())
+            },
+            || {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "cannot remove",
+                ))
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        super::finish_playback_restore(&intent, token, |_| Ok(()), || Ok(())).unwrap();
     }
 
     #[test]

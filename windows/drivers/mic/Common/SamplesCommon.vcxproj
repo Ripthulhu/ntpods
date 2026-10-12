@@ -144,6 +144,11 @@
       <FileDigestAlgorithm>sha256</FileDigestAlgorithm>
     </DriverSign>
   </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(NTPodsExperimentalPlayback)'=='true'">
+    <ClCompile>
+      <PreprocessorDefinitions>NTPODS_EXPERIMENTAL_PLAYBACK=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
   <ItemGroup>
     <FilesToPackage Include="$(TargetPath)" />
   </ItemGroup>
@@ -166,6 +171,8 @@
     <ClCompile Include="captureCircuit.cpp" />
     <ClCompile Include="CircuitHelper.cpp" />
     <ClCompile Include="MicPipe.cpp" />
+    <ClCompile Include="RenderPipe.cpp" />
+    <ClCompile Include="RenderCircuit.cpp" />
     <ClCompile Include="StreamEngine.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

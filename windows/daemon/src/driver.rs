@@ -143,6 +143,36 @@ fn require_reply(actual: u32, minimum: u32) -> io::Result<()> {
 }
 
 impl Driver {
+    #[cfg(feature = "experimental-playback")]
+    pub(crate) fn playback_ioctl(
+        &self,
+        function: u32,
+        input: &[u8],
+        output: &mut [u8],
+    ) -> io::Result<usize> {
+        if !(0x810..=0x814).contains(&function) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Invalid playback operation",
+            ));
+        }
+        let timeout = match function {
+            0x810 | 0x811 => 20_000,
+            0x812 => 3_000,
+            0x813 if input.len() == 12 => {
+                u32::from_le_bytes(input[8..12].try_into().unwrap()).min(10_000) + 1_000
+            }
+            _ => 2_000,
+        };
+        Ok(ioctl_with_timeout(
+            self.handle.0,
+            0x8000_c000 | (function << 2),
+            input,
+            output,
+            timeout,
+        )? as usize)
+    }
+
     pub fn open(mac: u64) -> io::Result<Driver> {
         let handle = open_driver(mac)?;
         Ok(Driver {

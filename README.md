@@ -45,18 +45,24 @@ Features vary by model and firmware; see [model support](docs/WINDOWS-MODEL-SUPP
 Microphone recovery briefly interrupts playback. Short recordings and twenty
 start/stop cycles passed; longer recordings, latency, drift, Discord and interrupted
 recovery still need testing. See [test results](docs/WINDOWS-VALIDATION.md).
-NTPods preserves your existing A2DP playback driver and codec settings.
+The normal build preserves your existing A2DP playback driver and codec settings.
 
 This build uses the Windows 11 ACX microphone driver. Older Windows versions
 are untested. For Android or Linux, use [LibrePods](https://github.com/librepods-org/librepods).
 
 ## Installing on Windows
 
-Download the **MSI** for guided setup or the **ZIP** for manual installation from
+Download **NTPods.msi** for guided setup or **NTPods-Windows.zip** for manual installation from
 [releases](https://github.com/Ripthulhu/ntpods/releases). Both include the app and
 drivers and require Test Mode. Source archives and checksums are included.
 See the [installation guide](windows/README.md) and [release notes](docs/WINDOWS-RELEASE-NOTES.md).
 Upstream nightly builds do not include this fork's changes.
+
+`NTPods-Native-AAC.zip` is a separate playback experiment. It adds a stereo AAC
+output without Alternative A2DP and requires replacing both NTPods drivers on a
+test PC. AirPods playback and microphone coexistence have not been hardware-tested.
+Read the [test and rollback instructions](windows/playback/TESTING.md) before
+installing it. AAC-ELD playback is available only as a local source build.
 
 ## Contributing
 

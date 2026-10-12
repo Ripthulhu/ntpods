@@ -46,6 +46,10 @@ DEFINE_GUID(GUID_DEVINTERFACE_NTPODSAAP,
 #define IOCTL_LP_ATT_SEND    CTL_CODE(FILE_DEVICE_NTPODS, 0x805, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define IOCTL_LP_ATT_RECEIVE CTL_CODE(FILE_DEVICE_NTPODS, 0x806, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
+#if NTPODS_EXPERIMENTAL_PLAYBACK
+#include "Playback.h"
+#endif
+
 typedef enum _LP_STATE {
     LpDisconnected = 0,
     LpConnecting   = 1,
@@ -126,6 +130,9 @@ typedef struct _DEVICE_CONTEXT {
     L2CAP_CHANNEL_HANDLE LastAttDisconnect;
     BOOLEAN              AttConnected;
     LONG                 AttAcceptStatus; // legacy status ABI: client open result
+#if NTPODS_EXPERIMENTAL_PLAYBACK
+    LP_PLAYBACK_CONTEXT   Playback;
+#endif
 } DEVICE_CONTEXT, *PDEVICE_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DEVICE_CONTEXT, DeviceGetContext)

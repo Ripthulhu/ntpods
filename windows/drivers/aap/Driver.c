@@ -143,6 +143,10 @@ LpEvtDeviceAdd(
     if (!NT_SUCCESS(status)) return status;
     status = WdfWaitLockCreate(&deviceAttrs, &ctx->AttReceiveLock);
     if (!NT_SUCCESS(status)) return status;
+#if NTPODS_EXPERIMENTAL_PLAYBACK
+    status = LpPlaybackInitialize(device);
+    if (!NT_SUCCESS(status)) return status;
+#endif
 
     /* AAP microphone packets must drain while ATT or control writes are pending. */
     WDF_IO_QUEUE_CONFIG_INIT(&queueConfig, WdfIoQueueDispatchSequential);

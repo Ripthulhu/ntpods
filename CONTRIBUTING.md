@@ -20,12 +20,17 @@ AirPods or installed drivers.
 | Dynamic Island | `windows/winui/NTPods.WinUI/Popup` |
 | Bluetooth AAP driver | `windows/drivers/aap` |
 | Windows 11 ACX microphone driver | `windows/drivers/mic` |
+| Optional AAC and AAC-ELD playback | `windows/playback`, `windows/daemon/src/playback` |
 | Installation and packaging | `windows/installer`, `windows/build.ps1` |
 
 The backend owns Bluetooth connections and publishes state through named pipes.
 The UI displays that state and sends commands; it does not open the drivers.
 The microphone driver receives PCM from the backend. Windows keeps control of
 normal Bluetooth playback.
+
+The [playback experiment](windows/playback/README.md) has a separate build and
+download, `NTPods-Native-AAC.zip`. The normal MSI and Windows ZIP keep the existing
+playback driver. AAC-ELD encoding remains a local development option.
 
 ## Build and test
 

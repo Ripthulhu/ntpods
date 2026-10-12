@@ -11,7 +11,12 @@
 This checkout builds on NTPods `188e45d` for **Windows 11 x64, Intel AX200, and
 AirPods Pro 3 / firmware 9A348**. It retains the Rust daemon and WinUI interface,
 with the native AAP Bluetooth driver and ACX virtual microphone. Windows continues
-to own the Bluetooth adapter and ordinary audio playback.
+to own the Bluetooth adapter and ordinary audio playback in the normal build.
+
+The separate `NTPods-Native-AAC.zip` download adds an experimental stereo playback
+endpoint. It requires replacing both NTPods drivers and has not been tested on
+AirPods. Follow its [installation and rollback procedure](playback/TESTING.md);
+the normal MSI and Windows ZIP do not enable it.
 
 The app includes native three-band EQ, a local automatic-pause preference and
 additional AirPods settings for stem controls, accessibility and charging.

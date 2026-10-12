@@ -174,7 +174,7 @@ static VOID MicPipe_EvtIoDeviceControl(
     WdfRequestCompleteWithInformation(Request, status, info);
 }
 
-static VOID MicPipeControlSddl(WDFDRIVER Driver, PWCHAR Buffer, size_t Characters)
+VOID MicPipeControlSddl(WDFDRIVER Driver, PWCHAR Buffer, size_t Characters)
 {
     (VOID)RtlStringCchCopyW(Buffer, Characters, L"D:P(A;;GA;;;SY)");
     WDFKEY key = NULL;

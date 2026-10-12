@@ -177,10 +177,6 @@ CStreamEngine::AllocateRtPackets(
     m_PacketSize = PacketSize;
     m_FirstPacketOffset = firstPacketOffset;
 
-    // NTPods: tell the mic ring how much this client pulls per tick, so its
-    // latency trim never leaves less than a packet buffered.
-    MicPipeSetPacketSize(PacketSize);
-
 exit:
     if (packetBuffer)
     {
@@ -651,6 +647,15 @@ CCaptureStreamEngine::~CCaptureStreamEngine()
 {
     PAGED_CODE();
     if (InterlockedExchange(&m_CaptureRunning, 0)) MicPipeCaptureStopped();
+}
+
+PAGED_CODE_SEG
+NTSTATUS CCaptureStreamEngine::AllocateRtPackets(ULONG PacketCount, ULONG PacketSize, PACX_RTPACKET* Packets)
+{
+    PAGED_CODE();
+    NTSTATUS status = CStreamEngine::AllocateRtPackets(PacketCount, PacketSize, Packets);
+    if (NT_SUCCESS(status)) MicPipeSetPacketSize(PacketSize);
+    return status;
 }
 
 _Use_decl_annotations_

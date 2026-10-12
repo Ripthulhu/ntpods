@@ -88,7 +88,8 @@ permission to relicense or redistribute the combined driver.
 
 ## FFmpeg
 
-The AAC-ELD decoder dynamically links FFmpeg 7.1 LGPL-3.0-or-later shared libraries, pinned to
+The AAC-ELD decoder and optional AAC-LC playback encoder dynamically link
+FFmpeg 7.1 LGPL-3.0-or-later shared libraries, pinned to
 the BtbN monthly build `autobuild-2026-07-31-14-10`, source revision
 `n7.1.5-12-g1fdbca85aa`, and archive SHA-256
 `0f376f96fb38554ccefb1b2ae9c7c6a7b351f0e60a372b38262c320e8392c5d0`.
@@ -100,6 +101,19 @@ alone are not a claim of complete license compliance.
 Experimental downloads include the exact FFmpeg source and matching BtbN build
 recipes, with pinned hashes. Dependency source archives are not bundled; see
 [source archive notes](docs/FFMPEG-SOURCES.md) for the contents and limitations.
+
+## Optional AAC-ELD playback encoder
+
+The local AAC-ELD playback experiment uses a separate FDK-AAC 2.0.3 worker.
+Its pinned source, license and redistribution restrictions are documented in
+[the encoder README](windows/playback/encoder/README.md). Published playback
+builds include only the FFmpeg AAC-LC encoder; they exclude the FDK worker and
+library.
+
+AAC-ELD packet framing follows
+[USBPods' macOS capture research](https://github.com/wasdwasd0105/USBPods-Pico2W/blob/6286ab1618ec1143d828b1fc377d8e22c449e567/aac-eld-apple.md).
+The implementation uses that protocol description; it does not include
+Alternative A2DP code or binaries.
 
 ## Other dependencies and assets
 

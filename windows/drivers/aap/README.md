@@ -177,3 +177,49 @@ normal release needs Microsoft driver signing and the hardware checks listed abo
 
 The upstream transport uses L2CAP Basic mode. ATT (PSM `0x001F`) opens lazily on the
 first ATT send and closes with AAP on disconnect or handle cleanup.
+
+## Experimental playback transport
+
+`/p:NTPodsExperimentalPlayback=true` adds separate AVDTP signaling and media
+channels. Normal builds exclude this code. Existing AAP/ATT IOCTLs are unchanged.
+Both channels use PSM `0x0019`, the paired device belonging to this PDO, and an
+authenticated, encrypted link. There is no caller-supplied PSM.
+
+The backend must release the existing playback transport before opening these
+channels. This driver cannot control another driver's AVDTP session. It supplies
+L2CAP transport; the backend owns AVDTP negotiation, media framing and recovery.
+
+The version-1 ABI uses packed little-endian fields and requires read/write access
+to the existing device handle:
+
+| IOCTL | Input | Output |
+| --- | --- | --- |
+| `0x8000E040` OPEN | `u32 version, u32 channel, u64 address` | `u32 version, u32 channel, u32 tx_mtu, u32 rx_mtu` |
+| `0x8000E044` CLOSE | none | none |
+| `0x8000E048` SEND | `u32 version, u32 channel`, then packet | none |
+| `0x8000E04C` RECEIVE | `u32 version, u32 channel, u32 timeout_ms` | packet bytes |
+| `0x8000E050` STATUS | none | `u32 version, u32 signaling_open, u32 media_open, u32 signaling_tx_mtu, u32 media_tx_mtu, u64 address` |
+
+Channel 0 is signaling; channel 1 is media and requires signaling to be open.
+Packet buffers are capped at 8192 bytes. Sends must fit the negotiated outbound
+MTU; receive buffers must hold the inbound MTU. Receives wait at most 100 ms and
+return zero bytes on timeout. The existing BRB cancellation and completion rules
+also apply here. Status does not wait for pending Bluetooth I/O.
+
+Media requests a 200 ms outbound L2CAP flush timeout; signaling requires infinite
+retransmission. An unexpected negotiated timeout rejects the channel. Windows
+owns the HCI packet flags: the BRB transfer API has no per-packet auto-flush flag.
+Hardware captures must verify expiry and signaling reliability under congestion.
+
+CLOSE closes media before signaling, leaving AAP and ATT alone. File cleanup,
+suspend and removal close all channels. An unexpected signaling disconnect
+disables media immediately and queues its closure at passive level. Separate
+send/receive locks prevent local close from releasing an in-flight transfer's
+channel. Failed closes retain the handle for cleanup retry unless the peer or
+radio has already removed it.
+
+`tests/playback_transport_test.cpp` compiles the production transport with WDF
+and completing Bluetooth substitutes. It checks access boundaries, MTUs,
+concurrent I/O, cancellation, failed opens/closes and remote disconnect cleanup.
+Build it with `cl /W4 /WX /EHsc /std:c++17` like the existing concurrency test.
+Hardware transport, codec playback and Driver Verifier remain untested.

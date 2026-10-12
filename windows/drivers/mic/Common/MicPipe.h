@@ -52,6 +52,8 @@ Environment:
 
 EXTERN_C_START
 
+VOID MicPipeControlSddl(WDFDRIVER Driver, PWCHAR Buffer, size_t Characters);
+
 //
 // Initialize the global ring buffer. Call once, early (device add), before any
 // read/write. Idempotent.

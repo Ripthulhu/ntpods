@@ -89,15 +89,23 @@
   <ItemGroup>
     <Inf Include="NTPodsAAP.inf" />
   </ItemGroup>
+  <ItemDefinitionGroup Condition="'$(NTPodsExperimentalPlayback)' == 'true'">
+    <ClCompile>
+      <PreprocessorDefinitions>NTPODS_EXPERIMENTAL_PLAYBACK=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="NTPodsAAP.h" />
     <ClInclude Include="Policy.h" />
+    <ClInclude Include="Playback.h" />
+    <ClInclude Include="PlaybackContract.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Driver.c" />
     <ClCompile Include="Device.c" />
     <ClCompile Include="L2cap.c" />
     <ClCompile Include="Ioctl.c" />
+    <ClCompile Include="Playback.c" Condition="'$(NTPodsExperimentalPlayback)' == 'true'" />
   </ItemGroup>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

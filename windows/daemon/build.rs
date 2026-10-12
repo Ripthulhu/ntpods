@@ -14,6 +14,14 @@ fn main() {
         .include(ff.join("include"))
         .compile("eld_shim");
 
+    if std::env::var_os("CARGO_FEATURE_EXPERIMENTAL_PLAYBACK").is_some() {
+        cc::Build::new()
+            .file("src/playback/aac_shim.c")
+            .std("c11")
+            .include(ff.join("include"))
+            .compile("aac_shim");
+    }
+
     // Link the FFmpeg import libs (avcodec pulls avutil + swresample).
     println!(
         "cargo:rustc-link-search=native={}",
@@ -23,4 +31,5 @@ fn main() {
     println!("cargo:rustc-link-lib=avutil");
     println!("cargo:rustc-link-lib=swresample");
     println!("cargo:rerun-if-changed=src/eld_shim.c");
+    println!("cargo:rerun-if-changed=src/playback/aac_shim.c");
 }

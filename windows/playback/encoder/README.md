@@ -1,0 +1,68 @@
+# AAC-ELD development encoder
+
+This worker encodes 48 kHz stereo PCM for the Apple AAC-ELD playback experiment.
+It is a local development tool. The normal build, MSI and release packages do
+not build or include it.
+
+## Build and check
+
+Run from the repository root with Visual Studio 2022 C++ and CMake tools:
+
+```powershell
+./windows/playback/encoder/build.ps1
+python windows/playback/encoder/test.py
+```
+
+The test encodes separate 440 Hz and 880 Hz tones, decodes through FDK, and checks
+format, pitch, channel separation and malformed input. It does not play audio or
+open Bluetooth. NTPods' pinned FFmpeg 7.1 decoder does not implement the low-delay
+SBR used here, so this round trip uses the encoder library's own decoder.
+
+Build output and downloaded source stay in ignored `build` and `vendor` folders.
+The executable and `fdk-aac.dll` are in `build/Release`.
+
+## Pipe format
+
+Input is signed 16-bit little-endian PCM, left then right, at 48,000 Hz.
+Write complete blocks of 480 stereo frames (1,920 bytes). A partial final block
+is an error. Closing stdin flushes the encoder and closes stdout.
+
+Output starts with this header:
+
+| Field | Encoding |
+| --- | --- |
+| Magic and version | Eight ASCII bytes: `NPELD001` |
+| Samples per channel per frame | Little-endian uint16: 480 |
+| AudioSpecificConfig length | Little-endian uint16: 1–64 |
+| AudioSpecificConfig | That many bytes |
+
+Each following record contains a little-endian uint16 length and one raw AAC-ELD
+access unit. Lengths are 1–320 bytes. EOF ends the stream; there is no zero-length
+record. Errors go to stderr and return a nonzero exit code. The caller must check
+the exit code before treating EOF as a normal stop.
+
+The encoder uses AOT 39, 480-sample frames, downsampled SBR, VBR mode 5 and a
+256 kbps peak limit. It checks the generated configuration before sending it.
+This is lossy audio; it does not implement Apple's wireless lossless mode.
+
+## Source and licensing
+
+FDK-AAC 2.0.3 is pinned to
+[`cac04476081a23c870fed05c36228cd02c5e7c3d`](https://github.com/mstorsjo/fdk-aac/tree/cac04476081a23c870fed05c36228cd02c5e7c3d).
+The build verifies the source archive's SHA-256:
+
+```text
+1b572fcb5e2a81aa0447a92ca95bfe4979f3edfc09918e0627b726bcd0165ff1
+```
+
+Its license is retained in [NOTICE-FDK.txt](NOTICE-FDK.txt).
+[FFmpeg identifies FDK's license as incompatible with GPL v2 and v3](https://ffmpeg.org/doxygen/trunk/md_LICENSE.html).
+Running a separate process does not by itself resolve the licensing of a
+combined product. Keep this worker out of published binaries until that is
+resolved. FDK's license also requires its complete source to accompany binary
+distribution or be made available to recipients; it grants no patent license.
+
+Codec settings follow
+[USBPods' macOS capture research](https://github.com/wasdwasd0105/USBPods-Pico2W/blob/6286ab1618ec1143d828b1fc377d8e22c449e567/aac-eld-apple.md).
+Successful local encoding does not establish AirPods playback or coexistence
+with Windows audio.

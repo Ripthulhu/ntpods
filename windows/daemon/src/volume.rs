@@ -1,18 +1,19 @@
-//! System output volume via Core Audio (WASAPI IAudioEndpointVolume). The daemon
-//! owns volume so it's the single arbiter — it reports it in the Snapshot, serves
-//! the tray's volume commands, and ducks it for Conversational Awareness without
-//! an IPC round-trip. Controls the default render device (the AirPods when they
-//! are the active output). This is Windows audio, independent of the AAP driver.
+//! Core Audio volume, mute and Conversation Awareness for the current output.
 
-use windows::core::{AgileReference, Interface};
+use windows::core::{AgileReference, Error, Interface, BSTR};
+use windows::Win32::Devices::FunctionDiscovery::{
+    PKEY_DeviceInterface_FriendlyName, PKEY_Device_FriendlyName,
+};
+use windows::Win32::Foundation::{ERROR_NOT_FOUND, E_FAIL};
 use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
 use windows::Win32::Media::Audio::{
     eConsole, eRender, AudioSessionStateActive, IAudioSessionControl2, IAudioSessionManager2,
-    IMMDeviceEnumerator, MMDeviceEnumerator,
+    IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
 };
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED,
+    CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED, STGM_READ,
 };
+use windows::Win32::UI::Shell::PropertiesSystem::PROPERTYKEY;
 
 /// Join the process MTA for the calling thread. Idempotent-safe (a second call
 /// returns S_FALSE). Every daemon thread that touches volume must call this.
@@ -22,16 +23,81 @@ pub fn init() {
     }
 }
 
-fn endpoint() -> windows::core::Result<IAudioEndpointVolume> {
+fn output_device() -> windows::core::Result<IMMDevice> {
     unsafe {
         let enumerator: IMMDeviceEnumerator =
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
-        let device = enumerator.GetDefaultAudioEndpoint(eRender, eConsole)?;
-        device.Activate(CLSCTX_ALL, None)
+        #[cfg(feature = "experimental-playback")]
+        let experimental = crate::playback::is_active();
+        #[cfg(not(feature = "experimental-playback"))]
+        let experimental = false;
+        resolve_output(
+            experimental,
+            || enumerator.GetDefaultAudioEndpoint(eRender, eConsole),
+            || {
+                let devices = enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)?;
+                let mut candidates = Vec::new();
+                for index in 0..devices.GetCount()? {
+                    let device = devices.Item(index)?;
+                    let Ok(properties) = device.OpenPropertyStore(STGM_READ) else {
+                        continue;
+                    };
+                    let text = |key: &PROPERTYKEY| {
+                        properties
+                            .GetValue(key)
+                            .ok()
+                            .and_then(|value| BSTR::try_from(&value).ok())
+                            .map(|value| value.to_string())
+                    };
+                    let interface = text(&PKEY_DeviceInterface_FriendlyName);
+                    let friendly = text(&PKEY_Device_FriendlyName);
+                    if is_experimental_endpoint(interface.as_deref(), friendly.as_deref()) {
+                        candidates.push(device);
+                    }
+                }
+                Ok(candidates)
+            },
+        )
     }
 }
 
-/// Current master volume of the default output (0..=100), or None if it fails.
+fn resolve_output<T>(
+    experimental: bool,
+    default: impl FnOnce() -> windows::core::Result<T>,
+    candidates: impl FnOnce() -> windows::core::Result<Vec<T>>,
+) -> windows::core::Result<T> {
+    if !experimental {
+        return default();
+    }
+    let mut matches = candidates()?;
+    match matches.len() {
+        0 => Err(Error::new(
+            windows::core::HRESULT::from_win32(ERROR_NOT_FOUND.0),
+            "Experimental playback endpoint is unavailable",
+        )),
+        1 => Ok(matches.pop().unwrap()),
+        _ => Err(Error::new(
+            E_FAIL,
+            "Multiple experimental playback endpoints are active",
+        )),
+    }
+}
+
+fn is_experimental_endpoint(interface: Option<&str>, friendly: Option<&str>) -> bool {
+    // The interface name comes from our INF and survives endpoint renaming.
+    match interface.filter(|name| !name.is_empty()) {
+        Some(name) => name == "NTPods Experimental",
+        None => friendly.is_some_and(|name| {
+            name == "NTPods Experimental" || name.ends_with(" (NTPods Experimental)")
+        }),
+    }
+}
+
+fn endpoint() -> windows::core::Result<IAudioEndpointVolume> {
+    unsafe { output_device()?.Activate(CLSCTX_ALL, None) }
+}
+
+/// Current master volume of the selected output (0..=100), or None if it fails.
 pub fn get() -> Option<u8> {
     let vol = endpoint().ok()?;
     let level = unsafe { vol.GetMasterVolumeLevelScalar().ok()? };
@@ -48,8 +114,14 @@ pub fn set(percent: u8) {
 }
 
 pub fn step(delta: i32) {
-    if let Some(cur) = get() {
-        set((cur as i32).saturating_add(delta).clamp(0, 100) as u8);
+    if let Ok(vol) = endpoint() {
+        if let Ok(current) = unsafe { vol.GetMasterVolumeLevelScalar() } {
+            let percent = (current * 100.0).round() as i32;
+            let level = percent.saturating_add(delta).clamp(0, 100) as f32 / 100.0;
+            unsafe {
+                let _ = vol.SetMasterVolumeLevelScalar(level, std::ptr::null());
+            }
+        }
     }
 }
 
@@ -71,23 +143,10 @@ pub fn toggle_mute() {
     }
 }
 
-/// True if any app is actively rendering audio on the default output — the
-/// broad "is this host playing something" test.
-///
-/// Core Audio also detects playback from apps without an SMTC session, such as
-/// calls and games. Skip `IsSystemSoundsSession` so notification sounds do not
-/// claim the audio route from another host.
-///
-/// Read the default endpoint because Windows moves playback there when the
-/// AirPods disconnect. Return false on COM failure.
+/// Includes apps without an SMTC session, but excludes notification sounds.
 pub fn any_render_active() -> bool {
     unsafe {
-        let Ok(enumerator) =
-            CoCreateInstance::<_, IMMDeviceEnumerator>(&MMDeviceEnumerator, None, CLSCTX_ALL)
-        else {
-            return false;
-        };
-        let Ok(device) = enumerator.GetDefaultAudioEndpoint(eRender, eConsole) else {
+        let Ok(device) = output_device() else {
             return false;
         };
         let Ok(manager) = device.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) else {
@@ -266,6 +325,62 @@ mod tests {
     use std::rc::Rc;
 
     #[test]
+    fn experimental_identity_accepts_renaming_but_not_similar_devices() {
+        assert!(is_experimental_endpoint(
+            Some("NTPods Experimental"),
+            Some("My output")
+        ));
+        for friendly in [
+            "NTPods Experimental",
+            "Speakers (NTPods Experimental)",
+            "Luidsprekers (NTPods Experimental)",
+        ] {
+            assert!(is_experimental_endpoint(None, Some(friendly)));
+        }
+        for friendly in [
+            "AirPods",
+            "NTPods Microphone",
+            "Speakers (NTPods Experimental 2)",
+            "NTPods Experimental backup",
+        ] {
+            assert!(!is_experimental_endpoint(None, Some(friendly)));
+        }
+        assert!(!is_experimental_endpoint(
+            Some("Other output"),
+            Some("Speakers (NTPods Experimental)")
+        ));
+        assert!(!is_experimental_endpoint(None, None));
+    }
+
+    #[test]
+    fn output_resolution_never_falls_back_while_experimental_playback_is_owned() {
+        assert_eq!(
+            resolve_output(
+                false,
+                || Ok(7),
+                || panic!("normal playback must not enumerate")
+            )
+            .unwrap(),
+            7
+        );
+        assert_eq!(
+            resolve_output(true, || panic!("must not use default"), || Ok(vec![9])).unwrap(),
+            9
+        );
+        for matches in [vec![], vec![8, 9]] {
+            assert!(
+                resolve_output(true, || panic!("must not use default"), || Ok(matches)).is_err()
+            );
+        }
+        assert!(resolve_output::<u8>(
+            true,
+            || panic!("must not use default"),
+            || Err(Error::new(E_FAIL, "enumeration failed"))
+        )
+        .is_err());
+    }
+
+    #[test]
     fn ordinary_playback_is_not_system_sounds() {
         use windows::Win32::Foundation::{E_FAIL, S_FALSE, S_OK};
         assert!(is_application_session(S_FALSE));
@@ -305,6 +420,34 @@ mod tests {
             self.writes.borrow_mut().push(level);
             true
         }
+    }
+
+    #[test]
+    fn playback_toggle_keeps_duck_restoration_on_the_endpoint_it_changed() {
+        let default = Endpoint::new(0.7);
+        let native = Endpoint::new(0.8);
+        let owned = Cell::new(false);
+        let resolve = || {
+            resolve_output(
+                owned.get(),
+                || Ok(default.clone()),
+                || Ok(vec![native.clone()]),
+            )
+            .ok()
+        };
+        let mut active = None;
+        update_duck(&mut active, 1, 25, resolve);
+        owned.set(true);
+        update_duck(&mut active, 4, 25, resolve);
+        assert_eq!(default.level.get(), 0.7);
+        assert!(native.writes.borrow().is_empty());
+
+        update_duck(&mut active, 1, 25, resolve);
+        owned.set(false);
+        update_duck(&mut active, 4, 25, resolve);
+        assert_eq!(native.level.get(), 0.8);
+        assert_eq!(*default.writes.borrow(), [0.25, 0.7]);
+        assert_eq!(*native.writes.borrow(), [0.25, 0.8]);
     }
 
     #[test]

@@ -20,8 +20,8 @@ This is based on the **Microsoft ACX `AudioCodec` sample** from
 - it includes a capture circuit (`Common/CaptureCircuit.cpp`);
 - it uses ACX on KMDF, also used by the `NTPodsAAP` driver.
 
-NTPods retains only the capture circuit and replaces the sample audio source with
-PCM supplied from user mode over an IOCTL.
+NTPods replaces the sample capture source with PCM supplied from user mode over
+an IOCTL. An optional render circuit sends playback PCM back to user mode.
 
 ## Status
 
@@ -31,7 +31,7 @@ changes need the Windows checks below before deployment:
 - The complete installer provisions the intended user's SID, signs the test
   package, and creates `ROOT\NTPodsMicACX`. The old single-driver `install.ps1`
   refuses to run because it bypassed that setup.
-- **Capture-only**: the render circuit was removed from `Device.cpp`.
+- Normal builds expose only the microphone.
 - **PCM bridge**: `Common/MicPipe.{h,cpp}` provides a spin-locked ring buffer and a
   control device `\\.\NTPodsMic` with `IOCTL_NTPODS_MIC_WRITE_PCM`
   (`0x0022A000`). `StreamEngine::ProcessPacket` drains the ring instead of the
@@ -144,3 +144,42 @@ producer exit and Driver Verifier still need hardware checks.
 These rules follow Microsoft's [ACX streaming contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/audio/acx-streaming),
 [packet timestamp contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/acxstreams/nc-acxstreams-evt_acx_stream_get_capture_packet),
 and [pin stream limit](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/acxpin/ns-acxpin-acx_pin_config).
+
+## Experimental playback
+
+Build `AudioCodec.sln` with `/p:NTPodsExperimentalPlayback=true` to enable
+`NTPODS_EXPERIMENTAL_PLAYBACK=1` in both driver projects. The default is off.
+This adds `Speakers (NTPods Experimental)`, a 48 kHz PCM16 stereo endpoint.
+Select it inside a playback application; its interface is marked
+`NeverSetAsDefaultEndpoint` so Windows cannot replace the normal system output.
+This flag also prevents setting it as the global default manually.
+
+The exclusive `\\.\NTPodsPlayback` reader uses the same installed
+`AllowedUserSid` and SYSTEM ACL as the microphone bridge. Open it with
+`GENERIC_READ`. Normal applications send sound through Windows; they never open
+this control device.
+
+| Request | Input | Output |
+| --- | --- | --- |
+| `READ_PCM` (`0x00226400`) | None | 4–1920 bytes, divisible by 4; returns the queued stereo frames, possibly zero bytes |
+| `STATUS` (`0x00226404`) | None | Exactly 32 bytes: eight little-endian DWORDs |
+
+The status fields are version (`2`), sample rate (`48000`), channels (`2`), bits
+per sample (`16`), running streams, queued frames, dropped frames and stream
+generation. Every queue reset advances the generation, including a last-client
+pause followed immediately by a new start. Consumers must discard pending PCM
+and encoded audio when it changes. Reads complete immediately; transmission is
+paced from the sample count.
+
+Windows mixes clients into one render stream. The shared timer consumes two
+event-driven buffers, each at most 9,600 bytes (50 ms stereo). Missing or partial
+end-of-stream packets produce silence. The PCM ring holds at most 100 ms and
+drops its oldest frames on overflow. Without a reader, playback is discarded.
+Reader closure, the last render pause, power-down and removal clear queued
+audio. No kernel read remains pending and no PCM enters driver logs.
+
+`tests/render_bridge_test.cpp` checks stereo copying, overflow, packet ordering,
+end-of-stream bounds, packet-number wrap and a 60-second sample clock. The
+microphone tests still cover the shared timer arithmetic. Endpoint enumeration,
+installed playback, sleep/resume, removal, Driver Verifier and Bluetooth latency
+remain hardware checks; the opt-in driver has not been installed.

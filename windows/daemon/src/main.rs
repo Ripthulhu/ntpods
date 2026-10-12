@@ -26,6 +26,8 @@ mod le;
 mod media;
 mod mic_lifecycle;
 mod micpipe;
+#[cfg(feature = "experimental-playback")]
+mod playback;
 mod rename;
 mod security;
 mod volume;
@@ -2567,6 +2569,8 @@ fn run_receiver(ctx: Ctx) {
 
         let head_worker =
             HeadTrackingWorker::start(ctx.clone(), driver.clone(), mic_ears.allows_capture());
+        #[cfg(feature = "experimental-playback")]
+        let playback_worker = playback::Worker::start(driver.clone(), ctx.mac());
 
         let mut we_paused: Option<(u64, media::PausedSession)> = None;
         let mut prev_ear = [false; 2]; // last [primary, secondary] in-ear state
@@ -3238,6 +3242,8 @@ fn run_receiver(ctx: Ctx) {
             log("mic: session closed before microphone cleanup finished; explicit retry required");
         }
         head_worker.join();
+        #[cfg(feature = "experimental-playback")]
+        drop(playback_worker);
         close_head_tracking(&ctx, &driver);
         cancel_microphone_request(&ctx);
         mic_stats.finish("session-closed");
@@ -3374,6 +3380,9 @@ fn main() {
         let _ = std::fs::create_dir_all(format!("{la}\\NTPods"));
     }
     log("=== ntpodsd start ===");
+    if let Err(error) = bt::restore_experimental_audio() {
+        log(&format!("playback restoration: {error}"));
+    }
     let (mac, dev_name) = match bt::find_airpods() {
         Some((m, n)) => (m, n),
         None => (0, "AirPods".to_string()),

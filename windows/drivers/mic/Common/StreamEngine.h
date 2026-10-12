@@ -218,6 +218,9 @@ protected:
 class CCaptureStreamEngine : public CStreamEngine
 {
 public:
+    PAGED_CODE_SEG
+    NTSTATUS AllocateRtPackets(ULONG PacketCount, ULONG PacketSize, PACX_RTPACKET* Packets) override;
+
     __drv_maxIRQL(PASSIVE_LEVEL)
     PAGED_CODE_SEG
     NTSTATUS Run() override;
