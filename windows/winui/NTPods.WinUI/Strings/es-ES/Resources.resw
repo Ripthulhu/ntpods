@@ -106,7 +106,6 @@
 
   <!-- ===== MicCard ===== -->
   <data name="MicTitle.Text" xml:space="preserve"><value>Micrófono de alta resolución</value></data>
-  <data name="MicAutoSwitch.Header" xml:space="preserve"><value>Usar automáticamente cuando una app graba</value></data>
   <data name="MicEnableBtn.Content" xml:space="preserve"><value>Usar el micrófono</value></data>
 
   <!-- ===== HearingAidCard ===== -->
@@ -168,8 +167,6 @@
   <data name="Overlay_BatteryLow" xml:space="preserve"><value>Batería baja —</value></data>
   <data name="Overlay_CaseBatteryLow" xml:space="preserve"><value>Batería del estuche baja —</value></data>
   <data name="Overlay_RenamedTo" xml:space="preserve"><value>Renombrado a</value></data>
-  <data name="Rename_WindowsNoticeTitle" xml:space="preserve"><value>Nombre actualizado</value></data>
-  <data name="Rename_WindowsNoticeBody" xml:space="preserve"><value>En Windows, el nuevo nombre solo aparece después de desconectar y volver a conectar los AirPods.</value></data>
   <data name="Battery_LeftShort" xml:space="preserve"><value>Izq</value></data>
   <data name="Battery_RightShort" xml:space="preserve"><value>Der</value></data>
   <data name="Battery_CaseShort" xml:space="preserve"><value>Estuche</value></data>
@@ -202,7 +199,6 @@
   <data name="Mic_Recording" xml:space="preserve"><value>En uso - grabando en alta calidad</value></data>
   <data name="Mic_Idle" xml:space="preserve"><value>No se está usando</value></data>
   <data name="Mic_NeedsNewerWindows" xml:space="preserve"><value>Necesita Windows 10 2004 o posterior. El micrófono Bluetooth normal de los AirPods sigue funcionando.</value></data>
-  <data name="Mic_NotLoaded" xml:space="preserve"><value>El driver del micrófono de NTPods no está cargado. Reinstala NTPods y reinicia.</value></data>
 
   <data name="Anc_Off" xml:space="preserve"><value>Desactivado</value></data>
   <data name="Anc_NoiseCancellation" xml:space="preserve"><value>Cancelación de ruido</value></data>
@@ -231,4 +227,31 @@
   <!-- ===== Restore audio ===== -->
   <data name="HeaderRebuildAudioBtn.Text" xml:space="preserve"><value>Restaurar audio</value></data>
   <data name="HeaderRebuildAudioBtn.Tip" xml:space="preserve"><value>Desactiva y reactiva los servicios de audio de los AirPods — la versión de un clic de Desconectar y volver a conectar. Úsalo cuando el sonido se corta pero todo parece conectado.</value></data>
+  <data name="HeadTracking.Title" xml:space="preserve"><value>Seguimiento de la cabeza</value></data>
+  <data name="HeadTracking.LiveMovement" xml:space="preserve"><value>Movimiento en directo</value></data>
+  <data name="HeadTracking.Horizontal" xml:space="preserve"><value>Horizontal</value></data>
+  <data name="HeadTracking.Vertical" xml:space="preserve"><value>Vertical</value></data>
+  <data name="HeadTracking.Start" xml:space="preserve"><value>Iniciar seguimiento</value></data>
+  <data name="HeadTracking.Pause" xml:space="preserve"><value>Pausar seguimiento</value></data>
+  <data name="HeadTracking.Connect" xml:space="preserve"><value>Conecta tus AirPods para ver el movimiento.</value></data>
+  <data name="HeadTracking.Wear" xml:space="preserve"><value>Ponte los AirPods para ver el movimiento.</value></data>
+  <data name="HeadTracking.Waiting" xml:space="preserve"><value>Esperando movimiento…</value></data>
+  <data name="HeadTracking.Ready" xml:space="preserve"><value>Inicia el seguimiento para ver tus movimientos.</value></data>
+  <data name="Device.DefaultName" xml:space="preserve"><value>Auriculares</value></data>
+  <data name="DeviceControls.AutoPause" xml:space="preserve"><value>Pausa automática</value></data>
+  <data name="DeviceControls.AutoPauseHint" xml:space="preserve"><value>Pausa la reproducción al quitarte un auricular. Solo reanuda la reproducción que NTPods haya pausado, cuando vuelvas a ponerte ambos auriculares.</value></data>
+  <data name="DeviceControls.HeadphoneAutoPauseHint" xml:space="preserve"><value>Pausa la reproducción al quitarte los auriculares. Solo reanuda la reproducción que NTPods haya pausado, cuando vuelvas a ponértelos.</value></data>
+  <data name="DeviceControls.HeadDetection" xml:space="preserve"><value>Detección automática de cabeza</value></data>
+  <data name="DeviceControls.EarDetection" xml:space="preserve"><value>Detección automática de oído</value></data>
+  <data name="DeviceControls.CrownDirection" xml:space="preserve"><value>Dirección de la Digital Crown</value></data>
+  <data name="DeviceControls.Reversed" xml:space="preserve"><value>Invertida</value></data>
+  <data name="DeviceControls.Default" xml:space="preserve"><value>Predeterminada</value></data>
+  <data name="DeviceControls.Buttons" xml:space="preserve"><value>Controles de los botones</value></data>
+  <data name="DeviceControls.CallControls" xml:space="preserve"><value>Controles de llamadas</value></data>
+  <data name="DeviceControls.CallDefault" xml:space="preserve"><value>Pulsa una vez para silenciar y dos para colgar</value></data>
+  <data name="DeviceControls.CallSwapped" xml:space="preserve"><value>Pulsa dos veces para silenciar y una para colgar</value></data>
+  <data name="DeviceControls.CallHint" xml:space="preserve"><value>Guarda el ajuste de llamadas del dispositivo. Estos gestos no controlan el micrófono NTPods ni las aplicaciones de Windows.</value></data>
+  <data name="LoudSoundReduction.Title" xml:space="preserve"><value>Reducción de sonidos fuertes</value></data>
+  <data name="DeviceSetting.Unknown" xml:space="preserve"><value>El dispositivo aún no ha comunicado este ajuste.</value></data>
+  <data name="Navigation.Back" xml:space="preserve"><value>Atrás</value></data>
 </root>

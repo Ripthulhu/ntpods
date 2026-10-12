@@ -2,6 +2,7 @@ using System;
 using NTPods.WinUI.Ipc;
 using NTPods.WinUI.Services;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
@@ -9,39 +10,64 @@ using Microsoft.UI.Xaml.Media.Imaging;
 
 namespace NTPods.WinUI.Controls;
 
-/// Device header card: product image + name (editable via a pencil), connection
-/// dot/status, an inline Connect link while disconnected, and a Disconnect button
-/// while connected. Renders a Snapshot; actions forward to the daemon.
+/// Device name and connection status, with device actions and app settings in one menu.
 public sealed partial class DeviceHeader : UserControl
 {
-    public DaemonClient? Client { get; set; }
+    public event Action? SettingsRequested;
+    private DaemonClient? _client;
+    public DaemonClient? Client
+    {
+        get => _client;
+        set
+        {
+            if (_client is not null) _client.CommandResultReceived -= RenameResult;
+            _client = value;
+            if (_client is not null) _client.CommandResultReceived += RenameResult;
+        }
+    }
+    private readonly RenameRequest _rename = new();
+    private readonly DispatcherTimer _renameTimeout = new() { Interval = TimeSpan.FromSeconds(10) };
 
     // The artwork family currently shown, so we only reload the image when the
     // detected model actually changes (snapshots arrive several times a second).
     private string? _artFamily;
+    private string _deviceId = "";
 
     public DeviceHeader()
     {
         InitializeComponent();
+        _renameTimeout.Tick += (_, _) =>
+        {
+            CancelRename();
+            ShowRenameMessage(Localize.Get("Rename.UnconfirmedTitle"), Localize.Get("Rename.UnconfirmedBody"));
+        };
     }
 
     /// Render the header from a daemon Snapshot (name + connection state).
     public void Update(Snapshot s)
     {
+        if (_deviceId != s.DeviceId)
+        {
+            _deviceId = s.DeviceId;
+            CancelRename();
+            ExitEdit();
+        }
         // Don't clobber the name while the user is editing it.
         if (NameEdit.Visibility != Visibility.Visible)
             DeviceName.Text = string.IsNullOrWhiteSpace(s.DevName) ? "NTPods" : s.DevName;
 
-        // Model-aware product image (falls back to the generic airpods.png until
-        // the 0x1D metadata arrives / for unknown models).
-        var family = DeviceArt.Family(s.Model);
+        // Keep the normally hidden header image consistent with the battery artwork.
+        var family = DeviceArt.Family(s.Model, DeviceModels.Headphone(s));
         if (family != _artFamily)
         {
             _artFamily = family;
-            DeviceImage.Source = new BitmapImage(new Uri(DeviceArt.MainImage(s.Model)));
+            DeviceImage.Source = new BitmapImage(new Uri(DeviceArt.MainImage(s.Model, DeviceModels.Headphone(s))));
         }
 
-        StatusText.Text = Localize.Get(s.Connected ? "Status_Connected" : "Status_Disconnected");
+        StatusText.Text = Localize.Get(BatteryPresentation.StatusKey(s));
+        string freshness = BatteryPresentation.FreshnessText(s);
+        ToolTipService.SetToolTip(StatusText, string.IsNullOrEmpty(freshness) ? null : freshness);
+        AutomationProperties.SetHelpText(StatusText, freshness);
         // Green = talking to us; Orange = attached but the channel went silent
         // (Repair appears); Gray = not connected.
         StatusDot.Fill = new SolidColorBrush(
@@ -60,11 +86,23 @@ public sealed partial class DeviceHeader : UserControl
         // "Restore audio" is the opposite case to Repair: the session is fine, the
         // sound is not. Only useful while connected.
         RebuildAudioButton.Visibility = s.Connected ? Visibility.Visible : Visibility.Collapsed;
-        if (!s.Connected) ExitEdit();
+        DeviceActionsSeparator.Visibility = Visibility.Visible;
+        if (!s.Connected) { CancelRename(); ExitEdit(); }
     }
 
     /// The events pipe dropped — reflect that we're no longer hearing from the daemon.
     public void ShowWaitingForDaemon() => StatusText.Text = Localize.Get("Status_WaitingForDaemon");
+
+    public void SetDaemonReady(bool ready)
+    {
+        ConnectButton.IsEnabled = RenameBtn.IsEnabled = RepairButton.IsEnabled =
+            RebuildAudioButton.IsEnabled = DisconnectButton.IsEnabled = ready;
+        if (!ready) { CancelRename(); ExitEdit(); }
+    }
+
+    public void FocusActions() => MoreButton.Focus(FocusState.Programmatic);
+
+    private void Settings_Click(object sender, RoutedEventArgs e) => SettingsRequested?.Invoke();
 
     private void Connect_Click(object sender, RoutedEventArgs e) => Client?.Connect();
     private void Disconnect_Click(object sender, RoutedEventArgs e) => Client?.Disconnect();
@@ -86,21 +124,45 @@ public sealed partial class DeviceHeader : UserControl
     private void Submit_Click(object sender, RoutedEventArgs e)
     {
         var name = NameBox.Text?.Trim() ?? "";
-        if (name.Length > 0)
+        if (_rename.Pending is not null) return;
+        if (!RenameRequest.Valid(name))
         {
-            Client?.SetName(name);
-            DeviceName.Text = name; // optimistic
-            ExitEdit();
-            // The daemon renames the device, but Windows only reflects the new
-            // name after a disconnect/reconnect — tell the user so the unchanged
-            // OS name doesn't read as a failure.
-            RenameHint.Target = DeviceName;
-            RenameHint.Title = Localize.Get("Rename_WindowsNoticeTitle");
-            RenameHint.Subtitle = Localize.Get("Rename_WindowsNoticeBody");
-            RenameHint.IsOpen = true;
+            ShowRenameMessage(Localize.Get("Rename.InvalidTitle"), Localize.Get("Rename.InvalidBody"));
             return;
         }
-        ExitEdit();
+        ulong id = _rename.Begin();
+        if (Client?.SetName(name, id) != true)
+        {
+            CancelRename();
+            ShowRenameMessage(Localize.Get("Rename.UnconfirmedTitle"), Localize.Get("Rename.UnconfirmedBody"));
+            return;
+        }
+        SubmitBtn.IsEnabled = false;
+        _renameTimeout.Start();
+    }
+
+    private void RenameResult(DaemonEvent.CommandResult result) => DispatcherQueue.TryEnqueue(() =>
+    {
+        if (!_rename.Complete(result)) return;
+        CancelRename();
+        if (result.Ok) ExitEdit();
+        ShowRenameMessage(Localize.Get(result.Ok ? "Rename.SentTitle" : "Rename.UnconfirmedTitle"),
+            result.Ok ? Localize.Get("Rename.SentBody") : result.Message);
+    });
+
+    private void CancelRename()
+    {
+        _renameTimeout.Stop();
+        _rename.Cancel();
+        SubmitBtn.IsEnabled = true;
+    }
+
+    private void ShowRenameMessage(string title, string body)
+    {
+        RenameHint.Target = NameEdit.Visibility == Visibility.Visible ? NameBox : DeviceName;
+        RenameHint.Title = title;
+        RenameHint.Subtitle = body;
+        RenameHint.IsOpen = true;
     }
 
     private void Cancel_Click(object sender, RoutedEventArgs e) => ExitEdit();

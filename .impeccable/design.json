@@ -1,0 +1,156 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-11T10:17:44Z",
+  "title": "Design System: NTPods WinUI",
+  "extensions": {
+    "platform": {
+      "name": "WinUI 3 on Windows",
+      "units": "Frontmatter px values represent WinUI device-independent pixels. AppWindow dimensions are physical pixels.",
+      "sources": [
+        "windows/winui/NTPods.WinUI/App.xaml",
+        "windows/winui/NTPods.WinUI/MainWindow.xaml",
+        "windows/winui/NTPods.WinUI/Pages/DevicePage.xaml",
+        "windows/winui/NTPods.WinUI/Pages/SettingsPage.xaml",
+        "windows/winui/NTPods.WinUI/Controls/NoiseControlCard.xaml",
+        "windows/winui/NTPods.WinUI/Controls/NoiseControlCard.xaml.cs",
+        "windows/winui/NTPods.WinUI/Controls/ListeningModeLayout.cs",
+        "windows/winui/NTPods.WinUI/Controls/FeaturesCard.xaml",
+        "windows/winui/NTPods.WinUI/Controls/BatteryCard.xaml"
+      ],
+      "previewScope": "Self-contained HTML specimens represent native composition. Browser controls and focus feedback are approximations; XAML remains authoritative. Native device artwork and mode raster icons are omitted from these specimens. Specimens are not connected to hardware.",
+      "primaryText": "WinUI TextFillColorPrimaryBrush",
+      "highContrast": "Custom colors map to SystemColorWindowColor, SystemColorWindowTextColor, SystemColorHighlightColor and SystemColorHighlightTextColor.",
+      "inheritedTemplates": ["DefaultButtonStyle", "DefaultToggleButtonStyle", "DefaultToggleSwitchStyle", "TextBox", "ComboBox", "RadioButtons", "Slider", "NavigationView", "MenuFlyout", "InfoBar"],
+      "themePairs": {
+        "NTPodsAccentBrush": ["accent-light", "accent-dark"],
+        "AppleToggleColor": ["toggle-light", "toggle-dark"],
+        "AppleToggleHoverColor": ["toggle-hover-light", "toggle-hover-dark"],
+        "AppleGreenBrush": ["battery-light", "battery-dark"],
+        "ApplePageBrush": ["page-light", "page-dark"],
+        "AppleGroupBrush": ["group-light", "group-dark"],
+        "AppleSecondaryBrush": ["secondary-light", "secondary-dark"],
+        "AppleDividerBrush": ["divider-light", "divider-dark"],
+        "AppleSelectedBrush": ["selected-light", "selected-dark"],
+        "AppleSelectedForegroundColor": ["selected-text-light", "selected-text-dark"],
+        "AppleTrackBrush": ["track-light", "track-dark"],
+        "AppleHoverBrush": ["hover-light", "hover-dark"]
+      }
+    },
+    "colorMeta": {
+      "accent-light": { "role": "primary", "displayName": "Control blue, light" },
+      "accent-dark": { "role": "primary", "displayName": "Control blue, dark" },
+      "toggle-light": { "role": "secondary", "displayName": "Enabled switch, light" },
+      "toggle-dark": { "role": "secondary", "displayName": "Enabled switch, dark" },
+      "battery-light": { "role": "secondary", "displayName": "Battery green, light" },
+      "battery-dark": { "role": "secondary", "displayName": "Battery green, dark" },
+      "page-light": { "role": "neutral", "displayName": "Light page" },
+      "page-dark": { "role": "neutral", "displayName": "Black page" },
+      "group-light": { "role": "neutral", "displayName": "White group" },
+      "group-dark": { "role": "neutral", "displayName": "Charcoal group" },
+      "secondary-light": { "role": "neutral", "displayName": "Secondary text, light" },
+      "secondary-dark": { "role": "neutral", "displayName": "Secondary text, dark" },
+      "divider-light": { "role": "neutral", "displayName": "Divider, light" },
+      "divider-dark": { "role": "neutral", "displayName": "Divider, dark" },
+      "selected-light": { "role": "neutral", "displayName": "Selected capsule, light" },
+      "selected-dark": { "role": "neutral", "displayName": "Selected capsule, dark" },
+      "track-light": { "role": "neutral", "displayName": "Listening track, light" },
+      "track-dark": { "role": "neutral", "displayName": "Listening track, dark" },
+      "hover-light": { "role": "neutral", "displayName": "Hover fill, light" },
+      "hover-dark": { "role": "neutral", "displayName": "Hover fill, dark" }
+    },
+    "typographyMeta": {
+      "page-title": { "displayName": "Page title", "purpose": "App settings heading; inherits the native theme font." },
+      "device-title": { "displayName": "Device name", "purpose": "Centered, wrapping device name." },
+      "section-title": { "displayName": "Section title", "purpose": "Secondary-color label above an inset group." },
+      "body": { "displayName": "Row label", "purpose": "Settings labels and expander headings." },
+      "status": { "displayName": "Status and helper", "purpose": "Descriptions, pending requests and capability state." },
+      "label": { "displayName": "Compact label", "purpose": "Listening modes and battery parts." }
+    },
+    "elevation": {
+      "groups": "Solid fills without custom shadows or outer borders.",
+      "selection": "One-DIP AppleDividerBrush border around the moving capsule.",
+      "nativeSurfaces": "Menu, tooltip and control feedback use WinUI templates.",
+      "serialPrivacy": "The serial field alone uses AcrylicBrush with TintOpacity 0.55 and TintLuminosityOpacity 0.9."
+    },
+    "interaction": {
+      "listeningSelection": "Direct pointer-following geometry; no custom animation duration or easing.",
+      "adaptiveFocus": "Two-DIP TextFillColorPrimaryBrush outline, corner radius 27 DIP, inset 1 DIP.",
+      "adaptiveRange": "0–100; keyboard small change 1 and large change 10.",
+      "requestFeedback": "Gesture preview, pending request, confirmed setting and errors have separate rendering paths.",
+      "offVisibility": "Off requires reported AllowOff = 1 and is hidden while Adaptive is expanded."
+    }
+  },
+  "components": [
+    {
+      "name": "Inset group, light",
+      "kind": "card",
+      "refersTo": "group-light",
+      "description": "Light group with a native body label and secondary helper text.",
+      "html": "<section class=\"ds-group-light\"><span class=\"ds-group-title\">Automatic ear detection</span><p class=\"ds-group-helper\">Pause playback when you remove an earbud.</p></section>",
+      "css": ".ds-group-light{background:#FFFFFF;color:CanvasText;border-radius:24px;padding:20px;font-family:'Segoe UI',sans-serif}.ds-group-title{font-size:16px}.ds-group-helper{font-size:13px;color:#636366;margin:6px 0 0}"
+    },
+    {
+      "name": "Inset group, dark",
+      "kind": "card",
+      "refersTo": "group-dark",
+      "description": "Dark group using the paired surface and secondary text resources.",
+      "html": "<section class=\"ds-group-dark\"><span class=\"ds-group-dark-title\">Automatic ear detection</span><p class=\"ds-group-dark-helper\">Pause playback when you remove an earbud.</p></section>",
+      "css": ".ds-group-dark{color-scheme:dark;background:#1C1C1E;color:CanvasText;border-radius:24px;padding:20px;font-family:'Segoe UI',sans-serif}.ds-group-dark-title{font-size:16px}.ds-group-dark-helper{font-size:13px;color:#A1A1A6;margin:6px 0 0}"
+    },
+    {
+      "name": "Quiet action",
+      "kind": "button",
+      "refersTo": "quiet-button",
+      "description": "Transparent action shape. Browser system hover and focus approximate the inherited WinUI template.",
+      "html": "<button class=\"ds-quiet\" type=\"button\">Device actions</button>",
+      "css": ".ds-quiet{background:transparent;color:CanvasText;border:0;border-radius:18px;padding:8px 12px;font-family:'Segoe UI',sans-serif}.ds-quiet:hover{background:ButtonFace}.ds-quiet:active{background:ButtonShadow}.ds-quiet:focus-visible{outline:2px solid Highlight;outline-offset:2px}"
+    },
+    {
+      "name": "Switch row",
+      "kind": "input",
+      "refersTo": "setting-row",
+      "description": "Wrapping label and a right-aligned 52px control slot. A browser checkbox stands in for the native ToggleSwitch.",
+      "html": "<label class=\"ds-setting-row\"><span class=\"ds-setting-label\">Conversation awareness</span><span class=\"ds-setting-slot\"><input class=\"ds-setting-check\" type=\"checkbox\" checked aria-label=\"Conversation awareness\"></span></label>",
+      "css": ".ds-setting-row{display:flex;align-items:center;gap:16px;background:#FFFFFF;color:CanvasText;padding:16px 20px;min-height:32px;border-radius:24px;font:16px 'Segoe UI',sans-serif}.ds-setting-label{flex:1}.ds-setting-slot{width:52px;text-align:right}.ds-setting-check{accent-color:#34C759}.ds-setting-check:hover{accent-color:#30B851}.ds-setting-check:active{accent-color:#248A3D}.ds-setting-check:focus-visible{outline:2px solid Highlight;outline-offset:3px}"
+    },
+    {
+      "name": "Grouped expander",
+      "kind": "custom",
+      "description": "Native expander spacing and connected outer corners, represented by browser details.",
+      "html": "<details class=\"ds-expander\"><summary class=\"ds-expander-heading\">Equalizer</summary><div class=\"ds-expander-content\">Adjust sound</div></details>",
+      "css": ".ds-expander{background:#FFFFFF;color:CanvasText;border-radius:24px;font-family:'Segoe UI',sans-serif;overflow:hidden}.ds-expander-heading{padding:16px 20px;font-size:16px;cursor:pointer}.ds-expander-heading:hover,.ds-expander-heading:active{background:#E7E7EB}.ds-expander-heading:focus-visible{outline:2px solid Highlight;outline-offset:-3px}.ds-expander-content{padding:8px 20px 20px;font-size:13px;color:#636366}"
+    },
+    {
+      "name": "Expanded Adaptive geometry",
+      "kind": "custom",
+      "refersTo": "listening-track-light",
+      "description": "Five-unit geometry with the middle three units assigned to Adaptive. Raster mode icons are omitted. This range previews the layout only; native shared-thumb interaction is defined in NoiseControlCard.",
+      "html": "<div class=\"ds-modes\"><div class=\"ds-mode-track\"><button class=\"ds-mode-end\" aria-label=\"Transparency\" type=\"button\"></button><div class=\"ds-adaptive\"><svg class=\"ds-adaptive-min\" viewBox=\"0 0 16 16\" aria-hidden=\"true\"><circle cx=\"8\" cy=\"8\" r=\"6\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-dasharray=\"1 2\"/></svg><input class=\"ds-adaptive-range\" type=\"range\" min=\"0\" max=\"100\" value=\"50\" aria-label=\"Adaptive strength\"><svg class=\"ds-adaptive-max\" viewBox=\"0 0 16 16\" aria-hidden=\"true\"><circle cx=\"8\" cy=\"8\" r=\"6\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"/></svg></div><button class=\"ds-mode-end\" aria-label=\"Noise cancellation\" type=\"button\"></button></div><div class=\"ds-mode-labels\"><span>Transparency</span><span>Adaptive</span><span>Noise cancellation</span></div></div>",
+      "css": ".ds-modes{font-family:'Segoe UI',sans-serif;color:CanvasText}.ds-mode-track{display:grid;grid-template-columns:1fr 3fr 1fr;gap:0;background:#E3E3E8;border-radius:30px;padding:4px;height:54px}.ds-mode-end{background:transparent;border:0;border-radius:26px;padding:0;min-width:0}.ds-mode-end:hover,.ds-mode-end:active{background:#E7E7EB}.ds-mode-end:focus-visible{outline:2px solid Highlight;outline-offset:-2px}.ds-adaptive{position:relative;background:rgba(255,255,255,.5);border-radius:27px;display:flex;align-items:center;min-width:0}.ds-adaptive-min,.ds-adaptive-max{position:absolute;width:13px;height:13px;pointer-events:none}.ds-adaptive-min{left:16px}.ds-adaptive-max{right:16px}.ds-adaptive-range{appearance:none;background:transparent;margin:0;width:100%;height:54px;z-index:1}.ds-adaptive-range::-webkit-slider-runnable-track{background:transparent;height:54px}.ds-adaptive-range::-webkit-slider-thumb{appearance:none;background:#FFFFFF;border:1px solid #D1D1D6;border-radius:27px;width:33.333%;height:54px}.ds-adaptive-range:hover::-webkit-slider-thumb,.ds-adaptive-range:active::-webkit-slider-thumb{background:#FFFFFF}.ds-adaptive:focus-within{outline:2px solid CanvasText;outline-offset:-3px}.ds-adaptive-range:focus-visible{outline:0}.ds-mode-labels{display:grid;grid-template-columns:1fr 3fr 1fr;margin:8px 4px 0;font-size:12px;text-align:center}.ds-mode-labels span{margin:0 2px}"
+    },
+    {
+      "name": "Native top navigation",
+      "kind": "nav",
+      "description": "Device and app-settings destinations. Browser focus and selection represent the native NavigationView without recreating its template.",
+      "html": "<nav class=\"ds-nav\" aria-label=\"NTPods\"><button class=\"ds-nav-item\" type=\"button\" aria-current=\"page\">NTPods</button><button class=\"ds-nav-item\" type=\"button\">Settings</button></nav>",
+      "css": ".ds-nav{display:flex;background:#F2F2F7;color:CanvasText;font-family:'Segoe UI',sans-serif}.ds-nav-item{font:inherit;background:transparent;color:inherit;border:0;padding:12px 16px}.ds-nav-item[aria-current=page]{text-decoration:underline;text-decoration-color:#0066D6;text-underline-offset:8px}.ds-nav-item:hover,.ds-nav-item:active{background:ButtonFace}.ds-nav-item:focus-visible{outline:2px solid Highlight;outline-offset:-2px}"
+    }
+  ],
+  "narrative": {
+    "northStar": "LibrePods Apple appearance with native Windows controls",
+    "overview": "NTPods uses the user-selected LibrePods Apple appearance: a light gray or black page, rounded inset groups, device artwork, green switches and battery rings. The Windows app keeps native text, navigation, keyboard controls and accessibility semantics.",
+    "keyCharacteristics": [],
+    "rules": [],
+    "dos": [
+      "Do use theme resources for custom fills and preserve Windows high-contrast mappings.",
+      "Do keep localized labels, visible keyboard focus and accessible names on custom compositions.",
+      "Do display confirmed, pending, unavailable and error states distinctly.",
+      "Do reuse the existing device artwork and proportional image scaling."
+    ],
+    "donts": [
+      "Don't show Off before the device reports it enabled, or while Adaptive occupies its expanded region.",
+      "Don't treat a drag preview or an outgoing request as confirmed device state.",
+      "Don't replace native input and accessibility behavior with a visual-only control."
+    ]
+  }
+}

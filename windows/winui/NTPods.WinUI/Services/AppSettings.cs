@@ -28,6 +28,7 @@ public static class AppSettings
         // connect island can show the right artwork *immediately*, before this
         // session's metadata packet arrives.
         public string LastModel { get; set; } = "";
+        public string LastDeviceId { get; set; } = "";
     }
 
     private static readonly object _gate = new();
@@ -105,14 +106,16 @@ public static class AppSettings
 
     /// The last-seen device model number (for the connect island's early artwork).
     public static string LastModel => Load().LastModel ?? "";
+    public static string LastDeviceId => Load().LastDeviceId ?? "";
 
     /// Persist the last-seen device model number.
-    public static void SetLastModel(string model)
+    public static void SetLastModel(string model, string deviceId)
     {
         if (string.IsNullOrWhiteSpace(model)) return;
         var m = Load();
-        if (m.LastModel == model) return;
+        if (m.LastModel == model && m.LastDeviceId == deviceId) return;
         m.LastModel = model;
+        m.LastDeviceId = deviceId;
         Save(m);
     }
 

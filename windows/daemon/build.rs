@@ -15,7 +15,10 @@ fn main() {
         .compile("eld_shim");
 
     // Link the FFmpeg import libs (avcodec pulls avutil + swresample).
-    println!("cargo:rustc-link-search=native={}", ff.join("lib").display());
+    println!(
+        "cargo:rustc-link-search=native={}",
+        ff.join("lib").display()
+    );
     println!("cargo:rustc-link-lib=avcodec");
     println!("cargo:rustc-link-lib=avutil");
     println!("cargo:rustc-link-lib=swresample");

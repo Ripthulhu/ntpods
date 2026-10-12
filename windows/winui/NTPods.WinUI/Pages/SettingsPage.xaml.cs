@@ -11,8 +11,20 @@ namespace NTPods.WinUI.Pages;
 /// ThemeChanged event; everything else is self-contained.
 public sealed partial class SettingsPage : UserControl
 {
-    /// The daemon client, used by "Refresh state".
-    public DaemonClient? Client { get; set; }
+    private DaemonClient? _client;
+    public DaemonClient? Client
+    {
+        get => _client;
+        set
+        {
+            if (_client is not null) _client.ConnectionChanged -= OnBackendConnectionChanged;
+            _client = value;
+            if (_client is not null) _client.ConnectionChanged += OnBackendConnectionChanged;
+            _nearbyHasSnapshot = false;
+            ClearNearbyRequest();
+            RenderNearbyBatterySetting();
+        }
+    }
 
     /// Raised when the user picks a theme. The host applies it to the window root.
     public event Action<ElementTheme>? ThemeChanged;
@@ -23,15 +35,26 @@ public sealed partial class SettingsPage : UserControl
 
     private bool _applyingLang;
     private bool _applyingStartup;
+    private bool _applyingNearbyBattery;
+    private bool _nearbyHasSnapshot;
+    private bool _nearbyReported;
+    private bool? _nearbyRequested;
+    private readonly DispatcherTimer _nearbyTimeout = new() { Interval = TimeSpan.FromSeconds(5) };
+    private readonly AutoHideScrollbars _scrollbars;
 
     public SettingsPage()
     {
         InitializeComponent();
+        _scrollbars = new AutoHideScrollbars(PageScrollViewer);
+        _nearbyTimeout.Tick += (_, _) =>
+        {
+            ClearNearbyRequest();
+            RenderNearbyBatterySetting();
+            ShowNearbyBatteryFailure();
+            Client?.RequestState();
+        };
 
-        // Reflect the current "run at Windows login" state without firing the toggle.
-        _applyingStartup = true;
-        StartupSetting.IsOn = StartupService.IsEnabled();
-        _applyingStartup = false;
+        RefreshStartupSetting();
 
         // App version in the About card (for bug reports).
         try
@@ -90,7 +113,111 @@ public sealed partial class SettingsPage : UserControl
     private void StartupSetting_Toggled(object sender, RoutedEventArgs e)
     {
         if (_applyingStartup) return;
-        StartupService.SetEnabled(StartupSetting.IsOn);
+        SetStartupEnabled(StartupSetting.IsOn);
+    }
+
+    private void OnBackendConnectionChanged(bool connected) => DispatcherQueue.TryEnqueue(() =>
+    {
+        if (!connected)
+        {
+            _nearbyHasSnapshot = false;
+            ClearNearbyRequest();
+        }
+        RenderNearbyBatterySetting();
+    });
+
+    private void NearbyBatterySetting_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (_applyingNearbyBattery) return;
+        if (!_nearbyHasSnapshot || Client?.IsReady != true || _nearbyRequested is not null)
+        {
+            RenderNearbyBatterySetting();
+            return;
+        }
+        bool requested = NearbyBatterySetting.IsOn;
+        if (requested == _nearbyReported) return;
+        _nearbyRequested = requested;
+        if (Client.Send(new SetBleScanWhileConnectedCmd { Enabled = requested }))
+        {
+            if (SettingsInfoBar.Message == Localize.Get("SettingsNearbyBattery.UpdateFailed")) SettingsInfoBar.IsOpen = false;
+            _nearbyTimeout.Start();
+        }
+        else { ClearNearbyRequest(); ShowNearbyBatteryFailure(); }
+        RenderNearbyBatterySetting();
+    }
+
+    private void ClearNearbyRequest()
+    {
+        _nearbyTimeout.Stop();
+        _nearbyRequested = null;
+    }
+
+    private void RenderNearbyBatterySetting()
+    {
+        _applyingNearbyBattery = true;
+        try
+        {
+            NearbyBatterySetting.IsOn = _nearbyRequested ?? _nearbyReported;
+            NearbyBatterySetting.IsEnabled = _nearbyHasSnapshot && Client?.IsReady == true && _nearbyRequested is null;
+        }
+        finally { _applyingNearbyBattery = false; }
+    }
+
+    private void ShowNearbyBatteryFailure()
+    {
+        SettingsInfoBar.ActionButton = null;
+        SettingsInfoBar.Severity = InfoBarSeverity.Error;
+        SettingsInfoBar.Message = Localize.Get("SettingsNearbyBattery.UpdateFailed");
+        SettingsInfoBar.IsOpen = true;
+    }
+
+    private void SetStartupEnabled(bool on)
+    {
+        try
+        {
+            StartupService.SetEnabled(on);
+            SettingsInfoBar.IsOpen = false;
+        }
+        catch (Exception ex)
+        {
+            SettingsInfoBar.Severity = InfoBarSeverity.Error;
+            SettingsInfoBar.Message = Localize.Get("SettingsStartup.WriteFailed", ex.Message);
+            SettingsInfoBar.IsOpen = true;
+        }
+        RefreshStartupSetting();
+    }
+
+    private void RefreshStartupSetting()
+    {
+        _applyingStartup = true;
+        SettingsInfoBar.ActionButton = null;
+        try
+        {
+            var state = StartupService.ReadState();
+            StartupSetting.IsOn = state.Enabled;
+            StartupSetting.IsEnabled = true;
+            if (!state.Enabled && state.HasEntries)
+            {
+                if (!SettingsInfoBar.IsOpen)
+                {
+                    SettingsInfoBar.Severity = InfoBarSeverity.Warning;
+                    SettingsInfoBar.Message = Localize.Get("SettingsStartup.Incomplete");
+                    SettingsInfoBar.IsOpen = true;
+                }
+                var remove = new Button { Content = Localize.Get("SettingsStartup.Remove") };
+                remove.Click += (_, _) => SetStartupEnabled(false);
+                SettingsInfoBar.ActionButton = remove;
+            }
+        }
+        catch (Exception ex)
+        {
+            StartupSetting.IsOn = false;
+            StartupSetting.IsEnabled = false;
+            SettingsInfoBar.Severity = InfoBarSeverity.Error;
+            SettingsInfoBar.Message = Localize.Get("SettingsStartup.ReadFailed", ex.Message);
+            SettingsInfoBar.IsOpen = true;
+        }
+        finally { _applyingStartup = false; }
     }
 
     private void Theme_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -108,20 +235,18 @@ public sealed partial class SettingsPage : UserControl
     /// Fill the (hidden-by-default) device-info card from the 0x1D metadata.
     public void UpdateDeviceInfo(Snapshot s)
     {
+        _nearbyReported = s.BleScanWhileConnected;
+        _nearbyHasSnapshot = Client?.IsReady == true;
+        if (!_nearbyHasSnapshot || _nearbyRequested == _nearbyReported) ClearNearbyRequest();
+        RenderNearbyBatterySetting();
         ModelText.Text = FriendlyModel(s.Model);
         FirmwareText.Text = string.IsNullOrWhiteSpace(s.Firmware) ? "—" : s.Firmware;
         SerialText.Text = string.IsNullOrWhiteSpace(s.Serial) ? "—" : s.Serial;
     }
 
     /// Map a known model number to a friendly name, else show the raw number.
-    private static string FriendlyModel(string model) => model switch
-    {
-        "" => "—",
-        "A3064" => "AirPods Pro 3 (A3064)",
-        "A2968" or "A2931" or "A2699" => $"AirPods Pro 2 ({model})",
-        "A2084" or "A2083" => $"AirPods Pro ({model})",
-        _ => model,
-    };
+    private static string FriendlyModel(string model) => string.IsNullOrWhiteSpace(model) ? "—" :
+        DeviceModels.Find(model) is { Known: true } profile ? $"{profile.Name} ({model})" : model;
 
     // The device info (incl. serial) is covered by a frosted blur; the eye toggles it.
     private void RevealInfo_Toggled(object sender, RoutedEventArgs e)

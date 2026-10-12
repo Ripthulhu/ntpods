@@ -1,5 +1,4 @@
 using System;
-using System.IO;
 using System.Runtime.InteropServices;
 using NTPods.WinUI.Services;
 using Microsoft.UI.Dispatching;
@@ -28,17 +27,18 @@ public sealed class ConnectPromptWindow : Window
     {
         Title = "NTPods";
 
-        var display = string.IsNullOrWhiteSpace(name) ? Localize.Get("Island_DefaultName") : name;
+        var display = string.IsNullOrWhiteSpace(name) ? Localize.Get("Device_DefaultName") : name;
 
         // ---- Content: a rounded acrylic card built in code (no XAML needed) ----
+        // The event has no model metadata; use the shared artwork fallback.
         var image = new Image
         {
+            Source = new BitmapImage(new Uri(DeviceArt.MainImage(null))),
+            Stretch = Stretch.Uniform,
             Width = 96,
             Height = 96,
-            Stretch = Stretch.Uniform,
             HorizontalAlignment = HorizontalAlignment.Center,
         };
-        try { image.Source = new BitmapImage(new Uri(ImageForName(display))); } catch { }
 
         var title = new TextBlock
         {
@@ -155,24 +155,6 @@ public sealed class ConnectPromptWindow : Window
     {
         if (_closed) return;
         try { Close(); } catch { _closed = true; }
-    }
-
-    // Best-effort map from device name to a bundled AirPods image (else generic).
-    private static string ImageForName(string devName)
-    {
-        const string root = "ms-appx:///Assets/";
-        var n = (devName ?? string.Empty).ToLowerInvariant();
-        if (n.Contains("pro"))
-        {
-            if (n.Contains("3")) return root + "airpods_pro_3_case.png";
-            if (n.Contains("1")) return root + "airpods_pro_1_case.png";
-            return root + "airpods_pro_2_case.png";
-        }
-        if (n.Contains("4")) return root + "airpods_4_case.png";
-        if (n.Contains("3")) return root + "airpods_3_case.png";
-        if (n.Contains("2")) return root + "airpods_2_case.png";
-        if (n.Contains("1")) return root + "airpods_1_case.png";
-        return root + "airpods.png";
     }
 
     private void RoundCorners()

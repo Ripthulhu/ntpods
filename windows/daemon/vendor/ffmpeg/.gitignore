@@ -4,3 +4,6 @@
 include/
 lib/
 bin/
+licenses/
+archive.sha256
+files.sha256

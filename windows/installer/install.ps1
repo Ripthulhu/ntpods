@@ -5,9 +5,8 @@
     Installs BOTH kernel drivers (test-signed on the fly):
       • NTPodsAAP  — opens the AirPods AAP L2CAP channel (battery, ANC, mic, …).
       • NTPodsMic  — a virtual microphone so any app can use the AirPods mic.
-                     Two drivers exist: ACX (default on Windows 11 22H2+) and
-                     PortCls (Windows 10 2004+). -MicDriver acx|portcls overrides.
-    Then copies the daemon + WinUI app to %LOCALAPPDATA%\NTPods, registers the
+                     Hardened ACX driver; Windows 11 22H2 or newer only.
+    Then copies the daemon + WinUI app to %ProgramFiles%\NTPods, registers the
     two elevated helper tasks (driver recovery, mic rename) and adds the apps to
     startup (the WinUI app launches minimised to the tray).
 
@@ -23,17 +22,19 @@
     Usage (elevated):  powershell -ExecutionPolicy Bypass -File .\install.ps1
     With BitLocker on it asks you to confirm the recovery key is saved; -Yes
     skips that question (unattended installs).
-      .\install.ps1 -MicDriver portcls     use the PortCls mic on Windows 11 too
 #>
-param([switch]$Yes, [ValidateSet('auto', 'acx', 'portcls')][string]$MicDriver = 'auto')
+param([switch]$Yes, [ValidateSet('auto', 'acx')][string]$MicDriver = 'acx')
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $here 'setup-common.ps1')
-$dest = Join-Path $env:LOCALAPPDATA 'NTPods'
+$dest = Join-Path $env:ProgramFiles 'NTPods'
 $sid = Get-CurrentUserSid
 
 # ---- 0. preflight: fail BEFORE touching certificates or drivers -------------
+Write-Warning 'NTPods requires Test Mode, which weakens Windows driver-signature checks. These experimental drivers are not Microsoft production-signed. Do not enable Test Mode on your everyday or work PC for NTPods; use a dedicated test PC.'
 if (-not (Test-Admin)) { throw 'Run this from an ADMINISTRATOR PowerShell.' }
+Assert-UserSid $sid
+$MicDriver = Resolve-MicDriver $MicDriver
 $bitlocker = Test-BitLocker
 if (-not (Test-TestMode)) {
     $secureBoot = switch (Test-SecureBoot) {
@@ -63,7 +64,6 @@ if ($bitlocker) {
 
 $required = @(
     'driver\NTPodsAAP.sys', 'driver\ntpodsaap.cat', 'driver\NTPodsAAP.inf',
-    'driver-mic\NTPodsMicPC.sys', 'driver-mic\ntpodsmicpc.cat', 'driver-mic\NTPodsMicPC.inf',
     'driver-mic-acx\AudioCodec.sys', 'driver-mic-acx\audiocodec.cat', 'driver-mic-acx\AudioCodec.inf',
     'tools\devcon.exe', 'ntpodsd.exe', 'avcodec-61.dll', 'avutil-59.dll', 'swresample-5.dll',
     'winui\ntpods-winui.exe', 'fix-driver.ps1', 'rename-mic.ps1'
@@ -73,31 +73,44 @@ if ($missing) {
     throw "This install folder is incomplete. Download the release again. Missing:`n  " + ($missing -join "`n  ")
 }
 
-# ---- 1. take over an older LibrePods install ---------------------------------
+# ---- 1. validate protected destinations before driver changes ---------------
+New-Item -ItemType Directory -Force -Path $dest | Out-Null
+Assert-ProtectedInstallPath $dest
 Stop-NTPods
-Remove-LegacyLibrePods $sid $env:LOCALAPPDATA $env:APPDATA
+$setupDir = Initialize-SetupDirectory
 Remove-SetupLeftovers $env:LOCALAPPDATA
 
 # ---- 2. both drivers (test-signed here, then pnputil / devcon) ---------------
-$work = Join-Path $env:TEMP "NTPods-drivers-$(Get-Random)"
-try { Install-NTPodsDrivers $here $work $MicDriver }
-finally { Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue }
+$work = Join-Path $setupDir "drivers-$([guid]::NewGuid())"
+$transactionId = [guid]::NewGuid().ToString()
+try {
+try { Install-NTPodsDrivers $here $work $MicDriver $sid $transactionId }
+finally {
+    if ([IO.Path]::GetFullPath($work).StartsWith($setupDir + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
 
 # ---- 3. copy the apps -------------------------------------------------------
 # The daemon owns the driver + AAP session + mic; the WinUI app is its IPC client.
 Write-Host "==> Copying the apps to $dest"
-New-Item -ItemType Directory -Force -Path $dest | Out-Null
-foreach ($f in 'ntpodsd.exe', 'avcodec-61.dll', 'avutil-59.dll', 'swresample-5.dll', 'fix-driver.ps1', 'rename-mic.ps1') {
+Assert-ProtectedInstallPath $dest
+foreach ($f in 'ntpodsd.exe', 'avcodec-61.dll', 'avutil-59.dll', 'swresample-5.dll', 'fix-driver.ps1', 'rename-mic.ps1', 'setup-common.ps1', 'stop-ntpods.ps1', 'msi-setup.ps1', 'uninstall.ps1') {
     Copy-Item (Join-Path $here $f) $dest -Force
 }
 # The WinUI app ships as a self-contained folder.
 Copy-Item (Join-Path $here 'winui') $dest -Recurse -Force
+Copy-Item (Join-Path $here 'tools') $dest -Recurse -Force
+Copy-Item (Join-Path $here 'licenses') $dest -Recurse -Force
 # Files from a downloaded zip carry the internet zone mark; clear it on the
 # installed copy so startup and the scheduled tasks don't get blocked or prompted.
 Get-ChildItem $dest -Recurse -File | Unblock-File
 
 # ---- 4. elevated on-demand helper tasks -------------------------------------
 Register-NTPodsTasks $dest $sid
+New-Item -Path 'HKLM:\SOFTWARE\NTPods' -Force | Out-Null
+Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\NTPods' -Name InstalledUserSid -Value $sid
+Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\NTPods' -Name InstallKind -Value 'zip'
 
 # ---- 5. auto-start at login -------------------------------------------------
 # The daemon is the always-on background process (per-user, in the session — NOT a
@@ -110,6 +123,14 @@ foreach ($l in 'NTPods Daemon.lnk', 'NTPods.lnk') {   # older installs used shor
     Remove-Item (Join-Path $startup $l) -Force -ErrorAction SilentlyContinue
 }
 Set-RunValues $sid (Join-Path $dest 'ntpodsd.exe') (Join-Path $dest 'winui\ntpods-winui.exe')
+} catch {
+    $failure = $_
+    try { Restore-NTPodsDriverCheckpoint $here $transactionId }
+    catch { throw "Installation failed: $failure Driver recovery failed: $_ Backup retained at $(Get-DriverCheckpointPath)." }
+    throw $failure
+}
+try { Complete-NTPodsDriverTransaction $transactionId }
+catch { Write-Warning "Installation completed, but backup cleanup failed at $(Get-DriverCheckpointPath). Remaining backup files may be incomplete. $_" }
 
 Write-Host ''
 Write-Host '==> Done. A reboot is needed to finish the driver install.' -ForegroundColor Green

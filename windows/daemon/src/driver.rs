@@ -6,17 +6,23 @@ use std::io;
 use std::ptr;
 use std::sync::Arc;
 
-use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
-    DIGCF_DEVICEINTERFACE, DIGCF_PRESENT, SP_DEVICE_INTERFACE_DATA,
-    SP_DEVICE_INTERFACE_DETAIL_DATA_W, SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInterfaces,
-    SetupDiGetClassDevsW, SetupDiGetDeviceInterfaceDetailW,
-};
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
-use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
-};
-use windows_sys::Win32::System::IO::DeviceIoControl;
 use windows_sys::core::GUID;
+use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
+    CM_Get_Device_IDW, CM_Get_Parent, SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInterfaces,
+    SetupDiGetClassDevsW, SetupDiGetDeviceInterfaceDetailW, CR_SUCCESS, DIGCF_DEVICEINTERFACE,
+    DIGCF_PRESENT, SP_DEVICE_INTERFACE_DATA, SP_DEVICE_INTERFACE_DETAIL_DATA_W, SP_DEVINFO_DATA,
+};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, GetLastError, ERROR_INSUFFICIENT_BUFFER, ERROR_IO_PENDING, ERROR_NO_MORE_ITEMS,
+    HANDLE, INVALID_HANDLE_VALUE,
+};
+use windows_sys::Win32::Storage::FileSystem::{
+    CreateFileW, FILE_FLAG_OVERLAPPED, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+};
+use windows_sys::Win32::System::Threading::CreateEventW;
+use windows_sys::Win32::System::IO::{
+    CancelIoEx, DeviceIoControl, GetOverlappedResult, GetOverlappedResultEx, OVERLAPPED,
+};
 
 const GENERIC_READ: u32 = 0x8000_0000;
 const GENERIC_WRITE: u32 = 0x4000_0000;
@@ -29,16 +35,17 @@ const GUID_DEVINTERFACE_NTPODSAAP: GUID = GUID {
 };
 
 const IOCTL_LP_CONNECT: u32 = 0x8000_2000;
+const IOCTL_LP_DISCONNECT: u32 = 0x8000_2004;
 const IOCTL_LP_SEND: u32 = 0x8000_2008;
 const IOCTL_LP_RECEIVE: u32 = 0x8000_200C;
 const IOCTL_LP_GET_STATUS: u32 = 0x8000_2010;
 const IOCTL_LP_ATT_SEND: u32 = 0x8000_2014;
 const IOCTL_LP_ATT_RECEIVE: u32 = 0x8000_2018;
 
-struct DriverHandle(HANDLE);
-unsafe impl Send for DriverHandle {}
-unsafe impl Sync for DriverHandle {}
-impl Drop for DriverHandle {
+struct WinHandle(HANDLE);
+unsafe impl Send for WinHandle {}
+unsafe impl Sync for WinHandle {}
+impl Drop for WinHandle {
     fn drop(&mut self) {
         unsafe { CloseHandle(self.0) };
     }
@@ -46,12 +53,28 @@ impl Drop for DriverHandle {
 
 #[derive(Clone)]
 pub struct Driver {
-    handle: Arc<DriverHandle>,
+    handle: Arc<WinHandle>,
 }
 
 fn ioctl(handle: HANDLE, code: u32, input: &[u8], output: &mut [u8]) -> io::Result<u32> {
+    ioctl_with_timeout(handle, code, input, output, 20_000)
+}
+
+fn ioctl_with_timeout(
+    handle: HANDLE,
+    code: u32,
+    input: &[u8],
+    output: &mut [u8],
+    timeout_ms: u32,
+) -> io::Result<u32> {
     unsafe {
         let mut returned: u32 = 0;
+        let event = WinHandle(CreateEventW(ptr::null(), 1, 0, ptr::null()));
+        if event.0.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let mut overlapped: OVERLAPPED = std::mem::zeroed();
+        overlapped.hEvent = event.0;
         let in_ptr = if input.is_empty() {
             ptr::null()
         } else {
@@ -63,21 +86,67 @@ fn ioctl(handle: HANDLE, code: u32, input: &[u8], output: &mut [u8]) -> io::Resu
             output.as_mut_ptr() as *mut c_void
         };
         if DeviceIoControl(
-            handle, code, in_ptr, input.len() as u32, out_ptr, output.len() as u32, &mut returned,
-            ptr::null_mut(),
+            handle,
+            code,
+            in_ptr,
+            input.len() as u32,
+            out_ptr,
+            output.len() as u32,
+            &mut returned,
+            &mut overlapped,
         ) == 0
         {
-            return Err(io::Error::last_os_error());
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
+                return Err(error);
+            }
+            // Includes queueing, lazy ATT open and channel cleanup. The driver has
+            // shorter per-BRB deadlines; a stuck call must still drain on cancel.
+            wait_for_completion(handle, &overlapped, &mut returned, timeout_ms)?;
+        }
+        if returned as usize > output.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Driver returned an oversized reply",
+            ));
         }
         Ok(returned)
     }
 }
 
+// The caller owns the event, buffers and OVERLAPPED until this function returns.
+unsafe fn wait_for_completion(
+    handle: HANDLE,
+    overlapped: &OVERLAPPED,
+    returned: &mut u32,
+    timeout_ms: u32,
+) -> io::Result<()> {
+    if GetOverlappedResultEx(handle, overlapped, returned, timeout_ms, 0) == 0 {
+        let error = io::Error::last_os_error();
+        CancelIoEx(handle, overlapped);
+        // Cancellation is a request: drain it before freeing any referenced memory.
+        GetOverlappedResult(handle, overlapped, returned, 1);
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn require_reply(actual: u32, minimum: u32) -> io::Result<()> {
+    if actual < minimum {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Truncated driver reply",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 impl Driver {
-    pub fn open() -> io::Result<Driver> {
-        let handle = open_driver()?;
+    pub fn open(mac: u64) -> io::Result<Driver> {
+        let handle = open_driver(mac)?;
         Ok(Driver {
-            handle: Arc::new(DriverHandle(handle)),
+            handle: Arc::new(WinHandle(handle)),
         })
     }
 
@@ -86,12 +155,18 @@ impl Driver {
         input[0..8].copy_from_slice(&addr.to_le_bytes());
         input[8..10].copy_from_slice(&psm.to_le_bytes());
         let mut out = [0u8; 8];
-        ioctl(self.handle.0, IOCTL_LP_CONNECT, &input, &mut out)?;
+        require_reply(ioctl(self.handle.0, IOCTL_LP_CONNECT, &input, &mut out)?, 8)?;
         Ok(u32::from_le_bytes([out[0], out[1], out[2], out[3]]) != 0)
     }
 
     pub fn send(&self, data: &[u8]) -> io::Result<()> {
         ioctl(self.handle.0, IOCTL_LP_SEND, data, &mut [])?;
+        Ok(())
+    }
+
+    pub fn send_sensor(&self, data: &[u8]) -> io::Result<()> {
+        // Optional sensors must leave time for microphone cleanup during shutdown.
+        ioctl_with_timeout(self.handle.0, IOCTL_LP_SEND, data, &mut [], 2_000)?;
         Ok(())
     }
 
@@ -108,25 +183,39 @@ impl Driver {
 
     /// Receive a raw ATT PDU from the ATT channel (blocking up to timeout_ms).
     pub fn att_recv(&self, timeout_ms: u32, buf: &mut [u8]) -> io::Result<usize> {
-        let to = timeout_ms.to_le_bytes();
-        Ok(ioctl(self.handle.0, IOCTL_LP_ATT_RECEIVE, &to, buf)? as usize)
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms as u64);
+        loop {
+            // Retain short waits for compatibility with the older serial driver.
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            let to = (remaining.as_millis().min(100) as u32).to_le_bytes();
+            let n = ioctl(self.handle.0, IOCTL_LP_ATT_RECEIVE, &to, buf)? as usize;
+            if n > 0 || std::time::Instant::now() >= deadline {
+                return Ok(n);
+            }
+        }
     }
 
     /// Driver connection state (2 = connected). Reads a state variable only —
     /// no L2CAP I/O, so it never disturbs the audio link.
     pub fn status(&self) -> io::Result<u32> {
         let mut out = [0u8; 32];
-        ioctl(self.handle.0, IOCTL_LP_GET_STATUS, &[], &mut out)?;
+        require_reply(
+            ioctl(self.handle.0, IOCTL_LP_GET_STATUS, &[], &mut out)?,
+            32,
+        )?;
         Ok(u32::from_le_bytes([out[0], out[1], out[2], out[3]]))
     }
 
-    /// ATT (PSM 0x001F) hearing-aid server diagnostics from the driver:
-    /// (register_ntstatus, server_registered, connect_indications, accept_ntstatus,
-    /// channel_open). Lets us see the hearing-aid channel progress in the daemon log
-    /// without a kernel debugger.
+    /// Legacy diagnostic layout: the removed ATT server's first three fields
+    /// are inactive. The last two describe the outbound ATT client open result
+    /// and channel state, respectively.
     pub fn att_diag(&self) -> io::Result<(i32, u32, u32, i32, u32)> {
         let mut out = [0u8; 32];
-        ioctl(self.handle.0, IOCTL_LP_GET_STATUS, &[], &mut out)?;
+        require_reply(
+            ioctl(self.handle.0, IOCTL_LP_GET_STATUS, &[], &mut out)?,
+            32,
+        )?;
         Ok((
             i32::from_le_bytes([out[28], out[29], out[30], out[31]]), // register status
             u32::from_le_bytes([out[12], out[13], out[14], out[15]]), // registered 0/1
@@ -136,20 +225,64 @@ impl Driver {
         ))
     }
 
-    /// Close the underlying device handle NOW, without waiting for the last `Arc`
-    /// clone to drop. Graceful shutdown needs this: `std::process::exit` skips
-    /// destructors, and letting the OS close the handle on process teardown can
-    /// leave the AAP devnode stuck in Code 38 (CM_PROB_DRIVER_FAILED_PRIOR_UNLOAD),
-    /// so the next daemon's `driver open` fails. Closing it explicitly first runs
-    /// the driver's L2CAP channel teardown. All clones share the one handle, so
-    /// this frees it for every clone — call it only on the way out (exit right
-    /// after), never mid-session.
-    pub fn close_now(&self) {
-        unsafe { CloseHandle(self.handle.0) };
+    pub fn disconnect(&self) -> io::Result<()> {
+        ioctl(self.handle.0, IOCTL_LP_DISCONNECT, &[], &mut [])?;
+        Ok(())
     }
 }
 
-fn open_driver() -> io::Result<HANDLE> {
+fn device_instance_address(instance: &str) -> Option<u64> {
+    let id = instance.to_ascii_lowercase();
+    let mut parts = id.splitn(3, '\\');
+    if parts.next()? != "bthenum" {
+        return None;
+    }
+    let device = parts.next()?;
+    let address = if let Some(address) = device.strip_prefix("dev_") {
+        address
+    } else if device.starts_with("{74ec2172-0bad-4d01-8f77-997b2be0722a}") {
+        let (address, channel) = parts.next()?.rsplit('&').next()?.split_once("_c")?;
+        if channel.len() != 8 || !channel.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        address
+    } else {
+        return None;
+    };
+    if address.len() != 12 || !address.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    u64::from_str_radix(address, 16)
+        .ok()
+        .filter(|address| *address != 0)
+}
+
+unsafe fn owning_bluetooth_address(mut node: u32) -> Option<u64> {
+    // The interface belongs to an AAP service child of the Bluetooth peer node.
+    for _ in 0..8 {
+        let mut id = [0u16; 512];
+        if CM_Get_Device_IDW(node, id.as_mut_ptr(), id.len() as u32, 0) == CR_SUCCESS {
+            let end = id.iter().position(|c| *c == 0)?;
+            if let Some(address) = device_instance_address(&String::from_utf16_lossy(&id[..end])) {
+                return Some(address);
+            }
+        }
+        let mut parent = 0;
+        if CM_Get_Parent(&mut parent, node, 0) != CR_SUCCESS || parent == node {
+            break;
+        }
+        node = parent;
+    }
+    None
+}
+
+fn open_driver(mac: u64) -> io::Result<HANDLE> {
+    if mac == 0 || mac > 0xffff_ffff_ffff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Invalid Bluetooth address",
+        ));
+    }
     unsafe {
         let devinfo = SetupDiGetClassDevsW(
             &GUID_DEVINTERFACE_NTPODSAAP,
@@ -161,55 +294,263 @@ fn open_driver() -> io::Result<HANDLE> {
             return Err(io::Error::last_os_error());
         }
 
-        let mut ifdata: SP_DEVICE_INTERFACE_DATA = std::mem::zeroed();
-        ifdata.cbSize = std::mem::size_of::<SP_DEVICE_INTERFACE_DATA>() as u32;
-        if SetupDiEnumDeviceInterfaces(
-            devinfo,
-            ptr::null(),
-            &GUID_DEVINTERFACE_NTPODSAAP,
-            0,
-            &mut ifdata,
-        ) == 0
-        {
-            SetupDiDestroyDeviceInfoList(devinfo);
-            return Err(io::Error::new(
+        let result = (|| {
+            for index in 0..u32::MAX {
+                let mut ifdata: SP_DEVICE_INTERFACE_DATA = std::mem::zeroed();
+                ifdata.cbSize = std::mem::size_of::<SP_DEVICE_INTERFACE_DATA>() as u32;
+                if SetupDiEnumDeviceInterfaces(
+                    devinfo,
+                    ptr::null(),
+                    &GUID_DEVINTERFACE_NTPODSAAP,
+                    index,
+                    &mut ifdata,
+                ) == 0
+                {
+                    let error = io::Error::last_os_error();
+                    if error.raw_os_error() == Some(ERROR_NO_MORE_ITEMS as i32) {
+                        break;
+                    }
+                    return Err(error);
+                }
+                let mut required: u32 = 0;
+                let first = SetupDiGetDeviceInterfaceDetailW(
+                    devinfo,
+                    &ifdata,
+                    ptr::null_mut(),
+                    0,
+                    &mut required,
+                    ptr::null_mut(),
+                );
+                if first != 0
+                    || GetLastError() != ERROR_INSUFFICIENT_BUFFER
+                    || (required as usize)
+                        < std::mem::size_of::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>()
+                    || required > 64 * 1024
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Invalid device interface size",
+                    ));
+                }
+                let mut buf =
+                    vec![0usize; (required as usize).div_ceil(std::mem::size_of::<usize>())];
+                let detail = buf.as_mut_ptr() as *mut SP_DEVICE_INTERFACE_DETAIL_DATA_W;
+                (*detail).cbSize = if cfg!(target_pointer_width = "64") {
+                    8
+                } else {
+                    6
+                };
+                let mut device: SP_DEVINFO_DATA = std::mem::zeroed();
+                device.cbSize = std::mem::size_of::<SP_DEVINFO_DATA>() as u32;
+                if SetupDiGetDeviceInterfaceDetailW(
+                    devinfo,
+                    &ifdata,
+                    detail,
+                    required,
+                    ptr::null_mut(),
+                    &mut device,
+                ) == 0
+                {
+                    return Err(io::Error::last_os_error());
+                }
+                if owning_bluetooth_address(device.DevInst) != Some(mac) {
+                    continue;
+                }
+                let handle = CreateFileW(
+                    (*detail).DevicePath.as_ptr(),
+                    GENERIC_READ | GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    ptr::null(),
+                    OPEN_EXISTING,
+                    FILE_FLAG_OVERLAPPED,
+                    ptr::null_mut(),
+                );
+                return if handle == INVALID_HANDLE_VALUE {
+                    Err(io::Error::last_os_error())
+                } else {
+                    Ok(handle)
+                };
+            }
+            Err(io::Error::new(
                 io::ErrorKind::NotFound,
-                "NTPodsAAP driver not found (installed and bound to the AirPods?)",
-            ));
-        }
+                "NTPodsAAP driver not found for the selected AirPods",
+            ))
+        })();
+        SetupDiDestroyDeviceInfoList(devinfo);
+        result
+    }
+}
 
-        let mut required: u32 = 0;
-        SetupDiGetDeviceInterfaceDetailW(
-            devinfo, &ifdata, ptr::null_mut(), 0, &mut required, ptr::null_mut(),
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use windows_sys::Win32::Foundation::{
+        ERROR_IO_INCOMPLETE, ERROR_OPERATION_ABORTED, WAIT_TIMEOUT,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile, PIPE_ACCESS_DUPLEX};
+    use windows_sys::Win32::System::Pipes::{
+        ConnectNamedPipe, CreateNamedPipeW, PIPE_REJECT_REMOTE_CLIENTS,
+    };
+
+    #[test]
+    fn driver_instance_addresses_match_only_the_selected_bluetooth_peer() {
+        let first = r"BTHENUM\DEV_112233445566\7&1&2&BLUETOOTHDEVICE_112233445566";
+        let second = r"BTHENUM\{74ec2172-0bad-4d01-8f77-997b2be0722a}_VID&0001004c_PID&2027\7&1&2&AABBCCDDEEFF_C00000000";
+        let selected = 0xaabbccddeeff;
+        assert_eq!(device_instance_address(first), Some(0x112233445566));
+        assert_eq!(device_instance_address(second), Some(selected));
+        assert_eq!(
+            [first, second]
+                .into_iter()
+                .position(|id| device_instance_address(id) == Some(selected)),
+            Some(1)
         );
-
-        let mut buf = vec![0u8; required as usize];
-        let detail = buf.as_mut_ptr() as *mut SP_DEVICE_INTERFACE_DETAIL_DATA_W;
-        (*detail).cbSize = if cfg!(target_pointer_width = "64") { 8 } else { 6 };
-
-        if SetupDiGetDeviceInterfaceDetailW(
-            devinfo, &ifdata, detail, required, ptr::null_mut(), ptr::null_mut(),
-        ) == 0
-        {
-            SetupDiDestroyDeviceInfoList(devinfo);
-            return Err(io::Error::last_os_error());
+        assert_eq!(
+            [first]
+                .into_iter()
+                .position(|id| device_instance_address(id) == Some(selected)),
+            None
+        );
+        assert_eq!(
+            device_instance_address(&second.to_lowercase()),
+            Some(selected)
+        );
+        for invalid in [
+            r"USB\DEV_AABBCCDDEEFF\instance",
+            r"BTHENUM\DEV_000000000000\instance",
+            r"BTHENUM\DEV_AABBCCDDEEF\instance",
+            r"BTHENUM\DEV_AABBCCDDEEFG\instance",
+            r"BTHENUM\DEV_AABBCCDDEEFF0\instance",
+            r"BTHENUM\{00000000-0000-0000-0000-000000000000}\7&1&2&AABBCCDDEEFF_C00000000",
+            r"BTHENUM\{74ec2172-0bad-4d01-8f77-997b2be0722a}\7&1&2&AABBCCDDEEFF_C0",
+        ] {
+            assert_eq!(device_instance_address(invalid), None, "{invalid}");
         }
+    }
 
-        let path = (*detail).DevicePath.as_ptr();
-        let handle = CreateFileW(
-            path,
+    // Local test pipes exercise real Windows overlapped completion without AirPods.
+    unsafe fn pipe_pair() -> (WinHandle, WinHandle) {
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let name: Vec<u16> = format!(
+            r"\\.\pipe\NTPods-transport-test-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        )
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+        let server = WinHandle(CreateNamedPipeW(
+            name.as_ptr(),
+            PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
+            PIPE_REJECT_REMOTE_CLIENTS,
+            1,
+            64,
+            64,
+            0,
+            ptr::null(),
+        ));
+        assert_ne!(server.0, INVALID_HANDLE_VALUE);
+        let connect_event = WinHandle(CreateEventW(ptr::null(), 1, 0, ptr::null()));
+        assert!(!connect_event.0.is_null());
+        let mut connection: OVERLAPPED = std::mem::zeroed();
+        connection.hEvent = connect_event.0;
+        assert_eq!(ConnectNamedPipe(server.0, &mut connection), 0);
+        assert_eq!(GetLastError(), ERROR_IO_PENDING);
+        let client = WinHandle(CreateFileW(
+            name.as_ptr(),
             GENERIC_READ | GENERIC_WRITE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            0,
             ptr::null(),
             OPEN_EXISTING,
             0,
             ptr::null_mut(),
-        );
-        SetupDiDestroyDeviceInfoList(devinfo);
+        ));
+        assert_ne!(client.0, INVALID_HANDLE_VALUE);
+        wait_for_completion(server.0, &connection, &mut 0, 1000).unwrap();
+        (server, client)
+    }
 
-        if handle == INVALID_HANDLE_VALUE {
-            return Err(io::Error::last_os_error());
+    #[test]
+    fn overlapping_reads_cancel_only_the_timed_out_request_and_drain_it() {
+        unsafe {
+            let (server, client) = pipe_pair();
+            let first_event = WinHandle(CreateEventW(ptr::null(), 1, 0, ptr::null()));
+            let second_event = WinHandle(CreateEventW(ptr::null(), 1, 0, ptr::null()));
+            assert!(!first_event.0.is_null() && !second_event.0.is_null());
+            let mut first: OVERLAPPED = std::mem::zeroed();
+            let mut second: OVERLAPPED = std::mem::zeroed();
+            first.hEvent = first_event.0;
+            second.hEvent = second_event.0;
+            let mut first_data = [0u8; 8];
+            let mut second_data = [0u8; 8];
+            assert_eq!(
+                ReadFile(
+                    server.0,
+                    first_data.as_mut_ptr(),
+                    8,
+                    ptr::null_mut(),
+                    &mut first
+                ),
+                0
+            );
+            assert_eq!(GetLastError(), ERROR_IO_PENDING);
+            assert_eq!(
+                ReadFile(
+                    server.0,
+                    second_data.as_mut_ptr(),
+                    8,
+                    ptr::null_mut(),
+                    &mut second
+                ),
+                0
+            );
+            assert_eq!(GetLastError(), ERROR_IO_PENDING);
+            let mut count = 0;
+            assert_eq!(
+                wait_for_completion(server.0, &first, &mut count, 10)
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(WAIT_TIMEOUT as i32)
+            );
+            assert_eq!(GetOverlappedResult(server.0, &first, &mut count, 0), 0);
+            assert_eq!(GetLastError(), ERROR_OPERATION_ABORTED);
+            assert_eq!(GetOverlappedResult(server.0, &second, &mut count, 0), 0);
+            assert_eq!(GetLastError(), ERROR_IO_INCOMPLETE);
+            assert_ne!(
+                WriteFile(client.0, b"audio".as_ptr(), 5, &mut count, ptr::null_mut()),
+                0
+            );
+            wait_for_completion(server.0, &second, &mut count, 1000).unwrap();
+            assert_eq!(count, 5);
+            assert_eq!(&second_data[..5], b"audio");
+            assert_eq!(first_data, [0u8; 8]);
         }
-        Ok(handle)
+    }
+
+    #[test]
+    fn overlapped_completion_reports_closed_peer_without_waiting_for_deadline() {
+        unsafe {
+            let (server, client) = pipe_pair();
+            let event = WinHandle(CreateEventW(ptr::null(), 1, 0, ptr::null()));
+            assert!(!event.0.is_null());
+            let mut operation: OVERLAPPED = std::mem::zeroed();
+            operation.hEvent = event.0;
+            let mut data = [0u8; 8];
+            assert_eq!(
+                ReadFile(
+                    server.0,
+                    data.as_mut_ptr(),
+                    8,
+                    ptr::null_mut(),
+                    &mut operation
+                ),
+                0
+            );
+            assert_eq!(GetLastError(), ERROR_IO_PENDING);
+            drop(client);
+            let error = wait_for_completion(server.0, &operation, &mut 0, 1000).unwrap_err();
+            assert_ne!(error.raw_os_error(), Some(WAIT_TIMEOUT as i32));
+        }
     }
 }

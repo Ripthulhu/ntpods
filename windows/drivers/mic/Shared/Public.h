@@ -57,6 +57,9 @@ typedef struct _CODEC_DEVICE_CONTEXT {
 //
 // Codec driver prototypes.
 //
+_IRQL_requires_max_(PASSIVE_LEVEL)
+NTSTATUS CodecC_SetPacketConstraints(_In_ ACXCIRCUIT Circuit);
+
 EVT_WDF_DRIVER_DEVICE_ADD           Codec_EvtBusDeviceAdd;
 DRIVER_INITIALIZE                   DriverEntry;
 EVT_WDF_DRIVER_UNLOAD               AudioCodecDriverUnload;
@@ -300,12 +303,6 @@ CaptureMC_AddStaticCapture(
     _In_ const GUID  *          MicCustomName,
     _In_ const UNICODE_STRING * CircuitName,
     _In_ const UNICODE_STRING * Uri
-);
-
-PAGED_CODE_SEG
-NTSTATUS
-CodecC_CircuitCleanup(
-    _In_ ACXCIRCUIT Device
 );
 
 PAGED_CODE_SEG

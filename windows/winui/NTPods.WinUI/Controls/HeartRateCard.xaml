@@ -7,17 +7,25 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     mc:Ignorable="d">
 
-    <!-- Heart rate (AirPods Pro 3) -->
-    <Border Style="{StaticResource Card}">
-        <StackPanel Spacing="8">
-            <TextBlock Text="{Binding [HeartRateTitle_Text], Source={StaticResource Loc}}" Style="{ThemeResource BodyStrongTextBlockStyle}" />
+    <Expander Style="{StaticResource GroupExpander}" IsExpanded="False">
+        <Expander.Header>
+            <TextBlock Text="{Binding [HeartRateTitle_Text], Source={StaticResource Loc}}" FontSize="16" />
+        </Expander.Header>
+        <StackPanel Spacing="16">
+            <Grid ColumnSpacing="24">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="{Binding [HeartRateSwitch_Header], Source={StaticResource Loc}}"
+                           FontSize="16" TextWrapping="Wrap" VerticalAlignment="Center" />
+                <ToggleSwitch x:Name="HeartRateSwitch" Grid.Column="1" Style="{StaticResource SettingToggle}"
+                              AutomationProperties.Name="{Binding [HeartRateSwitch_Header], Source={StaticResource Loc}}"
+                              Toggled="HeartRate_Toggled" />
+            </Grid>
             <TextBlock Text="{Binding [HeartRateSubtitle_Text], Source={StaticResource Loc}}"
-                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                       Style="{ThemeResource CaptionTextBlockStyle}"
+                       Foreground="{ThemeResource AppleSecondaryBrush}" FontSize="13"
                        TextWrapping="Wrap" />
-            <ToggleSwitch OnContent="{Binding [Toggle_On], Source={StaticResource Loc}}" OffContent="{Binding [Toggle_Off], Source={StaticResource Loc}}" x:Name="HeartRateSwitch"
-                          Header="{Binding [HeartRateSwitch_Header], Source={StaticResource Loc}}"
-                          Toggled="HeartRate_Toggled" />
             <!-- Current BPM on the left, min/avg/max of the window on the right. -->
             <Grid ColumnSpacing="16">
                 <Grid.ColumnDefinitions>
@@ -27,23 +35,23 @@
                 <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Bottom">
                     <TextBlock x:Name="HeartRateBpm"
                                Text="—"
-                               Style="{ThemeResource TitleTextBlockStyle}"
-                               Foreground="{ThemeResource NTPodsAccentBrush}" />
+                               FontSize="28" FontWeight="SemiBold" />
                     <TextBlock Text="{Binding [HeartRateBpmLabel_Text], Source={StaticResource Loc}}"
                                VerticalAlignment="Bottom"
                                Margin="0,0,0,4"
-                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                               Foreground="{ThemeResource AppleSecondaryBrush}" />
                 </StackPanel>
                 <TextBlock x:Name="HeartRateGraphCaption" Grid.Column="1"
                            HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,0,4"
                            TextWrapping="Wrap" TextAlignment="Right"
                            Style="{ThemeResource CaptionTextBlockStyle}"
-                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                           Foreground="{ThemeResource AppleSecondaryBrush}" />
             </Grid>
             <!-- What the graph shows: live (last minute) or a past session from the
                  daemon's heart-rate database. The list refreshes when it opens. -->
             <ComboBox x:Name="HistoryPicker"
                       Header="{Binding [HeartRateHistory_Header], Source={StaticResource Loc}}"
+                      AutomationProperties.Name="{Binding [HeartRateHistory_Header], Source={StaticResource Loc}}"
                       HorizontalAlignment="Stretch"
                       DropDownOpened="HistoryPicker_DropDownOpened"
                       SelectionChanged="HistoryPicker_SelectionChanged" />
@@ -58,13 +66,13 @@
                 <Grid MinWidth="24">
                     <TextBlock x:Name="GraphAxisMax" VerticalAlignment="Top" HorizontalAlignment="Right"
                                Style="{ThemeResource CaptionTextBlockStyle}"
-                               Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                               Foreground="{ThemeResource AppleSecondaryBrush}" />
                     <TextBlock x:Name="GraphAxisMid" VerticalAlignment="Center" HorizontalAlignment="Right"
                                Style="{ThemeResource CaptionTextBlockStyle}"
-                               Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                               Foreground="{ThemeResource AppleSecondaryBrush}" />
                     <TextBlock x:Name="GraphAxisMin" VerticalAlignment="Bottom" HorizontalAlignment="Right"
                                Style="{ThemeResource CaptionTextBlockStyle}"
-                               Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                               Foreground="{ThemeResource AppleSecondaryBrush}" />
                 </Grid>
                 <Canvas x:Name="HeartRateGraph" Grid.Column="1"
                         Background="Transparent"
@@ -73,5 +81,5 @@
                         PointerExited="HeartRateGraph_PointerExited" />
             </Grid>
         </StackPanel>
-    </Border>
+    </Expander>
 </UserControl>

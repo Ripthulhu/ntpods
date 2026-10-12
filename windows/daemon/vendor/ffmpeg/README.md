@@ -12,7 +12,9 @@ license live here.
   [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds), verifies its
   SHA256, and drops the headers + import libs (both MSVC `.lib` and MinGW
   `.dll.a`) + DLLs into `include/`, `lib/`, `bin/` here.
-- **License:** FFmpeg is used under the **LGPL v2.1+** — see `LICENSE-ffmpeg.txt`.
+- **License:** this bundle is **LGPL v3+** (`avcodec_license()` and its bundled
+  license confirm `--enable-version3`) — see `LICENSE-ffmpeg.txt` and the
+  repository's GPL-3.0 text incorporated by LGPL-3.0.
   The `-lgpl-shared` build ships the runtime DLLs (`avcodec-61.dll`,
   `avutil-59.dll`, `swresample-5.dll`) alongside the app.
 - **Updating:** bump `URL` / `URL_SHA256` in `fetch-ffmpeg.sh` when moving versions

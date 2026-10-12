@@ -17,3 +17,5 @@ drivers/**/x64/
 drivers/mic-portcls/x64/
 # The mic driver package is built by CI, never committed
 drivers/mic-portcls/prebuilt/
+# Local source-build artifacts and manifests.
+build-output/

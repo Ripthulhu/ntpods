@@ -3,28 +3,28 @@ using NTPods.WinUI.Popup;
 using NTPods.WinUI.Services;
 using NTPods.WinUI.Tray;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Dispatching;
+using Microsoft.Windows.AppLifecycle;
 
 namespace NTPods.WinUI;
 
-/// The app is primarily a tray client of `ntpodsd`. It starts hidden to the
-/// tray: the DaemonClient connects (spawning the daemon if needed), the main
-/// window is created but not shown, and the tray icon drives Open/Quit.
+/// Tray client of ntpodsd. Normal launches show the window; --tray keeps it hidden.
 public partial class App : Application
 {
     public DaemonClient Daemon { get; } = new();
 
     private MainWindow? _window;
     private TrayController? _tray;
+    private AppInstance? _instance;
 
-    // The connection "island" popup. A single instance is reused so reconnect
-    // spam re-populates it rather than stacking multiple popups; it self-closes
-    // after its animation and clears this reference. `_podsConnected` tracks the
-    // AirPods connected state so we fire only on the false→true transition.
+    // Reuse one island window and show connection notifications on false-to-true transitions.
     private IslandWindow? _island;
-    private bool _podsConnected;
+    private readonly IslandPresence _islandPresence = new();
+    private Snapshot? _latestSnapshot;
     // Last-seen model number (from the 0x1D metadata), so message-mode island
     // popups can show the right device render even without a full Snapshot.
     private string _lastModel = "";
+    private bool _quitting;
 
     public App()
     {
@@ -33,22 +33,27 @@ public partial class App : Application
         InitializeComponent();
     }
 
-    protected override void OnLaunched(LaunchActivatedEventArgs args)
+    protected override async void OnLaunched(LaunchActivatedEventArgs args)
     {
+        _instance = AppInstance.FindOrRegisterForKey("NTPods.WinUI");
+        if (!_instance.IsCurrent)
+        {
+            await _instance.RedirectActivationToAsync(AppInstance.GetCurrent().GetActivatedEventArgs());
+            Exit();
+            return;
+        }
+        var dispatcher = DispatcherQueue.GetForCurrentThread();
+        _instance.Activated += (_, _) => dispatcher.TryEnqueue(() => _window?.ShowFromTray());
+
         // The main window is created hidden; closing it hides back to the tray.
         _window = new MainWindow(Daemon);
 
         _tray = new TrayController(
             onOpen: () => _window.ShowFromTray(),
             onQuit: ExitApp,
+            onBatteries: () => ShowIsland(_latestSnapshot ?? new Snapshot()),
             client: Daemon);
         _tray.Show();
-
-        // Register native toast notifications (Windows App SDK AppNotificationManager)
-        // before the daemon starts producing overlays. A toast click ("action=open")
-        // reactivates the window — marshal to the UI thread, same as the tray "Open".
-        Notifier.Register(() =>
-            _window.DispatcherQueue.TryEnqueue(() => _window.ShowFromTray()));
 
         // Surface daemon overlays as the centred floating island (not a Windows
         // toast — the toast was the corner card the user didn't want). Marshalled
@@ -60,6 +65,15 @@ public partial class App : Application
         // arrive on a background thread; marshal to the UI thread (same as the window).
         Daemon.SnapshotReceived += s =>
             _window.DispatcherQueue.TryEnqueue(() => _tray?.UpdateSnapshot(s));
+        Daemon.ConnectionChanged += connected =>
+        {
+            if (!connected) _window.DispatcherQueue.TryEnqueue(() =>
+            {
+                _latestSnapshot = null;
+                _tray?.UpdateSnapshot(new Snapshot());
+                _island?.UpdateSnapshot(new Snapshot());
+            });
+        };
 
         // Show the connection island on the AirPods connect transition only
         // (Snapshot.Connected false→true). Tracking the snapshot's connected flag
@@ -67,35 +81,29 @@ public partial class App : Application
         // reconnect (which re-pushes the same connected=true snapshot) does not
         // re-fire the popup. Marshalled to the UI thread.
         Daemon.SnapshotReceived += s =>
+        {
+            bool sessionReady = Daemon.IsReady;
             _window.DispatcherQueue.TryEnqueue(() =>
             {
+                _latestSnapshot = s;
                 if (!string.IsNullOrEmpty(s.Model))
                 {
                     _lastModel = s.Model;
-                    AppSettings.SetLastModel(s.Model); // survive restarts for the connect island
+                    AppSettings.SetLastModel(s.Model, s.DeviceId); // survive restarts for this device's connect island
                 }
-                var now = s.Connected;
-                if (now && !_podsConnected) ShowIsland(s);
-                _podsConnected = now;
+                if (_islandPresence.Update(s, sessionReady)) ShowIsland(s);
+                else _island?.UpdateSnapshot(s);
             });
+        };
 
-        // If a previous daemon is still running (an orphan from a crashed or
-        // force-killed session), shut it down GRACEFULLY first so THIS app owns a
-        // single clean instance — the new daemon then opens the driver fresh,
-        // instead of hitting "driver open FAILED" against a leaked handle.
-        DaemonClient.ShutdownExistingDaemon();
-
-        // Begin talking to the daemon (background reader + writer loops).
+        // Reuse a running daemon so opening the app does not interrupt capture.
         Daemon.Start();
 
-        // Show the window on launch — unless started hidden. Autostart (startup.ps1)
-        // passes "--tray", so at login only the tray icon appears and the window
-        // opens on demand (double-click the tray, or "Open"); closing it hides it
-        // back to the tray.
+        // Startup opens only the tray; manual launches share the tray's entrance.
         var argv = Environment.GetCommandLineArgs();
         bool startHidden = Array.IndexOf(argv, "--tray") >= 0
                         || Array.IndexOf(argv, "--minimized") >= 0;
-        if (!startHidden) _window.Activate();
+        if (!startHidden) _window.ShowFromTray();
     }
 
     /// Create (or reuse) the single island window and play the connect popup.
@@ -124,6 +132,12 @@ public partial class App : Application
     /// Show a daemon overlay as the centred floating island (message mode).
     private void ShowIslandMessage(string title, string body)
     {
+        // The daemon follows its first battery snapshot with this connection event.
+        if (body.StartsWith(Localize.Get("Status_Connected") + "  ·  ", StringComparison.Ordinal) && _latestSnapshot is { Connected: true } snapshot)
+        {
+            _island?.UpdateSnapshot(snapshot);
+            return;
+        }
         try
         {
             if (_island is null)
@@ -131,7 +145,7 @@ public partial class App : Application
                 _island = new IslandWindow();
                 _island.Closed += (_, _) => _island = null;
             }
-            _island.ShowMessage(title, body, _lastModel);
+            _island.ShowMessage(title, body, _latestSnapshot, _lastModel);
         }
         catch
         {
@@ -143,17 +157,24 @@ public partial class App : Application
     /// runs at a time, and this app spawned the daemon, so quitting it should not
     /// leave a headless ntpodsd lingering. (Closing the *window* only hides to
     /// the tray — the daemon stays; Quit is the full teardown.)
-    public void ExitApp()
+    public async void ExitApp()
     {
+        if (_quitting) return;
+        _quitting = true;
+        _window?.SetClosingState(true);
         try
         {
-            Daemon.Shutdown();                       // tell ntpodsd to exit
-            System.Threading.Thread.Sleep(150);      // let the writer flush it
+            await Daemon.ShutdownAsync();
         }
-        catch { }
-        Notifier.Unregister();
+        catch (Exception)
+        {
+            _quitting = false;
+            _window?.SetClosingState(false);
+            if (_window is not null) await _window.ShowShutdownFailureAsync();
+            return;
+        }
         _tray?.Dispose();
-        Daemon.Dispose();
+        await Daemon.DisposeAsync();
         Exit();
     }
 }

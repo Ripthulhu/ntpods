@@ -12,10 +12,7 @@ using Windows.Foundation;
 
 namespace NTPods.WinUI.Controls;
 
-/// Heart-rate monitoring toggle + BPM readout + a full-width graph (AirPods Pro 3).
-/// The graph shows either the live stream (last minute) or a past session read
-/// from the daemon's heart-rate database. The toggle is user-driven — the snapshot
-/// has no "monitoring on" flag, only the BPM value — so Update touches only the reading.
+/// Monitoring state and timestamped readings come from the daemon.
 public sealed partial class HeartRateCard : UserControl
 {
     // Live: the last minute at the stream's 1 Hz. Scaling follows HeartRateMiniGraph
@@ -27,17 +24,14 @@ public sealed partial class HeartRateCard : UserControl
     public DaemonClient? Client { get; set; }
 
     private bool _applying;
-    private ushort? _latestBpm;
-    private readonly List<(DateTime At, ushort Bpm)> _live = new();
+    private readonly HeartRateLiveState _liveState = new();
     // The picker's entries after "Live" (index 0); null = live.
     private readonly List<HeartRateHistory.Session> _sessions = new();
     private HeartRateHistory.Session? _session;
     private List<(DateTime At, ushort Bpm)> _sessionSamples = new();
     private bool _populating;
     private Point? _hover;
-    // The daemon only pushes a snapshot when the BPM *changes*, so sample the latest
-    // value at the stream's own 1 Hz cadence instead of once per snapshot — a steady
-    // pulse then still draws as a flat line rather than a single point.
+    // Expire old readings and move the time axis even when no new packet arrives.
     private readonly DispatcherTimer _sampler = new() { Interval = TimeSpan.FromSeconds(1) };
 
     public HeartRateCard()
@@ -47,7 +41,7 @@ public sealed partial class HeartRateCard : UserControl
         Unloaded += (_, _) => _sampler.Stop();
         Loaded += (_, _) =>
         {
-            if (HeartRateSwitch.IsOn) _sampler.Start();
+            if (_liveState.Enabled) _sampler.Start();
             PopulatePicker();
             DrawGraph();
         };
@@ -60,9 +54,13 @@ public sealed partial class HeartRateCard : UserControl
         _applying = true;
         try
         {
-            _latestBpm = s.HeartRate;
-            HeartRateBpm.Text = s.HeartRate is ushort bpm ? bpm.ToString() : "—";
-            if (s.HeartRate is not null && !_sampler.IsEnabled) _sampler.Start();
+            HeartRateSwitch.IsOn = s.HeartRateEnabled;
+            HeartRateSwitch.IsEnabled = Client?.IsReady == true && (DeviceModels.Find(s.Model).HeartRate || s.HeartRateEnabled);
+            _liveState.Update(s, DateTimeOffset.UtcNow);
+            HeartRateBpm.Text = _liveState.Current(DateTimeOffset.UtcNow)?.ToString() ?? "—";
+            if (s.HeartRateEnabled && IsLoaded) _sampler.Start();
+            else _sampler.Stop();
+            DrawGraph();
         }
         finally
         {
@@ -74,23 +72,16 @@ public sealed partial class HeartRateCard : UserControl
     {
         if (_applying) return;
         Client?.SetHeartRate(HeartRateSwitch.IsOn);
-        if (HeartRateSwitch.IsOn)
-        {
-            _sampler.Start();
-            return;
-        }
-        _sampler.Stop();
-        _latestBpm = null;
-        _live.Clear();
-        HeartRateBpm.Text = "—";
-        DrawGraph();
+        _applying = true;
+        HeartRateSwitch.IsOn = _liveState.Enabled;
+        _applying = false;
     }
 
     private void Sample()
     {
-        if (_latestBpm is not ushort bpm) return;
-        _live.Add((DateTime.Now, bpm));
-        if (_live.Count > MaxGraphSamples) _live.RemoveAt(0);
+        var now = DateTimeOffset.UtcNow;
+        _liveState.Expire(now);
+        HeartRateBpm.Text = _liveState.Current(now)?.ToString() ?? "—";
         if (_session is null) DrawGraph();
     }
 
@@ -185,7 +176,7 @@ public sealed partial class HeartRateCard : UserControl
             });
 
         bool live = _session is null;
-        var raw = live ? _live : _sessionSamples;
+        var raw = live ? _liveState.Samples : _sessionSamples;
         if (raw.Count == 0)
         {
             GraphAxisMax.Text = GraphAxisMid.Text = GraphAxisMin.Text = "";
@@ -211,25 +202,33 @@ public sealed partial class HeartRateCard : UserControl
         int slots = live ? MaxGraphSamples : pts.Count;
         double step = slots > 1 ? (right - left) / (slots - 1) : 0;
         double x0 = right - step * (pts.Count - 1);
+        var now = DateTime.Now;
+        double X(int i) => live ? right - Math.Clamp((now - pts[i].At).TotalSeconds, 0, 60) / 60 * (right - left) : x0 + i * step;
         double Y(ushort bpm) => bottom - Math.Clamp((bpm - lower) / span, 0, 1) * height;
 
         var line = new Polyline { Stroke = accent, StrokeThickness = 2, StrokeLineJoin = PenLineJoin.Round };
         bool bars = step >= 3; // one faint bar per reading while they're still distinguishable
         for (int i = 0; i < pts.Count; i++)
         {
-            double x = x0 + i * step, y = Y(pts[i].Bpm);
+            double x = X(i), y = Y(pts[i].Bpm);
+            if (live && i > 0 && (pts[i].At - pts[i - 1].At).TotalSeconds > 3)
+            {
+                if (line.Points.Count > 1) canvas.Children.Add(line);
+                line = new Polyline { Stroke = accent, StrokeThickness = 2, StrokeLineJoin = PenLineJoin.Round };
+            }
             if (bars) canvas.Children.Add(new Line { X1 = x, X2 = x, Y1 = bottom, Y2 = y, Stroke = accent, StrokeThickness = 1, Opacity = 0.18 });
             line.Points.Add(new Point(x, y));
         }
-        if (pts.Count > 1) canvas.Children.Add(line);
-        AddDot(canvas, x0 + step * (pts.Count - 1), Y(pts[^1].Bpm), accent, 5);
+        if (line.Points.Count > 1) canvas.Children.Add(line);
+        AddDot(canvas, X(pts.Count - 1), Y(pts[^1].Bpm), accent, 5);
 
-        if (_hover is Point p && p.X >= x0 - step / 2)
+        if (_hover is Point p && p.X >= X(0) - step / 2)
         {
             // The reading nearest the pointer: a cursor line, a dot, and its value.
-            int i = step > 0 ? Math.Clamp((int)Math.Round((p.X - x0) / step), 0, pts.Count - 1) : 0;
+            int i = live ? Enumerable.Range(0, pts.Count).MinBy(index => Math.Abs(X(index) - p.X)) :
+                step > 0 ? Math.Clamp((int)Math.Round((p.X - x0) / step), 0, pts.Count - 1) : 0;
             var (at, bpm) = pts[i];
-            double x = x0 + i * step, y = Y(bpm);
+            double x = X(i), y = Y(bpm);
             canvas.Children.Add(new Line { X1 = x, X2 = x, Y1 = top, Y2 = bottom, Stroke = accent, StrokeThickness = 1, Opacity = 0.6 });
             AddDot(canvas, x, y, accent, 8);
 

@@ -22,11 +22,11 @@
 #include <bthguid.h>
 #include <bthddi.h>
 #include <bthioctl.h> // IOCTL_INTERNAL_BTH_SUBMIT_BRB
+#include "Policy.h"
 
 #define LP_POOL_TAG          'PbiL' // "LibP"
-#define LP_RECV_TIMEOUT_MS   5000
-// PSM_ATT (0x001F) — the AirPods open THIS to us (inbound) for hearing-aid config.
-// Already defined by the WDK's bthdef.h, so we just use that.
+#define LP_RECV_TIMEOUT_MS   LP_MAX_RECEIVE_MS
+// PSM_ATT (0x001F) is already defined by the WDK's bthdef.h.
 
 //
 // User-mode device interface: the NTPods app enumerates this GUID to find
@@ -74,13 +74,12 @@ typedef struct _LP_RECEIVE_INPUT {
 typedef struct _LP_STATUS_OUTPUT {
     ULONG     State;            // LP_STATE
     ULONGLONG ConnectedAddress;
-    // ATT (PSM 0x001F) server diagnostics — so user mode can see the hearing-aid
-    // channel progress without a kernel debugger (DebugView is unreliable here).
-    ULONG     AttServerRegistered; // 0/1
-    ULONG     AttIndicationCount;  // # of inbound ATT connect indications seen
-    LONG      AttAcceptStatus;     // NTSTATUS of the last accept (0x00000103 = not tried)
-    ULONG     AttChannelOpen;      // 0/1 (the accepted ATT channel is up)
-    LONG      AttRegisterStatus;   // NTSTATUS of the server register (0x00000103 = not tried)
+    // Preserve the legacy server diagnostics layout for existing callers.
+    ULONG     AttServerRegistered; // always zero: ATT is an outbound client
+    ULONG     AttIndicationCount;  // always zero
+    LONG      AttAcceptStatus;     // NTSTATUS of the last client open
+    ULONG     AttChannelOpen;      // 0/1
+    LONG      AttRegisterStatus;   // STATUS_NOT_SUPPORTED
 } LP_STATUS_OUTPUT, *PLP_STATUS_OUTPUT;
 
 #include <poppack.h>
@@ -105,29 +104,28 @@ typedef struct _DEVICE_CONTEXT {
 
     // L2CAP connection state.
     WDFSPINLOCK          Lock;
+    WDFWAITLOCK          OperationLock;
+    WDFWAITLOCK          AapReceiveLock;
+    WDFWAITLOCK          AttReceiveLock;
+    WDFQUEUE            AapReceiveQueue;
+    WDFQUEUE            AttReceiveQueue;
+    WDFQUEUE            ControlQueue;
+    WDFQUEUE            StatusQueue;
+    volatile LONG       Stopping;
+    volatile LONG       Ready;
+    volatile LONG       Removed;
+    BTH_ADDR            DeviceAddress; // from the owning BTHENUM PDO
     LP_STATE             State;
     BTH_ADDR             RemoteAddress;
     USHORT               Psm;
     L2CAP_CHANNEL_HANDLE ChannelHandle;
+    L2CAP_CHANNEL_HANDLE LastAapDisconnect;
 
-    // ATT (PSM 0x001F) server. The AirPods don't wait for us to connect — right
-    // after a hearing-aid enable they open an L2CAP channel INBOUND to this PSM,
-    // which bthport refuses ("PSM not supported") unless we register a server.
-    L2CAP_SERVER_HANDLE  AttServerHandle;
-    BOOLEAN              AttServerRegistered;
-
-    // The connect indication can fire at DISPATCH_LEVEL, where we cannot make the
-    // blocking BRB submit that accepts the channel. So we stash the connect params
-    // and defer the accept (BRB_L2CA_OPEN_CHANNEL_RESPONSE) to this PASSIVE-level
-    // work item.
-    WDFWORKITEM          AttAcceptWorkItem;
-    L2CAP_CHANNEL_HANDLE PendingAttConn;   // connection handle from the indication
-    BTH_ADDR             PendingAttAddr;
-    L2CAP_CHANNEL_HANDLE AttChannelHandle; // the accepted ATT channel
+    L2CAP_CHANNEL_HANDLE AttChannelHandle;
+    BTH_ADDR             AttAddress;
+    L2CAP_CHANNEL_HANDLE LastAttDisconnect;
     BOOLEAN              AttConnected;
-    ULONG                AttIndicationCount; // # inbound ATT connect indications
-    LONG                 AttAcceptStatus;    // NTSTATUS of the last accept attempt
-    LONG                 AttRegisterStatus;  // NTSTATUS of the server register
+    LONG                 AttAcceptStatus; // legacy status ABI: client open result
 } DEVICE_CONTEXT, *PDEVICE_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DEVICE_CONTEXT, DeviceGetContext)
@@ -140,26 +138,39 @@ EVT_WDF_DRIVER_DEVICE_ADD         LpEvtDeviceAdd;
 
 EVT_WDF_DEVICE_PREPARE_HARDWARE   LpEvtDevicePrepareHardware;
 EVT_WDF_DEVICE_RELEASE_HARDWARE   LpEvtDeviceReleaseHardware;
+EVT_WDF_DEVICE_SURPRISE_REMOVAL    LpEvtDeviceSurpriseRemoval;
 // Runs on the remove path while the default I/O target is still STARTED, which
 // is the only window where our teardown BRBs can actually reach bthport. See
 // the comment on the implementation in Device.c.
 EVT_WDF_DEVICE_SELF_MANAGED_IO_SUSPEND LpEvtDeviceSelfManagedIoSuspend;
+EVT_WDF_DEVICE_SELF_MANAGED_IO_RESTART LpEvtDeviceSelfManagedIoRestart;
 EVT_WDF_OBJECT_CONTEXT_CLEANUP    LpEvtDeviceContextCleanup;
 
 EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL LpEvtIoDeviceControl;
+EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL LpEvtIoDispatch;
+EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL LpEvtIoReceive;
+EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL LpEvtIoStatus;
+EVT_WDF_IO_QUEUE_IO_STOP           LpEvtIoStop;
 
 // Fires when the NTPods app closes its handle to our device interface -> we
 // tear down the L2CAP channel so it doesn't leak (which left Windows unable to
 // disconnect the AirPods until a manual disconnect/reboot).
 EVT_WDF_FILE_CLOSE                 LpEvtFileClose;
+EVT_WDF_FILE_CLEANUP               LpEvtFileCleanup;
+EVT_WDF_DEVICE_FILE_CREATE         LpEvtFileCreate;
 
 // L2cap.c
-NTSTATUS LpSubmitBrbSync(_In_ PDEVICE_CONTEXT Ctx, _Inout_ PBRB Brb);
-NTSTATUS LpConnect(_In_ PDEVICE_CONTEXT Ctx, _In_ BTH_ADDR Address, _In_ USHORT Psm);
+NTSTATUS LpSubmitBrbSync(_In_ PDEVICE_CONTEXT Ctx, _Inout_ PBRB Brb,
+                       _In_opt_ WDFREQUEST ParentRequest);
+NTSTATUS LpConnect(_In_ PDEVICE_CONTEXT Ctx, _In_ BTH_ADDR Address, _In_ USHORT Psm,
+                   _In_ WDFREQUEST Request);
 NTSTATUS LpDisconnect(_In_ PDEVICE_CONTEXT Ctx);
-NTSTATUS LpSend(_In_ PDEVICE_CONTEXT Ctx, _In_reads_bytes_(Length) PVOID Buffer, _In_ ULONG Length);
+VOID LpStopChannels(_In_ PDEVICE_CONTEXT Ctx);
+NTSTATUS LpSend(_In_ PDEVICE_CONTEXT Ctx, _In_reads_bytes_(Length) PVOID Buffer,
+               _In_ ULONG Length, _In_ WDFREQUEST Request);
 NTSTATUS LpReceive(_In_ PDEVICE_CONTEXT Ctx, _Out_writes_bytes_(BufferLen) PVOID Buffer,
-                   _In_ ULONG BufferLen, _Out_ PULONG BytesRead, _In_ ULONG TimeoutMs);
+                   _In_ ULONG BufferLen, _Out_ PULONG BytesRead, _In_ ULONG TimeoutMs,
+                   _In_ WDFREQUEST Request);
 
 _Function_class_(PFNBTHPORT_INDICATION_CALLBACK)
 VOID LpIndicationCallback(_In_opt_ PVOID Context, _In_ INDICATION_CODE Indication,
@@ -168,19 +179,16 @@ VOID LpIndicationCallback(_In_opt_ PVOID Context, _In_ INDICATION_CODE Indicatio
 // ATT (PSM 0x001F) — we OPEN it as a CLIENT to the AirPods (like Android's
 // ATTManager), which sidesteps the bthport rule that forbids registering a SERVER
 // on the reserved ATT PSM. LpConnectAtt opens it; LpCloseAttChannel tears it down.
-// (The server-register path below is kept but unused — it returned 0xC000000D.)
-NTSTATUS LpConnectAtt(_In_ PDEVICE_CONTEXT Ctx);
-NTSTATUS LpAttSend(_In_ PDEVICE_CONTEXT Ctx, _In_reads_bytes_(Length) PVOID Buffer, _In_ ULONG Length);
+NTSTATUS LpConnectAtt(_In_ PDEVICE_CONTEXT Ctx, _In_ WDFREQUEST Request);
+NTSTATUS LpAttSend(_In_ PDEVICE_CONTEXT Ctx, _In_reads_bytes_(Length) PVOID Buffer,
+                  _In_ ULONG Length, _In_ WDFREQUEST Request);
 NTSTATUS LpAttReceive(_In_ PDEVICE_CONTEXT Ctx, _Out_writes_bytes_(BufferLen) PVOID Buffer,
-                      _In_ ULONG BufferLen, _Out_ PULONG BytesRead, _In_ ULONG TimeoutMs);
-NTSTATUS LpRegisterAttServer(_In_ PDEVICE_CONTEXT Ctx);
-VOID     LpUnregisterAttServer(_In_ PDEVICE_CONTEXT Ctx);
-VOID     LpCloseAttChannel(_In_ PDEVICE_CONTEXT Ctx);
+                      _In_ ULONG BufferLen, _Out_ PULONG BytesRead, _In_ ULONG TimeoutMs,
+                      _In_ WDFREQUEST Request);
+NTSTATUS LpCloseAttChannel(_In_ PDEVICE_CONTEXT Ctx);
 
 _Function_class_(PFNBTHPORT_INDICATION_CALLBACK)
-VOID LpAttServerIndication(_In_opt_ PVOID Context, _In_ INDICATION_CODE Indication,
+VOID LpAttIndicationCallback(_In_opt_ PVOID Context, _In_ INDICATION_CODE Indication,
                            _In_ PINDICATION_PARAMETERS Parameters);
-
-EVT_WDF_WORKITEM LpAttAcceptWorkItem;
 
 #endif // _NTPODSAAP_H_

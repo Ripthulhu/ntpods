@@ -8,22 +8,19 @@
     xmlns:ipc="using:NTPods.WinUI.Ipc"
     mc:Ignorable="d">
 
-    <!-- Multipoint: the hosts the AirPods themselves report being connected to.
-         Windows cannot see this at all - it only knows about its own link - so
-         this card is the only place the sharing is visible. -->
-    <Border Style="{StaticResource Card}">
-        <StackPanel Spacing="8">
-            <TextBlock Text="{Binding [MultipointTitle_Text], Source={StaticResource Loc}}"
-                       Style="{ThemeResource BodyStrongTextBlockStyle}" />
-
-            <TextBlock x:Name="SummaryText"
-                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                       TextWrapping="Wrap" />
-
+    <Expander Style="{StaticResource GroupExpander}" IsExpanded="False">
+        <Expander.Header>
+            <StackPanel Spacing="4">
+                <TextBlock Text="{Binding [MultipointTitle_Text], Source={StaticResource Loc}}" FontSize="16" />
+                <TextBlock x:Name="SummaryText" FontSize="13"
+                           Foreground="{ThemeResource AppleSecondaryBrush}" TextWrapping="Wrap" />
+            </StackPanel>
+        </Expander.Header>
+        <StackPanel Spacing="16">
             <ItemsControl x:Name="DeviceList">
                 <ItemsControl.ItemTemplate>
                     <DataTemplate x:DataType="ipc:ConnectedDevice">
-                        <Grid Margin="0,6,0,0" ColumnSpacing="10">
+                        <Grid Margin="0,8" ColumnSpacing="16">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto" />
                                 <ColumnDefinition Width="*" />
@@ -31,13 +28,13 @@
                             <FontIcon Grid.Column="0"
                                       FontFamily="{ThemeResource SymbolThemeFontFamily}"
                                       Glyph="{x:Bind Glyph}"
-                                      FontSize="18"
+                                      FontSize="20"
                                       VerticalAlignment="Center" />
-                            <StackPanel Grid.Column="1">
-                                <TextBlock Text="{x:Bind Name}" />
+                            <StackPanel Grid.Column="1" Spacing="4">
+                                <TextBlock Text="{x:Bind Name}" FontSize="16" TextWrapping="Wrap" />
                                 <TextBlock Text="{x:Bind Address}"
                                            Style="{ThemeResource CaptionTextBlockStyle}"
-                                           Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                           Foreground="{ThemeResource AppleSecondaryBrush}" />
                             </StackPanel>
                         </Grid>
                     </DataTemplate>
@@ -46,9 +43,9 @@
 
             <TextBlock Text="{Binding [Multipoint_Hint], Source={StaticResource Loc}}"
                        Style="{ThemeResource CaptionTextBlockStyle}"
-                       Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                       Foreground="{ThemeResource AppleSecondaryBrush}"
                        TextWrapping="Wrap"
                        Margin="0,4,0,0" />
         </StackPanel>
-    </Border>
+    </Expander>
 </UserControl>

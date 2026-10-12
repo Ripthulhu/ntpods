@@ -68,7 +68,7 @@
       <WarningLevel>Level3</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <Optimization>Disabled</Optimization>
-      <PreprocessorDefinitions>_DEBUG;_AMD64_;_KERNEL_MODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_DEBUG;_AMD64_;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Inf>
       <TimeStamp>*</TimeStamp>
@@ -79,7 +79,7 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
-      <PreprocessorDefinitions>NDEBUG;_AMD64_;_KERNEL_MODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NDEBUG;_AMD64_;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Inf>
       <TimeStamp>*</TimeStamp>
@@ -91,6 +91,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="NTPodsAAP.h" />
+    <ClInclude Include="Policy.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Driver.c" />

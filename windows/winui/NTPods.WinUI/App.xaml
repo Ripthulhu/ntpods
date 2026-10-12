@@ -9,28 +9,74 @@
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
             </ResourceDictionary.MergedDictionaries>
 
-            <!-- NTPods brand accent (Android app's light_blue_600 = #039BE5),
-                 recoloured slightly per theme. Overriding SystemAccentColor tints
-                 the Fluent accent controls (toggles, radios, sliders) to brand. -->
+            <!-- LibrePods Apple appearance, using native Windows controls. -->
             <ResourceDictionary.ThemeDictionaries>
                 <ResourceDictionary x:Key="Light">
-                    <Color x:Key="NTPodsAccentColor">#FF039BE5</Color>
-                    <Color x:Key="SystemAccentColor">#FF0288C7</Color>
-                    <Color x:Key="SystemAccentColorLight1">#FF039BE5</Color>
-                    <Color x:Key="SystemAccentColorLight2">#FF29AEEA</Color>
-                    <Color x:Key="SystemAccentColorLight3">#FF57C1EF</Color>
-                    <SolidColorBrush x:Key="NTPodsAccentBrush" Color="#FF039BE5" />
+                    <Color x:Key="AppleToggleColor">#FF34C759</Color>
+                    <Color x:Key="AppleToggleHoverColor">#FF30B851</Color>
+                    <Color x:Key="AppleTogglePressedColor">#FF248A3D</Color>
+                    <Color x:Key="AppleToggleKnobColor">#FFFFFFFF</Color>
+                    <Color x:Key="AppleSelectedForegroundColor">#FF000000</Color>
+                    <Color x:Key="AppleSelectedColor">#FFFFFFFF</Color>
+                    <Color x:Key="ApplePageColor">#FFF2F2F7</Color>
+                    <Color x:Key="AppleHoverColor">#FFE7E7EB</Color>
+                    <Color x:Key="AppleGroupColor">#FFFFFFFF</Color>
+                    <Color x:Key="NTPodsAccentColor">#FF007AFF</Color>
+                    <Color x:Key="SystemAccentColor">#FF0066D6</Color>
+                    <SolidColorBrush x:Key="NTPodsAccentBrush" Color="#FF0066D6" />
+                    <SolidColorBrush x:Key="ApplePageBrush" Color="#FFF2F2F7" />
+                    <SolidColorBrush x:Key="AppleGroupBrush" Color="White" />
+                    <SolidColorBrush x:Key="AppleSecondaryBrush" Color="#FF636366" />
+                    <SolidColorBrush x:Key="AppleDividerBrush" Color="#FFD1D1D6" />
+                    <SolidColorBrush x:Key="AppleGreenBrush" Color="#FF248A3D" />
+                    <SolidColorBrush x:Key="AppleLowBatteryBrush" Color="#FFC62828" />
+                    <SolidColorBrush x:Key="AppleSelectedBrush" Color="White" />
+                    <SolidColorBrush x:Key="AppleTrackBrush" Color="#FFE3E3E8" />
+                    <SolidColorBrush x:Key="AppleHoverBrush" Color="#FFE7E7EB" />
                 </ResourceDictionary>
                 <ResourceDictionary x:Key="Dark">
-                    <Color x:Key="NTPodsAccentColor">#FF29AEEA</Color>
-                    <Color x:Key="SystemAccentColor">#FF29AEEA</Color>
-                    <Color x:Key="SystemAccentColorDark1">#FF039BE5</Color>
-                    <Color x:Key="SystemAccentColorDark2">#FF0288C7</Color>
-                    <Color x:Key="SystemAccentColorDark3">#FF01579B</Color>
-                    <SolidColorBrush x:Key="NTPodsAccentBrush" Color="#FF29AEEA" />
+                    <Color x:Key="AppleToggleColor">#FF30D158</Color>
+                    <Color x:Key="AppleToggleHoverColor">#FF34C759</Color>
+                    <Color x:Key="AppleTogglePressedColor">#FF248A3D</Color>
+                    <Color x:Key="AppleToggleKnobColor">#FFFFFFFF</Color>
+                    <Color x:Key="AppleSelectedForegroundColor">#FFFFFFFF</Color>
+                    <Color x:Key="AppleSelectedColor">#FF48484A</Color>
+                    <Color x:Key="ApplePageColor">#FF000000</Color>
+                    <Color x:Key="AppleHoverColor">#FF2C2C2E</Color>
+                    <Color x:Key="AppleGroupColor">#FF1C1C1E</Color>
+                    <Color x:Key="NTPodsAccentColor">#FF0A84FF</Color>
+                    <Color x:Key="SystemAccentColor">#FF0A84FF</Color>
+                    <SolidColorBrush x:Key="NTPodsAccentBrush" Color="#FF0A84FF" />
+                    <SolidColorBrush x:Key="ApplePageBrush" Color="Black" />
+                    <SolidColorBrush x:Key="AppleGroupBrush" Color="#FF1C1C1E" />
+                    <SolidColorBrush x:Key="AppleSecondaryBrush" Color="#FFA1A1A6" />
+                    <SolidColorBrush x:Key="AppleDividerBrush" Color="#FF38383A" />
+                    <SolidColorBrush x:Key="AppleGreenBrush" Color="#FF30D158" />
+                    <SolidColorBrush x:Key="AppleLowBatteryBrush" Color="#FFFF453A" />
+                    <SolidColorBrush x:Key="AppleSelectedBrush" Color="#FF48484A" />
+                    <SolidColorBrush x:Key="AppleTrackBrush" Color="#FF1C1C1E" />
+                    <SolidColorBrush x:Key="AppleHoverBrush" Color="#FF2C2C2E" />
                 </ResourceDictionary>
                 <ResourceDictionary x:Key="HighContrast">
+                    <StaticResource x:Key="AppleToggleColor" ResourceKey="SystemColorHighlightColor" />
+                    <StaticResource x:Key="AppleToggleHoverColor" ResourceKey="SystemColorHighlightColor" />
+                    <StaticResource x:Key="AppleTogglePressedColor" ResourceKey="SystemColorHighlightColor" />
+                    <StaticResource x:Key="AppleToggleKnobColor" ResourceKey="SystemColorHighlightTextColor" />
+                    <StaticResource x:Key="AppleSelectedForegroundColor" ResourceKey="SystemColorHighlightTextColor" />
+                    <StaticResource x:Key="AppleSelectedColor" ResourceKey="SystemColorHighlightColor" />
+                    <StaticResource x:Key="ApplePageColor" ResourceKey="SystemColorWindowColor" />
+                    <StaticResource x:Key="AppleHoverColor" ResourceKey="SystemColorHighlightColor" />
+                    <StaticResource x:Key="AppleGroupColor" ResourceKey="SystemColorWindowColor" />
                     <SolidColorBrush x:Key="NTPodsAccentBrush" Color="{ThemeResource SystemColorHighlightColor}" />
+                    <SolidColorBrush x:Key="ApplePageBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="AppleGroupBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="AppleSecondaryBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="AppleDividerBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="AppleGreenBrush" Color="{ThemeResource SystemColorHighlightColor}" />
+                    <SolidColorBrush x:Key="AppleLowBatteryBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="AppleSelectedBrush" Color="{ThemeResource SystemColorHighlightColor}" />
+                    <SolidColorBrush x:Key="AppleTrackBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="AppleHoverBrush" Color="{ThemeResource SystemColorHighlightColor}" />
                 </ResourceDictionary>
             </ResourceDictionary.ThemeDictionaries>
 
@@ -38,15 +84,123 @@
                  Loc.Instance (published from its ctor). UI text binds {StaticResource Loc}. -->
             <services:Loc x:Key="Loc" />
 
-            <!-- Shared card look used by every device/settings section. Lifted to
-                 app scope so each UserControl (Controls/*, Pages/*) can reference
-                 {StaticResource Card} without redefining it. -->
+            <SolidColorBrush x:Key="ToggleSwitchFillOn" Color="{ThemeResource AppleToggleColor}" />
+            <SolidColorBrush x:Key="ToggleSwitchFillOnPointerOver" Color="{ThemeResource AppleToggleHoverColor}" />
+            <SolidColorBrush x:Key="ToggleSwitchFillOnPressed" Color="{ThemeResource AppleTogglePressedColor}" />
+            <SolidColorBrush x:Key="ToggleSwitchKnobFillOn" Color="{ThemeResource AppleToggleKnobColor}" />
+            <SolidColorBrush x:Key="ToggleSwitchKnobFillOnPointerOver" Color="{ThemeResource AppleToggleKnobColor}" />
+            <SolidColorBrush x:Key="ToggleSwitchKnobFillOnPressed" Color="{ThemeResource AppleToggleKnobColor}" />
+
+            <SolidColorBrush x:Key="ExpanderHeaderBackground" Color="{ThemeResource AppleGroupColor}" />
+            <SolidColorBrush x:Key="ExpanderHeaderBackgroundPointerOver" Color="{ThemeResource AppleHoverColor}" />
+            <SolidColorBrush x:Key="ExpanderHeaderBackgroundPressed" Color="{ThemeResource AppleHoverColor}" />
+            <SolidColorBrush x:Key="ExpanderContentBackground" Color="{ThemeResource AppleGroupColor}" />
+            <SolidColorBrush x:Key="ExpanderHeaderBorderBrush" Color="Transparent" />
+            <SolidColorBrush x:Key="ExpanderContentBorderBrush" Color="Transparent" />
+            <CornerRadius x:Key="ExpanderHeaderCornerRadius">24</CornerRadius>
+            <CornerRadius x:Key="ExpanderHeaderCornerRadiusExpandedDown">24,24,0,0</CornerRadius>
+            <CornerRadius x:Key="ExpanderContentCornerRadius">0,0,24,24</CornerRadius>
+            <Thickness x:Key="ExpanderHeaderPadding">20,16</Thickness>
+            <Thickness x:Key="ExpanderContentPadding">20,8,20,20</Thickness>
+            <SolidColorBrush x:Key="NavigationViewTopPaneBackground" Color="{ThemeResource ApplePageColor}" />
+
             <Style x:Key="Card" TargetType="Border">
-                <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorDefaultBrush}" />
-                <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}" />
-                <Setter Property="BorderThickness" Value="1" />
-                <Setter Property="CornerRadius" Value="8" />
-                <Setter Property="Padding" Value="16" />
+                <Setter Property="Background" Value="{ThemeResource AppleGroupBrush}" />
+                <Setter Property="BorderThickness" Value="0" />
+                <Setter Property="CornerRadius" Value="24" />
+                <Setter Property="Padding" Value="20" />
+            </Style>
+            <Style x:Key="SectionTitle" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="14" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+                <Setter Property="Foreground" Value="{ThemeResource AppleSecondaryBrush}" />
+                <Setter Property="Margin" Value="16,0,16,8" />
+                <Setter Property="TextWrapping" Value="Wrap" />
+            </Style>
+            <Style x:Key="GroupExpander" TargetType="Expander">
+                <Setter Property="IsTabStop" Value="False" />
+                <Setter Property="HorizontalAlignment" Value="Stretch" />
+                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                <Setter Property="Background" Value="{ThemeResource AppleGroupBrush}" />
+                <Setter Property="CornerRadius" Value="24" />
+                <Setter Property="BorderThickness" Value="0" />
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <!-- Retains the native WinUI Expander parts and header style; only the content reveal changes.
+                             Adapted from Microsoft.UI.Xaml (MIT), copyright Microsoft Corporation. -->
+                        <ControlTemplate TargetType="Expander">
+                            <Grid MinWidth="{TemplateBinding MinWidth}" MaxWidth="{TemplateBinding MaxWidth}"
+                                  Background="{TemplateBinding Background}" CornerRadius="{TemplateBinding CornerRadius}">
+                                <VisualStateManager.VisualStateGroups>
+                                    <VisualStateGroup x:Name="ExpandStates">
+                                        <VisualState x:Name="ExpandDown" /><VisualState x:Name="CollapseUp" />
+                                        <VisualState x:Name="ExpandUp" /><VisualState x:Name="CollapseDown" />
+                                    </VisualStateGroup>
+                                    <VisualStateGroup x:Name="ExpandDirectionStates">
+                                        <VisualState x:Name="Down" />
+                                        <VisualState x:Name="Up">
+                                            <VisualState.Setters>
+                                                <Setter Target="ExpanderHeader.Style" Value="{StaticResource ExpanderHeaderUpStyle}" />
+                                                <Setter Target="ExpanderHeader.(Grid.Row)" Value="1" />
+                                                <Setter Target="ExpanderContentClip.(Grid.Row)" Value="0" />
+                                            </VisualState.Setters>
+                                        </VisualState>
+                                    </VisualStateGroup>
+                                </VisualStateManager.VisualStateGroups>
+                                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                                <ToggleButton x:Name="ExpanderHeader" AutomationProperties.AutomationId="ExpanderToggleButton"
+                                    Background="{ThemeResource ExpanderHeaderBackground}" BackgroundSizing="{TemplateBinding BackgroundSizing}"
+                                    BorderBrush="{ThemeResource ExpanderHeaderBorderBrush}" BorderThickness="{ThemeResource ExpanderHeaderBorderThickness}"
+                                    MinHeight="{TemplateBinding MinHeight}" CornerRadius="0" IsEnabled="{TemplateBinding IsEnabled}"
+                                    Padding="{StaticResource ExpanderHeaderPadding}" Style="{StaticResource ExpanderHeaderDownStyle}"
+                                    HorizontalAlignment="Stretch" HorizontalContentAlignment="{StaticResource ExpanderHeaderHorizontalContentAlignment}"
+                                    VerticalContentAlignment="{StaticResource ExpanderHeaderVerticalContentAlignment}"
+                                    FontSize="16" FontWeight="Normal" FontFamily="{TemplateBinding FontFamily}"
+                                    Content="{TemplateBinding Header}" ContentTemplate="{TemplateBinding HeaderTemplate}" ContentTemplateSelector="{TemplateBinding HeaderTemplateSelector}"
+                                    IsChecked="{Binding IsExpanded, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}" />
+                                <Border x:Name="ExpanderContentClip" Grid.Row="1">
+                                    <services:ExpanderRevealPanel>
+                                        <Border x:Name="ExpanderContent" Visibility="Collapsed" Background="{TemplateBinding Background}"
+                                            BackgroundSizing="{TemplateBinding BackgroundSizing}" BorderBrush="{TemplateBinding BorderBrush}"
+                                            BorderThickness="{TemplateBinding BorderThickness}" Padding="{StaticResource ExpanderContentPadding}">
+                                            <ContentPresenter Content="{TemplateBinding Content}" ContentTemplate="{TemplateBinding ContentTemplate}"
+                                                ContentTemplateSelector="{TemplateBinding ContentTemplateSelector}"
+                                                HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}" />
+                                        </Border>
+                                    </services:ExpanderRevealPanel>
+                                </Border>
+                            </Grid>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+            <Style x:Key="SettingToggle" TargetType="ToggleSwitch" BasedOn="{StaticResource DefaultToggleSwitchStyle}">
+                <Setter Property="MinWidth" Value="0" />
+                <Setter Property="Width" Value="52" />
+                <Setter Property="HorizontalAlignment" Value="Right" />
+                <Setter Property="OnContent" Value="" />
+                <Setter Property="OffContent" Value="" />
+                <Setter Property="VerticalAlignment" Value="Center" />
+            </Style>
+            <Style x:Key="InsetDivider" TargetType="Border">
+                <Setter Property="Background" Value="{ThemeResource AppleDividerBrush}" />
+                <Setter Property="Height" Value="1" />
+                <Setter Property="Margin" Value="16,0" />
+            </Style>
+            <Style x:Key="QuietButton" TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">
+                <Setter Property="Background" Value="Transparent" />
+                <Setter Property="BorderThickness" Value="0" />
+                <Setter Property="CornerRadius" Value="18" />
+                <Setter Property="Padding" Value="12,8" />
+            </Style>
+            <Style x:Key="ListeningModeButton" TargetType="ToggleButton" BasedOn="{StaticResource DefaultToggleButtonStyle}">
+                <Setter Property="Background" Value="Transparent" />
+                <Setter Property="BorderThickness" Value="0" />
+                <Setter Property="CornerRadius" Value="26" />
+                <Setter Property="HorizontalAlignment" Value="Stretch" />
+                <Setter Property="Height" Value="54" />
+                <Setter Property="Padding" Value="0" />
             </Style>
         </ResourceDictionary>
     </Application.Resources>

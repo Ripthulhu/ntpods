@@ -1,305 +1,268 @@
-/*++
-
-Module Name:
-
-    MicPipe.cpp
-
-Abstract:
-
-    Implementation of the NTPods hi-res microphone bridge. See MicPipe.h.
-
-    Design: a single global byte ring buffer guarded by a spin lock (the virtual
-    mic is single-instance). User mode writes decoded PCM via the control device
-    IOCTL; the ACX capture stream engine reads a packet per tick. No WPP tracing
-    here (keeps the file self-contained).
-
-Environment:
-
-    Kernel mode
-
---*/
-
+// NTPods PCM bridge. Only the control device receives the restrictive ACL.
 #include "MicPipe.h"
+#include "MicRing.h"
+#include "MicRequest.h"
+#include "MicSid.h"
+#include <ntstrsafe.h>
 
-//
-// Ring capacity @ 48 kHz mono 16-bit (96000 B/s), so 0x8000 is ~341 ms. Lives in
-// the driver's non-paged image data, so it's safe to touch at DISPATCH_LEVEL.
-//
-// The two sides run on independent clocks with no drift correction between them:
-// the write side is the decoded Bluetooth uplink, delivered on the AirPods' own
-// schedule, and the read side is Windows' ACX capture timer (see
-// CStreamEngine::ScheduleNextPass). With "drop the oldest byte on a hard overflow"
-// as the only backpressure, a write side that is even marginally the faster of the
-// two fills the ring within seconds and then sits pinned at full — turning what is
-// meant to be a small jitter cushion into a fixed delay equal to the ring's whole
-// capacity. That is what the old 0x20000 (~1.36 s) ring did to mic latency.
-//
-// So the capacity now bounds only the WORST case; steady-state latency is bounded
-// by the active trim below. Keep it comfortably above the high watermark all the
-// same: it still has to swallow a whole priming write on top of the buffered audio
-// without hard-dropping.
-//
-#define MIC_RING_BYTES 0x8000u
+static_assert(IOCTL_NTPODS_MIC_WRITE_PCM == 0x0022A000u, "PCM ABI");
+static_assert(IOCTL_NTPODS_MIC_STATUS == 0x00226004u, "status ABI");
+static_assert(IOCTL_NTPODS_MIC_FLUSH == 0x0022A008u, "flush ABI");
 
-//
-// Active trim. When a write pushes the backlog past the high watermark, jump the
-// tail forward to the target instead of waiting for a hard overflow. This is what
-// actually bounds latency — one deliberate skip beats a slow creep into a
-// permanent delay.
-//
-// The target has to cover the uplink's jitter. The AirPods send 4 AAC-ELD frames
-// (30 ms) per packet, and measured on AirPods Pro 3 (daemon "mic stats", 2026-09-30)
-// the gap between packets was p50 ~27 ms, p95 ~55 ms, p99 ~75 ms, max ~98 ms. The
-// old 32 ms target ran dry on every late packet (zero-fill) and the 64 ms watermark
-// trimmed on every pair that arrived together. Both were audible as a metallic
-// crackle ~5 times a second. 100 ms / 160 ms clears the worst gap measured.
-//
-#define MIC_RING_HIGH_WATERMARK 0x3C00u  // ~160 ms
-#define MIC_RING_TARGET_BYTES   0x2580u  // ~100 ms
-
-static UCHAR      g_Ring[MIC_RING_BYTES];
-static ULONG      g_Head;   // next write index
-static ULONG      g_Tail;   // next read index
-static ULONG      g_Count;  // bytes currently buffered
+static MicRing g_Ring;
 static KSPIN_LOCK g_Lock;
-static BOOLEAN    g_Inited = FALSE;
-
-static WDFDEVICE  g_ControlDevice = NULL;
-
-// Advances on every capture pull (MicPipeRead). The tray polls it to tell when
-// an app is actually recording from the mic, and auto-enables/disables the
-// hi-res stream accordingly.
+static BOOLEAN g_Inited = FALSE;
+static WDFFILEOBJECT g_FeederFile = NULL;
+static WDFDEVICE g_ControlDevice = NULL;
+static WDFDEVICE g_ControlOwner = NULL;
 static volatile LONG g_ReadTick = 0;
-
-// Bytes the capture timer pulls per tick, published by the stream engine once the
-// client's packets are allocated (MicPipeSetPacketSize); 0 until then. The trim
-// levels are raised to clear it, because a target below one packet would make
-// every single read underrun into silence.
 static volatile LONG g_PacketSize = 0;
+static ULONG g_CaptureStreams = 0;
 
 EXTERN_C_START
 
-VOID
-MicPipeInit(
-    VOID
-)
+VOID MicPipeInit(VOID)
 {
-    if (g_Inited) {
-        return;
-    }
+    if (g_Inited) return;
     KeInitializeSpinLock(&g_Lock);
-    g_Head = g_Tail = g_Count = 0;
+    MicRingFlush(&g_Ring);
     g_Inited = TRUE;
 }
 
-VOID
-MicPipeWrite(
-    _In_reads_bytes_(Len) PVOID Data,
-    _In_                  ULONG Len
-)
+VOID MicPipeFlush(VOID)
 {
-    KIRQL  irql;
-    PUCHAR src = (PUCHAR)Data;
-    ULONG  i;
-
-    if (!g_Inited || Data == NULL || Len == 0) {
-        return;
-    }
-
+    if (!g_Inited) return;
+    KIRQL irql;
     KeAcquireSpinLock(&g_Lock, &irql);
-    for (i = 0; i < Len; i++) {
-        if (g_Count == MIC_RING_BYTES) {
-            // Full: drop the oldest byte so the newest audio always wins.
-            g_Tail = (g_Tail + 1u) % MIC_RING_BYTES;
-            g_Count--;
-        }
-        g_Ring[g_Head] = src[i];
-        g_Head = (g_Head + 1u) % MIC_RING_BYTES;
-        g_Count++;
-    }
-
-    //
-    // Active trim: the two sides run on independent clocks (see MIC_RING_BYTES),
-    // so don't let the backlog quietly grow. Past the high watermark, drop back to
-    // the target in one step. That skip is audible if you time it right, but it
-    // keeps steady-state latency near the target instead of drifting up to the
-    // ring's capacity and staying there.
-    //
-    {
-        ULONG target = MIC_RING_TARGET_BYTES;
-        ULONG high   = MIC_RING_HIGH_WATERMARK;
-        ULONG packet = (ULONG)InterlockedCompareExchange(&g_PacketSize, 0, 0);
-
-        // Keep at least two capture packets buffered: a client that pulls 40 ms at
-        // a time would otherwise underrun on every read at a 32 ms target.
-        if (packet != 0) {
-            if (target < 2u * packet) {
-                target = 2u * packet;
-            }
-            if (high < target + packet) {
-                high = target + packet;
-            }
-        }
-
-        // A packet larger than the ring can hold this way: leave it to the
-        // hard-overflow path above rather than trim to a nonsensical level.
-        if (high < MIC_RING_BYTES && g_Count > high) {
-            // Trim whole samples only — this is the one place that could shift the
-            // ring by half a 16-bit frame and garble everything from then on.
-            ULONG excess = (g_Count - target) & ~1u;
-            g_Tail = (g_Tail + excess) % MIC_RING_BYTES;
-            g_Count -= excess;
-        }
-    }
-
+    MicRingFlush(&g_Ring);
     KeReleaseSpinLock(&g_Lock, irql);
 }
 
-VOID
-MicPipeSetPacketSize(
-    _In_ ULONG PacketSize
-)
+static BOOLEAN MicPipeWrite(_In_reads_bytes_(Len) PVOID Data, _In_ ULONG Len,
+                            _In_ WDFFILEOBJECT Producer)
+{
+    if (!g_Inited || !Data || !MicPcmWriteLengthValid(Len)) return FALSE;
+    KIRQL irql;
+    KeAcquireSpinLock(&g_Lock, &irql);
+    // Cleanup closes the producer under this lock, so queued writes cannot
+    // put old speech back after the last producer handle closes.
+    BOOLEAN accepted = FALSE;
+    if (Producer != NULL && g_FeederFile == Producer) {
+        // The daemon can notice the last capture stop one poll later. Treat
+        // that late PCM as normal cancellation without refilling the ring.
+        accepted = g_CaptureStreams == 0 || MicRingWrite(&g_Ring, Data, Len,
+            (ULONG)InterlockedCompareExchange(&g_PacketSize, 0, 0)) ? TRUE : FALSE;
+    }
+    KeReleaseSpinLock(&g_Lock, irql);
+    return accepted;
+}
+
+VOID MicPipeSetPacketSize(_In_ ULONG PacketSize)
 {
     InterlockedExchange(&g_PacketSize, (LONG)PacketSize);
 }
 
-VOID
-MicPipeRead(
-    _Out_writes_bytes_(Len) PVOID Out,
-    _In_                    ULONG Len
-)
+VOID MicPipeCaptureStarted(VOID)
 {
-    KIRQL  irql;
-    PUCHAR dst = (PUCHAR)Out;
-    ULONG  i;
-
-    if (Out == NULL || Len == 0) {
-        return;
-    }
-    // A capture is pulling data: mark activity so the tray can auto-enable.
-    InterlockedIncrement(&g_ReadTick);
-    if (!g_Inited) {
-        RtlZeroMemory(Out, Len);
-        return;
-    }
-
+    KIRQL irql;
     KeAcquireSpinLock(&g_Lock, &irql);
-    for (i = 0; i < Len; i++) {
-        if (g_Count == 0) {
-            dst[i] = 0;  // underrun -> silence
-        } else {
-            dst[i] = g_Ring[g_Tail];
-            g_Tail = (g_Tail + 1u) % MIC_RING_BYTES;
-            g_Count--;
-        }
+    if (g_CaptureStreams++ == 0) MicRingFlush(&g_Ring);
+    KeReleaseSpinLock(&g_Lock, irql);
+}
+
+VOID MicPipeCaptureStopped(VOID)
+{
+    KIRQL irql;
+    KeAcquireSpinLock(&g_Lock, &irql);
+    if (g_CaptureStreams != 0 && --g_CaptureStreams == 0) MicRingFlush(&g_Ring);
+    KeReleaseSpinLock(&g_Lock, irql);
+}
+
+VOID MicPipeRead(_Out_writes_bytes_(Len) PVOID Out, _In_ ULONG Len)
+{
+    if (!Out || Len == 0) return;
+    InterlockedIncrement(&g_ReadTick);
+    ULONG taken = 0;
+    if (g_Inited) {
+        KIRQL irql;
+        KeAcquireSpinLock(&g_Lock, &irql);
+        taken = MicRingTake(&g_Ring, Out, Len);
+        KeReleaseSpinLock(&g_Lock, irql);
+    }
+    // Large capture buffers never extend the spin-lock hold time.
+    RtlZeroMemory((PUCHAR)Out + taken, Len - taken);
+}
+
+static EVT_WDF_DEVICE_FILE_CREATE MicPipe_EvtFileCreate;
+static VOID MicPipe_EvtFileCreate(WDFDEVICE Device, WDFREQUEST Request, WDFFILEOBJECT FileObject)
+{
+    if (WdfFileObjectGetFileName(FileObject)->Length != 0) {
+        WdfRequestComplete(Request, STATUS_OBJECT_NAME_NOT_FOUND);
+        return;
+    }
+    KIRQL irql;
+    KeAcquireSpinLock(&g_Lock, &irql);
+    NTSTATUS status = STATUS_SHARING_VIOLATION;
+    if (Device != g_ControlDevice) {
+        status = STATUS_DELETE_PENDING;
+    } else if (g_FeederFile == NULL) {
+        MicRingFlush(&g_Ring);
+        g_FeederFile = FileObject;
+        status = STATUS_SUCCESS;
+    }
+    KeReleaseSpinLock(&g_Lock, irql);
+    WdfRequestComplete(Request, status);
+}
+
+static EVT_WDF_FILE_CLEANUP MicPipe_EvtFileCleanup;
+static VOID MicPipe_EvtFileCleanup(WDFFILEOBJECT FileObject)
+{
+    KIRQL irql;
+    KeAcquireSpinLock(&g_Lock, &irql);
+    if (g_FeederFile == FileObject) {
+        g_FeederFile = NULL;
+        MicRingFlush(&g_Ring);
     }
     KeReleaseSpinLock(&g_Lock, irql);
 }
 
-//
-// IOCTL handler: copy the pushed PCM into the ring.
-//
-static VOID
-MicPipe_EvtIoDeviceControl(
-    _In_ WDFQUEUE   Queue,
-    _In_ WDFREQUEST Request,
-    _In_ size_t     OutputBufferLength,
-    _In_ size_t     InputBufferLength,
-    _In_ ULONG      IoControlCode
-)
+static VOID MicPipe_EvtIoDeviceControl(
+    _In_ WDFQUEUE Queue, _In_ WDFREQUEST Request,
+    _In_ size_t OutputBufferLength, _In_ size_t InputBufferLength,
+    _In_ ULONG IoControlCode)
 {
-    NTSTATUS  status = STATUS_INVALID_DEVICE_REQUEST;
-    ULONG_PTR info = 0;
-
     UNREFERENCED_PARAMETER(Queue);
-    UNREFERENCED_PARAMETER(OutputBufferLength);
-
-    if (IoControlCode == IOCTL_NTPODS_MIC_WRITE_PCM && InputBufferLength > 0) {
-        PVOID  buf = NULL;
-        size_t len = 0;
-        status = WdfRequestRetrieveInputBuffer(Request, 1, &buf, &len);
+    NTSTATUS status = STATUS_INVALID_DEVICE_REQUEST;
+    ULONG_PTR info = 0;
+    const MicRequestKind kind = MicValidateRequest(IoControlCode, InputBufferLength, OutputBufferLength);
+    if (kind == MicRequestKind::BadSize) {
+        status = STATUS_INVALID_BUFFER_SIZE;
+    } else if (kind == MicRequestKind::Write) {
+        PVOID buf = NULL;
+        status = WdfRequestRetrieveInputBuffer(Request, InputBufferLength, &buf, NULL);
         if (NT_SUCCESS(status)) {
-            MicPipeWrite(buf, (ULONG)len);
-            info = len;
+            status = MicPipeWrite(buf, (ULONG)InputBufferLength, WdfRequestGetFileObject(Request))
+                ? STATUS_SUCCESS : STATUS_FILE_CLOSED;
+            // METHOD_BUFFERED reports output bytes, not consumed input bytes.
+            // WRITE_PCM has no output buffer.
         }
-    } else if (IoControlCode == IOCTL_NTPODS_MIC_STATUS) {
-        PVOID  buf = NULL;
-        size_t len = 0;
-        status = WdfRequestRetrieveOutputBuffer(Request, sizeof(LONG), &buf, &len);
+    } else if (kind == MicRequestKind::Status) {
+        PVOID buf = NULL;
+        status = WdfRequestRetrieveOutputBuffer(Request, sizeof(ULONG), &buf, NULL);
         if (NT_SUCCESS(status)) {
-            *(LONG *)buf = InterlockedCompareExchange(&g_ReadTick, 0, 0);
-            info = sizeof(LONG);
+            KIRQL irql;
+            KeAcquireSpinLock(&g_Lock, &irql);
+            ((ULONG*)buf)[0] = (ULONG)InterlockedCompareExchange(&g_ReadTick, 0, 0);
+            if (OutputBufferLength >= 2 * sizeof(ULONG)) {
+                ((ULONG*)buf)[1] = g_CaptureStreams;
+                info = 2 * sizeof(ULONG);
+            } else {
+                info = sizeof(ULONG);
+            }
+            KeReleaseSpinLock(&g_Lock, irql);
         }
+    } else if (kind == MicRequestKind::Flush) {
+        KIRQL irql;
+        KeAcquireSpinLock(&g_Lock, &irql);
+        status = STATUS_FILE_CLOSED;
+        if (g_FeederFile != NULL && g_FeederFile == WdfRequestGetFileObject(Request)) {
+            MicRingFlush(&g_Ring);
+            status = STATUS_SUCCESS;
+        }
+        KeReleaseSpinLock(&g_Lock, irql);
     }
-
     WdfRequestCompleteWithInformation(Request, status, info);
 }
 
-NTSTATUS
-MicPipeCreateControlDevice(
-    _In_ WDFDEVICE Parent
-)
+static VOID MicPipeControlSddl(WDFDRIVER Driver, PWCHAR Buffer, size_t Characters)
 {
-    NTSTATUS             status;
-    PWDFDEVICE_INIT      init = NULL;
-    WDFDEVICE            ctl = NULL;
-    WDFQUEUE             queue;
-    WDF_IO_QUEUE_CONFIG  qCfg;
+    (VOID)RtlStringCchCopyW(Buffer, Characters, L"D:P(A;;GA;;;SY)");
+    WDFKEY key = NULL;
+    if (!NT_SUCCESS(WdfDriverOpenParametersRegistryKey(Driver, KEY_READ,
+            WDF_NO_OBJECT_ATTRIBUTES, &key))) return;
+    DECLARE_CONST_UNICODE_STRING(valueName, L"AllowedUserSid");
+    WCHAR sidBuffer[128] = {0};
+    UNICODE_STRING sid = {0, sizeof(sidBuffer), sidBuffer};
+    NTSTATUS status = WdfRegistryQueryUnicodeString(key, &valueName, NULL, &sid);
+    WdfRegistryClose(key);
+    if (!NT_SUCCESS(status) || sid.Length % sizeof(WCHAR) != 0 ||
+        !MicAllowedUserSidValid(sid.Buffer, sid.Length / sizeof(WCHAR))) return;
+    sidBuffer[sid.Length / sizeof(WCHAR)] = L'\0';
+    if (!NT_SUCCESS(RtlStringCchPrintfW(Buffer, Characters,
+            L"D:P(A;;GA;;;SY)(A;;GRGW;;;%ws)", sidBuffer))) {
+        (VOID)RtlStringCchCopyW(Buffer, Characters, L"D:P(A;;GA;;;SY)");
+    }
+}
 
-    // SYSTEM: all, Builtin Admins: RWX, Everyone: RW (so a non-elevated app can
-    // open \\.\NTPodsMic and push audio).
-    DECLARE_CONST_UNICODE_STRING(sddl,
-        L"D:P(A;;GA;;;SY)(A;;GRGWGX;;;BA)(A;;GRGW;;;WD)");
-    DECLARE_CONST_UNICODE_STRING(ntName,  L"\\Device\\NTPodsMic");
+NTSTATUS MicPipeCreateControlDevice(_In_ WDFDEVICE Parent)
+{
+    if (g_ControlDevice != NULL) return STATUS_SUCCESS;
+    WCHAR sddlBuffer[192];
+    MicPipeControlSddl(WdfDeviceGetDriver(Parent), sddlBuffer, RTL_NUMBER_OF(sddlBuffer));
+    UNICODE_STRING sddl;
+    RtlInitUnicodeString(&sddl, sddlBuffer);
+    DECLARE_CONST_UNICODE_STRING(ntName, L"\\Device\\NTPodsMic");
     DECLARE_CONST_UNICODE_STRING(symLink, L"\\DosDevices\\NTPodsMic");
-
-    // Driver-scoped, created once. Survives PnP device remove/re-add.
-    if (g_ControlDevice != NULL) {
-        return STATUS_SUCCESS;
-    }
-
-    init = WdfControlDeviceInitAllocate(WdfDeviceGetDriver(Parent), &sddl);
-    if (init == NULL) {
-        return STATUS_INSUFFICIENT_RESOURCES;
-    }
-
+    PWDFDEVICE_INIT init = WdfControlDeviceInitAllocate(WdfDeviceGetDriver(Parent), &sddl);
+    if (!init) return STATUS_INSUFFICIENT_RESOURCES;
     WdfDeviceInitSetDeviceType(init, FILE_DEVICE_UNKNOWN);
+    WdfDeviceInitSetCharacteristics(init, FILE_DEVICE_SECURE_OPEN, TRUE);
     WdfDeviceInitSetIoType(init, WdfDeviceIoBuffered);
-
-    // Single audio source: only one process may feed the mic at a time. Two
-    // writers interleaving in the ring sound like static, so refuse a second
-    // open (a stuck feeder is freed on its process exit / a driver reload).
     WdfDeviceInitSetExclusive(init, TRUE);
-
-    status = WdfDeviceInitAssignName(init, &ntName);
+    WDF_FILEOBJECT_CONFIG fileConfig;
+    WDF_FILEOBJECT_CONFIG_INIT(&fileConfig, MicPipe_EvtFileCreate,
+        WDF_NO_EVENT_CALLBACK, MicPipe_EvtFileCleanup);
+    WDF_OBJECT_ATTRIBUTES fileAttributes;
+    WDF_OBJECT_ATTRIBUTES_INIT(&fileAttributes);
+    fileAttributes.SynchronizationScope = WdfSynchronizationScopeNone;
+    fileAttributes.ExecutionLevel = WdfExecutionLevelPassive;
+    WdfDeviceInitSetFileObjectConfig(init, &fileConfig, &fileAttributes);
+    NTSTATUS status = WdfDeviceInitAssignName(init, &ntName);
     if (!NT_SUCCESS(status)) {
         WdfDeviceInitFree(init);
         return status;
     }
-
+    WDFDEVICE ctl;
     status = WdfDeviceCreate(&init, WDF_NO_OBJECT_ATTRIBUTES, &ctl);
     if (!NT_SUCCESS(status)) {
-        WdfDeviceInitFree(init);  // WdfDeviceCreate only consumes init on success
+        if (init) WdfDeviceInitFree(init);
         return status;
     }
-
     status = WdfDeviceCreateSymbolicLink(ctl, &symLink);
     if (!NT_SUCCESS(status)) {
         WdfObjectDelete(ctl);
         return status;
     }
-
-    WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&qCfg, WdfIoQueueDispatchParallel);
-    qCfg.EvtIoDeviceControl = MicPipe_EvtIoDeviceControl;
-    status = WdfIoQueueCreate(ctl, &qCfg, WDF_NO_OBJECT_ATTRIBUTES, &queue);
+    WDF_IO_QUEUE_CONFIG queueConfig;
+    WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&queueConfig, WdfIoQueueDispatchSequential);
+    queueConfig.EvtIoDeviceControl = MicPipe_EvtIoDeviceControl;
+    WDFQUEUE queue;
+    status = WdfIoQueueCreate(ctl, &queueConfig, WDF_NO_OBJECT_ATTRIBUTES, &queue);
     if (!NT_SUCCESS(status)) {
         WdfObjectDelete(ctl);
         return status;
     }
-
-    WdfControlFinishInitializing(ctl);
     g_ControlDevice = ctl;
+    g_ControlOwner = Parent;
+    WdfControlFinishInitializing(ctl);
     return STATUS_SUCCESS;
+}
+
+VOID MicPipeDeleteControlDevice(_In_ WDFDEVICE Parent)
+{
+    PAGED_CODE();
+    if (g_ControlOwner != Parent) return;
+    KIRQL irql;
+    KeAcquireSpinLock(&g_Lock, &irql);
+    WDFDEVICE control = g_ControlDevice;
+    g_ControlDevice = NULL;
+    g_ControlOwner = NULL;
+    g_FeederFile = NULL;
+    MicRingFlush(&g_Ring);
+    KeReleaseSpinLock(&g_Lock, irql);
+    // File cleanup can acquire the same lock. KMDF control devices must be
+    // deleted explicitly at PASSIVE_LEVEL when their PnP owner is removed.
+    if (control != NULL) WdfObjectDelete(control);
 }
 
 EXTERN_C_END

@@ -1,298 +1,139 @@
-name: Windows CI (frontend)
-
-# Builds the native Windows frontend: the Rust daemon (ntpodsd) and the WinUI 3
-# app (ntpods-winui, which carries its own tray), and packs them with
-# everything else into ONE self-contained install folder. The end user gets only
-# that folder, so nothing may rely on tools installed on their PC (no WDK, no
-# Windows SDK, no VC++ redistributable).
-#
-# The two kernel drivers (AAP L2CAP + hi-res mic) are built here from source with
-# the WDK (installed via winget — approach from the Gab4545/librepods fork), their
-# catalogs are regenerated, and the result overwrites windows/drivers/*/prebuilt so
-# the install folder always carries drivers that match the source. The committed
-# prebuilt packages remain for local installs; install.ps1 test-signs them on the
-# user's machine either way.
+name: Experimental Windows build
 
 on:
   push:
     branches: [main]
     tags: ['windows-v*']
-    paths:
-      - 'windows/**'
-      - '.github/workflows/ci-windows.yml'
+    paths: ['windows/**', 'licenses/**', 'THIRD_PARTY.md', 'docs/WINDOWS-RELEASE-NOTES.md', 'docs/FFMPEG-SOURCES.md', 'global.json', 'rust-toolchain.toml', '.github/workflows/ci-windows.yml']
   pull_request:
-    paths:
-      - 'windows/**'
-      - '.github/workflows/ci-windows.yml'
+    paths: ['windows/**', 'licenses/**', 'THIRD_PARTY.md', 'docs/WINDOWS-RELEASE-NOTES.md', 'docs/FFMPEG-SOURCES.md', 'global.json', 'rust-toolchain.toml', '.github/workflows/ci-windows.yml']
   workflow_dispatch:
 
-# A new push to a PR makes its older run pointless: cancel it. Runs on main are
-# left alone so every merge still publishes its nightly.
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
-    # Pinned to windows-2022: windows-latest moved to Windows Server 2025 + VS2026,
-    # whose WDK/MSBuild integration for the WindowsKernelModeDriver10.0 toolset
-    # isn't there yet (MSB4062 loading Microsoft.DriverKit.Build.Tasks). VS2022
-    # (17.x) builds both drivers. Revisit once WDK support for VS2026 lands.
     runs-on: windows-2022
-    # Creating/updating GitHub Releases needs write access; the default
-    # GITHUB_TOKEN is read-only on newer repos.
-    permissions:
-      contents: write
-
+    timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
-
-      # The drivers only change when their source does. The WDK install and the
-      # driver build below take ~4 of the ~9 minutes, so cache what they produce
-      # (the refreshed prebuilt packages) by a hash of windows/drivers/** and skip
-      # all four driver steps on a hit. Bump the version when the build steps change.
-      - name: Cache built drivers
-        id: drivers
-        uses: actions/cache@v4
-        with:
-          path: |
-            windows/drivers/aap/prebuilt
-            windows/drivers/mic/prebuilt
-            windows/drivers/mic-portcls/prebuilt
-          key: drivers-v3-${{ hashFiles('windows/drivers/**') }}
-
-      # ---- Kernel drivers (WDK) ------------------------------------------------
-      # A source change under windows/drivers/* only reaches users if the shipped
-      # .sys is rebuilt — e.g. the AAP channel's 1691-byte MTU that heart rate needs.
-      # Build both drivers here with Microsoft's WinGet-based WDK install
-      # (learn.microsoft.com/windows-hardware/drivers/install-the-wdk-using-winget),
-      # regenerate their catalogs, and overwrite windows/drivers/*/prebuilt so the
-      # "Assemble install folder" step below bundles the fresh builds.
-      # windows-2022 doesn't ship winget — install it first.
-      - name: Install winget
-        if: steps.drivers.outputs.cache-hit != 'true'
-        uses: Cyberboss/install-winget@v1
+      # Checkout clears the bootstrap action's leftover downloads before building.
+      - uses: Cyberboss/install-winget@1c6f189175e9f015bf1aa113cd1cc6c73efb9d47 # v1
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Install Windows SDK + WDK (winget)
-        if: steps.drivers.outputs.cache-hit != 'true'
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Select package version
         shell: pwsh
         run: |
-          foreach ($id in 'Microsoft.WindowsSDK.10.0.26100', 'Microsoft.WindowsWDK.10.0.26100') {
-            winget install --source winget --exact --id $id `
-              --accept-package-agreements --accept-source-agreements --disable-interactivity
-            # -1978335189 (0x8A15002B) = already installed / no applicable update.
-            if ($LASTEXITCODE -and $LASTEXITCODE -ne -1978335189) { throw "winget $id failed (exit $LASTEXITCODE)" }
+          $version = "0.2.$env:GITHUB_RUN_NUMBER"
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            if ($env:GITHUB_REF_NAME -notmatch '^windows-v(\d+\.\d+\.\d+)$') { throw 'Expected windows-vX.Y.Z tag.' }
+            $version = $Matches[1]
+            if ([version]$version -lt [version]'0.3.0') { throw 'Tagged releases must be 0.3.0 or later, above the 0.2 nightly series.' }
           }
-
-      - name: Build drivers (KMDF, x64 Release)
-        if: steps.drivers.outputs.cache-hit != 'true'
+          "NTPODS_BUILD_VERSION=$version" >> $env:GITHUB_ENV
+      - name: Install pinned SDK, WDK, and WinUI tools
         shell: pwsh
         run: |
+          foreach ($p in @(
+            @('Microsoft.WindowsSDK.10.0.26100', '10.0.26100.4188'),
+            @('Microsoft.WindowsWDK.10.0.26100', '10.1.26100.6584')
+          )) {
+            winget install --exact --id $p[0] --version $p[1] --source winget --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
+            if ($LASTEXITCODE -and $LASTEXITCODE -ne -1978335189) { throw "Tool installation failed: $($p[0]) ($LASTEXITCODE)" }
+          }
+          winget install --exact --id Microsoft.VisualStudio.BuildTools --version 18.10.2 --source winget --silent --accept-package-agreements --accept-source-agreements --disable-interactivity --override '--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.UniversalBuildTools --includeRecommended'
+          if ($LASTEXITCODE -and $LASTEXITCODE -ne -1978335189) { throw "WinUI tool installation failed ($LASTEXITCODE)" }
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $msbuild = & $vswhere -latest -version "[17.0,18.0)" -requires Microsoft.Component.MSBuild `
-            -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
-          if (-not $msbuild) { throw "MSBuild.exe not found via vswhere for VS2022 (17.x)" }
-          Write-Host "Using MSBuild: $msbuild"
-          # AAP: the WDK's own post-build Inf2Cat runs before the .sys sits next to
-          # the .inf and fails the signability test — the catalog is made below.
-          & $msbuild windows/drivers/aap/NTPodsAAP.vcxproj /p:Configuration=Release /p:Platform=x64 /p:EnableInf2cat=false /m
-          if ($LASTEXITCODE) { throw "AAP driver build failed (exit $LASTEXITCODE)" }
-          & $msbuild windows/drivers/mic-portcls/NTPodsMicPC.vcxproj /p:Configuration=Release /p:Platform=x64 /m
-          if ($LASTEXITCODE) { throw "PortCls mic driver build failed (exit $LASTEXITCODE)" }
-          # ACX mic: the default on Windows 11 22H2+ (the installer picks per OS).
-          & $msbuild windows/drivers/mic/AudioCodec/Driver/AudioCodec.sln /p:Configuration=Release /p:Platform=x64 /m
-          if ($LASTEXITCODE) { throw "ACX mic driver build failed (exit $LASTEXITCODE)" }
-
-      - name: Regenerate driver catalogs + refresh the prebuilt packages
-        if: steps.drivers.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: |
-          $inf2cat = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter Inf2Cat.exe |
-            Where-Object { $_.FullName -match '\\x86\\' } | Select-Object -First 1
-          if (-not $inf2cat) { throw "Inf2Cat.exe not found under Windows Kits" }
-
-          # name, freshly built .sys, the .inf to ship, catalog name, prebuilt dir
-          $drivers = @(
-            @{ Name = 'NTPodsAAP'; Inf = 'windows/drivers/aap/NTPodsAAP.inf'; Cat = 'ntpodsaap.cat'
-               Sys = (Get-ChildItem windows/drivers/aap -Recurse -Filter NTPodsAAP.sys |
-                        Where-Object { $_.FullName -match '\\x64\\Release\\' -and $_.FullName -notmatch '\\prebuilt\\' } |
-                        Select-Object -First 1).FullName
-               Out = 'windows/drivers/aap/prebuilt' },
-            @{ Name = 'NTPodsMicPC'; Inf = 'windows/drivers/mic-portcls/x64/Release/NTPodsMicPC.inf'; Cat = 'ntpodsmicpc.cat'
-               Sys = 'windows/drivers/mic-portcls/x64/Release/NTPodsMicPC.sys'
-               Out = 'windows/drivers/mic-portcls/prebuilt' },
-            @{ Name = 'AudioCodec'; Inf = 'windows/drivers/mic/AudioCodec/Driver/x64/Release/AudioCodec.inf'; Cat = 'audiocodec.cat'
-               Sys = 'windows/drivers/mic/AudioCodec/Driver/x64/Release/AudioCodec.sys'
-               Out = 'windows/drivers/mic/prebuilt' }
-          )
-          foreach ($d in $drivers) {
-            foreach ($f in @($d.Sys, $d.Inf)) { if (-not $f -or -not (Test-Path $f)) { throw "$($d.Name): missing '$f' after build" } }
-            $pkg = "wdk-pkg-$($d.Name)"
-            Remove-Item $pkg -Recurse -Force -ErrorAction SilentlyContinue
-            New-Item -ItemType Directory -Force -Path $pkg | Out-Null
-            Copy-Item $d.Sys, $d.Inf $pkg -Force
-            & $inf2cat.FullName /driver:$pkg /os:10_X64
-            $cat = Join-Path $pkg $d.Cat
-            if (-not (Test-Path $cat)) { throw "$($d.Name): Inf2Cat did not produce $($d.Cat)" }
-            # The PortCls mic's prebuilt folder isn't in git; the others are, and get overwritten.
-            New-Item -ItemType Directory -Force -Path $d.Out | Out-Null
-            Copy-Item (Join-Path $pkg '*') $d.Out -Force
-            Write-Host "==> Freshly built $($d.Name) copied into $($d.Out)"
-          }
-
-      # ---- Rust: daemon (native msvc target) ---------------------------------
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+          $vs2022 = & $vswhere -latest -products '*' -version '[17.0,18.0)' -property installationPath
+          if (-not $vs2022) { throw 'VS2022 is required to build the kernel drivers.' }
+          $installer = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
+          $p = Start-Process $installer -WindowStyle Hidden -Wait -PassThru -ArgumentList @('modify', '--installPath', "`"$vs2022`"", '--add', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', '--add', 'Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre', '--add', 'Microsoft.Windows.DriverKit', '--quiet', '--norestart')
+          if ($p.ExitCode -notin 0, 3010) { throw "WDK integration failed ($($p.ExitCode))" }
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+        with:
+          toolchain: '1.95.0'
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: windows/daemon -> target
-
-      - name: Fetch FFmpeg (AAC-ELD decode libs — not vendored in git)
-        shell: bash
-        run: windows/daemon/fetch-ffmpeg.sh
-
-      - name: Build daemon (ntpodsd)
-        working-directory: windows/daemon
-        # Static CRT: otherwise the msvc build imports VCRUNTIME140.dll, which a
-        # clean Windows does not have, and the daemon won't start. (The FFmpeg
-        # DLLs only need the UCRT, which ships with Windows 10+.)
-        env:
-          RUSTFLAGS: -C target-feature=+crt-static
-        run: cargo build --release
-
-      # ---- WinUI 3 app (unpackaged, self-contained) --------------------------
-      # WinUI resource generation runs the PRI MSBuild task
-      # (Microsoft.Build.Packaging.Pri.Tasks.dll), which is a .NET *Framework*
-      # assembly. `dotnet build` hosts MSBuild on .NET (Core) and cannot load it
-      # → MSB4062. Visual Studio's msbuild.exe is .NET Framework and loads it, so
-      # build the WinUI project with VS MSBuild. The .NET 10 SDK is still needed
-      # for the net10.0 target resolver.
-      - name: Setup .NET 10
-        uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
-          dotnet-version: '10.0.x'
-
-      - name: Setup MSBuild
-        uses: microsoft/setup-msbuild@v2
-
-      - name: Cache NuGet packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.nuget/packages
-          key: nuget-${{ hashFiles('windows/winui/**/*.csproj') }}
-          restore-keys: nuget-
-
-      - name: Restore WinUI app
-        working-directory: windows/winui
-        run: msbuild NTPods.WinUI/NTPods.WinUI.csproj -t:Restore -p:Configuration=Release -p:Platform=x64
-
-      - name: Build WinUI app
-        working-directory: windows/winui
-        run: msbuild NTPods.WinUI/NTPods.WinUI.csproj -t:Build -p:Configuration=Release -p:Platform=x64 -p:RestorePackages=false
-
-      # ---- Collect + upload artifacts ----------------------------------------
-      - name: Assemble install folder
+          dotnet-version: '10.0.401'
+      - name: Install WiX
         shell: pwsh
         run: |
-          # make-dist.ps1 is the one place that knows the installer's layout (the
-          # local dist uses it too), and it fails if any file install.ps1 needs is
-          # missing — so an incomplete bundle can't be uploaded again.
-          # Find the WinUI output dir by locating the exe (path varies with TFM/RID).
-          $exe = Get-ChildItem -Recurse -Filter ntpods-winui.exe `
-            windows/winui/NTPods.WinUI/bin | Select-Object -First 1
-          if (-not $exe) { throw "WinUI build output (ntpods-winui.exe) not found" }
-          ./windows/installer/make-dist.ps1 -Out "$env:GITHUB_WORKSPACE/dist" `
-            -DaemonExe windows/daemon/target/release/ntpodsd.exe `
-            -WinUIDir $exe.Directory.FullName
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ntpods-windows-frontend
-          path: dist
-          if-no-files-found: error
-
-      # ---- MSI (WiX 5) -------------------------------------------------------
-      # Same dist folder, wrapped in a normal setup wizard. MSI versions must be
-      # numeric: a windows-vX.Y.Z tag gives X.Y.Z, everything else 0.1.<run number>.
-      - name: Cache WiX
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.dotnet/tools
-            ~/.wix
-          key: wix-5.0.2
-
-      - name: Build MSI
-        shell: pwsh
-        run: |
-          $env:PATH += ";$env:USERPROFILE\.dotnet\tools"
-          if (-not (Get-Command wix -ErrorAction SilentlyContinue)) {
-            dotnet tool install --global wix --version 5.0.2
-          }
-          # A no-op when the cache already has them.
+          dotnet tool install --global wix --version 5.0.2
           wix extension add -g WixToolset.UI.wixext/5.0.2 WixToolset.Util.wixext/5.0.2
-          $version = '0.1.${{ github.run_number }}'
-          if ('${{ github.ref }}' -match '^refs/tags/windows-v(\d+\.\d+\.\d+)$') { $version = $matches[1] }
-          ./windows/installer/msi/build-msi.ps1 -Dist dist -Version $version -Out NTPods.msi
-
-      - name: Upload MSI artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ntpods-windows-msi
-          path: NTPods.msi
-          if-no-files-found: error
-
-      # ---- Releases --------------------------------------------------------
-      # push to main → rolling "nightly" pre-release, rebuilt on
-      #                          every push and pointing at that commit.
-      # push a windows-v* tag   → a versioned release.
-      # PRs and other branches only get the Actions artifact above.
-      - name: Package release zip
-        if: startsWith(github.ref, 'refs/tags/windows-v') || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+      - name: Build and test current source
         shell: pwsh
-        run: Compress-Archive -Path dist/* -DestinationPath NTPods-Windows.zip
-
-      - name: Publish nightly pre-release
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Recreate instead of editing, so the tag moves to this commit too.
-          gh release delete nightly --cleanup-tag --yes 2>$null
-          $global:LASTEXITCODE = 0
-          $notes = @"
-          Automatic build of ``main`` at ${{ github.sha }}.
-
-          Turn on Test Mode first (see windows/README.md), then run **NTPods.msi**.
-          It installs the app, the background service and both drivers, and lets
-          you pick a desktop shortcut and starting with Windows.
-
-          NTPods-Windows.zip has the same files for a manual install: extract it and
-          run ``powershell -ExecutionPolicy Bypass -File .\install.ps1`` in an
-          **admin** PowerShell inside the folder.
-
-          Everything here was built from source in this run.
-          "@
-          gh release create nightly NTPods.msi NTPods-Windows.zip `
-            --target ${{ github.sha }} --prerelease --latest=false `
-            --title "NTPods (nightly)" --notes $notes
-          if ($LASTEXITCODE) { throw "gh release create failed ($LASTEXITCODE)" }
-
-      - name: Create versioned GitHub Release
-        if: startsWith(github.ref, 'refs/tags/windows-v')
-        uses: softprops/action-gh-release@v2
+          ./windows/tests/test-release-package.ps1
+          ./windows/build.ps1 -Version $env:NTPODS_BUILD_VERSION
+      - name: Package downloads
+        shell: pwsh
+        run: |
+          ./windows/package-release.ps1
+          ./windows/fetch-release-sources.ps1
+      # Binary distribution remains an explicit opt-in while THIRD_PARTY.md is unresolved.
+      - name: Upload experimental downloads
+        if: vars.NTPODS_PUBLISH_BUILDS == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          tag_name: ${{ github.ref_name }}
-          name: NTPods ${{ github.ref_name }}
-          files: |
-            NTPods.msi
-            NTPods-Windows.zip
-          generate_release_notes: true
+          name: ntpods-windows-${{ github.run_number }}
+          path: windows/build-output/downloads/*
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    needs: build
+    if: >-
+      vars.NTPODS_PUBLISH_BUILDS == 'true' &&
+      github.repository == 'Ripthulhu/ntpods' &&
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/windows-v'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ntpods-windows-${{ github.run_number }}
+          path: downloads
+      - name: Publish experimental release
+        working-directory: downloads
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum --check SHA256SUMS.txt
+          tag="$GITHUB_REF_NAME"
+          title="NTPods $tag (experimental)"
+          if [[ "$GITHUB_REF_TYPE" != tag ]]; then
+            main_sha=$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)
+            if [[ "$main_sha" != "$GITHUB_SHA" ]]; then
+              echo 'A newer commit is on main; keeping its nightly.'
+              exit 0
+            fi
+            tag=nightly
+            title="NTPods nightly 0.2.$GITHUB_RUN_NUMBER (experimental)"
+            if gh release view "$tag" >/dev/null 2>&1; then
+              previous=$(gh release view "$tag" --json name --jq .name)
+              if [[ "$previous" =~ nightly\ 0\.2\.([0-9]+) ]] && (( BASH_REMATCH[1] >= GITHUB_RUN_NUMBER )); then
+                echo 'This nightly or a newer build is already published.'
+                exit 0
+              fi
+              gh release delete "$tag" --cleanup-tag --yes
+            fi
+          fi
+          gh release create "$tag" NTPods.msi NTPods-Windows.zip NTPods-source.zip build-manifest.json RELEASE-NOTES.md SHA256SUMS.txt \
+            FFmpeg-source.zip FFmpeg-build-recipes.zip FFmpeg-SOURCE-NOTES.md \
+            --target "$GITHUB_SHA" --prerelease --latest=false --title "$title" --notes-file RELEASE-NOTES.md

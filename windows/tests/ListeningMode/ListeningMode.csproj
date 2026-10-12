@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="../../device-models.json" LogicalName="ntpods.device-models.json" />
+    <Compile Include="../../winui/NTPods.WinUI/Services/DeviceModels.cs" Link="DeviceModels.cs" />
+    <Compile Include="../../winui/NTPods.WinUI/Services/BatteryPresentation.cs" Link="BatteryPresentation.cs" />
+    <Compile Include="../../winui/NTPods.WinUI/Controls/ListeningModeLayout.cs" Link="ListeningModeLayout.cs" />
+    <Compile Include="../../winui/NTPods.WinUI/Controls/ListeningModeLens.cs" Link="ListeningModeLens.cs" />
+    <Compile Include="../../winui/NTPods.WinUI/Controls/ListeningModeMotion.cs" Link="ListeningModeMotion.cs" />
+    <Compile Include="../../winui/NTPods.WinUI/Controls/ListeningModePolicy.cs" Link="ListeningModePolicy.cs" />
+    <Compile Include="../../winui/NTPods.WinUI/Controls/ListeningModeRequest.cs" Link="ListeningModeRequest.cs" />
+    <Compile Include="../../winui/NTPods.WinUI/Controls/DeviceSettingStatus.cs" Link="DeviceSettingStatus.cs" />
+    <Compile Include="../../winui/NTPods.WinUI/Ipc/Messages.cs" Link="Messages.cs" />
+  </ItemGroup>
+</Project>

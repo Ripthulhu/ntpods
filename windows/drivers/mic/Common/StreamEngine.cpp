@@ -28,6 +28,7 @@ Environment:
 #include <ksmedia.h>
 #include "streamengine.h"
 #include "MicPipe.h"
+#include "MicTiming.h"
 
 #ifndef __INTELLISENSE__
 #include "streamengine.tmh"
@@ -37,29 +38,26 @@ _Use_decl_annotations_
 PAGED_CODE_SEG
 CStreamEngine::CStreamEngine(
     _In_ ACXSTREAM Stream,
-    _In_ ACXDATAFORMAT StreamFormat,
-    _In_ BOOL Offload,
-    _In_opt_ CSimPeakMeter *CircuitPeakmeter
+    _In_ ACXDATAFORMAT StreamFormat
 )
     : m_PacketsCount(0),
     m_PacketSize(0),
     m_FirstPacketOffset(0),
     m_NotificationTimer(NULL),
     m_CurrentState(AcxStreamStateStop),
+    m_HasCompletedPacket(FALSE),
     m_CurrentPacket(0),
     m_Position(0),
     m_Stream(Stream),
     m_StreamFormat(StreamFormat),
     m_StartTime(0),
     m_StartPosition(0),
-    m_GlitchAdjust(0),
-    m_ToneFrequency(DEFAULT_FREQUENCY),
-    m_Offload(Offload),
-    m_pCircuitPeakmeter(CircuitPeakmeter)
+    m_GlitchAdjust(0)
 {
     PAGED_CODE();
 
     KeQueryPerformanceCounter(&m_PerformanceCounterFrequency);
+    KeInitializeSpinLock(&m_PacketLock);
     RtlZeroMemory(m_Packets, sizeof(m_Packets));
 }
 
@@ -90,11 +88,18 @@ CStreamEngine::AllocateRtPackets(
 
     PAGED_CODE();
 
-    if (PacketCount > MAX_PACKET_COUNT)
+    *Packets = NULL;
+    // shortcut: add page-aligned, incremental filling when timer-driven capture
+    // is required; the current engine supports only two event-driven packets.
+    if (PacketCount == 1) return STATUS_NOT_SUPPORTED;
+    if (!MicRtPacketLayoutValid(PacketCount, PacketSize))
     {
-        ASSERT(FALSE);
         status = STATUS_INVALID_PARAMETER;
         goto exit;
+    }
+    if (m_PacketsCount != 0)
+    {
+        return STATUS_INVALID_DEVICE_STATE;
     }
 
     status = RtlSizeTMult(PacketCount, sizeof(ACX_RTPACKET), &packetsSize);
@@ -212,10 +217,13 @@ CStreamEngine::FreeRtPackets(
     }
 
     ExFreePool(Packets);
+    RtlZeroMemory(m_Packets, sizeof(m_Packets));
+    m_PacketsCount = 0;
+    m_PacketSize = 0;
+    m_FirstPacketOffset = 0;
 }
 
 _Use_decl_annotations_
-PAGED_CODE_SEG
 NTSTATUS
 CStreamEngine::PrepareHardware()
 {
@@ -223,14 +231,17 @@ CStreamEngine::PrepareHardware()
     WDF_TIMER_CONFIG        timerConfig;
     WDF_OBJECT_ATTRIBUTES   timerAttributes;
     PSTREAM_TIMER_CONTEXT   timerCtx;
+    KIRQL                   irql;
 
     PAGED_CODE();
 
     //
     // If already in this state, do nothing.
     //
+    KeAcquireSpinLock(&m_PacketLock, &irql);
     if (m_CurrentState == AcxStreamStatePause)
     {
+        KeReleaseSpinLock(&m_PacketLock, irql);
         // Nothing to do.
         status = STATUS_SUCCESS;
         goto exit;
@@ -238,10 +249,12 @@ CStreamEngine::PrepareHardware()
 
     if (m_CurrentState != AcxStreamStateStop)
     {
+        KeReleaseSpinLock(&m_PacketLock, irql);
         // Error out.
         status = STATUS_INVALID_STATE_TRANSITION;
         goto exit;
     }
+    KeReleaseSpinLock(&m_PacketLock, irql);
 
     //
     // Stop to Pause.
@@ -264,7 +277,9 @@ CStreamEngine::PrepareHardware()
     timerCtx = GetStreamTimerContext(m_NotificationTimer);
     timerCtx->StreamEngine = this;
 
+    KeAcquireSpinLock(&m_PacketLock, &irql);
     m_CurrentState = AcxStreamStatePause;
+    KeReleaseSpinLock(&m_PacketLock, irql);
     status = STATUS_SUCCESS;
 
 exit:
@@ -272,17 +287,19 @@ exit:
 }
 
 _Use_decl_annotations_
-PAGED_CODE_SEG
 NTSTATUS
 CStreamEngine::ReleaseHardware()
 {
+    KIRQL irql;
     PAGED_CODE();
 
     //
     // If already in this state, do nothing.
     //
+    KeAcquireSpinLock(&m_PacketLock, &irql);
     if (m_CurrentState == AcxStreamStateStop)
     {
+        KeReleaseSpinLock(&m_PacketLock, irql);
         // Nothing to do.
         goto exit;
     }
@@ -292,6 +309,7 @@ CStreamEngine::ReleaseHardware()
     // On the way down we always want to succeed.
     //
     ASSERT(m_CurrentState == AcxStreamStatePause);
+    KeReleaseSpinLock(&m_PacketLock, irql);
 
     //
     // Pause to Stop.
@@ -303,29 +321,37 @@ CStreamEngine::ReleaseHardware()
         m_NotificationTimer = NULL;
     }
 
-    KeFlushQueuedDpcs();
-
+    KeAcquireSpinLock(&m_PacketLock, &irql);
     m_Position = 0;
+    m_StartPosition = 0;
+    m_StartTime = 0;
     m_GlitchAdjust = 0;
     m_CurrentPacket = 0;
-
+    m_HasCompletedPacket = FALSE;
+    m_CurrentPacketStart.QuadPart = 0;
+    m_LastPacketStart.QuadPart = 0;
     m_CurrentState = AcxStreamStateStop;
+    KeReleaseSpinLock(&m_PacketLock, irql);
 
 exit:
     return STATUS_SUCCESS;
 }
 
 _Use_decl_annotations_
-PAGED_CODE_SEG
 NTSTATUS
 CStreamEngine::Pause()
 {
     NTSTATUS status = STATUS_UNSUCCESSFUL;
+    ULONG bytesPerSecond;
+    KIRQL irql;
 
     PAGED_CODE();
+    bytesPerSecond = GetBytesPerSecond();
 
+    KeAcquireSpinLock(&m_PacketLock, &irql);
     if (m_CurrentState == AcxStreamStatePause)
     {
+        KeReleaseSpinLock(&m_PacketLock, irql);
         // Nothing to do.
         status = STATUS_SUCCESS;
         goto exit;
@@ -333,26 +359,22 @@ CStreamEngine::Pause()
 
     if (m_CurrentState != AcxStreamStateRun)
     {
+        KeReleaseSpinLock(&m_PacketLock, irql);
         // Error out.
         status = STATUS_INVALID_STATE_TRANSITION;
         goto exit;
     }
-
-    m_PeakMeter.StopStream();
-    if (m_pCircuitPeakmeter)
-    {
-        m_pCircuitPeakmeter->StopStream();
-    }
+    KeReleaseSpinLock(&m_PacketLock, irql);
 
     //
     // Run to Pause.
     //
     WdfTimerStop(m_NotificationTimer, TRUE);
 
-    // Save the position we paused at.
-    UpdatePosition();
-
+    KeAcquireSpinLock(&m_PacketLock, &irql);
+    UpdatePositionLocked(KeQueryPerformanceCounter(NULL), bytesPerSecond);
     m_CurrentState = AcxStreamStatePause;
+    KeReleaseSpinLock(&m_PacketLock, irql);
     status = STATUS_SUCCESS;
 
 exit:
@@ -360,16 +382,21 @@ exit:
 }
 
 _Use_decl_annotations_
-PAGED_CODE_SEG
 NTSTATUS
 CStreamEngine::Run()
 {
     NTSTATUS status = STATUS_UNSUCCESSFUL;
+    LARGE_INTEGER startQpc;
+    ULONG bytesPerSecond;
+    KIRQL irql;
 
     PAGED_CODE();
+    bytesPerSecond = GetBytesPerSecond();
 
+    KeAcquireSpinLock(&m_PacketLock, &irql);
     if (m_CurrentState == AcxStreamStateRun)
     {
+        KeReleaseSpinLock(&m_PacketLock, irql);
         // Nothing to do.
         status = STATUS_SUCCESS;
         goto exit;
@@ -377,15 +404,17 @@ CStreamEngine::Run()
 
     if (m_CurrentState != AcxStreamStatePause)
     {
+        KeReleaseSpinLock(&m_PacketLock, irql);
         status = STATUS_INVALID_STATE_TRANSITION;
         goto exit;
     }
-
-    m_PeakMeter.StartStream();
-    if (m_pCircuitPeakmeter)
+    if (!MicRtPacketLayoutValid(m_PacketsCount, m_PacketSize) || bytesPerSecond == 0)
     {
-        m_pCircuitPeakmeter->StartStream();
+        KeReleaseSpinLock(&m_PacketLock, irql);
+        status = STATUS_INVALID_DEVICE_STATE;
+        goto exit;
     }
+    KeReleaseSpinLock(&m_PacketLock, irql);
 
     //
     // Pause to Run.
@@ -394,15 +423,16 @@ CStreamEngine::Run()
     // us to continue scheduling packet completions correctly, while still reporting absolute position from the
     // start of the stream.
     //
-    m_StartTime = KSCONVERT_PERFORMANCE_TIME(m_PerformanceCounterFrequency.QuadPart, KeQueryPerformanceCounter(NULL));
+    KeAcquireSpinLock(&m_PacketLock, &irql);
+    startQpc = KeQueryPerformanceCounter(NULL);
+    m_StartTime = KSCONVERT_PERFORMANCE_TIME(m_PerformanceCounterFrequency.QuadPart, startQpc);
     m_StartPosition = m_Position;
-
-    // Reset time we've lost to glitches
+    m_CurrentPacketStart = startQpc;
     m_GlitchAdjust = 0;
+    m_CurrentState = AcxStreamStateRun;
+    KeReleaseSpinLock(&m_PacketLock, irql);
 
     ScheduleNextPass();
-
-    m_CurrentState = AcxStreamStateRun;
     status = STATUS_SUCCESS;
 
 exit:
@@ -410,7 +440,6 @@ exit:
 }
 
 _Use_decl_annotations_
-PAGED_CODE_SEG
 NTSTATUS
 CStreamEngine::GetPresentationPosition(
     _Out_   PULONGLONG      PositionInBlocks,
@@ -418,101 +447,23 @@ CStreamEngine::GetPresentationPosition(
 )
 {
     ULONG blockAlign;
+    ULONG bytesPerSecond;
     LARGE_INTEGER qpc;
+    KIRQL irql;
 
     PAGED_CODE();
 
     blockAlign = AcxDataFormatGetBlockAlign(m_StreamFormat);
+    bytesPerSecond = GetBytesPerSecond();
 
-    // Update the position based on the current time
-    UpdatePosition();
+    // Position, QPC and the clock epoch must come from one snapshot.
+    KeAcquireSpinLock(&m_PacketLock, &irql);
     qpc = KeQueryPerformanceCounter(NULL);
+    UpdatePositionLocked(qpc, bytesPerSecond);
 
     *PositionInBlocks = m_Position / blockAlign;
     *QPCPosition = (ULONGLONG)qpc.QuadPart;
-
-    return STATUS_SUCCESS;
-}
-
-_Use_decl_annotations_
-PAGED_CODE_SEG
-NTSTATUS
-CStreamEngine::GetLinearBufferPosition(
-    _Out_   PULONGLONG      Position
-)
-{
-    UNREFERENCED_PARAMETER(Position);
-    PAGED_CODE();
-    return STATUS_SUCCESS;
-}
-
-_Use_decl_annotations_
-PAGED_CODE_SEG
-NTSTATUS
-CStreamEngine::SetCurrentWritePosition(
-    _In_   ULONG      Position
-)
-{
-    UNREFERENCED_PARAMETER(Position);
-    PAGED_CODE();
-    return STATUS_SUCCESS;
-}
-
-_Use_decl_annotations_
-PAGED_CODE_SEG
-NTSTATUS
-CStreamEngine::SetLastBufferPosition(
-    _In_   ULONG      Position
-)
-{
-    UNREFERENCED_PARAMETER(Position);
-    PAGED_CODE();
-    return STATUS_SUCCESS;
-}
-
-_Use_decl_annotations_
-PAGED_CODE_SEG
-NTSTATUS
-CStreamEngine::AssignDrmContentId(
-    ULONG          DrmContentId,
-    PACXDRMRIGHTS  DrmRights
-)
-{
-    PAGED_CODE();
-
-    UNREFERENCED_PARAMETER(DrmContentId);
-    UNREFERENCED_PARAMETER(DrmRights);
-    
-    //
-    // At this point the driver should enforce the new DrmRights.
-    //
-    // HDMI render: if DigitalOutputDisable or CopyProtect is true, enable HDCP.
-    // 
-    // From MSDN:
-    //
-    // This sample doesn't forward protected content, but if your driver uses 
-    // lower layer drivers or a different stack to properly work, please see the 
-    // following info from MSDN:
-    //
-    // "Before allowing protected content to flow through a data path, the system
-    // verifies that the data path is secure. To do so, the system authenticates
-    // each module in the data path beginning at the upstream end of the data path
-    // and moving downstream. As each module is authenticated, that module gives
-    // the system information about the next module in the data path so that it
-    // can also be authenticated. To be successfully authenticated, a module's 
-    // binary file must be signed as DRM-compliant.
-    //
-    // Two adjacent modules in the data path can communicate with each other in 
-    // one of several ways. If the upstream module calls the downstream module 
-    // through IoCallDriver, the downstream module is part of a WDM driver. In 
-    // this case, the upstream module calls the AcxDrmForwardContentToDeviceObject
-    // function to provide the system with the device object representing the 
-    // downstream module. (If the two modules communicate through the downstream
-    // module's content handlers, the upstream module calls AcxDrmAddContentHandlers
-    // instead.)
-    //
-    // For more information, see MSDN's DRM Functions and Interfaces.
-    //
+    KeReleaseSpinLock(&m_PacketLock, irql);
 
     return STATUS_SUCCESS;
 }
@@ -531,16 +482,6 @@ CStreamEngine::GetHWLatency(
     *Delay = 0;
 
     return STATUS_SUCCESS;
-}
-
-_Use_decl_annotations_
-PAGED_CODE_SEG
-CSimPeakMeter *
-CStreamEngine::GetPeakMeter()
-{
-    PAGED_CODE();
-
-    return &m_PeakMeter;
 }
 
 _Use_decl_annotations_
@@ -567,17 +508,20 @@ CStreamEngine::StreamPassCallback()
 {
     ULONGLONG completedPacket;
     ULONGLONG qpcCompleted;
+    KIRQL irql;
 
-    // Process the packet (e.g. save render to file/generate capture data)
+    // Fill the next capture packet.
     ProcessPacket();
 
-    // We've completed a packet! Increment our currently active packet
-    completedPacket = (ULONG)InterlockedIncrement((LONG*)&m_CurrentPacket) - 1;
     // Save the time at which we moved to the next packet
     qpcCompleted = (ULONGLONG)KeQueryPerformanceCounter(NULL).QuadPart;
-
-    InterlockedExchange64(&m_LastPacketStart.QuadPart, m_CurrentPacketStart.QuadPart);
-    InterlockedExchange64(&m_CurrentPacketStart.QuadPart, qpcCompleted);
+    // The count and its timestamp must describe the same completed packet.
+    KeAcquireSpinLock(&m_PacketLock, &irql);
+    completedPacket = m_CurrentPacket++;
+    m_LastPacketStart = m_CurrentPacketStart;
+    m_CurrentPacketStart.QuadPart = qpcCompleted;
+    m_HasCompletedPacket = TRUE;
+    KeReleaseSpinLock(&m_PacketLock, irql);
 
     // Tell ACX we've completed the packet.
     (void)AcxRtStreamNotifyPacketComplete(m_Stream, completedPacket, qpcCompleted);
@@ -598,41 +542,35 @@ CStreamEngine::ScheduleNextPass()
     ULONGLONG nextPacketTimeFromLastPauseHns = 0;
     ULONGLONG nextPacketTime = 0;
     ULONGLONG currentTime;
+    KIRQL irql;
     BOOLEAN inTimerQueue = FALSE;
 
     // Get the number of bytes per second from our stored stream format
     bytesPerSecond = GetBytesPerSecond();
+    KeAcquireSpinLock(&m_PacketLock, &irql);
+    if (m_CurrentState != AcxStreamStateRun)
+    {
+        KeReleaseSpinLock(&m_PacketLock, irql);
+        return;
+    }
 
     // Calculate the absolute position of the beginning of the next packet from the beginning of the stream
-    nextPacket = m_CurrentPacket + 1;
+    nextPacket = (ULONGLONG)m_CurrentPacket + 1;
     nextPacketStartPosition = nextPacket * m_PacketSize;
 
     // Adjust next packet position to account for the last time we resumed from Pause
-    nextPacketPositionFromLastPause = nextPacketStartPosition - m_StartPosition;
+    nextPacketPositionFromLastPause = nextPacketStartPosition > m_StartPosition
+        ? nextPacketStartPosition - m_StartPosition : 0;
 
-    // Convert from bytes to HNS (to prevent truncation, multiply first then divide)
-    nextPacketTimeFromLastPauseHns = nextPacketPositionFromLastPause * HNS_PER_SEC / bytesPerSecond;
+    nextPacketTimeFromLastPauseHns = MicBytesToHns(nextPacketPositionFromLastPause, bytesPerSecond);
 
     // Next packet time is Time @ resume from Pause, offset for lost time due to glitch, with next packet time added
     nextPacketTime = m_StartTime + m_GlitchAdjust + nextPacketTimeFromLastPauseHns;
 
     currentTime = KSCONVERT_PERFORMANCE_TIME(m_PerformanceCounterFrequency.QuadPart, KeQueryPerformanceCounter(NULL));
 
-    // Determine how long we want to wait, in HNS. Negative since it's a relative wait
-    delay = -(LONGLONG)(nextPacketTime - currentTime);
-
-    // If the delay isn't negative, this means we lost some time (e.g. broken into kernel debugger). Update
-    // our glitch adjust to account for that lost time, and attempt to schedule again
-    if (delay >= 0)
-    {
-        // Glitch!!!
-        // Update the glitch adjustment and set the new delay.
-        m_GlitchAdjust += delay;
-
-        StreamPassCallback();
-
-        return;
-    }
+    delay = MicPacketTimerDelay(nextPacketTime, currentTime, &m_GlitchAdjust);
+    KeReleaseSpinLock(&m_PacketLock, irql);
 
     // Start the timer for our next pass! Note the timer isn't periodic.
     inTimerQueue = WdfTimerStart(m_NotificationTimer, delay);
@@ -643,20 +581,22 @@ CStreamEngine::ScheduleNextPass()
 
 _Use_decl_annotations_
 VOID
-CStreamEngine::UpdatePosition()
+CStreamEngine::UpdatePositionLocked(LARGE_INTEGER Qpc, ULONG BytesPerSecond)
 {
     ULONGLONG currentTime;
-    ULONG bytesPerSecond;
 
     if (m_CurrentState != AcxStreamStateRun)
     {
         return;
     }
-    bytesPerSecond = GetBytesPerSecond();
-    currentTime = KSCONVERT_PERFORMANCE_TIME(m_PerformanceCounterFrequency.QuadPart, KeQueryPerformanceCounter(NULL));
+    currentTime = KSCONVERT_PERFORMANCE_TIME(m_PerformanceCounterFrequency.QuadPart, Qpc);
 
     // Update position
-    m_Position = m_StartPosition - m_GlitchAdjust + (currentTime - m_StartTime) * bytesPerSecond / HNS_PER_SEC;
+    const ULONGLONG elapsed = currentTime >= m_StartTime ? currentTime - m_StartTime : 0;
+    const ULONGLONG position = MicPositionBytes(m_StartPosition, elapsed,
+        m_GlitchAdjust, BytesPerSecond);
+    // A delayed timer can adjust its clock after an earlier position query.
+    if (position > m_Position) m_Position = position;
 }
 
 _Use_decl_annotations_
@@ -671,7 +611,6 @@ CStreamEngine::GetBytesPerSecond()
 }
 
 _Use_decl_annotations_
-PAGED_CODE_SEG
 NTSTATUS
 CStreamEngine::GetCurrentPacket(
     _Out_   PULONG          CurrentPacket
@@ -680,7 +619,10 @@ CStreamEngine::GetCurrentPacket(
     ULONG currentPacket;
     PAGED_CODE();
 
-    currentPacket = (ULONG)InterlockedCompareExchange((LONG*)&m_CurrentPacket, -1, -1);
+    KIRQL irql;
+    KeAcquireSpinLock(&m_PacketLock, &irql);
+    currentPacket = (ULONG)m_CurrentPacket;
+    KeReleaseSpinLock(&m_PacketLock, irql);
 
     *CurrentPacket = currentPacket;
 
@@ -695,7 +637,7 @@ CCaptureStreamEngine::CCaptureStreamEngine(
     _In_    ACXSTREAM       Stream,
     _In_    ACXDATAFORMAT   StreamFormat
 )
-    : CStreamEngine(Stream, StreamFormat, FALSE, NULL)
+    : CStreamEngine(Stream, StreamFormat), m_CaptureRunning(0)
 {
     PAGED_CODE();
 
@@ -708,6 +650,31 @@ PAGED_CODE_SEG
 CCaptureStreamEngine::~CCaptureStreamEngine()
 {
     PAGED_CODE();
+    if (InterlockedExchange(&m_CaptureRunning, 0)) MicPipeCaptureStopped();
+}
+
+_Use_decl_annotations_
+PAGED_CODE_SEG
+NTSTATUS CCaptureStreamEngine::Run()
+{
+    PAGED_CODE();
+    NTSTATUS status = CStreamEngine::Run();
+    if (NT_SUCCESS(status) && !InterlockedExchange(&m_CaptureRunning, 1)) {
+        MicPipeCaptureStarted();
+    }
+    return status;
+}
+
+_Use_decl_annotations_
+PAGED_CODE_SEG
+NTSTATUS CCaptureStreamEngine::Pause()
+{
+    PAGED_CODE();
+    NTSTATUS status = CStreamEngine::Pause();
+    if (NT_SUCCESS(status) && InterlockedExchange(&m_CaptureRunning, 0)) {
+        MicPipeCaptureStopped();
+    }
+    return status;
 }
 
 _Use_decl_annotations_
@@ -728,12 +695,14 @@ NTSTATUS
 CCaptureStreamEngine::ReleaseHardware()
 {
     PAGED_CODE();
-
-    return CStreamEngine::ReleaseHardware();
+    NTSTATUS status = CStreamEngine::ReleaseHardware();
+    if (NT_SUCCESS(status) && InterlockedExchange(&m_CaptureRunning, 0)) {
+        MicPipeCaptureStopped();
+    }
+    return status;
 }
 
 _Use_decl_annotations_
-PAGED_CODE_SEG
 NTSTATUS
 CCaptureStreamEngine::GetCapturePacket(
     _Out_   ULONG* LastCapturePacket,
@@ -747,10 +716,14 @@ CCaptureStreamEngine::GetCapturePacket(
 
     PAGED_CODE();
 
-    currentPacket = (ULONG)InterlockedCompareExchange((LONG*)&m_CurrentPacket, -1, -1);
-    qpcPacketStart = InterlockedCompareExchange64(&m_LastPacketStart.QuadPart, -1, -1);
+    KIRQL irql;
+    KeAcquireSpinLock(&m_PacketLock, &irql);
+    currentPacket = (ULONG)m_CurrentPacket;
+    qpcPacketStart = m_LastPacketStart.QuadPart;
+    if (!m_HasCompletedPacket) status = STATUS_DEVICE_NOT_READY;
+    KeReleaseSpinLock(&m_PacketLock, irql);
 
-    *LastCapturePacket = currentPacket - 1;
+    *LastCapturePacket = NT_SUCCESS(status) ? currentPacket - 1 : 0;
     *QPCPacketStart = (ULONGLONG)qpcPacketStart;
     *MoreData = FALSE;
 
@@ -765,7 +738,8 @@ CCaptureStreamEngine::ProcessPacket()
     ULONG packetIndex;
     PBYTE packetBuffer;
 
-    currentPacket = (ULONG)InterlockedCompareExchange((LONG*)&m_CurrentPacket, -1, -1);
+    // Only this stream's timer advances the packet while it is running.
+    currentPacket = (ULONG)m_CurrentPacket;
 
     packetIndex = currentPacket % m_PacketsCount;
     packetBuffer = (PBYTE)m_Packets[packetIndex];
@@ -933,26 +907,6 @@ EvtStreamPause(
     streamEngine = (CStreamEngine*)ctx->StreamEngine;
 
     return streamEngine->Pause();
-}
-
-PAGED_CODE_SEG
-NTSTATUS
-EvtStreamAssignDrmContentId(
-    _In_ ACXSTREAM      Stream,
-    _In_ ULONG          DrmContentId,
-    _In_ PACXDRMRIGHTS  DrmRights
-)
-{
-    PSTREAMENGINE_CONTEXT ctx;
-    CStreamEngine * streamEngine = NULL;
-
-    PAGED_CODE();
-
-    ctx = GetStreamEngineContext(Stream);
-
-    streamEngine = (CStreamEngine*)ctx->StreamEngine;
-
-    return streamEngine->AssignDrmContentId(DrmContentId, DrmRights);
 }
 
 PAGED_CODE_SEG

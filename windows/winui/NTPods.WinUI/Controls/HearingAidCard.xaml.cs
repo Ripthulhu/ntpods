@@ -1,6 +1,7 @@
 using System;
 using System.Linq;
 using NTPods.WinUI.Ipc;
+using NTPods.WinUI.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
@@ -21,6 +22,9 @@ public sealed partial class HearingAidCard : UserControl
 
     private readonly NumberBox[] _leftEq = new NumberBox[8];
     private readonly NumberBox[] _rightEq = new NumberBox[8];
+    private string _deviceId = "";
+    private bool _supported;
+    private bool _applying;
     // Long-ish: filling in the audiogram touches many boxes in a row and each apply
     // is a heavy ATT round-trip on the daemon, so coalesce a burst of edits into one
     // apply once the user pauses (the daemon also drops superseded applies).
@@ -91,7 +95,20 @@ public sealed partial class HearingAidCard : UserControl
         foreach (var b in _leftEq) b.IsEnabled = on;
         foreach (var b in _rightEq) b.IsEnabled = on;
         _debounce.Stop();
-        Apply(); // enabling/disabling applies immediately
+        if (!_applying) Apply(); // enabling/disabling applies immediately
+    }
+
+    public void Update(Snapshot snapshot)
+    {
+        _supported = snapshot.Connected && !snapshot.LinkStale && DeviceModels.Find(snapshot.Model).HearingAid;
+        if (_deviceId != snapshot.DeviceId || !_supported)
+        {
+            _deviceId = snapshot.DeviceId;
+            _debounce.Stop();
+            _applying = true;
+            EnableSwitch.IsOn = false;
+            _applying = false;
+        }
     }
 
     private void Settings_Changed(object sender, RangeBaseValueChangedEventArgs e)
@@ -108,6 +125,7 @@ public sealed partial class HearingAidCard : UserControl
 
     private void Apply()
     {
+        if (!_supported) return;
         Client?.SetHearingAid(new SetHearingAidCmd
         {
             On = EnableSwitch.IsOn,

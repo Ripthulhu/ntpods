@@ -5,12 +5,14 @@ using Microsoft.UI.Xaml.Controls;
 
 namespace NTPods.WinUI.Pages;
 
-/// The device view: header + transient InfoBars + the responsive 2-column card
-/// grid. It owns no daemon logic beyond fanning a Snapshot out to each card and
-/// rendering the overlay / connect-prompt InfoBars.
+/// The device view owns no daemon logic beyond fanning a Snapshot out to each control and
+/// rendering the connect prompt.
 public sealed partial class DevicePage : UserControl
 {
+    public event Action? SettingsRequested;
     private DaemonClient? _client;
+    private readonly AutoHideScrollbars _scrollbars;
+    private Snapshot _snapshot = new();
 
     /// The daemon client, propagated to the header + every command-sending card.
     public DaemonClient? Client
@@ -21,11 +23,13 @@ public sealed partial class DevicePage : UserControl
             _client = value;
             Header.Client = value;
             VolumeCard.Client = value;
-            AdaptiveNoiseCard.Client = value;
+            EqualizerCard.Client = value;
+            DeviceSettingsCard.Client = value;
             NoiseControlCard.Client = value;
             FeaturesCard.Client = value;
             MicCard.Client = value;
             HeartRateCard.Client = value;
+            HeadTrackingCard.Client = value;
             HearingAidCard.Client = value;
         }
     }
@@ -33,16 +37,12 @@ public sealed partial class DevicePage : UserControl
     public DevicePage()
     {
         InitializeComponent();
-        // Experimental cards (hearing aid) are hidden by default. Show them only
-        // when the user opts in via Settings ▸ Experimental. (Heart rate works and
-        // is always shown.)
+        Header.SettingsRequested += () => SettingsRequested?.Invoke();
+        _scrollbars = new AutoHideScrollbars(PageScrollViewer);
+        // Hearing assistance remains an opt-in for supported models.
         ApplyExperimentalVisibility();
 
-        // Daemon overlays are one-shot strings resolved when they arrive, so one
-        // shown before a language change stays in the old language. Dismiss it on a
-        // culture switch (the next overlay renders in the new language).
-        Services.Loc.Instance.PropertyChanged += (_, _) =>
-            DispatcherQueue.TryEnqueue(() => OverlayBar.IsOpen = false);
+        ConnectPromptBar.Closed += (_, _) => ConnectPromptBar.Visibility = Visibility.Collapsed;
     }
 
     /// Re-read the experimental opt-in (call after the Settings toggle changes so the
@@ -52,22 +52,35 @@ public sealed partial class DevicePage : UserControl
     /// Show/hide every experimental card from the single experimental opt-in.
     private void ApplyExperimentalVisibility()
     {
-        var vis = AppSettings.EnableExperimental ? Visibility.Visible : Visibility.Collapsed;
+        var vis = AppSettings.EnableExperimental && DeviceModels.Find(_snapshot.Model).HearingAid ? Visibility.Visible : Visibility.Collapsed;
         HearingAidCard.Visibility = vis;
     }
 
     /// Fan a fresh Snapshot out to the header and every card that renders state.
-    /// (AdaptiveNoiseCard is stateless — send-only — so it is skipped.)
     public void Update(Snapshot s)
     {
+        var profile = DeviceModels.Find(s.Model);
+        if (s.DeviceId != _snapshot.DeviceId || !DeviceModels.HeadTracking(s)) HeadTrackingCard.Stop();
+        _snapshot = s;
+        NoiseControlCard.Visibility = DeviceModels.Listening(s) ? Visibility.Visible : Visibility.Collapsed;
+        EqualizerCard.Visibility = DeviceModels.CustomEq(s) ? Visibility.Visible : Visibility.Collapsed;
+        HeartRateCard.Visibility = profile.HeartRate || s.HeartRateEnabled ? Visibility.Visible : Visibility.Collapsed;
+        HeadTrackingCard.Visibility = DeviceModels.HeadTracking(s) ? Visibility.Visible : Visibility.Collapsed;
+        MicCard.Visibility = DeviceModels.HighQualityMic(s) || s.AutoMode || s.MicManualActive || s.MicCaptureActive
+            ? Visibility.Visible : Visibility.Collapsed;
+        ApplyExperimentalVisibility();
         Header.Update(s);
         BatteryCard.Update(s);
         VolumeCard.Update(s);
+        EqualizerCard.Update(s);
+        DeviceSettingsCard.Update(s);
         NoiseControlCard.Update(s);
         FeaturesCard.Update(s);
         MicCard.Update(s);
         MultipointCard.Update(s);
         HeartRateCard.Update(s);
+        HeadTrackingCard.Update(s);
+        HearingAidCard.Update(s);
 
         // Disable every interactive control while there's no proper connection — a
         // disconnected/desynced link can't apply commands, so the controls shouldn't
@@ -75,21 +88,12 @@ public sealed partial class DevicePage : UserControl
         // ligação" in the header to force a clean reconnect.
         bool on = s.Connected;
         VolumeCard.IsEnabled = on;
-        AdaptiveNoiseCard.IsEnabled = on;
         NoiseControlCard.IsEnabled = on;
-        FeaturesCard.IsEnabled = on;
-        MicCard.IsEnabled = on;
-        HeartRateCard.IsEnabled = on;
+        // The microphone permission is local; it must remain possible to turn
+        // it off after the AirPods disconnect or the capture driver disappears.
+        MicCard.IsEnabled = true;
+        HeartRateCard.IsEnabled = _client?.IsReady == true && (profile.HeartRate || s.HeartRateEnabled);
         HearingAidCard.IsEnabled = on;
-    }
-
-    /// Show a transient daemon overlay in the InfoBar.
-    public void ShowOverlay(string title, string body)
-    {
-        OverlayBar.Title = title;
-        OverlayBar.Message = body;
-        OverlayBar.Severity = InfoBarSeverity.Informational;
-        OverlayBar.IsOpen = true;
     }
 
     /// Show the "nearby — connect?" prompt with a Connect action.
@@ -101,29 +105,31 @@ public sealed partial class DevicePage : UserControl
         btn.Click += (_, _) =>
         {
             _client?.Connect();
-            ConnectPromptBar.IsOpen = false;
+            DismissConnectPrompt();
         };
         ConnectPromptBar.ActionButton = btn;
+        ConnectPromptBar.Visibility = Visibility.Visible;
         ConnectPromptBar.IsOpen = true;
     }
 
     /// Hide the "nearby — connect?" prompt (e.g. once the device is connected).
-    public void DismissConnectPrompt() => ConnectPromptBar.IsOpen = false;
+    public void DismissConnectPrompt()
+    {
+        ConnectPromptBar.IsOpen = false;
+        ConnectPromptBar.Visibility = Visibility.Collapsed;
+    }
 
     /// The events pipe dropped — surface it in the header.
     public void ShowWaitingForDaemon() => Header.ShowWaitingForDaemon();
 
-    /// Responsive layout: two side-by-side columns only when the page is wide
-    /// enough (measured on the page's own content width, since the nav pane is
-    /// separate); otherwise the right column stacks below the left (one column).
-    private void OnSizeChanged(object sender, SizeChangedEventArgs e)
+    public void StopHeadTracking() => HeadTrackingCard.Stop();
+
+    public void SetDaemonReady(bool ready)
     {
-        bool wide = e.NewSize.Width >= 720;
-        Grid.SetRow(RightColumn, wide ? 0 : 1);
-        Grid.SetColumn(RightColumn, wide ? 1 : 0);
-        Col1.Width = wide ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
-        // In one-column mode the collapsed Col1 still reserves ColumnSpacing (16px),
-        // leaving a phantom gap on the right — drop the spacing when single-column.
-        CardsGrid.ColumnSpacing = wide ? 16 : 0;
+        DeviceBody.IsEnabled = ready;
+        Header.SetDaemonReady(ready);
     }
+
+    public void FocusActions() => Header.FocusActions();
+
 }

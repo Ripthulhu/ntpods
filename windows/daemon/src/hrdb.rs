@@ -23,8 +23,15 @@ use crate::hr::HrSample;
 const SCHEMA_VERSION: i32 = 1;
 
 enum Event {
-    Sample { device: u64, ts_ms: i64, bpm: u16, confidence: u8 },
-    EndSession { ts_ms: i64 },
+    Sample {
+        device: u64,
+        ts_ms: i64,
+        bpm: u16,
+        confidence: u8,
+    },
+    EndSession {
+        ts_ms: i64,
+    },
 }
 
 /// Handle to the writer thread; cheap to clone into `Ctx`.
@@ -45,7 +52,9 @@ impl HrDb {
     /// daemon's logger, so failures land in daemon.log.
     pub fn open(log: fn(&str)) -> HrDb {
         let path = match std::env::var("LOCALAPPDATA") {
-            Ok(la) => std::path::Path::new(&la).join("NTPods").join("heart-rate.sqlite3"),
+            Ok(la) => std::path::Path::new(&la)
+                .join("NTPods")
+                .join("heart-rate.sqlite3"),
             Err(_) => {
                 log("hrdb: LOCALAPPDATA not set — heart-rate tracking disabled");
                 return HrDb { tx: None };
@@ -54,7 +63,10 @@ impl HrDb {
         let conn = match Connection::open(&path).and_then(|c| init(&c).map(|_| c)) {
             Ok(c) => c,
             Err(e) => {
-                log(&format!("hrdb: cannot open {} ({e}) — heart-rate tracking disabled", path.display()));
+                log(&format!(
+                    "hrdb: cannot open {} ({e}) — heart-rate tracking disabled",
+                    path.display()
+                ));
                 return HrDb { tx: None };
             }
         };
@@ -67,7 +79,12 @@ impl HrDb {
     /// Record one validated reading from the AirPods at `device` (their address).
     pub fn sample(&self, device: u64, s: HrSample) {
         if let Some(tx) = &self.tx {
-            let _ = tx.send(Event::Sample { device, ts_ms: now_ms(), bpm: s.bpm, confidence: s.confidence });
+            let _ = tx.send(Event::Sample {
+                device,
+                ts_ms: now_ms(),
+                bpm: s.bpm,
+                confidence: s.confidence,
+            });
         }
     }
 
@@ -117,11 +134,19 @@ fn writer(conn: Connection, rx: mpsc::Receiver<Event>, log: fn(&str)) {
     for ev in rx {
         let res: rusqlite::Result<()> = (|| {
             match ev {
-                Event::Sample { device, ts_ms, bpm, confidence } => {
+                Event::Sample {
+                    device,
+                    ts_ms,
+                    bpm,
+                    confidence,
+                } => {
                     // A different pair of buds starts its own session.
                     if let Some((id, dev)) = open {
                         if dev != device {
-                            conn.execute("UPDATE sessions SET ended_at = ?1 WHERE id = ?2", params![ts_ms, id])?;
+                            conn.execute(
+                                "UPDATE sessions SET ended_at = ?1 WHERE id = ?2",
+                                params![ts_ms, id],
+                            )?;
                             open = None;
                         }
                     }
@@ -144,7 +169,10 @@ fn writer(conn: Connection, rx: mpsc::Receiver<Event>, log: fn(&str)) {
                 }
                 Event::EndSession { ts_ms } => {
                     if let Some((id, _)) = open.take() {
-                        conn.execute("UPDATE sessions SET ended_at = ?1 WHERE id = ?2", params![ts_ms, id])?;
+                        conn.execute(
+                            "UPDATE sessions SET ended_at = ?1 WHERE id = ?2",
+                            params![ts_ms, id],
+                        )?;
                     }
                 }
             }

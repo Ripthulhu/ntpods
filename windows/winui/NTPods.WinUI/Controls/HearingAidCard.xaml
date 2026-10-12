@@ -7,53 +7,64 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     mc:Ignorable="d">
 
-    <!-- Hearing assistance (AirPods Pro 3, accessibility amplification) -->
-    <Border Style="{StaticResource Card}">
-        <StackPanel Spacing="8">
+    <Expander Style="{StaticResource GroupExpander}" IsExpanded="False">
+        <Expander.Header>
             <TextBlock Text="{Binding [HearingAidTitle_Text], Source={StaticResource Loc}}"
-                       Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                       FontSize="16" />
+        </Expander.Header>
+        <StackPanel Spacing="16">
             <TextBlock Text="{Binding [HearingAidSubtitle_Text], Source={StaticResource Loc}}"
-                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                       Style="{ThemeResource CaptionTextBlockStyle}"
+                       Foreground="{ThemeResource AppleSecondaryBrush}" FontSize="13"
                        TextWrapping="Wrap" />
             <InfoBar Title="{Binding [HearingAidWarning_Title], Source={StaticResource Loc}}"
                      Message="{Binding [HearingAidWarning_Message], Source={StaticResource Loc}}"
                      Severity="Warning" IsOpen="True" IsClosable="False" />
 
-            <ToggleSwitch x:Name="EnableSwitch"
-                          OnContent="{Binding [Toggle_On], Source={StaticResource Loc}}"
-                          OffContent="{Binding [Toggle_Off], Source={StaticResource Loc}}"
-                          Header="{Binding [HearingAidSwitch_Header], Source={StaticResource Loc}}"
-                          Toggled="Enable_Toggled" />
+            <Grid ColumnSpacing="24">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="{Binding [HearingAidSwitch_Header], Source={StaticResource Loc}}"
+                           FontSize="16" TextWrapping="Wrap" VerticalAlignment="Center" />
+                <ToggleSwitch x:Name="EnableSwitch" Grid.Column="1" Style="{StaticResource SettingToggle}"
+                              AutomationProperties.Name="{Binding [HearingAidSwitch_Header], Source={StaticResource Loc}}"
+                              Toggled="Enable_Toggled" />
+            </Grid>
 
             <!-- Per-person audiogram (hearing loss, dB HL). Rows built in code-behind. -->
             <TextBlock Text="{Binding [HearingAidAudiogram_Header], Source={StaticResource Loc}}"
                        Style="{ThemeResource CaptionTextBlockStyle}"
-                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       Foreground="{ThemeResource AppleSecondaryBrush}"
                        Margin="0,4,0,0" />
             <Grid x:Name="AudiogramGrid" ColumnSpacing="10" RowSpacing="4" />
 
-            <TextBlock Text="{Binding [HearingAidAmp_Header], Source={StaticResource Loc}}"
-                       Style="{ThemeResource CaptionTextBlockStyle}" Margin="0,4,0,0" />
             <Slider x:Name="AmpSlider" Minimum="0" Maximum="100" Value="50"
+                    Header="{Binding [HearingAidAmp_Header], Source={StaticResource Loc}}"
+                    AutomationProperties.Name="{Binding [HearingAidAmp_Header], Source={StaticResource Loc}}"
                     ValueChanged="Settings_Changed" IsEnabled="False" />
 
-            <TextBlock Text="{Binding [HearingAidBalance_Header], Source={StaticResource Loc}}"
-                       Style="{ThemeResource CaptionTextBlockStyle}" />
             <Slider x:Name="BalanceSlider" Minimum="-100" Maximum="100" Value="0"
+                    Header="{Binding [HearingAidBalance_Header], Source={StaticResource Loc}}"
+                    AutomationProperties.Name="{Binding [HearingAidBalance_Header], Source={StaticResource Loc}}"
                     ValueChanged="Settings_Changed" IsEnabled="False" />
 
-            <TextBlock Text="{Binding [HearingAidTone_Header], Source={StaticResource Loc}}"
-                       Style="{ThemeResource CaptionTextBlockStyle}" />
             <Slider x:Name="ToneSlider" Minimum="-100" Maximum="100" Value="0"
+                    Header="{Binding [HearingAidTone_Header], Source={StaticResource Loc}}"
+                    AutomationProperties.Name="{Binding [HearingAidTone_Header], Source={StaticResource Loc}}"
                     ValueChanged="Settings_Changed" IsEnabled="False" />
 
-            <ToggleSwitch x:Name="ConvBoostSwitch"
-                          OnContent="{Binding [Toggle_On], Source={StaticResource Loc}}"
-                          OffContent="{Binding [Toggle_Off], Source={StaticResource Loc}}"
-                          Header="{Binding [HearingAidConvBoost_Header], Source={StaticResource Loc}}"
-                          IsEnabled="False"
-                          Toggled="ConvBoost_Toggled" />
+            <Grid ColumnSpacing="24">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="{Binding [HearingAidConvBoost_Header], Source={StaticResource Loc}}"
+                           FontSize="16" TextWrapping="Wrap" VerticalAlignment="Center" />
+                <ToggleSwitch x:Name="ConvBoostSwitch" Grid.Column="1" Style="{StaticResource SettingToggle}"
+                              AutomationProperties.Name="{Binding [HearingAidConvBoost_Header], Source={StaticResource Loc}}"
+                              IsEnabled="False" Toggled="ConvBoost_Toggled" />
+            </Grid>
         </StackPanel>
-    </Border>
+    </Expander>
 </UserControl>

@@ -69,8 +69,7 @@ const WIRE_FIXED32: u8 = 5;
 
 /// type=0x0004, service=0x0004, opcode=0x0017, descriptor=0x00100000 — the
 /// AACP/RTBuddy SensorDataWX frame prefix (first 10 bytes of the 12-byte header).
-const RTBUDDY_FRAME_PREFIX: [u8; 10] =
-    [0x04, 0x00, 0x04, 0x00, 0x17, 0x00, 0x00, 0x00, 0x10, 0x00];
+const RTBUDDY_FRAME_PREFIX: [u8; 10] = [0x04, 0x00, 0x04, 0x00, 0x17, 0x00, 0x00, 0x00, 0x10, 0x00];
 
 // ---- proto scaffolding ----
 
@@ -199,7 +198,10 @@ impl RtBuddyHeartRateDecoder {
 fn classify_frame(frame: &[u8]) -> Option<HrSample> {
     let top_level = parse_proto_message(frame, AACP_RTBUDDY_HEADER_LENGTH, frame.len())?;
 
-    let log_type = top_level.first_varint(FIELD_LOG_TYPE).map(|v| v as i64).unwrap_or(-1);
+    let log_type = top_level
+        .first_varint(FIELD_LOG_TYPE)
+        .map(|v| v as i64)
+        .unwrap_or(-1);
     let mut commands: Vec<HeartRateCommand> = Vec::new();
 
     for field in &top_level.fields {
@@ -207,7 +209,13 @@ fn classify_frame(frame: &[u8]) -> Option<HrSample> {
             && SENSOR_DATA_COMMAND_FIELDS.contains(&field.number)
             && commands.len() < MAX_COMMANDS_PER_FRAME
         {
-            collect_heart_rate_commands(frame, field.value_start, field.value_end, 0, &mut commands);
+            collect_heart_rate_commands(
+                frame,
+                field.value_start,
+                field.value_end,
+                0,
+                &mut commands,
+            );
         }
     }
 
@@ -253,10 +261,18 @@ fn collect_heart_rate_commands(
         let mut payloads: Vec<Vec<u8>> = Vec::new();
         for field in &message.fields {
             if field.number == FIELD_COMMAND_PAYLOAD && field.wire_type == WIRE_LENGTH_DELIMITED {
-                collect_payload_candidates(data, field.value_start, field.value_end, 0, &mut payloads);
+                collect_payload_candidates(
+                    data,
+                    field.value_start,
+                    field.value_end,
+                    0,
+                    &mut payloads,
+                );
             }
         }
-        commands.push(HeartRateCommand { payload_candidates: payloads });
+        commands.push(HeartRateCommand {
+            payload_candidates: payloads,
+        });
     }
 
     if depth == MAX_COMMAND_ENVELOPE_DEPTH {
@@ -264,7 +280,13 @@ fn collect_heart_rate_commands(
     }
     for field in &message.fields {
         if field.wire_type == WIRE_LENGTH_DELIMITED && commands.len() < MAX_COMMANDS_PER_FRAME {
-            collect_heart_rate_commands(data, field.value_start, field.value_end, depth + 1, commands);
+            collect_heart_rate_commands(
+                data,
+                field.value_start,
+                field.value_end,
+                depth + 1,
+                commands,
+            );
         }
     }
 }
@@ -296,7 +318,13 @@ fn collect_payload_candidates(
         if field.wire_type == WIRE_LENGTH_DELIMITED
             && candidates.len() < MAX_PAYLOAD_CANDIDATES_PER_COMMAND
         {
-            collect_payload_candidates(data, field.value_start, field.value_end, depth + 1, candidates);
+            collect_payload_candidates(
+                data,
+                field.value_start,
+                field.value_end,
+                depth + 1,
+                candidates,
+            );
         }
     }
 }
@@ -411,7 +439,10 @@ fn read_varint(data: &[u8], start: usize, end: usize) -> Option<VarintRead> {
         index += 1;
         value |= (byte & 0x7F) << shift;
         if byte & 0x80 == 0 {
-            return Some(VarintRead { value, next_index: index });
+            return Some(VarintRead {
+                value,
+                next_index: index,
+            });
         }
         shift += 7;
     }
@@ -442,7 +473,11 @@ fn index_of_prefix(data: &[u8], prefix: &[u8], start_index: usize) -> Option<usi
         return None;
     }
     for start in start_index..=last_start {
-        if prefix.iter().enumerate().all(|(i, b)| data[start + i] == *b) {
+        if prefix
+            .iter()
+            .enumerate()
+            .all(|(i, b)| data[start + i] == *b)
+        {
             return Some(start);
         }
     }

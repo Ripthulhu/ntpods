@@ -8,6 +8,7 @@
 
     <!-- The tray's pref.rs launches this exe by name; keep it exact. -->
     <AssemblyName>ntpods-winui</AssemblyName>
+    <Version>0.1.26</Version>
 
     <Platforms>x64</Platforms>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
@@ -36,6 +37,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="..\..\device-models.json" LogicalName="ntpods.device-models.json" />
     <!-- UI strings (x:Uid + code lookups) compiled into resources.pri. -->
     <PRIResource Include="Strings\**\*.resw" />
   </ItemGroup>
@@ -53,12 +55,16 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.7.260224002" />
+    <!-- GPU displacement and spectral sampling for the LibrePods glass selector. -->
+    <PackageReference Include="Microsoft.Graphics.Win2D" Version="1.3.2" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.4188" />
     <PackageReference Include="H.NotifyIcon.WinUI" Version="2.4.1" />
     <!-- GDI (System.Drawing.Icon/Bitmap/Graphics) for the tray's number-badge icon. -->
     <PackageReference Include="System.Drawing.Common" Version="10.0.0" />
     <!-- Reads the daemon's heart-rate history DB (Services/HeartRateHistory.cs). -->
-    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
+    <!-- Explicit fixed native SQLite bundle; 2.1.11 carries CVE-2025-6965. -->
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.13" />
   </ItemGroup>
 
   <ItemGroup>

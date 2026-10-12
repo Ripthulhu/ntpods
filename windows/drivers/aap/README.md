@@ -7,7 +7,103 @@ RFCOMM is exposed; raw L2CAP `connect()` fails with `WSAENETDOWN`). This driver
 opens that channel in kernel mode and bridges it to user space via
 `DeviceIoControl`, so the NTPods app can read battery, toggle ANC, etc.
 
-## How it binds (the key trick)
+## Hardened development build
+
+Build from source; the checked-in prebuilt package does not contain these changes.
+The elevated installer must set the `AllowedUserSid` REG_SZ value under
+`HKLM\SYSTEM\CurrentControlSet\Services\NTPodsAAP\Parameters` before binding the
+driver. Its protected registry key may be written only by administrators/SYSTEM.
+The device permits SYSTEM and that one local/domain account (`S-1-5-21-...`). A
+missing, malformed, or unsupported account SID leaves the interface SYSTEM-only.
+
+The IOCTL numbers and packed payloads remain compatible with the daemon. CONNECT
+accepts only PSM `0x1001` and the peer reported by the owning BTHENUM service PDO;
+SEND/RECEIVE payloads are limited to 8192 bytes. A receive waits at most 100 ms,
+including when a caller requests zero or a longer timeout; callers should poll.
+Timeouts return an empty receive. Cancellation is checked every 50 ms while a BRB
+is pending. Connect has a 10-second deadline, other BRBs a 2-second outer deadline.
+On cancellation/deadline, the child request is canceled and must complete before
+its buffers are released. A malfunctioning lower driver that never completes a
+canceled IRP cannot safely be abandoned by this driver.
+
+Handle cleanup and PnP suspend close both AAP and ATT, using the address saved for
+each channel. The unused ATT server has been removed; legacy server-status fields
+remain zero/unsupported. The driver only opens an outbound ATT client on demand.
+
+A parallel dispatch queue forwards requests into four sequential queues: control,
+AAP receive, ATT receive, and cached status. A waiting ATT read/open or AAP write
+does not block kernel AAP receives or `GET_STATUS`. Status takes only the brief
+state spin lock and never borrows a Bluetooth interface or channel. Each BRB checks cancellation of
+its own parent request. Close waits for the corresponding receive lock before
+releasing a channel; control operations remain serialized by `OperationLock`.
+Lock order is control, then one receive lock, then the brief state spin lock.
+Receive handlers never acquire the control lock, and callbacks only take the
+state spin lock. A remote AAP disconnect also marks ATT unavailable until reopen.
+
+The Rust transport opens the device with `FILE_FLAG_OVERLAPPED`, using a separate
+manual-reset event and `OVERLAPPED` per call. Calls request cancellation after
+20 seconds, including queueing time, and wait for completion before releasing any
+buffers. This requires a completing lower stack, just like the kernel BRB wait.
+The old synchronous handle would serialize calls before the separate driver
+queues could help. The IOCTL ABI and account/device restrictions are unchanged.
+
+Portable boundary check (no driver installation):
+
+```
+cc -std=c11 -Wall -Wextra -Werror tests/policy_test.c -o policy_test
+./policy_test
+```
+
+The host-side concurrency harness compiles the production IOCTL callbacks against
+small framework substitutes. It checks independent AAP/ATT reads, writes while
+reads are pending, per-request cancellation, and receive input validation:
+
+```
+cl /nologo /W4 /WX /EHsc /std:c++17 tests/receive_concurrency_test.cpp
+receive_concurrency_test.exe
+```
+
+`cargo test --manifest-path windows/daemon/Cargo.toml driver::tests` exercises
+Windows overlapped completion on local test pipes. One pending read times out and
+is drained while another on the same handle remains usable; a closed peer returns
+an error without waiting for the deadline. Neither test needs an installed driver.
+
+Before loading a release, run Driver Verifier and the WDK checks on a dedicated
+test system. Validate malformed/oversized IOCTLs, cancellation during a receive
+and connect, access rejection from another user, repeated open/close and daemon
+crash, ATT close/reopen, sleep/resume, radio removal, and driver uninstall. Confirm
+ANC/STOP sends remain responsive during idle receive polling, and that the
+Windows audio profiles keep working. These hardware checks are not replaced by
+the portable policy test.
+
+## Transport research, 2026-10-11
+
+- Microsoft's [L2CAP transfer contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/bthddi/ns-bthddi-_brb_l2ca_acl_transfer)
+  allows reads and writes simultaneously. Its [channel-open documentation](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/bthddi/ns-bthddi-_brb_l2ca_open_channel)
+  states that incoming packets are discarded when the configured MTU queue fills.
+  Serializing every operation behind a long ATT open could therefore lose AAP
+  microphone frames. The new receive queues remove that local source of delay;
+  they cannot repair radio loss or time spent decoding in user mode.
+- [WdfRequestForwardToIoQueue](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestforwardtoioqueue)
+  returns queued request ownership to the framework. The forwarding queue must
+  remain able to accept the next receive while a control operation is outstanding.
+- [DeviceIoControl](https://learn.microsoft.com/en-us/windows/win32/api/ioapiset/nf-ioapiset-deviceiocontrol),
+  [GetOverlappedResultEx](https://learn.microsoft.com/en-us/windows/win32/api/ioapiset/nf-ioapiset-getoverlappedresultex)
+  and [CancelIoEx](https://learn.microsoft.com/en-us/windows/win32/api/ioapiset/nf-ioapiset-cancelioex)
+  define the per-operation event and completion lifetime used by the daemon.
+- [Microsoft bthecho](https://github.com/microsoft/Windows-driver-samples/blob/main/bluetooth/bthecho/bthcli/sys/queue.c)
+  reports received bytes from `BufferSize`. [BthPS3 at 2a0de63](https://github.com/nefarius/BthPS3/blob/2a0de63ce48092a20cfe12d0600e3619688de743/BthPS3/L2CAP.Transfer.c)
+  uses asynchronous BRBs and explicit rundown, but subtracts `RemainingBufferSize`.
+  We retain the deployed byte-count interpretation until a hardware trace resolves
+  that discrepancy. We did not copy code from either reference in this change.
+
+Pending hardware checks: AAP packet continuity during ATT settings/probes, send
+latency under microphone capture, cancel/disconnect during both receive types,
+daemon crash, radio removal and sleep/resume with Driver Verifier. The current
+MTU and ten-MTU input queue remain unchanged; larger buffers would conceal stalls
+and do not replace those checks.
+
+## How it binds
 
 AirPods advertise an SDP service with UUID `{74ec2172-0bad-4d01-8f77-997b2be0722a}`
 (taken from LibrePods on Linux). Windows enumerates a devnode
@@ -17,6 +113,21 @@ service PDO** — with the Bluetooth stack as its parent I/O target. From there 
 `BthAllocateBrb` + submit `BRB_L2CA_OPEN_CHANNEL` to open PSM `0x1001` outbound.
 No filter driver is needed (unlike PS3/BthPS3), because AirPods advertise the
 service. Architecture reference: MS `bthecho` sample + `nefarius/BthPS3`.
+
+The INF leaves `ProductType` unrestricted so both ordinary Windows 11 and
+Enterprise multi-session can select the model. Multi-session reports product
+type 3; the old workstation-only `NTamd64.10.0.1..16299` excluded it. The x64
+architecture and existing minimum build 16299 are preserved. See Microsoft's
+[TargetOSVersion documentation](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/inf-manufacturer-section).
+
+The native regression test asks SetupAPI to select the real INF for workstation
+and multi-session product types, and rejects older builds and other architectures.
+From an x64 Developer prompt (read-only; no device installation):
+
+```
+cl /nologo /W4 /WX tests/inf_target_test.c /link setupapi.lib
+inf_target_test.exe NTPodsAAP.inf
+```
 
 ## Files
 
@@ -51,45 +162,18 @@ Then generate the catalog from a folder holding `NTPodsAAP.sys` + `.inf`:
 inf2cat /driver:<pkg-dir> /os:10_X64
 ```
 
-## Install (test-signed — requires Test Mode)
+## Install and validation
 
-The driver is not attestation-signed, so Windows must be in test mode. **Advanced
-users only; back up your BitLocker recovery key and make a restore point first.**
+Use `NTPods.msi` or `install.ps1` from a complete generated distribution. The
+central installer sets the intended user's protected registry value before the
+driver is bound, verifies the package, and installs both drivers together. The
+old single-driver `install.ps1` deliberately fails without changing the machine.
+Do not install the upstream `prebuilt/` binaries: they lack this hardening.
 
-The easy path — a compiled package is committed in [`prebuilt/`](prebuilt), so no
-Visual Studio or WDK is needed to install it (only `signtool` from the SDK):
+Initial AirPods hardware checks are recorded in
+[WINDOWS-VALIDATION.md](../../../docs/WINDOWS-VALIDATION.md), including the remaining
+capture and recovery failures. A test package needs a prepared test system; a
+normal release needs Microsoft driver signing and the hardware checks listed above.
 
-```powershell
-.\install.ps1 -PackageDir .\prebuilt      # creates a test cert, signs, trusts, installs
-```
-
-Or the whole stack at once (both drivers + apps) with
-[`../../installer/install.ps1`](../../installer/install.ps1).
-
-Manually, step by step:
-
-```powershell
-# 1. test cert + sign
-$c = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=NTPods Test" -CertStoreLocation Cert:\LocalMachine\My
-signtool sign /fd SHA256 /sha1 $c.Thumbprint NTPodsAAP.sys
-signtool sign /fd SHA256 /sha1 $c.Thumbprint ntpodsaap.cat
-# 2. trust the cert (Trusted Root + Trusted Publishers, LocalMachine)
-# 3. enable test signing, disable Secure Boot in firmware, reboot
-bcdedit /set testsigning on
-# 4. install (binds to the AirPods AAP devnode)
-pnputil /add-driver NTPodsAAP.inf /install
-```
-
-Uninstall: `pnputil /delete-driver NTPodsAAP.inf /uninstall`, then
-`bcdedit /set testsigning off` and re-enable Secure Boot.
-
-## Status
-
-Working and in daily use: the AAP channel opens on hardware and carries battery,
-noise control, ear detection, the hi-res mic uplink and the rest. The channel runs
-in L2CAP **Basic** mode (ERTM is not serialized to the wire by `bthport` for a
-client profile driver — see the comments in `L2cap.c`).
-
-The ATT/GATT channel (PSM `0x001F`, used by the hearing aid) is opened **lazily**,
-on the first `LpAttSend`, not on connect — an idle ATT channel gets torn down by the
-buds after ~30 s and that teardown stalls the AAP channel on the shared ACL.
+The upstream transport uses L2CAP Basic mode. ATT (PSM `0x001F`) opens lazily on the
+first ATT send and closes with AAP on disconnect or handle cleanup.

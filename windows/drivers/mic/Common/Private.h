@@ -123,16 +123,6 @@ typedef struct _CAPTURE_DEVICE_CONTEXT {
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(CAPTURE_DEVICE_CONTEXT, GetCaptureDeviceContext)
 
 //
-// Define RENDER device context.
-//
-typedef struct _RENDER_DEVICE_CONTEXT {
-    ACXCIRCUIT      Circuit;
-    BOOLEAN         FirstTimePrepareHardware;
-} RENDER_DEVICE_CONTEXT, * PRENDER_DEVICE_CONTEXT;
-
-WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(RENDER_DEVICE_CONTEXT, GetRenderDeviceContext)
-
-//
 // Define circuit/stream element context.
 //
 typedef struct _ELEMENT_CONTEXT {
@@ -150,18 +140,6 @@ typedef struct _MUTE_ELEMENT_CONTEXT {
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(MUTE_ELEMENT_CONTEXT, GetMuteElementContext)
 
-//
-// Define circuit/stream element context.
-//
-typedef struct _VOLUME_ELEMENT_CONTEXT {
-    LONG            VolumeLevel[MAX_CHANNELS];
-} VOLUME_ELEMENT_CONTEXT, *PVOLUME_ELEMENT_CONTEXT;
-
-WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(VOLUME_ELEMENT_CONTEXT, GetVolumeElementContext)
-
-#define VOLUME_STEPPING         0x8000
-#define VOLUME_LEVEL_MAXIMUM    0x00000000
-#define VOLUME_LEVEL_MINIMUM    (-96 * 0x10000)
     
 //
 // Define mute timer context.
@@ -229,25 +207,6 @@ typedef struct _PNPEVENT_CONTEXT {
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(PNPEVENT_CONTEXT, GetPnpEventContext)
 
 //
-// Define peakmeter element context.
-//
-typedef struct _PEAKMETER_ELEMENT_CONTEXT {
-    LONG            PeakMeterLevel[MAX_CHANNELS];
-} PEAKMETER_ELEMENT_CONTEXT, * PPEAKMETER_ELEMENT_CONTEXT;
-
-WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(PEAKMETER_ELEMENT_CONTEXT, GetPeakMeterElementContext)
-
-//
-// Define DSP circuit's peakmeter element context.
-//
-typedef struct _DSP_PEAKMETER_ELEMENT_CONTEXT
-{
-    PVOID peakMeter;
-} DSP_PEAKMETER_ELEMENT_CONTEXT, *PDSP_PEAKMETER_ELEMENT_CONTEXT;
-
-WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DSP_PEAKMETER_ELEMENT_CONTEXT, GetDspPeakMeterElementContext)
-
-//
 // Define stream engine context.
 //
 typedef struct _STREAMENGINE_CONTEXT {
@@ -255,10 +214,6 @@ typedef struct _STREAMENGINE_CONTEXT {
 } STREAMENGINE_CONTEXT, * PSTREAMENGINE_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(STREAMENGINE_CONTEXT, GetStreamEngineContext)
-
-#define PEAKMETER_STEPPING_DELTA    0x1000
-#define PEAKMETER_MAXIMUM           LONG_MAX
-#define PEAKMETER_MINIMUM           LONG_MIN
 
 /////////////////////////////////////////////////////////////
 // Codec driver defintions
@@ -284,37 +239,17 @@ WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(CODEC_PIN_CONTEXT, GetCodecPinContext)
 // Codec Capture (microphone) definitions
 //
 
-//
-// Define capture circuit context.
-//
-typedef struct _CODEC_CAPTURE_CIRCUIT_CONTEXT {
-    ACXVOLUME           BoostElement;
-    ACXVOLUME           VolumeElement;
-    ACXKEYWORDSPOTTER   KeywordSpotter;
-} CODEC_CAPTURE_CIRCUIT_CONTEXT, * PCODEC_CAPTURE_CIRCUIT_CONTEXT;
-
-WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(CODEC_CAPTURE_CIRCUIT_CONTEXT, GetCaptureCircuitContext)
-
 typedef enum {
     CodecCaptureHostPin = 0,
     CodecCaptureBridgePin = 1,
     CodecCapturePinCount = 2
 } CODEC_CAPTURE_PINS;
 
-typedef enum {
-    CaptureVolumeIndex = 0,
-    CaptureElementCount = 1
-} CAPTURE_ELEMENTS;
-
 // Capture callbacks.
 
 EVT_ACX_CIRCUIT_CREATE_STREAM       CodecC_EvtCircuitCreateStream;
 EVT_ACX_CIRCUIT_POWER_UP            CodecC_EvtCircuitPowerUp;
 EVT_ACX_CIRCUIT_POWER_DOWN          CodecC_EvtCircuitPowerDown;
-EVT_ACX_VOLUME_ASSIGN_LEVEL         CodecC_EvtVolumeAssignLevelCallback;
-EVT_ACX_VOLUME_RETRIEVE_LEVEL       CodecC_EvtVolumeRetrieveLevelCallback;
-EVT_ACX_VOLUME_ASSIGN_LEVEL         CodecC_EvtBoostAssignLevelCallback;
-EVT_ACX_VOLUME_RETRIEVE_LEVEL       CodecC_EvtBoostRetrieveLevelCallback;
 EVT_ACX_STREAM_GET_CAPTURE_PACKET   CodecC_EvtStreamGetCapturePacket;
 EVT_ACX_PIN_SET_DATAFORMAT          CodecC_EvtAcxPinSetDataFormat;
 EVT_ACX_PIN_RETRIEVE_NAME           CodecC_EvtAcxPinRetrieveName;

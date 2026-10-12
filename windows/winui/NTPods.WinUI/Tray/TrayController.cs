@@ -25,6 +25,7 @@ public sealed class TrayController : IDisposable
     private readonly DaemonClient _client;
     private readonly Action _onOpen;
     private readonly Action _onQuit;
+    private readonly Action? _onBatteries;
 
     // Latest snapshot, so the menu (built on right-click) reflects current state.
     private Snapshot? _lastSnapshot;
@@ -35,15 +36,19 @@ public sealed class TrayController : IDisposable
     private readonly Icon? _baseIcon;
     private Icon? _generatedIcon;
     private IntPtr _generatedHandle;
+    private bool _badgeInitialized;
+    private byte? _badgeLevel;
+    private bool _badgeLight;
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool DestroyIcon(IntPtr hIcon);
 
-    public TrayController(Action onOpen, Action onQuit, DaemonClient client)
+    public TrayController(Action onOpen, Action onQuit, DaemonClient client, Action? onBatteries = null)
     {
         _client = client;
         _onOpen = onOpen;
         _onQuit = onQuit;
+        _onBatteries = onBatteries;
 
         _icon = new TaskbarIcon
         {
@@ -61,9 +66,9 @@ public sealed class TrayController : IDisposable
         try
         {
             var path = Path.Combine(AppContext.BaseDirectory, "Assets", "tray.ico");
-            if (File.Exists(path)) _baseIcon = new Icon(path);
+            _baseIcon = File.Exists(path) ? new Icon(path) : (Icon)SystemIcons.Application.Clone();
         }
-        catch { _baseIcon = null; }
+        catch { _baseIcon = (Icon)SystemIcons.Application.Clone(); }
     }
 
     public void Show() => _icon.ForceCreate();
@@ -74,7 +79,7 @@ public sealed class TrayController : IDisposable
         try
         {
             try { _menuWindow?.Close(); } catch { }
-            var menu = new TrayMenuWindow(_client, _onOpen, _onQuit);
+            var menu = new TrayMenuWindow(_client, _onOpen, _onQuit, _onBatteries);
             _menuWindow = menu;
             menu.Closed += (_, _) => { if (ReferenceEquals(_menuWindow, menu)) _menuWindow = null; };
             menu.ShowAt(_lastSnapshot ?? new Snapshot());
@@ -87,37 +92,28 @@ public sealed class TrayController : IDisposable
     public void UpdateSnapshot(Snapshot s)
     {
         _lastSnapshot = s;
+        _menuWindow?.UpdateSnapshot(s);
 
         var name = string.IsNullOrWhiteSpace(s.DevName) ? "NTPods" : s.DevName;
-        var left = Present(s.Battery.Left);
-        var right = Present(s.Battery.Right);
-        var @case = Present(s.Battery.Case);
-
-        string tip;
-        if (!s.Connected)
-        {
-            tip = $"{name} — {Localize.Get("Status_Disconnected")}";
-        }
-        else
-        {
-            var parts = new List<string>();
-            if (left is byte l) parts.Add($"L {l}%");
-            if (right is byte r) parts.Add($"R {r}%");
-            if (@case is byte c) parts.Add($"{Localize.Get("Tray_CaseShort")} {c}%");
-            tip = parts.Count > 0 ? $"{name} — {string.Join("  ", parts)}" : $"{name} — {Localize.Get("Status_Connected")}";
-            if (AncName(s.Anc) is string mode) tip += $"  ·  {mode}";
-        }
+        bool live = BatteryPresentation.IsLive(s);
+        string statusKey = BatteryPresentation.StatusKey(s);
+        string status = Localize.Get(statusKey);
+        if (!live && BatteryPresentation.HasData(s)) status += " · " + Localize.Get("Battery.LastKnown");
+        else if (BatteryPresentation.IsCharging(s) && statusKey != "Battery.NearbyCharging")
+            status += " · " + Localize.Get("Battery_Charging");
+        var parts = new List<string>();
+        foreach (var (part, label) in new[] { (BatteryPart.Left, Localize.Get("Battery_LeftShort")),
+            (BatteryPart.Right, Localize.Get("Battery_RightShort")), (BatteryPart.Headphone, ""), (BatteryPart.Case, Localize.Get("Tray_CaseShort")) })
+            if (BatteryPresentation.ReadingText(s, part, label) is { Length: > 0 } text) parts.Add(text);
+        string tip = $"{status}\n{Clip(name, 40)}";
+        if (parts.Count > 0) tip += "\n" + string.Join("  ", parts);
+        if (s.Connected && !s.LinkStale && AncName(s.Anc) is string mode) tip += " · " + mode;
         // Win32 NOTIFYICONDATA tooltip caps at 127 chars.
-        _icon.ToolTipText = tip.Length > 127 ? tip[..127] : tip;
+        _icon.ToolTipText = Clip(tip, 127);
 
         // Icon badge: lower present bud (min of L/R), else plain icon.
-        UpdateIconBadge(LowerBud(left, right));
+        UpdateIconBadge(BatteryPresentation.LiveEarbudReading(s));
     }
-
-    /// A battery reading is "present" only when it's a real 0..100 value; the
-    /// daemon uses 0xFF (255) as an absent sentinel.
-    private static byte? Present(byte? value) =>
-        value is byte v and <= 100 ? v : null;
 
     /// The localized noise-control mode name for anc 1..4, or null if unknown.
     private static string? AncName(byte anc) => anc switch
@@ -129,42 +125,60 @@ public sealed class TrayController : IDisposable
         _ => null,
     };
 
-    private static byte? LowerBud(byte? left, byte? right)
-    {
-        if (left is byte l && right is byte r) return Math.Min(l, r);
-        return left ?? right;
-    }
-
     private void UpdateIconBadge(byte? level)
     {
+        bool light = level is not null && LightTaskbar();
+        if (_badgeInitialized && _badgeLevel == level && _badgeLight == light) return;
         if (level is not byte v)
         {
-            if (_baseIcon is not null) SetIcon(_baseIcon, IntPtr.Zero);
+            if (_baseIcon is not null && SetIcon(_baseIcon, IntPtr.Zero)) RememberBadge(null, light);
             return;
         }
 
         try
         {
-            var (icon, handle) = RenderNumberIcon(v.ToString(), LightTaskbar());
-            SetIcon(icon, handle);
+            var (icon, handle) = RenderNumberIcon(v.ToString(), light);
+            if (SetIcon(icon, handle)) RememberBadge(level, light);
         }
         catch
         {
+            _badgeInitialized = false;
             if (_baseIcon is not null) SetIcon(_baseIcon, IntPtr.Zero);
         }
     }
 
+    private static string Clip(string value, int limit)
+    {
+        if (value.Length <= limit) return value;
+        int length = limit - 1;
+        if (char.IsHighSurrogate(value[length - 1])) length--;
+        return value[..length] + "…";
+    }
+
+    private void RememberBadge(byte? level, bool light)
+    {
+        _badgeInitialized = true;
+        _badgeLevel = level;
+        _badgeLight = light;
+    }
+
     /// Assign a new tray icon and release the previously generated one (never the
     /// persistent base icon, which is passed with a zero handle).
-    private void SetIcon(Icon icon, IntPtr generatedHandle)
+    private bool SetIcon(Icon icon, IntPtr generatedHandle)
     {
-        try { _icon.Icon = icon; } catch { }
+        try { _icon.Icon = icon; }
+        catch
+        {
+            if (generatedHandle != IntPtr.Zero) { icon.Dispose(); DestroyIcon(generatedHandle); }
+            return false;
+        }
 
         _generatedIcon?.Dispose();
         if (_generatedHandle != IntPtr.Zero) DestroyIcon(_generatedHandle);
 
         _generatedIcon = generatedHandle == IntPtr.Zero ? null : icon;
         _generatedHandle = generatedHandle;
+        return true;
     }
 
     /// Draw the battery number as LARGE as it fits, centred on a 64px transparent
@@ -218,13 +232,6 @@ public sealed class TrayController : IDisposable
         {
             return false;
         }
-    }
-
-    /// Show a tray balloon for a daemon overlay event.
-    public void ShowBalloon(string title, string body)
-    {
-        try { _icon.ShowNotification(title, body); }
-        catch { }
     }
 
     public void Dispose()
