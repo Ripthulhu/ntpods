@@ -74,23 +74,12 @@ pub fn toggle_mute() {
 /// True if any app is actively rendering audio on the default output — the
 /// broad "is this host playing something" test.
 ///
-/// `media::is_playing()` only sees apps that register a System Media Transport
-/// Controls session: browsers, Spotify, media players. Teams, Zoom, Discord,
-/// games and most VoIP clients never do, so they read as silence there. This
-/// asks Core Audio directly instead: enumerate the render sessions on the
-/// endpoint and look for one in the Active state.
+/// Core Audio also detects playback from apps without an SMTC session, such as
+/// calls and games. Skip `IsSystemSoundsSession` so notification sounds do not
+/// claim the audio route from another host.
 ///
-/// **The system-sounds session is skipped on purpose.** That is Apple's tier 3
-/// ("Background Audio / System Sounds - ignored unless manually triggered"), and
-/// Core Audio hands us exactly that distinction via
-/// `IAudioSessionControl2::IsSystemSoundsSession`. A Windows notification chime
-/// must not count as "this host owns the audio", or we would fight the phone
-/// over a ding of our own.
-///
-/// Note this deliberately reads the *default* endpoint, not the AirPods
-/// specifically: once the buds drop, Windows moves those sessions to the
-/// fallback device, and "something of ours is still playing" is what we need to
-/// know. Returns false on any COM failure — never claim ownership on a guess.
+/// Read the default endpoint because Windows moves playback there when the
+/// AirPods disconnect. Return false on COM failure.
 pub fn any_render_active() -> bool {
     unsafe {
         let Ok(enumerator) =

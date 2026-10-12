@@ -1,27 +1,27 @@
 # NTPods — Windows docs
 
-Notes for the Windows port: the drivers, the daemon, and the reverse-engineering
-that each feature needed.
+Windows driver, daemon and protocol notes.
 
 - **[`daemon-ipc/PLAN.md`](daemon-ipc/PLAN.md)** — the daemon + named-pipe IPC
-  design: why `ntpodsd` owns the drivers and the UIs are thin clients.
+  migration history and named-pipe design.
 - **[`hires-mic/PLAN.md`](hires-mic/PLAN.md)** — the hi-res AirPods microphone:
-  the AAP uplink protocol, AAC-ELD decoding, and the virtual audio driver.
+  implementation history, AAC-ELD decoding and virtual audio driver checks.
 - **[`heart-rate.md`](heart-rate.md)** — heart-rate monitoring: why it needed the
   AAP channel's MTU raised to 1691, what the daemon sends and decodes, and what was
-  ruled out on the way.
+  ruled out during testing.
 - **[`aap-packet-discovery.md`](aap-packet-discovery.md)** — how to capture
-  ground-truth AAP traffic on macOS/iOS to confirm or discover packets.
+  AAP traffic on macOS/iOS to confirm or discover packets.
 
 Setup and usage live in the **[Windows README](../README.md)**; the drivers have
 their own notes in [`../drivers/aap`](../drivers/aap) and
-the two mic drivers, [`../drivers/mic`](../drivers/mic) (ACX, Windows 11 22H2+)
-and [`../drivers/mic-portcls`](../drivers/mic-portcls) (PortCls, Windows 10 2004+).
+[`../drivers/mic`](../drivers/mic) (ACX, Windows 11 22H2+). The older
+[`../drivers/mic-portcls`](../drivers/mic-portcls) source is retained for reference
+and is not supported by this build.
 
 ## Other platforms
-- **Linux** — [`linux/README.md`](../../linux/README.md) (BlueZ/PipeWire, no
-  port-specific driver needed).
-- **Android** — the repo-root [README](../../README.md) and the app sources.
+
+Linux and Android development is in the upstream
+[LibrePods repository](https://github.com/librepods-org/librepods).
 
 ## Protocol (OS-agnostic)
 AAP/AACP notes apply to every platform:

@@ -21,6 +21,6 @@ playback, and sustained capture, latency/drift and broader hardware testing rema
 incomplete. Read the [validation record](https://github.com/Ripthulhu/ntpods/blob/codex/windows-airpods-hardening/docs/WINDOWS-VALIDATION.md)
 before testing.
 
-The ACX microphone driver's licensing issue remains unresolved. Publishing a build
-does not resolve it. Retain all bundled licenses and notices; see
+The ACX microphone driver's licensing issue remains unresolved. Retain all bundled
+licenses and notices; see
 [THIRD_PARTY.md](https://github.com/Ripthulhu/ntpods/blob/codex/windows-airpods-hardening/THIRD_PARTY.md).

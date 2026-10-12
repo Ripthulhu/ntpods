@@ -1,23 +1,16 @@
-//! One-shot GATT service/characteristic discovery over the ATT (PSM 0x001F) client
-//! channel — an experiment to find a heart-rate characteristic the AirPods might
-//! expose. We only ever touched the hearing-aid handle 0x2A; this walks the buds'
-//! whole GATT server as a *client* (the role bthport allows on the reserved PSM) and
-//! returns human-readable lines for the caller to log. Read-only: it discovers, it
-//! does not subscribe.
+//! Experimental GATT discovery over the ATT client channel (PSM 0x001F).
+//! Scan the AirPods' server for characteristics beyond the hearing-aid handle
+//! 0x2A and return diagnostic lines. Discovery does not subscribe to notifications.
 
 use crate::driver::Driver;
 use std::thread;
 use std::time::Duration;
 
-// ATT round-trip timeout (ms). The driver handle is shared with the AAP receive
-// loop, so keep it short-ish.
+// Limit ATT round trips because the driver handle is shared with the AAP receiver.
 const T: u32 = 1200;
 
-// Hearing-assist enable — the AirPods' GATT/ATT server is DORMANT until this is
-// sent (an outbound ATT open just fails otherwise). We send only the two enable
-// control commands (0x2C on + 0x33 on) and DELIBERATELY skip the Transparency
-// switch the hearing-aid path uses, so probing doesn't disturb the user's noise
-// control. If the ATT server won't wake without it, add it back + restore ANC after.
+// Wake the ATT server with 0x2C and 0x33. Skip the hearing-aid path's Transparency
+// switch so discovery preserves the listening mode.
 const HA_ON_2C: [u8; 11] = [
     0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x2C, 0x01, 0x01, 0x00, 0x00,
 ];
@@ -39,9 +32,7 @@ const OP_ERROR_RSP: u8 = 0x01;
 const OP_READ_BY_TYPE_RSP: u8 = 0x09;
 const OP_READ_BY_GROUP_TYPE_RSP: u8 = 0x11;
 
-/// One ATT request/response, dumping the raw reply hex so we can read whatever the
-/// buds actually return (their discovery replies didn't match the spec opcodes, so
-/// parse-by-opcode is unreliable — dump and interpret by eye).
+/// Log the raw ATT response because observed discovery replies used unexpected opcodes.
 fn round(drv: &Driver, label: &str, pdu: &[u8], out: &mut Vec<String>, buf: &mut [u8]) -> usize {
     if drv.att_send(pdu).is_err() {
         out.push(format!("gatt-probe: {label}: att_send FAILED"));

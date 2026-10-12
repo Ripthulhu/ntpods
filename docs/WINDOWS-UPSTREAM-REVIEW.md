@@ -2,8 +2,7 @@
 
 Reviewed 2026-10-11 against `WINDOWS-FEATURES.md`. The source check covered the
 current upstream branches, the most-starred forks, and active branches with
-Windows, heart-rate or device-discovery work. No hardware validation is implied
-by this inventory.
+Windows, heart-rate or device-discovery work. These were source checks only.
 
 ## Pinned sources
 
@@ -16,8 +15,8 @@ were inspected, not a quality rating.
 | [Upstream main](https://github.com/librepods-org/librepods/tree/efccc4499b2c1fd2ac243e975ae1f42d8e828ffd) | `efccc449` | Linux Qt and Rust implementations; Linux audio/session APIs need Windows equivalents. |
 | [hexarch, 29 stars](https://github.com/hexarch/librepods/tree/f3b1db25136af7e884e7f41580d5644338449d17) | `f3b1db25` | Older tree from December 2025; no newer Windows transport found. |
 | [beidaoc, 17 stars](https://github.com/beidaoc/librepods/tree/2aad9c3c5c7dd20e97cc9c1673b19b5373fb9bdf) | `2aad9c3c` | Xiaomi hooks, Android spatializer, Keep heart-rate bridge and routing work. OS hooks are not Windows implementations. |
-| [Tblob18 Windows fork, 15 stars](https://github.com/Tblob18/librepods-windows/tree/a439cadb517f6973b5d57dd2e0d3fbfdde16fe97) | `a439cadb` | Qt Windows port; `windows/main.cpp` still opens `QBluetoothSocket(L2capProtocol)`. No replacement for our working Windows AACP driver found. |
-| [Chrisbattarbee, 13 stars](https://github.com/Chrisbattarbee/librepods/tree/9b34fdcad7a9d1a345c7f39595850116b777edb4) | `9b34fdca` | Concrete Linux Rust stem-event dispatch and rearm fix. |
+| [Tblob18 Windows fork, 15 stars](https://github.com/Tblob18/librepods-windows/tree/a439cadb517f6973b5d57dd2e0d3fbfdde16fe97) | `a439cadb` | Qt Windows port; `windows/main.cpp` still opens `QBluetoothSocket(L2capProtocol)`. No replacement for the NTPods Windows AACP driver found. |
+| [Chrisbattarbee, 13 stars](https://github.com/Chrisbattarbee/librepods/tree/9b34fdcad7a9d1a345c7f39595850116b777edb4) | `9b34fdca` | Linux Rust stem-event dispatch and rearm fix. |
 | [yicareful Chinese fork, 13 stars](https://github.com/yicareful/librepods_Chinese/tree/9c556558e2531a427b2af4e2d470a770fa5c8025) | `9c556558` | Android fork; no Windows transport or audio implementation to import. |
 | [arctumn Windows native, 10-star parent](https://github.com/arctumn/librepods/tree/eb002807795f9abebffddf296b0e8d9a8d201111) | `eb002807` | Windows predecessor to NTPods. |
 | [arctumn heart-rate MTU branch](https://github.com/arctumn/librepods/tree/eda9eae99233c98b61577ec1e9b7cbb23958417b) | `eda9eae9` | Inbound MTU 1691, HR packet parsing and history. NTPods already carries this work. |
@@ -68,8 +67,8 @@ were inspected, not a quality rating.
    [NearbyAirPodsFinder.kt](https://github.com/thibaup/librepods/blob/3f4f9391ebb4fd1cef645e081052854a967ff969/android/app/src/main/java/me/kavishdevar/librepods/finder/NearbyAirPodsFinder.kt)
    consumes identity-verified BLE scans only while explicitly active. A Windows
    port could show signal getting stronger or weaker using the existing BLE
-   watcher. It must preserve our no-scanning-during-audio policy, distinguish lost
-   signal from proximity, and avoid claiming precise distance. This is separate
+   watcher. At the review date, scanning paused during audio; a proximity view
+   would need to respect that policy and distinguish signal loss from distance. This is separate
    from cloud Find My, case ringing and Ultra Wideband navigation.
 
 ## Existing coverage and unresolved gaps

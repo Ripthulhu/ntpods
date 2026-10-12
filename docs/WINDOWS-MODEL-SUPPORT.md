@@ -1,8 +1,8 @@
 # Device model support on Windows
 
 The shared [model catalog](../windows/device-models.json) defines which controls
-NTPods can offer. Rust and WinUI read the same file. A catalog entry is an
-implementation policy; it does not mean that model has passed hardware testing.
+NTPods can offer. Rust and WinUI read the same file. Listed models have not all
+been tested on hardware.
 The recorded Windows hardware checks used AirPods Pro 3, firmware 9A348, and an
 Intel AX200. First-generation Pro A2084 has also passed connection, battery,
 listening-mode and automatic-pause checks on that adapter. Additional checks are
@@ -70,8 +70,8 @@ accepted movement samples, so its movement support remains unresolved. One
 protocol difference to investigate is the rewrite's AACP 1.3 initialization;
 NTPods starts its ordinary control session with 1.2. Max 2 also needs sensor
 descriptor discovery: another Windows implementation found its motion stream on
-advertised service 6. Do not claim that a model's motion hardware proves its
-NTPods graph works. NTPods does not provide head-tracked spatial playback.
+advertised service 6. Motion hardware alone does not establish NTPods graph
+support. NTPods does not provide head-tracked spatial playback.
 
 Firmware gates accept public build strings and legacy dotted versions. Metadata
 also decodes release-only packed values such as `6619472` to `6F21`; that layout

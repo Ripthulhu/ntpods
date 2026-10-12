@@ -1,9 +1,9 @@
 <#
     startup.ps1 - make a NTPods Windows app launch at user login (or remove it).
 
-    Per-user, NO admin needed. Copies the exe to a stable location
-    (%LOCALAPPDATA%\NTPods) and drops a shortcut in the Startup folder, so it
-    survives even if the WSL build target is cleaned.
+    Creates a per-user Startup shortcut without administrator access. The
+    executable must already exist at the supplied path; this does not copy it.
+    Installed builds use the app's "Start with Windows" setting instead.
 
     Install (default = the WinUI app):
         .\startup.ps1

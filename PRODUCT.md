@@ -8,22 +8,22 @@ Native Windows desktop (WinUI 3).
 
 ## Users and purpose
 
-NTPods gives Windows users access to AirPods controls, battery information and a virtual microphone while retaining stereo playback. Initial hardware validation uses Windows 11, an Intel AX200 and AirPods Pro 3.
+NTPods provides AirPods controls, battery levels and a microphone for Windows while keeping playback in stereo. Hardware testing uses Windows 11, an Intel AX200 and AirPods Pro 3; first-generation AirPods Pro have also been tested for core controls.
 
 ## Capabilities and constraints
 
-Keep the existing Rust daemon, driver interfaces and WinUI behavior. Device-reported settings, pending writes, missing capabilities and errors remain distinguishable through state, control availability and accessible help. Keep routine status copy out of the main layout. Active microphone use, recovery and actionable errors remain visible. Hardware support and production signing are separate from interface quality.
+Keep the Rust daemon, driver interfaces and WinUI behavior. Track confirmed settings, pending changes, unsupported features and errors separately. Use control availability and accessible help for routine status. Keep active microphone use, recovery and actionable errors visible.
 
-The existing Alternative A2DP playback driver must remain intact. This redesign does not alter Bluetooth, microphone streaming, startup registration or device settings.
+Preserve existing A2DP playback drivers and codec settings, including Alternative A2DP. Visual changes must not alter Bluetooth connections, microphone streaming, startup registration or device settings.
 
-## Brand commitments
+## Appearance
 
-The user requested LibrePods' Android rewrite with Apple appearance, adapted to NTPods. They chose one focused settings page and direct implementation from that reference. Keep the NTPods name and existing device artwork. Use native Windows keyboard, focus and accessibility behavior.
+Use LibrePods' Android rewrite with Apple appearance as the reference: one centered settings page, existing device artwork and grouped controls. Keep the NTPods name and native Windows keyboard, focus and accessibility behavior.
 
 ## Operating context
 
-Users open the app to check their earbuds or change a setting, then return to listening. Support light, dark and system appearance. Retain app settings and all existing feature controls; use progressive disclosure for less frequent adjustments.
+Users open the app to check their earbuds or change a setting, then return to listening. Support light, dark and system appearance. Put less-used settings in expandable groups.
 
-## Evidence on hand
+## Reference
 
-The LibrePods rewrite reference is commit `34076c85f0fc2eaf32ad1d5cad1bb7315df9c89c`. Existing device state and controls are available through the shared Rust/C# IPC contract. Visual QA must not send settings changes to the earbuds.
+The LibrePods rewrite reference is commit `34076c85f0fc2eaf32ad1d5cad1bb7315df9c89c`. Device state and commands use the shared Rust/C# IPC contract. Visual tests must not send settings changes to the earbuds.

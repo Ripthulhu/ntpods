@@ -23,16 +23,9 @@ pub const STOP_AUDIO: [u8; 12] = [
 
 // ---- AirPods Pro 3 RTBuddy heart-rate (PR #702) ----
 //
-// Enable = the AACP 1.3 init handshake (the four CONNECT/CAPABILITIES packets,
-// sent RAW via the driver like `sendPacket` on Android) then a `sensor_stream`
-// frame for the heart-rate stream. The init packets carry the `04 00 04 00`
-// header inline; `sensor_stream` bakes it in too, so every constant here is a
-// ready-to-send driver packet.
-//
-// The init packets are **unrefuted rather than confirmed**: every iOS capture
-// so far began with the AACP session already established, so they were never
-// seen on the wire. They are kept because the Android implementation sends them
-// and nothing contradicts that.
+// Start with the four raw CONNECT/CAPABILITIES packets from Android's AACP 1.3
+// handshake, then enable the sensor stream. Each packet includes its header.
+// The available iOS captures start after session setup and do not verify this handshake.
 
 /// AACP 1.3 init, service 0 — CONNECT (raw `sendPacket`).
 pub const HR_CONNECT_SERVICE_0: [u8; 16] = [
@@ -47,61 +40,41 @@ pub const HR_CONNECT_SERVICE_4: [u8; 16] = [
 /// AACP 1.3 init, service 4 — CAPABILITIES (raw `sendPacket`).
 pub const HR_CAPABILITIES_SERVICE_4: [u8; 7] = [0x04, 0x00, 0x04, 0x00, 0x01, 0x00, 0x00];
 
-/// HRM_STATE control command (id 0x30), value 0x01 = on — the switch that powers
-/// the PPG measurement engine.
-///
-/// The enable step the working Android client (upstream PR #702, produces real BPM
-/// on AirPods Pro 3) sends: `sendControlCommand(HRM_STATE=0x30, true)` right after the
-/// AACP 1.3 session init and before the stream start. iOS reaches the engine by another
-/// (hidden) path, so the iOS PacketLogger captures never showed 0x30; the Android path
-/// is the reproducible one. NOTE: sending this makes our enable byte-match Android, but
-/// on the A3063 test unit the AirPods still ACK service 19 and emit no data frames — so
-/// it is necessary but, standalone, not sufficient here (see hr_retry_campaign).
+/// Enable the PPG engine: HRM_STATE (0x30), value 0x01. Android PR #702 sends this
+/// after AACP setup and before stream start. Available iOS captures omit this command.
+/// The A3063 test unit acknowledged service 19 without data after this command alone;
+/// see `hr_retry_campaign` for the rest of the enable sequence.
 pub const HR_ENABLE: [u8; 11] = [
     0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x30, 0x01, 0x00, 0x00, 0x00,
 ];
 
 // ---- Sensor stream control ----
 //
-// Streams are started and stopped with the `0x17` … `42 0B` frame family that
-// `AAP Definitions.md` already documents for Head Tracking. The frame carries a
-// stream id and a sampling period in microseconds; **a period of zero stops the
-// stream**. Verified against four captures — see `AAP Definitions.md` →
-// "Starting and Stopping Sensor Streams" for the alignment.
-//
-// There are **two forms** of this frame, and mixing them produces a packet that
-// appears in no capture. Across 24 observed control frames the correlation is
-// exact, with no exceptions:
+// The `0x17` ... `42 0B` sensor frame carries a stream id and a period in
+// microseconds; zero stops the stream. See `AAP Definitions.md`, "Starting and
+// Stopping Sensor Streams", for alignment verified against four captures.
+// Across 24 observed control frames, two forms occur:
 //
 //   form A — no `10 02` after the sequence, bare stream id (0x10, 0x12, 0x13)
 //   form B — `10 02` after the sequence, stream id with bit 0x40 set (0x50, 0x52, 0x53)
 //
-// The payload length is not a constant: it is the real byte count, so it moves
-// with both the form and the width of the sequence varint (0x10 for form A with a
-// two-byte varint, 0x11 / 0x12 for form B).
+// Payload length depends on the form and sequence varint width: 0x10 for form A
+// with a two-byte varint, or 0x11 / 0x12 for form B.
 //
-// A session captured from the connection onwards uses **form A** to start heart
-// rate:
+// A capture starting at connection uses form A for heart rate:
 //
 //   t=364.35  ->  08 13 ... period 1000000     heart rate at 1 Hz
 //   t=365.92  <-  first type-19 frame          (+1.57 s)
 //
-// Captures that begin mid-session show only form B, which is where an earlier
-// revision here got 0x53 and the `10 02` field from. That revision also fixed the
-// length at 17, which is only right for form B with a one-byte varint. This is
-// form A, matching both the fresh-session capture and the original constant.
-//
-// The Windows symptom that prompted the recheck fits: raw PPG came up but heart
-// rate never did, on a daemon sending form B into a freshly established session.
+// Mid-session captures show only form B. Use form A for a fresh session;
+// sending form B there produced motion data without heart-rate readings.
 
 /// Stream id for heart rate — data type 19.
 pub const STREAM_HEART_RATE: u8 = 0x54; // HEARTRATE_COMMAND — newer firmware (version3 first digit >= 8)
 pub const STREAM_HEART_RATE_LEGACY: u8 = 0x13; // HEARTRATE — older firmware
-/// Stream id for 6-axis device motion — data type 16 (DEVMOTION6). This was
-/// mislabelled "raw PPG": the RTBuddy schema's ServiceType enum is 16=DEVMOTION6,
-/// 19=HEARTRATE. It is motion, unrelated to heart rate (Android never sends it),
-/// so it is NOT part of the HR enable. LibrePods uses it for head tracking on
-/// firmware 8 and newer; the motion decoder lives in head_tracking.rs.
+/// RTBuddy 6-axis motion (DEVMOTION6), separate from heart rate (HEARTRATE=19).
+/// LibrePods uses it for head tracking on firmware 8 and newer;
+/// `head_tracking.rs` decodes it.
 pub const STREAM_DEVMOTION6: u8 = 0x10;
 /// Stream id 14 is the ACTIVITY classifier on current firmware. LibrePods also
 /// uses this service for 58-byte head-tracking records on firmware older than 8;
@@ -115,11 +88,8 @@ pub const PERIOD_PPG_US: u32 = 20_000;
 
 /// Build a sensor stream control frame, ready to send via the driver.
 ///
-/// `seq` is the sequence number the phone increments per control frame. It is
-/// encoded as a **two-byte varint**, which is what both the captures and the
-/// original constant here used, and what makes the payload length come out at
-/// 16 — so pass a value that stays inside 14 bits and just count up. Whether the
-/// AirPods validate it is untested.
+/// `seq` increments per frame and uses a two-byte varint, giving a 16-byte payload.
+/// Keep it within 14 bits. Whether the AirPods validate the sequence is untested.
 ///
 /// Pass `period_us = 0` to stop the stream.
 ///
@@ -145,15 +115,11 @@ pub fn sensor_stream(seq: u16, stream_id: u8, period_us: u32) -> [u8; 28] {
     ]
 }
 
-/// Kavish's confirmed-working heart-rate START frame (from the LibrePods maintainer, Discord
-/// 2026-08-13: "this is what finally worked for me"). On newer AirPods Pro 3 firmware
-/// the HR service id MOVED: it's now **84 (0x54)**, not 19 (0x13) — and the top-level
-/// message carries an extra field-2=2 vs the generic `sensor_stream`. 1 Hz (period
-/// 1 000 000 µs, the last 4 bytes = UINT32 LE). `seq` is a plain request counter (its
-/// value is irrelevant); keep it < 128 so it stays a single-byte varint like his.
-/// The maintainer's `setSensorServiceReportInterval` frame — sets a sensor service's
-/// report interval (START = 1 Hz / period 1e6 µs, STOP = period 0). `service` is
-/// HEARTRATE_COMMAND (84) or HEARTRATE (19) per firmware. Matches his
+/// `setSensorServiceReportInterval` from LibrePods maintainer Kavish's working
+/// frame (Discord, 2026-08-13). Newer Pro 3 firmware uses HEARTRATE_COMMAND (84);
+/// older firmware uses HEARTRATE (19). It adds top-level field 2=2 to `sensor_stream`.
+/// `seq` is a 7-bit request counter. A period of 1,000,000 µs starts 1 Hz
+/// reporting; zero stops it. The period is a little-endian UINT32 in:
 /// `SensorDataWX{ ServiceSettings{ service, setting=2, config=0x01+interval_µs_LE } }`.
 pub fn hr_stream(seq: u8, service: u8, period_us: u32) -> [u8; 29] {
     let p = period_us.to_le_bytes();
@@ -191,10 +157,9 @@ pub fn hr_stream(seq: u8, service: u8, period_us: u32) -> [u8; 29] {
 }
 
 /// SensorDataWX `request_all_descriptors` (protobuf field 4, `22 00` = empty
-/// message) on the Sensor Data WX service. A *named discovery call* from the
-/// RTBuddy schema (pabloaul/apple-wireshark): iOS sends it twice at session open —
-/// once without `log_type`, once with `log_type=2` — before any stream. The daemon
-/// never sent these. Two-byte varint seq → length field 5 (no log_type) or 7.
+/// message) on the Sensor Data WX service, from pabloaul/apple-wireshark's schema.
+/// iOS sends it twice before streaming: without `log_type`, then with `log_type=2`.
+/// A two-byte sequence varint gives a payload length of 5 or 7, respectively.
 pub fn request_all_descriptors(seq: u16, log_type: bool) -> Vec<u8> {
     let s0 = 0x80 | (seq & 0x7F) as u8;
     let s1 = ((seq >> 7) & 0x7F) as u8;
@@ -211,14 +176,12 @@ pub fn request_all_descriptors(seq: u16, log_type: bool) -> Vec<u8> {
     f
 }
 
-/// Parse the `0x2E` **Connected Devices** packet: the list of hosts the AirPods
+/// Parse the `0x2E` Connected Devices packet: the list of hosts the AirPods
 /// are currently connected to. Returns each device's 48-bit address.
 ///
-/// This is the multipoint ground truth, and the only party that has it is the
-/// buds themselves — measured 2026-08-31, during a Teams call the AirPods moved
-/// the audio to the phone while the Windows endpoint, the Bluetooth link and our
-/// AAP channel all still reported healthy. `0x2E` announced the phone **3.2
-/// seconds before** Windows noticed anything.
+/// During a Teams handoff captured on 2026-08-31, this packet reported the phone
+/// 3.2 seconds before Windows detected the change. The endpoint and AAP channel
+/// still reported connected while the phone had the audio.
 ///
 /// Layout, from two captures (one device, then two):
 ///
@@ -231,14 +194,10 @@ pub fn request_all_descriptors(seq: u16, log_type: bool) -> Vec<u8> {
 /// ```
 ///
 /// Each entry is 8 bytes: a 6-byte address then 2 bytes of per-device flags
-/// (this host showed `02 06`, the phone `01 00`). The flags are NOT interpreted
-/// here — two samples is not enough to know what they mean, and the count plus
-/// the addresses already answer the question we care about.
+/// (this host showed `02 06`, the phone `01 00`). The flags remain uninterpreted;
+/// two samples do not establish their meaning.
 ///
-/// The address is **big-endian**, i.e. it reads in the same order as a
-/// `BLUETOOTH_ADDRESS.ullLong`, so the two compare directly. (First written as
-/// little-endian, which produced this machine's radio byte-reversed —
-/// `9c90721dbd20` against the real `20bd1d72909c` — and so never matched.)
+/// Addresses are big-endian and compare directly with `BLUETOOTH_ADDRESS.ullLong`.
 pub fn parse_connected_devices(data: &[u8]) -> Option<Vec<(u64, [u8; 2])>> {
     if data.len() < 9 || data[..4] != HEADER || data[4] != 0x2E {
         return None;
@@ -259,17 +218,9 @@ pub fn parse_connected_devices(data: &[u8]) -> Option<Vec<(u64, [u8; 2])>> {
     Some(out)
 }
 
-/// The two per-device flag bytes of an 0x2E entry are **not** a device class.
-///
-/// A first version of this guessed a device type from them, on one capture where
-/// this PC was `02 06` and a phone `01 00`. More data killed it: over 23 packets
-/// this same PC appeared as `02 06` (15x), `01 06` (4x) and `02 04` (4x). A value
-/// that changes for a fixed device cannot be its class — it looks like connection
-/// or stream state. Until we know what it means, no label is inferred from it: a
-/// wrong "Computer" next to the user's iPhone is worse than an honest "Unknown".
-///
-/// Kept as a formatter so the bytes still reach the log, where more samples can
-/// eventually settle what they are.
+/// Format 0x2E flags for diagnostics; they do not identify a device class.
+/// In 23 packets the same PC reported `02 06` (15x), `01 06` (4x) and `02 04` (4x).
+/// Their meaning remains unknown, so they must not determine the UI device type.
 pub fn flags_hex(flags: [u8; 2]) -> String {
     format!("{:02x} {:02x}", flags[0], flags[1])
 }
@@ -277,17 +228,12 @@ pub fn flags_hex(flags: [u8; 2]) -> String {
 /// Audio-route diagnostics: the opcodes `AAP Definitions.md` names as carrying
 /// routing/stream state, which the daemon does not yet interpret.
 ///
-/// Why they matter (measured 2026-08-31, a Teams call): the AirPods can move the
-/// audio to the phone while the AAP channel keeps flowing, the Bluetooth link
-/// stays connected and the Windows endpoint still reports OK — so *every* signal
-/// the daemon watches today reads healthy and it never notices. The buds are the
-/// only party that knows, and if they announce it at all it is on one of these:
+/// These can expose audio handoffs while Windows still reports a connected endpoint:
 ///
 ///   0x2B Stream State Info · 0x44 Send Smart Routing 2.0 Info
 ///   0x52 Source Context    · 0x2E Connected Devices (carries BT addresses)
 ///
-/// Returns the opcode and a hex dump so a reproduction shows which one fires and
-/// what it says. Once that is known, this becomes the reclaim trigger.
+/// Return the opcode and a bounded hex dump for protocol research.
 pub fn route_diag(data: &[u8]) -> Option<(u8, String)> {
     if data.len() < 6 || data[..4] != HEADER {
         return None;

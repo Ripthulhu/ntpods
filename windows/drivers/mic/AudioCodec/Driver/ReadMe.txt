@@ -2,36 +2,26 @@
     AudioCodec Project Overview
 ========================================================================
 
-This file contains a summary of what you will find in each of the files that make up your project.
+This project builds the NTPods ACX virtual microphone from the Microsoft
+AudioCodec sample. See ../../README.md for the driver contract and build steps.
 
 AudioCodec.vcxproj
-    This is the main project file for projects generated using an Application Wizard.
-    It contains information about the version of the product that generated the file, and
-    information about the platforms, configurations, and project features selected with the
-    Application Wizard.
+    Build configuration, source files and dependencies.
 
 AudioCodec.vcxproj.filters
-    This is the filters file for VC++ projects generated using an Application Wizard.
-    It contains information about the association between the files in your project
-    and the filters. This association is used in the IDE to show grouping of files with
-    similar extensions under a specific node (for e.g. ".cpp" files are associated with the
-    "Source Files" filter).
+    Visual Studio source-file groups.
 
-Driver.cpp & Driver.h
-    DriverEntry and WDFDRIVER related functionality and callbacks. Driver developers should
-    make changes to these files for their specific driver as necessary. 
+Driver.cpp
+    DriverEntry and WDFDRIVER callbacks.
 
-Device.cpp & Device.h
-    WDFDEVICE related functionality and callbacks. Driver developers should make changes to
-    these files for their specific driver as necessary. 
+Device.cpp
+    WDFDEVICE callbacks and capture-device setup.
 
-Trace.h
-    Definitions for WPP tracing.
+../../Common/
+    Capture circuit, PCM bridge, stream engine and shared driver headers.
 
 DriverSettings.h
-    Contains guid definitions and other definitions used by the render and capture circuits
-    for this specific driver. Driver developers should replace these definitions with their
-    own.  
+    Device and circuit GUIDs.
 
 /////////////////////////////////////////////////////////////////////////////
 

@@ -107,16 +107,15 @@ function Test-Admin {
         [Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-# Test-signed drivers only load when the RUNNING boot has test signing on.
-# SystemStartOptions describes the current boot (bcdedit shows the next one), so
-# this also catches "turned it on but didn't reboot yet".
+# SystemStartOptions describes the current boot; bcdedit may describe changes
+# that require a restart. The running boot must have test signing enabled.
 function Test-TestMode {
     $opts = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control').SystemStartOptions
     $opts -match '\bTESTSIGNING\b'
 }
 
-# Secure Boot on means bcdedit refuses `testsigning on`, so it's worth naming when
-# Test Mode is off. $null when it can't be read (legacy BIOS, or not elevated).
+# Secure Boot blocks `testsigning on`. Return $null when its state cannot be read
+# (legacy BIOS or insufficient privileges).
 function Test-SecureBoot {
     try { Confirm-SecureBootUEFI -ErrorAction Stop } catch { $null }
 }
@@ -534,15 +533,10 @@ function Remove-MicDriverPackages {
 }
 
 # ---- elevated on-demand helper tasks -----------------------------------------
-# The daemon runs unelevated and fires these with `schtasks /run`, which runs them
-# elevated WITHOUT a UAC prompt:
-#   • NTPods Fix Driver — recover the AAP devnode from Code 38 without a reboot,
-#     after repeated driver-open failures (daemon/src/devnode.rs). It re-checks
-#     the devnode and no-ops when healthy.
-#   • NTPods Rename Mic — show the mic under the connected device's name; the
-#     daemon writes it to micname.txt first (daemon/src/rename.rs). Idempotent.
-# They run as the user (not SYSTEM) so that user can start them and they see the
-# user's %LOCALAPPDATA%.
+# The unelevated daemon invokes these pre-authorized elevated tasks:
+# - Fix Driver checks and recovers its AAP devnode after repeated open failures.
+# - Rename Mic reads micname.txt and updates the virtual microphone's name.
+# Both run as the installing user, whose LOCALAPPDATA holds micname.txt.
 function Register-NTPodsTasks([string]$scriptDir, [string]$userSid) {
     Assert-UserSid $userSid
     Assert-ProtectedInstallPath $scriptDir

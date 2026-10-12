@@ -56,7 +56,7 @@ public sealed partial class MainWindow : Window
         {
             if (RootGrid is not null) RootGrid.RequestedTheme = theme;
         };
-        // Restore the theme saved on a previous run (it wasn't persisted before).
+        // Apply the saved theme before showing the window.
         if (RootGrid is not null) RootGrid.RequestedTheme = AppSettings.Theme;
         SettingsPageView.InitThemeSelector(AppSettings.ThemeIndex);
 
@@ -219,9 +219,7 @@ public sealed partial class MainWindow : Window
             RenderSnapshot(s);
         });
 
-    // Re-render the last snapshot on a language change so code-picked strings (the
-    // header status, mic state, ANC mode name…) — which are only set when a snapshot
-    // arrives — refresh into the new language instead of lingering in the old one.
+    // Language changes also refresh strings set from the last snapshot.
     private void RenderSnapshot(Snapshot s)
     {
             _connected = s.Connected;

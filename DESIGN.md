@@ -96,7 +96,7 @@ components:
 
 ## Overview
 
-NTPods uses the user-selected LibrePods Apple appearance: a light gray or black page, rounded inset groups, device artwork, green switches and battery rings. The Windows app keeps native text, navigation, keyboard controls and accessibility semantics.
+NTPods follows LibrePods' Apple appearance: a light gray or black page, rounded inset groups, device artwork, green switches and battery rings. Text, navigation, keyboard controls and accessibility use native Windows behavior.
 
 This record covers the main window, device page and app settings. `App.xaml` supplies the shared resources; the page and control XAML files supply the composition. The tray and island popup have separate layouts. All numeric lengths below are WinUI device-independent pixels (DIP), except the explicitly identified window pixel sizes. The portable frontmatter uses `px` to represent those logical lengths. Opaque XAML ARGB colors are written as equivalent CSS RGB hex values.
 

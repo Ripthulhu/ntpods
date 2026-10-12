@@ -1,9 +1,8 @@
 # AirPods microphone protocol and Windows reliability research
 
-Reviewed on 2026-10-11 against the local 0.1.15 source. This is a source review,
-not a hardware test. The recommendations below distinguish implemented behavior,
-author-reported results and assumptions that still need measurements on the
-Intel AX200 / AirPods Pro 3 / 9A348 setup.
+Source review of NTPods 0.1.15 on 2026-10-11. Upstream hardware results are
+author reports. Proposed changes still need testing on Intel AX200 / AirPods
+Pro 3 / 9A348.
 
 ## Sources and revisions
 
@@ -14,15 +13,14 @@ Intel AX200 / AirPods Pro 3 / 9A348 setup.
 | [Android microphone PR 723](https://github.com/librepods-org/librepods/pull/723) | [5afad4dc](https://github.com/IvanChanPing/librepods/tree/5afad4dc4de5016a57c1e521b27d044d2e738047) | Bounded decoder worker and app-scoped PCM. Author explicitly reports compile/unit checks only. |
 | [Linux microphone PR 774](https://github.com/librepods-org/librepods/pull/774) | [96344dae](https://github.com/injkgz/librepods/tree/96344dae683465e4b5ca036b62d1d08c79be9aff) | Independent FDK-AAC/PipeWire implementation; author reports Pro 3 start/stop coexistence. Closed unmerged as a duplicate of 655. |
 | [USBPods two-way fork](https://github.com/han-um/USBPods-Pico2W-2-way-audio-implement/tree/d18d083bc52de3143d8d922c4abaae865cc0dc28) | `d18d083bc52de3143d8d922c4abaae865cc0dc28` | Pico 2 W AACP uplink plus AAC-ELD playback; a different Bluetooth and output-codec path. |
-| [NTPods upstream](https://github.com/arctumn/ntpods/tree/188e45df20259b616ce155be812086259d1a2488) | `188e45df20259b616ce155be812086259d1a2488` | Current upstream remains our original baseline. Local fixes are additional work. |
+| [NTPods upstream](https://github.com/arctumn/ntpods/tree/188e45df20259b616ce155be812086259d1a2488) | `188e45df20259b616ce155be812086259d1a2488` | Baseline used for this fork. |
 | [FFmpeg native AAC implementation](https://github.com/FFmpeg/FFmpeg/blob/n7.1/libavcodec/aac/aacdec.c) | `n7.1` | Decoder frame format, ELD frame length, and flush behavior. |
 
 The most-starred LibrePods fork inventory was refreshed through GitHub's fork
 API. The leaders remain hexarch (29), beidaoc (17), Tblob18 (15), Chrisbattarbee
 (13), and yicareful (13). Their earlier review is in
-[WINDOWS-UPSTREAM-REVIEW.md](WINDOWS-UPSTREAM-REVIEW.md). The microphone-specific
-branches above are more relevant than star count: this review found no newer
-Windows microphone transport in those popular forks.
+[WINDOWS-UPSTREAM-REVIEW.md](WINDOWS-UPSTREAM-REVIEW.md). This review found no
+newer Windows microphone transport in those popular forks.
 
 ## Protocol facts supported by source
 
@@ -48,11 +46,10 @@ nor a complete start/stop acknowledgement contract. Sending a packet successfull
 means the transport accepted it; only subsequent valid PCM demonstrates capture.
 After stop, quiet uplink alone does not demonstrate correct stereo playback.
 
-Our parser is deliberately stricter than these examples: it validates the entire
-SDU before emitting any AU, rejects zero-length units and trailing partial
-records, and checks the known audio header and subtype. Keep that behavior. Upstream demux examples
-can emit the valid prefix before encountering a truncated tail; importing them
-would weaken our trust boundary.
+NTPods validates the entire SDU before emitting any AU, rejects zero-length
+units and trailing partial records, and checks the known audio header and subtype.
+The upstream demux examples can emit a valid prefix before encountering a
+truncated tail.
 
 ## Coding rate, presentation clock and timestamps
 
@@ -67,9 +64,8 @@ approximately 30 ms of audio, or 1,440 output samples.
 
 The source agreement and existing pitch checks support retaining that conversion.
 They do not calibrate the exact device clock, prove every firmware uses it, or
-establish long-run drift. The historical local plan's `+180` timestamp / 24 kHz
-clock explanation is not backed here by a pinned trace. Do not treat that
-statement as an independently verified protocol rule.
+establish long-run drift. The proposed `+180` timestamp / 24 kHz clock
+interpretation has no pinned capture trace and remains unverified.
 
 The 480-sample decoder-output check has a firmer basis than the presentation
 clock: parsing the ASC yields escape marker 31 followed by 7 (`32 + 7 = 39`), frequency index 3,
@@ -113,9 +109,9 @@ AirPods Pro 3 A3064 on Fedora 44, about 130 AUs per second, no decode failures i
 session, A2DP retained across repeated toggle cycles, and no further microphone
 packets after stop. Its code does not perform an A2DP service reset. The report
 also identifies WirePlumber's automatic headset switching as a separate source
-of playback pauses. This is useful evidence that resets are not universal to the
-AirPods protocol, but it does not identify a Windows equivalent or establish
-acoustic channel separation on our machine.
+of playback pauses. This suggests resets are not universal to the AirPods
+protocol. It does not identify a Windows equivalent or establish acoustic
+channel separation on the Windows test setup.
 
 The Pico author's
 [hardware report](https://github.com/librepods-org/librepods/pull/655#issuecomment-4980170555)
@@ -127,11 +123,10 @@ watchdog. It owns the Bluetooth stack and streams AAC-ELD playback itself.
 Replacing Windows' AAC playback path or copying the unbounded watchdog would
 change more than the microphone driver and is not justified by this evidence.
 
-Preserve the local recovery that has passed hardware checks. In particular,
 [WINDOWS-VALIDATION.md](WINDOWS-VALIDATION.md) records that resetting the decoder
 and resampler on ear changes did **not** fix reinsertion static. Packets continued
-and decode errors remained zero. Stopping when both buds are out, recovering
-playback, then starting a fresh stream did restore clean speech in the user's
+and decode errors remained zero. Stopping when both buds were out, recovering
+playback, then starting a fresh stream restored clean speech in the reinsertion
 test. Finite, successfully decoded PCM can still be acoustically wrong.
 
 ## Conversation Awareness during capture
@@ -173,7 +168,7 @@ also distinguishes an inactive interval from a continuously slow producer.
 
 The local receive path already drops an entire invalid SDU, destroys decoder
 history and flushes queued PCM. It also resets after a two-second packet gap.
-The remaining useful changes are small and testable:
+Proposed changes:
 
 1. **Detect missing decoded PCM during an active capture.** At the review
    baseline, `Capturing` has no PCM-progress deadline. Packets can stop, fail
@@ -255,6 +250,4 @@ label cannot establish stereo separation. Keep the existing Alternative A2DP
 driver and the user-selected playback codec configuration throughout these tests.
 
 No reviewed source supplies a verified quieter/faster Windows stop sequence.
-The research supports better failure handling and measurements now; it does not
-support removing the known-working playback recovery or promising lossless,
-zero-latency microphone audio.
+The tested playback recovery remains necessary on this Windows setup.

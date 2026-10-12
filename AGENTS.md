@@ -1,16 +1,18 @@
-# Preserve the approved interface
+# Development
 
-On 2026-10-11, the user explicitly approved the current 0.1.21 preview:
-"The design language and look is great right now." Preserve that design when
-fixing bugs or adding features. A broad restyle needs a user request; routine
-changes should extend the existing components.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) for the code layout, build commands and
+tests. Keep changes within the existing modules where possible. Comments should
+explain constraints and reasons that are not clear from the code.
 
-The user also confirmed that the listening slider in the installed 0.1.21 app is
-smooth. Preserve its glass appearance, input batching and resource reuse.
+# Interface
+
+Preserve the existing LibrePods Apple design when fixing bugs or adding features.
+Extend existing components; a broad restyle requires an explicit request.
+Keep the listening slider's glass appearance, input batching and resource reuse.
 
 Read [DESIGN.md](DESIGN.md) before UI work and inspect the affected controls in
 `windows/winui/NTPods.WinUI`. Reuse the shared styles and theme resources in
-`App.xaml`. The approved interface and the rules below take precedence over
+`App.xaml`. The current interface and the rules below take precedence over
 older design notes if they disagree.
 
 - Keep the LibrePods Apple appearance: one focused, centered settings column,
@@ -43,7 +45,7 @@ older design notes if they disagree.
   `windows/device-models.json` for model names and capabilities in both the
   backend and UI; unknown models must not inherit Pro 3 sensor or microphone support.
   When exact artwork is missing, reuse the closest bundled earbud or headset
-  artwork. The user prefers this to placeholder icons. Artwork reuse must never
+  artwork instead of placeholder icons. Artwork reuse must never
   change the device's reported name or supported controls.
 - Keep motion smooth and interruptible. Use compositor animations or rendering
   callbacks while animating; stop frame work when idle. Preserve the artwork
@@ -57,8 +59,14 @@ older design notes if they disagree.
 
 For visual changes, compare the affected view before and after in its relevant
 states, including light/dark and a narrow window. Check animation interruptions,
-cached data and missing data when they are affected. Fix the requested issue
-without changing surrounding layout or styling for personal preference.
+cached data and missing data when they are affected. Keep unrelated styling unchanged.
+
+# Writing
+
+Use plain, direct language in documentation, UI text and comments. Cut filler,
+repeated disclaimers and explanations of obvious details. Keep technical facts,
+useful warnings and licensing notices. Project instructions should state the
+rules without conversation quotes, approval anecdotes or assistant work logs.
 
 # Before every commit
 

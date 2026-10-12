@@ -1,9 +1,6 @@
-//! Media auto-pause/resume via the Windows System Media Transport Controls
-//! (SMTC) — the same session API every media app registers with. This is how we
-//! pause playback when the AirPods leave your ears (the Apple/MagicPods
-//! behaviour) WITHOUT touching the A2DP profile: Windows manages A2DP itself, so
-//! unlike the Linux build there is no profile to toggle. We simply pause/resume
-//! whatever app currently owns the system media session (Spotify, a browser, …).
+//! Auto-pause through Windows System Media Transport Controls (SMTC).
+//! Ear removal pauses the current media session without changing its A2DP profile.
+//! Resume applies only to the session and pause owned by NTPods.
 
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;

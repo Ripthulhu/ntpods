@@ -69,8 +69,8 @@ them as calibrated angles or implement spatial audio.
 with Microsoft copyright notices in the source. The upstream
 [Windows-driver-samples license](https://github.com/microsoft/Windows-driver-samples/blob/d5569c08aa2818c6240744bb47a00f67f20fdb54/LICENSE)
 is **Microsoft Public License (MS-PL), not MIT**. Its full text is retained in
-`licenses/Microsoft-Public-License.txt`. The upstream revision here pins the
-license evidence; it does not claim to identify NTPods' original sample import.
+`licenses/Microsoft-Public-License.txt`. This revision pins the license text;
+NTPods' original Microsoft sample revision is unknown.
 
 NTPods imported the driver in
 [`48ce5c4f092c7d0138a9d6e810305060cae51218`](https://github.com/arctumn/ntpods/commit/48ce5c4f092c7d0138a9d6e810305060cae51218),
@@ -80,13 +80,11 @@ while the root README and license identify NTPods as GPL-3.0. The Git history
 through `188e45d` contains no driver-specific exception or dual-license grant
 that reconciles those statements with Microsoft's MS-PL terms.
 
-The license status of the combined driver remains unresolved. Adding the
-Microsoft notice does not grant permission to relicense NTPods' contributions.
-Resolution needs the relevant authors' permission or replacement of the affected
-implementation. No such permission has been obtained, and publication of this
-fork's source does not establish it. The maintainer has enabled experimental
-binary publishing with this issue disclosed; that decision does not resolve
-the license conflict or establish redistribution permission.
+The combined driver's licensing remains unresolved. Resolution needs the relevant
+authors' permission or replacement of the affected implementation. No such
+permission has been obtained. The Microsoft notice and publication of this fork's
+source and experimental binaries do not resolve the conflict or establish
+permission to relicense or redistribute the combined driver.
 
 ## FFmpeg
 

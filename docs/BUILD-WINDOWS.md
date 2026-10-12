@@ -10,8 +10,8 @@
 Baseline: `188e45df20259b616ce155be812086259d1a2488`, Windows 11 x64 / ACX only.
 The current source version is `0.1.26`. The installed version is tracked in
 `WINDOWS-VALIDATION.md`.
-Builds do not install or load drivers. Hardware acceptance and Microsoft signing
-remain separate gates. Read `THIRD_PARTY.md` before distributing anything.
+Building does not install or load drivers. Hardware testing and Microsoft signing
+are required before production deployment. See `THIRD_PARTY.md` for licensing issues.
 
 ## Toolchain
 
@@ -118,5 +118,5 @@ restoration leaves the backup in place and reports its location. Recovery that
 requires a Windows restart cannot finish until that restart occurs.
 
 Normal deployment must use Microsoft-signed driver packages verified on a clean
-Secure Boot/Memory Integrity system. The current installer is deliberately a
-test-signing installer and must not be described as a production release.
+Secure Boot/Memory Integrity system. This installer uses test signing and is
+for development only.

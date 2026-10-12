@@ -11,13 +11,9 @@ using Windows.Graphics;
 
 namespace NTPods.WinUI.Popup;
 
-/// A centred, borderless, always-on-top card shown when the AirPods are nearby
-/// (the case is opened) but not connected — the iOS-style "Connect?" prompt with
-/// the device image, name and a Connect button. Unlike the passive connection
-/// island, this one is INTERACTIVE, so it is activatable (a no-activate window
-/// wouldn't route the button click). It self-closes after a timeout, on Connect,
-/// or on dismiss. Every windowing call is guarded so a popup failure never crashes
-/// the app — at worst there is simply no prompt.
+/// Borderless connection prompt for nearby AirPods. The window must activate to
+/// receive button clicks. It closes on timeout, connection or dismissal and
+/// contains windowing failures so they do not terminate the app.
 public sealed class ConnectPromptWindow : Window
 {
     private readonly DispatcherQueueTimer _autoClose;

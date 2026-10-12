@@ -1,41 +1,34 @@
-# AAP Packet Discovery — field guide (macOS / iOS)
+# Capturing AAP packets on macOS and iOS
 
-**Goal:** capture the *ground-truth* AirPods AAP protocol traffic so we stop guessing.
-We reverse-engineer AAP (the AirPods control protocol over classic-Bluetooth
-L2CAP **PSM `0x1001`**) from the Android app and community PRs. macOS talks AAP
-**natively**, so sniffing its Bluetooth traffic shows us the **exact bytes Apple
-sends** — for confirming what we know and discovering what we don't.
+AAP carries AirPods control traffic over classic-Bluetooth L2CAP PSM `0x1001`.
+Captures from Apple devices help verify packet definitions inferred from
+LibrePods and identify unknown commands.
 
-**What this best unblocks**
-1. 🫀 **Heart-rate enable sequence** (the stubborn one — capture on *iOS*, see Part B).
-2. 🔋 **Charging bit** in the battery packet (confirm `0x01`/`0x05`/`0x02`).
-3. ❓ Any **unknown opcodes** not yet in `AAP Definitions.md`.
-
-> This guide lives in the repo on purpose — do the git import on the Mac, open
-> Claude Code there, and point it at this file. Everything below is runnable on
-> the Mac.
+This guide was written for the heart-rate and charging investigations. The
+heart-rate failure was later traced to the channel MTU; see
+[heart-rate.md](heart-rate.md). The capture procedure also applies to other
+controls and status reports.
 
 ---
 
 ## 0. What you need
 
-- **This repo** (git import done ✅).
+- A checkout of this repository.
 - A **Mac** with Bluetooth + your AirPods paired.
 - **PacketLogger** — ships in Apple's *Additional Tools for Xcode*:
   [developer.apple.com/download/all](https://developer.apple.com/download/all/) →
   search **"Additional Tools for Xcode"** → download the DMG → `PacketLogger.app`
   is inside the **Hardware/** folder. (Free Apple ID is enough.)
 - **(HR only)** an **iPhone** + Apple's **Bluetooth logging profile** (Part B).
-- **Optional but handy:** Wireshark/tshark to parse `.pklg` — `brew install wireshark`.
+- **Optional:** Wireshark/tshark to parse `.pklg` — `brew install wireshark`.
 
 ---
 
 ## 1. The method: one action, one diff
 
-The whole trick is **isolation**. Capture with a clean log, do **one** action,
-stop, and see which bytes appeared/changed. That single-action delta *is* the
-opcode for that action. Never toggle three things at once — you won't know which
-bytes belong to which.
+Start a clean capture, perform one action, then inspect the packets that appeared
+or changed. Repeat the action to distinguish its response from unrelated status
+traffic. Changing several controls at once makes attribution harder.
 
 Keep a scratch note like:
 
@@ -68,8 +61,8 @@ Adaptive Volume, features**.
 
 ## 3. Part B — capture iOS ↔ AirPods (the HR sequence)
 
-macOS almost certainly **doesn't** drive heart-rate — the iPhone's Fitness /
-Workout flow does. So HR must be captured on the **iPhone**:
+For the heart-rate investigation, capture an iPhone workout session that uses
+the AirPods sensor:
 
 1. On the iPhone, install Apple's **Bluetooth** logging profile:
    [developer.apple.com/bug-reporting/profiles-and-logs](https://developer.apple.com/bug-reporting/profiles-and-logs/)
@@ -85,7 +78,7 @@ Workout flow does. So HR must be captured on the **iPhone**:
 
 > Alternative: some Xcode/PacketLogger versions can capture a **connected iOS
 > device** directly (`PacketLogger → File → New iOS Trace`). If yours offers it,
-> skip the sysdiagnose dance.
+> use that instead of sysdiagnose.
 
 ---
 
@@ -110,9 +103,9 @@ AAP rides L2CAP SDUs on **PSM `0x1001`**. Framing cheatsheet (from our code —
          -T fields -e frame.time_relative -e btl2cap.cid -e data \
     | grep -Ei '0400 0400|04000400'
   ```
-- **Claude on the Mac** (richer): open the `.pklg` in **Wireshark**, then
-  `File → Export Packet Dissections → As JSON` and hand the JSON to Claude to
-  parse + diff. Or use the helper below.
+- **Wireshark**: open the `.pklg`, then use
+  `File → Export Packet Dissections → As JSON` to compare fields and timestamps.
+  The helper below also accepts text exports.
 
 ---
 
@@ -127,20 +120,22 @@ tshark -r airpods-macos.pklg -Y btl2cap -T fields -e frame.time_relative -e data
   | python3 windows/docs/aap_extract.py
 ```
 
-It's deliberately simple/forgiving about input format — adapt it on the Mac with
-Claude if your export looks different.
+The helper identifies hex byte runs; it does not reassemble fragmented packets.
 
 ---
 
-## 6. Part E — what to hunt (priorities)
+## 6. Original investigation questions
 
-1. **HR compute trigger** — the enable *mechanism* is solved: streams are driven
+The following heart-rate hypothesis preceded the MTU finding in
+[heart-rate.md](heart-rate.md). It is retained as capture history:
+
+1. **HR compute trigger** — streams were driven
    by `sensor_stream` (`0x17 … 42 0B`, stream id + period µs; see `AAP
    Definitions.md` → "Starting and Stopping Sensor Streams"). On Windows this
-   already brings up **raw PPG (type 16) standalone**, but the AirPods never emit
-   the **computed heart rate (type 19)**. Every capture began mid-session, so the
-   trigger is believed to be in the setup. **Do a fresh capture from a
-   disconnected state**: start `idevicebtlogger` → connect the AirPods → start a
+   brought up **raw PPG (type 16) standalone**, but no
+   **computed heart rate (type 19)** arrived. Captures began mid-session, so
+   setup was suspected. The proposed check was a fresh capture from a
+   disconnected state: start `idevicebtlogger` → connect the AirPods → start a
    Fitness workout, and extract the full ordered host→device sequence up to the
    first `08 13 1a 12` (type-19) frame.
 2. **Unknown opcodes** — anything with header `04 00 04 00` and an opcode not in
@@ -159,13 +154,14 @@ per-component status byte) and watch device→host opcodes + control id `0x3B`.
      lid for ~3 min. Count `0x05` occurrences.
    - **Run B (handled):** seat both buds, then open/close the lid and handle the
      case a few times. Count `0x05`.
-   - If `0x05` appears only in Run B → lid/case interaction is the selector.
+   - If `0x05` appears only in Run B, that supports the lid/case-interaction hypothesis.
 2. **The lid open/close signal** (never located). Buds already seated, hands-off,
    start capture; **open** the lid (note t), wait, **close** it (note t). Diff the
    packets at those two instants — look for a device→host opcode or a control id
    that toggles with the lid.
 3. **Control id `0x3B`** fires 260 ms before the `0x05 → 0x01` flip — watch
-   whether it consistently precedes the flip (cause) or just co-occurs.
+   whether it consistently precedes the flip or just co-occurs. Timing alone
+   does not establish causation.
 
 Bring findings back to `AAP Definitions.md`; a clean lid signal would let the
 daemon fire real "Case opened/closed" events instead of inferring them from
@@ -173,12 +169,9 @@ whether the case battery is being reported.
 
 ---
 
-## 7. Part F — bring it back
+## 7. Record the results
 
 - Protocol findings → append to **`AAP Definitions.md`** (the protocol doc).
 - HR frames → **`windows/daemon/src/aap.rs`** (the `HR_*` consts).
-- **Keep the per-action diff notes** — "these bytes changed when I did X" is the
-  most valuable artifact; paste them into the PR / commit message so the
-  provenance is clear.
-
-Happy hunting. 🎯
+- Keep timestamps, actions and packet differences in the PR or commit message
+  so another contributor can check the interpretation.

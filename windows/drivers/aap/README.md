@@ -5,9 +5,9 @@ over Apple's Accessory Protocol (AAP). AAP runs on a classic-Bluetooth **L2CAP
 channel at PSM `0x1001`**, which Windows user-mode Winsock cannot open (only
 RFCOMM is exposed; raw L2CAP `connect()` fails with `WSAENETDOWN`). This driver
 opens that channel in kernel mode and bridges it to user space via
-`DeviceIoControl`, so the NTPods app can read battery, toggle ANC, etc.
+`DeviceIoControl`, so NTPods can read battery levels and change listening modes.
 
-## Hardened development build
+## Development build
 
 Build from source; the checked-in prebuilt package does not contain these changes.
 The elevated installer must set the `AllowedUserSid` REG_SZ value under
@@ -94,8 +94,8 @@ the portable policy test.
 - [Microsoft bthecho](https://github.com/microsoft/Windows-driver-samples/blob/main/bluetooth/bthecho/bthcli/sys/queue.c)
   reports received bytes from `BufferSize`. [BthPS3 at 2a0de63](https://github.com/nefarius/BthPS3/blob/2a0de63ce48092a20cfe12d0600e3619688de743/BthPS3/L2CAP.Transfer.c)
   uses asynchronous BRBs and explicit rundown, but subtracts `RemainingBufferSize`.
-  We retain the deployed byte-count interpretation until a hardware trace resolves
-  that discrepancy. We did not copy code from either reference in this change.
+  The deployed byte-count interpretation is retained until a hardware trace
+  resolves that discrepancy. No code was copied from either reference.
 
 Pending hardware checks: AAP packet continuity during ATT settings/probes, send
 latency under microphone capture, cancel/disconnect during both receive types,
@@ -109,8 +109,8 @@ AirPods advertise an SDP service with UUID `{74ec2172-0bad-4d01-8f77-997b2be0722
 (taken from LibrePods on Linux). Windows enumerates a devnode
 `BTHENUM\{74ec2172-...}_VID&0001004c_PID&2027` for it. Our INF matches that
 hardware ID, so Windows loads this driver as the **function driver for the AAP
-service PDO** — with the Bluetooth stack as its parent I/O target. From there we
-`BthAllocateBrb` + submit `BRB_L2CA_OPEN_CHANNEL` to open PSM `0x1001` outbound.
+service PDO**, with the Bluetooth stack as its parent I/O target. It calls
+`BthAllocateBrb` and submits `BRB_L2CA_OPEN_CHANNEL` to open PSM `0x1001` outbound.
 No filter driver is needed (unlike PS3/BthPS3), because AirPods advertise the
 service. Architecture reference: MS `bthecho` sample + `nefarius/BthPS3`.
 

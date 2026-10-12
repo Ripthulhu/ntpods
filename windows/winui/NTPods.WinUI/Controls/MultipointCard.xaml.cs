@@ -7,13 +7,8 @@ using Microsoft.UI.Xaml.Controls;
 
 namespace NTPods.WinUI.Controls;
 
-/// Shows every host the AirPods report themselves connected to (AAP 0x2E).
-///
-/// This is not something Windows can tell us: it only knows about its own link,
-/// and during a handoff the endpoint, the Bluetooth device and our AAP channel
-/// all keep reporting healthy while the audio is actually playing on a phone.
-/// The buds are the only party that knows, and they announce it -- in one capture
-/// 3.2 seconds before Windows noticed anything.
+/// Shows hosts reported by the AirPods in AAP 0x2E. Windows only reports its own
+/// link and can remain connected while another host receives the audio.
 public sealed partial class MultipointCard : UserControl
 {
     public MultipointCard()
