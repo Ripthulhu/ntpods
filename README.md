@@ -16,6 +16,10 @@ Based on [arctumn/NTPods](https://github.com/arctumn/ntpods) and
 
 ## Preview
 
+
+https://github.com/user-attachments/assets/44b47894-22f6-49f1-a891-99ce0b7346bc
+
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: light)" srcset="docs/images/app-light.png">
