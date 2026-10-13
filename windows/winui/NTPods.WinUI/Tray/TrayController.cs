@@ -12,13 +12,7 @@ using Microsoft.UI.Xaml.Media.Imaging;
 
 namespace NTPods.WinUI.Tray;
 
-/// The system-tray presence, built on H.NotifyIcon.WinUI. Double-click (or the
-/// menu's "Open") shows the main window; right-click opens a custom themed menu
-/// (TrayMenuWindow — the WinUI MenuFlyout clipped and the native Win32 menu can't
-/// carry icons or follow the theme). The tooltip + icon badge are driven live from
-/// the daemon's Snapshot; the icon shows the lower bud's battery % as a number.
-///
-/// Because the TaskbarIcon is created outside the visual tree, we call ForceCreate().
+/// Owns the tray icon, battery badge and menu window.
 public sealed class TrayController : IDisposable
 {
     private readonly TaskbarIcon _icon;
@@ -27,12 +21,10 @@ public sealed class TrayController : IDisposable
     private readonly Action _onQuit;
     private readonly Action? _onBatteries;
 
-    // Latest snapshot, so the menu (built on right-click) reflects current state.
     private Snapshot? _lastSnapshot;
     private TrayMenuWindow? _menuWindow;
 
-    // Icon lifetime: the plain NTPods icon is persistent; each number badge is a
-    // freshly generated GDI icon whose HICON we must destroy when it's replaced.
+    // Keep the base icon; release each generated badge's HICON when replacing it.
     private readonly Icon? _baseIcon;
     private Icon? _generatedIcon;
     private IntPtr _generatedHandle;
@@ -57,12 +49,10 @@ public sealed class TrayController : IDisposable
             ContextFlyout = null,
             RightClickCommand = new RelayCommand(ShowMenu),
             IconSource = new BitmapImage(new Uri("ms-appx:///Assets/tray.ico")),
-            // Double-click opens the app; single click is left to the OS so a
-            // double-click isn't consumed early.
+            // Leave single-click unbound so it does not consume double-click.
             DoubleClickCommand = new RelayCommand(onOpen),
         };
 
-        // Load the plain icon from disk for the "no number" fallback.
         try
         {
             var path = Path.Combine(AppContext.BaseDirectory, "Assets", "tray.ico");
@@ -71,6 +61,7 @@ public sealed class TrayController : IDisposable
         catch { _baseIcon = (Icon)SystemIcons.Application.Clone(); }
     }
 
+    // The tray icon is outside the visual tree, so it must be created explicitly.
     public void Show() => _icon.ForceCreate();
 
     /// Open the custom tray menu at the cursor, from the latest snapshot.
@@ -87,8 +78,7 @@ public sealed class TrayController : IDisposable
         catch { }
     }
 
-    /// Refresh the tooltip + icon badge from the latest snapshot, and cache it for
-    /// the menu. MUST be called on the UI thread (the App marshals via DispatcherQueue).
+    /// Update the tooltip, badge and menu on the UI thread.
     public void UpdateSnapshot(Snapshot s)
     {
         _lastSnapshot = s;
@@ -111,7 +101,7 @@ public sealed class TrayController : IDisposable
         // Win32 NOTIFYICONDATA tooltip caps at 127 chars.
         _icon.ToolTipText = Clip(tip, 127);
 
-        // Icon badge: lower present bud (min of L/R), else plain icon.
+        // Show the lowest live earbud or headphone reading; otherwise use the plain icon.
         UpdateIconBadge(BatteryPresentation.LiveEarbudReading(s));
     }
 
@@ -181,8 +171,7 @@ public sealed class TrayController : IDisposable
         return true;
     }
 
-    /// Draw the battery number as LARGE as it fits, centred on a 64px transparent
-    /// bitmap for a crisp tray downscale. Returns the Icon + its backing HICON.
+    /// Render at 64px for tray downscaling; the caller owns the Icon and its HICON.
     private static (Icon icon, IntPtr handle) RenderNumberIcon(string text, bool lightTaskbar)
     {
         const int size = 64;
@@ -200,8 +189,6 @@ public sealed class TrayController : IDisposable
                 LineAlignment = StringAlignment.Center,
             };
 
-            // Shrink from a large face until the number nearly fills the box, so a
-            // big "9" and a big "100" both read large in the tray.
             float emSize = 64f;
             while (emSize > 12f)
             {
@@ -218,8 +205,7 @@ public sealed class TrayController : IDisposable
         return (Icon.FromHandle(handle), handle);
     }
 
-    /// True when the taskbar uses the light theme (→ draw dark text). Defaults to
-    /// false (dark taskbar, white text) — the Windows 11 default — if unreadable.
+    /// Use white badge text if the taskbar theme cannot be read.
     private static bool LightTaskbar()
     {
         try
@@ -242,7 +228,6 @@ public sealed class TrayController : IDisposable
         _baseIcon?.Dispose();
     }
 
-    /// Minimal ICommand so the tray's clicks can invoke an Action.
     private sealed class RelayCommand(Action execute) : ICommand
     {
         public event EventHandler? CanExecuteChanged { add { } remove { } }

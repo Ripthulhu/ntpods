@@ -89,8 +89,7 @@ CStreamEngine::AllocateRtPackets(
     PAGED_CODE();
 
     *Packets = NULL;
-    // shortcut: add page-aligned, incremental filling when timer-driven capture
-    // is required; the current engine supports only two event-driven packets.
+    // shortcut: only two event-driven packets are supported; timer-driven capture needs page-aligned incremental filling.
     if (PacketCount == 1) return STATUS_NOT_SUPPORTED;
     if (!MicRtPacketLayoutValid(PacketCount, PacketSize))
     {
@@ -690,8 +689,6 @@ CCaptureStreamEngine::PrepareHardware()
 {
     PAGED_CODE();
 
-    // NTPods: capture data comes from the mic pipe (see ProcessPacket), so there
-    // is no wave-file reader or tone generator source to initialize here.
     return CStreamEngine::PrepareHardware();
 }
 
@@ -756,10 +753,7 @@ CCaptureStreamEngine::ProcessPacket()
         packetBuffer += m_FirstPacketOffset;
     }
 
-    // NTPods: fill this capture packet from the mic pipe — the PCM that user
-    // mode pushed over IOCTL_NTPODS_MIC_WRITE_PCM (the decoded AirPods audio).
-    // Underrun is zero-filled (silence). Replaces the sample's WAV-file / tone
-    // dummy sources.
+    // MicPipeRead fills underruns with silence.
     MicPipeRead(packetBuffer, m_PacketSize);
 }
 

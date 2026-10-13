@@ -1,18 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <root>
   <!--
-    English (default) UI strings for the NTPods WinUI client.
-
-    Two kinds of entries live here:
-      * "<Uid>.<Property>"  — resolved automatically by x:Uid in XAML
-        (e.g. BatteryTitle.Text, HeaderConnectBtn.Content, FeatureCaSwitch.Header).
-      * "Bare_Keys"          — fetched from code-behind via Services/Localize.cs
-        for strings that are chosen at runtime (status, mute/unmute, toasts…).
-
-    To add a language, copy Strings/en-US to Strings/<lang> (e.g. pt-PT) and
-    translate the <value>s; the build merges them into resources.pri and the OS
-    language picks the match. Keys and .resw schema below are the standard WinUI
-    (.resx) format.
+    English fallback strings. Loc exposes dot-free aliases for XAML bindings;
+    code can use the original keys through Localize.Get.
+    Add languages to Loc.Cultures, the project's embedded resources and SettingsPage's picker.
   -->
   <xsd:schema id="root" xmlns="" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:msdata="urn:schemas-microsoft-com:xml-msdata">
     <xsd:import namespace="http://www.w3.org/XML/1998/namespace" />
@@ -73,52 +64,52 @@
     <value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
   </resheader>
 
-  <!-- ===== MainWindow ===== -->
+  <!-- MainWindow -->
   <data name="NavDevicesHeader.Content" xml:space="preserve"><value>Devices</value></data>
 
-  <!-- ===== DeviceHeader ===== -->
+  <!-- DeviceHeader -->
   <data name="HeaderConnectBtn.Content" xml:space="preserve"><value>Connect</value></data>
   <data name="HeaderDisconnectBtn.Text" xml:space="preserve"><value>Disconnect</value></data>
   <data name="HeaderRepairBtn.Text" xml:space="preserve"><value>Repair connection</value></data>
 
-  <!-- ===== BatteryCard ===== -->
+  <!-- BatteryCard -->
   <data name="BatteryTitle.Text" xml:space="preserve"><value>Battery</value></data>
   <data name="BatteryLeftLabel.Text" xml:space="preserve"><value>Left</value></data>
   <data name="BatteryRightLabel.Text" xml:space="preserve"><value>Right</value></data>
   <data name="BatteryCaseLabel.Text" xml:space="preserve"><value>Case</value></data>
 
-  <!-- ===== VolumeCard ===== -->
+  <!-- VolumeCard -->
   <data name="VolumeTitle.Text" xml:space="preserve"><value>Volume</value></data>
   <data name="MuteToggle.Content" xml:space="preserve"><value>Mute</value></data>
   <data name="Toggle_On" xml:space="preserve"><value>On</value></data>
   <data name="Toggle_Off" xml:space="preserve"><value>Off</value></data>
 
-  <!-- ===== AdaptiveNoiseCard ===== -->
+  <!-- AdaptiveNoiseCard -->
   <data name="AdaptiveNoiseTitle.Text" xml:space="preserve"><value>Adaptive Audio</value></data>
   <data name="AdaptiveNoiseSubtitle.Text" xml:space="preserve"><value>Only affects Adaptive mode.</value></data>
   <data name="NoiseLowBtn.Content" xml:space="preserve"><value>Low</value></data>
   <data name="NoiseMidBtn.Content" xml:space="preserve"><value>Medium</value></data>
   <data name="NoiseHighBtn.Content" xml:space="preserve"><value>High</value></data>
 
-  <!-- ===== NoiseControlCard ===== -->
+  <!-- NoiseControlCard -->
   <data name="NoiseControlTitle.Text" xml:space="preserve"><value>Listening Mode</value></data>
   <data name="AncOffRadio.Content" xml:space="preserve"><value>Off</value></data>
   <data name="AncNcRadio.Content" xml:space="preserve"><value>Noise Cancellation</value></data>
   <data name="AncTransparencyRadio.Content" xml:space="preserve"><value>Transparency</value></data>
   <data name="AncAdaptiveRadio.Content" xml:space="preserve"><value>Adaptive</value></data>
 
-  <!-- ===== FeaturesCard ===== -->
+  <!-- FeaturesCard -->
   <data name="FeaturesTitle.Text" xml:space="preserve"><value>Audio</value></data>
   <data name="FeatureCaSwitch.Header" xml:space="preserve"><value>Conversation Awareness</value></data>
   <data name="FeatureCaPending.Text" xml:space="preserve"><value>Setting sent. Confirmation may wait until the AirPods reconnect.</value></data>
   <data name="FeatureAvSwitch.Header" xml:space="preserve"><value>Personalized Volume</value></data>
   <data name="FeatureAllowOffSwitch.Header" xml:space="preserve"><value>Allow "Off" mode</value></data>
 
-  <!-- ===== MicCard ===== -->
+  <!-- MicCard -->
   <data name="MicTitle.Text" xml:space="preserve"><value>Microphone</value></data>
   <data name="MicEnableBtn.Content" xml:space="preserve"><value>Use the microphone</value></data>
 
-  <!-- ===== HearingAidCard ===== -->
+  <!-- HearingAidCard -->
   <data name="HearingAidTitle.Text" xml:space="preserve"><value>Hearing assistance</value></data>
   <data name="HearingAid.Unconfirmed" xml:space="preserve"><value>Hearing settings were not confirmed. Check the connection and try again.</value></data>
   <data name="HearingAidSubtitle.Text" xml:space="preserve"><value>Amplify the world around you through your AirPods (Pro 3).</value></data>
@@ -130,7 +121,7 @@
   <data name="HearingAidConvBoost.Header" xml:space="preserve"><value>Conversation boost</value></data>
   <data name="HearingAidAudiogram.Header" xml:space="preserve"><value>Audiogram — hearing loss (dB HL) per frequency</value></data>
   <data name="HearingAidTone.Header" xml:space="preserve"><value>Tone</value></data>
-  <!-- ===== HeartRateCard ===== -->
+  <!-- HeartRateCard -->
   <data name="HeartRateTitle.Text" xml:space="preserve"><value>Heart Rate</value></data>
   <data name="HeartRateSubtitle.Text" xml:space="preserve"><value>AirPods Pro 3. Uses extra battery while it's on.</value></data>
   <data name="HeartRateSwitch.Header" xml:space="preserve"><value>Monitor heart rate</value></data>
@@ -144,7 +135,7 @@
   <data name="HeartRateSessionStats" xml:space="preserve"><value>{0} readings · min {1} · avg {2} · max {3} bpm</value></data>
   <data name="HeartRateGraphPointAt" xml:space="preserve"><value>{0} bpm · {1:HH:mm:ss}</value></data>
 
-  <!-- ===== SettingsPage ===== -->
+  <!-- SettingsPage -->
   <data name="SettingsTitle.Text" xml:space="preserve"><value>Settings</value></data>
   <data name="SettingsAppearance.Text" xml:space="preserve"><value>Appearance</value></data>
   <data name="SettingsTheme.Text" xml:space="preserve"><value>Theme</value></data>
@@ -191,10 +182,10 @@
   <data name="SettingsAbout.Text" xml:space="preserve"><value>About</value></data>
   <data name="SettingsAppDesc.Text" xml:space="preserve"><value>AirPods controls for Windows</value></data>
 
-  <!-- ===== IslandView ===== -->
+  <!-- IslandView -->
   <data name="IslandCaseLabel.Text" xml:space="preserve"><value>Case</value></data>
 
-  <!-- ===== Runtime strings (fetched from code via Localize.Get) ===== -->
+  <!-- Runtime strings -->
   <data name="Status_Connected" xml:space="preserve"><value>Connected</value></data>
   <data name="Status_Disconnected" xml:space="preserve"><value>Disconnected</value></data>
   <data name="Status_Connecting" xml:space="preserve"><value>Connecting…</value></data>
@@ -228,7 +219,7 @@
   <data name="Settings_DefaultUiChanged_Title" xml:space="preserve"><value>Default UI changed</value></data>
   <data name="Settings_DefaultUiChanged_Message" xml:space="preserve"><value>The iced app will be the default front-end next time you open NTPods.</value></data>
 
-  <!-- ===== MultipointCard ===== -->
+  <!-- MultipointCard -->
   <data name="MultipointTitle.Text" xml:space="preserve"><value>Shared with</value></data>
   <data name="Multipoint_OnlyThisPc" xml:space="preserve"><value>Only this PC is connected</value></data>
   <data name="Multipoint_Shared" xml:space="preserve"><value>{0} other devices</value></data>
@@ -236,7 +227,7 @@
   <data name="Multipoint_ThisPc" xml:space="preserve"><value>This PC</value></data>
   <data name="Multipoint_Hint" xml:space="preserve"><value>The AirPods can hold two connections at once. When another device plays audio, it can take them from this PC.</value></data>
 
-  <!-- ===== Restore audio ===== -->
+  <!-- Restore audio -->
   <data name="HeaderRebuildAudioBtn.Text" xml:space="preserve"><value>Restore audio</value></data>
   <data name="HeaderRebuildAudioBtn.Tip" xml:space="preserve"><value>Toggle the AirPods audio services off and on — the one-click version of Disconnect then Connect. Use it when the sound stops but everything still looks connected.</value></data>
   <data name="Mic_Starting" xml:space="preserve"><value>Starting microphone…</value></data>

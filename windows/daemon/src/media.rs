@@ -49,7 +49,6 @@ pub fn init() {
 }
 
 fn current_session() -> windows::core::Result<Session> {
-    // RequestAsync + GetCurrentSession are both quick; block on the async op.
     let manager = SessionManager::RequestAsync()?.get()?;
     manager.GetCurrentSession()
 }

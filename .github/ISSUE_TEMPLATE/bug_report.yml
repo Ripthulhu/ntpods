@@ -10,7 +10,7 @@ body:
         Quick checks before you start:
         - Test Mode is on (it says "Test Mode" in the bottom-right corner of the desktop).
         - The AirPods are paired in **Settings > Bluetooth & devices**. NTPods doesn't pair anything itself.
-        - You restarted after installing.
+        - You restarted if setup requested it.
 
   - type: dropdown
     id: model

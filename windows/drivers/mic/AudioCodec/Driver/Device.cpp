@@ -182,10 +182,7 @@ Return Value:
     RETURN_NTSTATUS_IF_FAILED(CodecC_AddStaticCapture(device, &CODEC_CAPTURE_COMPONENT_GUID, &MIC_CUSTOM_NAME, &captureCircuitName));
 
     //
-    // NTPods mic bridge (Phase 2): init the PCM ring and expose the control
-    // device (\\.\NTPodsMic) so user mode can push the decoded AirPods audio
-    // into the capture stream. Best-effort — a failure here must not fail device
-    // add (the mic still enumerates, just without a user-mode feed).
+    // If control-device creation fails, the capture endpoint still opens with silence.
     //
     MicPipeInit();
     (VOID)MicPipeCreateControlDevice(device);
@@ -227,10 +224,6 @@ Return Value:
 
     devCtx = GetCodecDeviceContext(Device);
     ASSERT(devCtx != nullptr);
-
-    // NOTE: Download firmware here.
-
-    // NOTE: Register streaming h/w resources here.
 
     //
     // Set power policy data.
@@ -292,8 +285,6 @@ Return Value:
     // The driver uses this DDI to delete a circuit from the current device. 
     //
     RETURN_NTSTATUS_IF_FAILED(AcxDeviceRemoveCircuit(Device, devCtx->Capture));
-
-    // NOTE: Release streaming h/w resources here.
 
     status = STATUS_SUCCESS;
 

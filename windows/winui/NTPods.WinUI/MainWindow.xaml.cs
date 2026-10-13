@@ -13,10 +13,7 @@ using Windows.UI.ViewManagement;
 
 namespace NTPods.WinUI;
 
-/// The window swaps between the device and settings pages. It wires the daemon
-/// client into the pages, forwards daemon events (marshalled to the UI thread) to
-/// the device page, and applies the settings page's theme choice to the window
-/// root. Closing the window hides it to the tray rather than exiting.
+/// Hosts device and app settings, forwards daemon events and hides to the tray on close.
 public sealed partial class MainWindow : Window
 {
     private readonly DaemonClient _client;
@@ -59,8 +56,6 @@ public sealed partial class MainWindow : Window
 
         RootGrid.ActualThemeChanged += (_, _) => ApplyTitleBarTheme();
 
-        // Hand the client to the pages: DevicePage fans it out to its cards; the
-        // SettingsPage uses it for "Refresh state".
         DevicePageView.Client = _client;
         DevicePageView.SettingsRequested += () => ShowSettings(true);
         SettingsPageView.Client = _client;
@@ -75,8 +70,6 @@ public sealed partial class MainWindow : Window
         if (RootGrid is not null) RootGrid.RequestedTheme = AppSettings.Theme;
         SettingsPageView.InitThemeSelector(AppSettings.ThemeIndex);
 
-        // The experimental opt-in (hearing aid) lives in Settings; the DevicePage owns
-        // the card. Refresh its visibility live when the toggle flips.
         SettingsPageView.ExperimentalVisibilityChanged += () => DevicePageView.RefreshExperimentalVisibility();
         SettingsPageView.InitExperimentalSetting();
 
@@ -222,11 +215,11 @@ public sealed partial class MainWindow : Window
 
     private void OnClosing(AppWindow sender, AppWindowClosingEventArgs args)
     {
-        args.Cancel = true;   // don't destroy the window…
+        args.Cancel = true;   // Keep the tray client alive when the window closes.
         DevicePageView.StopHeadTracking();
         FinishEntrance();
         FinishNavigation();
-        AppWindow.Hide();     // …just hide it back to the tray.
+        AppWindow.Hide();
     }
 
     // ---- Navigation --------------------------------------------------------

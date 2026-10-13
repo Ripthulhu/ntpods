@@ -8,14 +8,14 @@
 > Secure Boot can block Test Mode. Save your BitLocker recovery key before
 > changing boot settings.
 
-This checkout builds on NTPods `188e45d` for **Windows 11 x64, Intel AX200, and
-AirPods Pro 3 / firmware 9A348**. It retains the Rust daemon and WinUI interface,
-with the AAP Bluetooth driver, ACX virtual microphone and an experimental
-AudioSink playback driver. Windows continues to own the Bluetooth adapter.
+NTPods provides AirPods controls, batteries, a high-quality microphone and
+experimental AAC/AAC-ELD playback on Windows 11 22H2 or newer, x64. Windows owns the Bluetooth
+adapter; NTPods adds an AAP control driver, an ACX microphone and an AudioSink
+playback driver.
 
 The MSI and ZIP include experimental AAC and AAC-ELD playback for the
 [listed AirPods models](../docs/WINDOWS-MODEL-SUPPORT.md#native-playback). Choose
-the codec and Best effort or Manual kbps under **Playback and microphone**.
+the codec and bitrate under **Playback and microphone**.
 Both use the paired AirPods output; NTPods must remain running. Pro 1 and Pro 3
 have passed short playback checks. Other models are available to test using the
 [playback guide](playback/TESTING.md).
@@ -25,17 +25,11 @@ additional AirPods settings for stem controls, accessibility and charging.
 Controls distinguish reported values from requests awaiting confirmation.
 See [Windows controls and protocol limits](../docs/WINDOWS-FEATURES.md).
 
-Battery, noise controls, ear detection, automatic pause and Conversation Awareness
-have passed the checks listed in the validation record. The microphone retains
-stereo playback during capture. A sustained capture ran for about 21 minutes, but
-stopping it left only one earbud playing until a manual reconnect. Since version
-0.1.7, NTPods restores the audio services automatically after capture stops.
-Using Alternative A2DP, twenty repeated capture/stop cycles
-passed, with both channels confirmed afterward and AAC stereo preserved at
-48 kHz / 256 kbps. Recovery interrupts playback for about 17 seconds. Another
-sustained recording and broader recovery checks remain pending. Short checks
-with the native NTPods playback driver recovered in about two seconds on Pro 3;
-its longer capture and lifecycle checks remain pending. See the
+Hardware checks used an Intel AX200, AirPods Pro 3 on firmware 9A348 and Pro 1
+on 6F21. Pro 3 kept stereo playback during short microphone captures with both
+codecs. Stopping the microphone briefly interrupts playback; native-driver
+recovery took about two seconds in those checks. Longer capture, repeated
+interruptions and other adapters remain unverified. See the
 [hardware results](../docs/WINDOWS-VALIDATION.md).
 
 See [build and installation instructions](../docs/BUILD-WINDOWS.md) for the pinned

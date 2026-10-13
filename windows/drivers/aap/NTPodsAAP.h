@@ -42,7 +42,7 @@ DEFINE_GUID(GUID_DEVINTERFACE_NTPODSAAP,
 #define IOCTL_LP_SEND        CTL_CODE(FILE_DEVICE_NTPODS, 0x802, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define IOCTL_LP_RECEIVE     CTL_CODE(FILE_DEVICE_NTPODS, 0x803, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define IOCTL_LP_GET_STATUS  CTL_CODE(FILE_DEVICE_NTPODS, 0x804, METHOD_BUFFERED, FILE_ANY_ACCESS)
-// ATT (PSM 0x001F) channel I/O — raw ATT PDUs to/from the AirPods' hearing-aid GATT.
+// Raw ATT PDUs for the AirPods' GATT services over PSM 0x001F.
 #define IOCTL_LP_ATT_SEND    CTL_CODE(FILE_DEVICE_NTPODS, 0x805, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define IOCTL_LP_ATT_RECEIVE CTL_CODE(FILE_DEVICE_NTPODS, 0x806, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
@@ -146,9 +146,7 @@ EVT_WDF_DRIVER_DEVICE_ADD         LpEvtDeviceAdd;
 EVT_WDF_DEVICE_PREPARE_HARDWARE   LpEvtDevicePrepareHardware;
 EVT_WDF_DEVICE_RELEASE_HARDWARE   LpEvtDeviceReleaseHardware;
 EVT_WDF_DEVICE_SURPRISE_REMOVAL    LpEvtDeviceSurpriseRemoval;
-// Runs on the remove path while the default I/O target is still STARTED, which
-// is the only window where our teardown BRBs can actually reach bthport. See
-// the comment on the implementation in Device.c.
+// Teardown BRBs require the default I/O target to remain started.
 EVT_WDF_DEVICE_SELF_MANAGED_IO_SUSPEND LpEvtDeviceSelfManagedIoSuspend;
 EVT_WDF_DEVICE_SELF_MANAGED_IO_RESTART LpEvtDeviceSelfManagedIoRestart;
 EVT_WDF_OBJECT_CONTEXT_CLEANUP    LpEvtDeviceContextCleanup;
@@ -159,9 +157,7 @@ EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL LpEvtIoReceive;
 EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL LpEvtIoStatus;
 EVT_WDF_IO_QUEUE_IO_STOP           LpEvtIoStop;
 
-// Fires when the NTPods app closes its handle to our device interface -> we
-// tear down the L2CAP channel so it doesn't leak (which left Windows unable to
-// disconnect the AirPods until a manual disconnect/reboot).
+// Release channels when the user-mode handle closes, including after a crash.
 EVT_WDF_FILE_CLOSE                 LpEvtFileClose;
 EVT_WDF_FILE_CLEANUP               LpEvtFileCleanup;
 EVT_WDF_DEVICE_FILE_CREATE         LpEvtFileCreate;
@@ -183,9 +179,7 @@ _Function_class_(PFNBTHPORT_INDICATION_CALLBACK)
 VOID LpIndicationCallback(_In_opt_ PVOID Context, _In_ INDICATION_CODE Indication,
                           _In_ PINDICATION_PARAMETERS Parameters);
 
-// ATT (PSM 0x001F) — we OPEN it as a CLIENT to the AirPods (like Android's
-// ATTManager), which sidesteps the bthport rule that forbids registering a SERVER
-// on the reserved ATT PSM. LpConnectAtt opens it; LpCloseAttChannel tears it down.
+// Open ATT as a client, as Android's ATTManager does; bthport reserves this PSM against server registration.
 NTSTATUS LpConnectAtt(_In_ PDEVICE_CONTEXT Ctx, _In_ WDFREQUEST Request);
 NTSTATUS LpAttSend(_In_ PDEVICE_CONTEXT Ctx, _In_reads_bytes_(Length) PVOID Buffer,
                   _In_ ULONG Length, _In_ WDFREQUEST Request);

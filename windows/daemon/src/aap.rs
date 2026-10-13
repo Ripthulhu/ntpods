@@ -50,26 +50,12 @@ pub const HR_ENABLE: [u8; 11] = [
 
 // ---- Sensor stream control ----
 //
-// The `0x17` ... `42 0B` sensor frame carries a stream id and a period in
-// microseconds; zero stops the stream. See `AAP Definitions.md`, "Starting and
-// Stopping Sensor Streams", for alignment verified against four captures.
-// Across 24 observed control frames, two forms occur:
-//
-//   form A — no `10 02` after the sequence, bare stream id (0x10, 0x12, 0x13)
-//   form B — `10 02` after the sequence, stream id with bit 0x40 set (0x50, 0x52, 0x53)
-//
-// Payload length depends on the form and sequence varint width: 0x10 for form A
-// with a two-byte varint, or 0x11 / 0x12 for form B.
-//
-// A capture starting at connection uses form A for heart rate:
-//
-//   t=364.35  ->  08 13 ... period 1000000     heart rate at 1 Hz
-//   t=365.92  <-  first type-19 frame          (+1.57 s)
-//
-// Mid-session captures show only form B. Use form A for a fresh session;
-// sending form B there produced motion data without heart-rate readings.
+// Report intervals are microseconds; zero stops reporting. `sensor_stream`
+// retains the captured form without a top-level log type. Runtime heart-rate
+// activation uses `hr_stream`, which includes log type 2 and services 84/19.
+// See docs/WINDOWS-AIRPODS-CONTROL-PROTOCOL.md for descriptor-based service mapping.
 
-/// Stream id for heart rate — data type 19.
+/// Heart-rate command service on newer firmware; the legacy report service is 19.
 pub const STREAM_HEART_RATE: u8 = 0x54; // HEARTRATE_COMMAND — newer firmware (version3 first digit >= 8)
 pub const STREAM_HEART_RATE_LEGACY: u8 = 0x13; // HEARTRATE — older firmware
 /// RTBuddy 6-axis motion (DEVMOTION6), separate from heart rate (HEARTRATE=19).
@@ -179,9 +165,7 @@ pub fn request_all_descriptors(seq: u16, log_type: bool) -> Vec<u8> {
 /// Parse the `0x2E` Connected Devices packet: the list of hosts the AirPods
 /// are currently connected to. Returns each device's 48-bit address.
 ///
-/// During a Teams handoff captured on 2026-08-31, this packet reported the phone
-/// 3.2 seconds before Windows detected the change. The endpoint and AAP channel
-/// still reported connected while the phone had the audio.
+/// Host reports can reveal a handoff before Windows detects the connection change.
 ///
 /// Layout, from two captures (one device, then two):
 ///
@@ -219,7 +203,7 @@ pub fn parse_connected_devices(data: &[u8]) -> Option<Vec<(u64, [u8; 2])>> {
 }
 
 /// Format 0x2E flags for diagnostics; they do not identify a device class.
-/// In 23 packets the same PC reported `02 06` (15x), `01 06` (4x) and `02 04` (4x).
+/// The same PC has reported `02 06`, `01 06` and `02 04`.
 /// Their meaning remains unknown, so they must not determine the UI device type.
 pub fn flags_hex(flags: [u8; 2]) -> String {
     format!("{:02x} {:02x}", flags[0], flags[1])
@@ -565,9 +549,8 @@ pub enum EarStatus {
     OutOfEar,
     InCase,
     Disconnected,
-    /// 0x04 — a transitional value the iOS capture found: emitted only while a bud
-    /// is *in motion* between resting states, never at rest. Callers should hold
-    /// the previous state rather than act on it, to avoid false auto-pauses.
+    /// 0x04 appeared during movement between resting states in iOS captures.
+    /// Hold the previous state to avoid false auto-pauses.
     Transitional,
 }
 

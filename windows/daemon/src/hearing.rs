@@ -1,10 +1,7 @@
 //! AirPods ATT settings, including Loud Sound Reduction and hearing assistance.
-//! Hearing assistance: enable it over AAP (control commands 0x2C /
-//! 0x33), switch to Transparency, then write the full settings to the ATT/GATT
-//! (PSM 0x001F, handle 0x2A) via a read-modify-write. Layout + semantics are ported
-//! from the Linux `hearing-aid-adjustments.py`: an 8-band audiogram (hearing loss in
-//! dB HL) per ear, per-ear amplification, tone, conversation-boost, ambient-noise-
-//! reduction and own-voice — all little-endian f32 at fixed offsets.
+//! Hearing assistance uses AAP controls 0x2C/0x33, Transparency mode and ATT handle 0x2A.
+//! Settings follow Linux `hearing-aid-adjustments.py`: a mode byte and little-endian
+//! f32 fields for each ear's 8-band audiogram (dB HL), gain, tone and noise controls.
 
 use crate::aap;
 use crate::driver::Driver;
@@ -432,9 +429,7 @@ fn require_write_response(response: &[u8]) -> Result<(), String> {
     }
 }
 
-/// Read-modify-write the settings characteristic over the (already-open) ATT channel.
-/// This is the only step a settings tweak needs — no AAP re-enable, so the ATT
-/// channel stays up.
+/// Preserve unrelated fields and keep ATT open while updating hearing settings.
 #[allow(clippy::too_many_arguments)]
 fn write_settings(
     mut exchange: impl FnMut(&[u8]) -> Result<Vec<u8>, String>,
@@ -447,15 +442,12 @@ fn write_settings(
     anr: f32,
     own_voice: f32,
 ) -> Result<String, String> {
-    // 1) Read the current settings value (read-modify-write).
     let response = exchange(&att_read_req(H_SETTINGS))?;
     if response.len() < 105 || response[0] != 0x0B {
         return Err(format!("bad ATT read resp [{}]", response.len()));
     }
     let mut val = response[1..].to_vec(); // the characteristic value (~104 bytes)
 
-    // 2) Patch: audiogram (per-frequency loss in dB HL) + per-ear amplification from
-    // amplification/balance + tone/conversation-boost/ANR/own-voice.
     let amp = amplification.clamp(0.0, 1.0);
     let bal = balance.clamp(-1.0, 1.0);
     let left_amp = (amp - bal / 2.0).clamp(-1.0, 1.0);
@@ -490,7 +482,6 @@ fn write_settings(
     put_f32(&mut val, OFF_RIGHT_ANR, anr);
     put_f32(&mut val, OFF_OWN_VOICE, own_voice);
 
-    // 3) Write it back.
     require_write_response(&exchange(&att_write_pdu(H_SETTINGS, &val))?)?;
 
     Ok(format!(
@@ -499,8 +490,7 @@ fn write_settings(
     ))
 }
 
-/// Apply hearing-assist settings. Requires the AAP + ATT channels to be up (the
-/// driver opens ATT on demand). Returns a summary only for work that was applied.
+/// Apply settings through AAP and lazy-opened ATT; superseded requests return `None`.
 #[allow(clippy::too_many_arguments)]
 pub fn apply(
     drv: &Driver,
@@ -515,15 +505,13 @@ pub fn apply(
     anr: f32,
     own_voice: f32,
 ) -> Result<Option<String>, String> {
-    // Serialize applies and read the "already enabled" flag under the same lock, so
-    // overlapping applies can't interleave ATT I/O on the shared channel.
+    // Keep the enable state and ATT transaction under one lock to prevent interleaved replies.
     let mut state = HEARING_STATE.lock().unwrap_or_else(|p| p.into_inner());
     let session = HEARING_SESSION.load(Ordering::SeqCst);
     let off_revision = HEARING_OFF_REVISION.load(Ordering::SeqCst);
     let current = || is_current(gen) && self::session() == session;
 
-    // A newer command arrived while we waited for the lock — drop this stale apply
-    // before touching the driver (latest-wins coalescing).
+    // Discard superseded work before touching the shared driver.
     if !current() {
         return Ok(None);
     }

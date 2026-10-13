@@ -17,7 +17,6 @@ public static class AppSettings
         public bool EnableExperimental { get; set; }
 
         // BCP-47 UI language override (e.g. "pt-PT"); "" = follow the system.
-        // Applied as ApplicationLanguages.PrimaryLanguageOverride at startup.
         public string LanguageTag { get; set; } = "";
 
         // Cache model 0x1D metadata for island artwork before the next session reports it.
@@ -126,7 +125,7 @@ public static class AppSettings
         Save(m);
     }
 
-    /// Persist the chosen UI language override (takes effect on restart).
+    /// Persist the language choice; the caller updates Loc for the current session.
     public static void SetLanguageTag(string tag)
     {
         var m = Load();

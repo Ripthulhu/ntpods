@@ -7,12 +7,10 @@ using Microsoft.UI.Xaml.Controls;
 
 namespace NTPods.WinUI.Controls;
 
-/// Left/Right/Case battery readout with model-aware device artwork. Pure
-/// presentation — renders a Snapshot, sends no commands.
+/// Battery readings and artwork for earbuds, cases and headphones.
 public sealed partial class BatteryCard : UserControl
 {
-    // The artwork family currently shown, so the part images only reload when the
-    // detected model changes (snapshots arrive several times a second).
+    // Avoid decoding the same artwork on every snapshot.
     private string? _artFamily;
     private string _model = "";
     private readonly DeviceArtworkState _artwork = new();
@@ -23,7 +21,7 @@ public sealed partial class BatteryCard : UserControl
         _ = new ArtworkTransitions(this, LeftImg, RightImg, CaseImg);
     }
 
-    /// Render the three battery gauges (+ artwork) from a daemon Snapshot.
+    /// Render the model's battery gauges and artwork from a daemon snapshot.
     public void Update(Snapshot s)
     {
         _model = _artwork.Update(s, AppSettings.LastModel, AppSettings.LastDeviceId);

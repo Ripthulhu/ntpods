@@ -55,8 +55,7 @@ public static class StartupService
         }
     }
 
-    /// Locate ntpodsd.exe — next to us, else the standard install dir. Mirrors
-    /// DaemonClient.FindDaemon so the startup entry points at the same binary.
+    /// Keep search order aligned with DaemonClient.FindDaemon so startup uses the same binary.
     private static string? FindDaemon()
     {
         string[] candidates =

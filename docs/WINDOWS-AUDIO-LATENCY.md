@@ -12,7 +12,7 @@ and [ACX streaming documentation](https://learn.microsoft.com/en-us/windows-hard
 when changing this path.
 
 - Declare tested processing periods for the supported signal-processing mode.
-  Query `IAudioClient3` to verify what Windows exposes and actually negotiates.
+  Query `IAudioClient3` to verify what Windows exposes and negotiates.
   A shorter period must be requested by an audio client; ordinary clients can
   continue using the default period.
 - Preserve packet ownership and completion notifications. Keep each packet
@@ -27,32 +27,25 @@ when changing this path.
   real-time work queues. The NTPods daemon reads private driver IOCTLs, so WASAPI
   flags do not change its current polling loop.
 
-The [packet constraints structure](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ksmedia/ns-ksmedia-_ksaudio_packetsize_constraints2)
-allows zero minimum period and zero mode entries. Installed 0.2.16 used those
-values and exposed only 480 frames at 48 kHz, or 10 ms. Its legacy 3 ms minimum
-was not an available shared-mode period. The updated circuits publish a RAW
-240-frame / 5 ms quantum with a 4 ms absolute minimum, retaining their alignment
-and maximum packet sizes. After installing 0.2.17 and rebooting, this PC still
-exposed only 480 frames in both default and RAW mode. The 240-frame property was
-present on the live playback interface, but Windows did not offer a 5 ms period.
-The microphone did accept a silent 5 ms initialization in default and RAW mode.
-Version 0.2.18 expresses the quantum directly as 50,000 HNS with a zero
-sample count, as specified by the
-[processing-mode constraint](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ksmedia/ns-ksmedia-_ksaudio_packetsize_signalprocessingmode_constraint).
-After its required restart, Windows assigned new playback and microphone endpoint
-IDs. Playback still exposed only 480 frames, including RAW native PCM16; the
-microphone accepted 240 frames without starting a stream. The updated declaration
-and refreshed endpoint therefore have not resolved the playback limit.
-An exclusive, event-driven PCM16 initialization on the same endpoint accepted
-240 frames at 48 kHz. It registered the event and queried the buffer without
-starting audio. This confirms that a 5 ms buffer is accepted below the shared
-engine; shared-mode negotiation and streaming stability still need validation.
-The driver packages also declare the same constraints on their audio interfaces
-through INF `AddProperty`, so they are available before endpoint activation.
-The runtime setters retain identical persistent values. Tests compare all bytes
-of both INF properties with the circuit declarations.
+The circuits and driver INF audio interfaces publish a RAW 5 ms quantum
+(50,000 HNS, zero sample count) with a 4 ms absolute minimum. Runtime and INF
+values must match. See Microsoft's
+[packet constraints](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ksmedia/ns-ksmedia-_ksaudio_packetsize_constraints2)
+and [processing-mode fields](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ksmedia/ns-ksmedia-_ksaudio_packetsize_signalprocessingmode_constraint).
 
-## Implemented changes
+Recorded initialization results after installation and restart:
+
+| Path | Observed period at 48 kHz | Limit |
+| --- | --- | --- |
+| Shared playback, default and RAW | 480 frames / 10 ms | The live interface had the 5 ms declaration, but Windows did not offer it |
+| Exclusive event-driven PCM16 playback | 240 frames / 5 ms accepted | Initialized and queried without starting audio; sustained streaming unverified |
+| Microphone, default and RAW | 240 frames / 5 ms accepted | Silent initialization only |
+
+Publishing a constraint does not prove that the shared engine negotiates it.
+Tests compare the full INF property bytes with the circuit declaration and check
+short-packet delivery and clock arithmetic.
+
+## Implementation
 
 1. AAC assembles an available 4096-byte frame in at most three reads without
    sleeping between them. Empty reads yield, and each read checks that the
@@ -66,7 +59,7 @@ of both INF properties with the circuit declarations.
    accepts 5 ms. Shared-mode negotiation and streaming stability remain unresolved.
 4. A stream-end diagnostic summarizes accepted frames, queue depth, deadline
    lateness and media-send duration. It contains no audio or device identifiers.
-5. The shared stream engine now reports zero hardware FIFO bytes instead of the
+5. The shared stream engine reports zero hardware FIFO bytes instead of the
    sample driver's invented 128. Microsoft's
    [latency callback](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/acxstreams/nc-acxstreams-evt_acx_stream_get_hw_latency)
    describes circuit delay. Additional delay remains unavailable: neither bridge
@@ -78,7 +71,7 @@ The source reserve remains 50 ms. Retest it against 30 ms with fixed mic placeme
 alternating baseline/trial starts and loaded-system checks before reducing it.
 The 100 ms ring capacity is a separate safety bound.
 
-The sample-count frame clock already preserves AAC's fractional 21.333 ms period.
+The sample-count frame clock preserves AAC's fractional 21.333 ms period.
 Keep that arithmetic. AAC-ELD groups two 10 ms access units; a single-unit packet
 trial needs separate peer compatibility testing. Changing the Windows period
 does not change either codec's frame size.
@@ -88,7 +81,7 @@ The AirPods' own buffer is a separate research target. LibrePods names control
 and USBPods defines [90/60 ms profiles](https://github.com/wasdwasd0105/USBPods-Pico2W/blob/6286ab1618ec1143d828b1fc377d8e22c449e567/src/settings.h#L95).
 Its public Lite build [stubs out the sender](https://github.com/wasdwasd0105/USBPods-Pico2W/blob/6286ab1618ec1143d828b1fc377d8e22c449e567/src/lite_stubs.c).
 Confirm the value semantics, ordering and restoration with captures before
-testing writes. No buffer-control command was sent in this investigation.
+testing writes. NTPods does not write this control.
 
 ## Measurement
 

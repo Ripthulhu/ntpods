@@ -110,8 +110,7 @@ fn battery_text(b: &ntpods_ipc::Battery, connected: bool) -> String {
     )
 }
 
-/// Outgoing queue to one client (drained by its writer thread — so a slow client
-/// never blocks the session/broadcast, i.e. async delivery).
+/// Each client has its own writer thread so a slow client cannot block the session.
 type ClientTx = std::sync::mpsc::SyncSender<Vec<u8>>;
 
 /// Everything the session, poll and IPC threads share.
@@ -131,7 +130,6 @@ struct Ctx {
     hr_generation: Arc<AtomicU64>,
     head_tracking: Arc<Mutex<head_tracking::Tracker>>,
     auto_pause: Arc<Mutex<media::AutoPausePolicy>>,
-    /// Heart-rate tracking database (writer thread handle).
     hr_db: hrdb::HrDb,
     clients: Arc<Mutex<Vec<ClientTx>>>,
     driver_cell: Arc<Mutex<Option<driver::Driver>>>,
@@ -144,8 +142,7 @@ struct Ctx {
     handsfree_done: Arc<AtomicBool>,
     shutdown_cleanup_failed: Arc<AtomicBool>,
     auto_mode: Arc<AtomicBool>,
-    /// AirPods Pro 3 heart-rate monitoring is on (opt-in — off by default). When
-    /// set, `run_receiver` feeds each recv chunk into the RTBuddy HR decoder.
+    /// Opt-in gate for heart-rate decoding in `run_receiver`.
     hr_on: Arc<AtomicBool>,
     /// First decoded BPM sample, set by `run_receiver` and polled by the retry thread.
     /// Cleared before each enable attempt.
@@ -153,30 +150,24 @@ struct Ctx {
     /// An HR frame arrived, possibly without a reading. Keep a live stream open
     /// while the sensor warms up. Cleared before each enable attempt.
     hr_stream_live: Arc<AtomicBool>,
-    /// True while an HR retry thread is live. A one-thread guard so rapid on/off
-    /// never stacks two retry campaigns over the one driver.
+    /// Prevents overlapping heart-rate retries on the shared driver.
     hr_retrying: Arc<AtomicBool>,
-    /// The user accepted the "connect?" prompt — the session may start.
+    /// Connection intent and generation, shared with asynchronous workers.
     connect_requested: Arc<ConnectionRequest>,
-    /// Set by the "Repair connection" command: asks `run_receiver` to drop + reopen
-    /// the driver (fresh AAP session + ATT channel) to recover a wedged / desynced
-    /// link. run_receiver clears it.
+    /// Repair request consumed by `run_receiver` to reopen AAP and ATT after cleanup.
     wants_reconnect: Arc<AtomicBool>,
     /// Consumed by the receiver; unlike repair, this must never stop a capture.
     wants_settings_refresh: Arc<AtomicBool>,
     pipe: Arc<micpipe::MicPipeCell>,
-    /// Conversational Awareness volume duck — shared so `apply_command` can
-    /// restore the volume if the user turns CA off mid-duck (no end event comes).
+    /// Shared so disabling Conversation Awareness can restore volume without an end event.
     conv_duck: Arc<Mutex<volume::ConvDuck>>,
-    /// True while an audio-reclaim campaign is running — one at a time, so a
-    /// burst of losses can't stack campaigns fighting each other for the buds.
+    /// Prevents overlapping audio-reclaim attempts.
     reclaiming: Arc<AtomicBool>,
     /// Explicit Disconnect blocks automatic resume. Connect or Repair clears it.
     user_disconnected: Arc<AtomicBool>,
     /// Reserved at Disconnect, applied only after the receiver closes its channel.
     pending_audio_disconnect: Arc<Mutex<PendingAudioDisconnect>>,
-    /// When the last reclaim campaign ended. Cooldown: a phone that really owns
-    /// the buds (a call — tier 1 on its side) must not be fought over and over.
+    /// Cooldown after a reclaim attempt, to avoid repeated requests during a phone call.
     last_reclaim: Arc<Mutex<Option<Instant>>>,
     /// Last repair request. Debounce prevents repeated handle reopens that can
     /// leave the devnode in Code 38.
@@ -207,8 +198,7 @@ impl Ctx {
         };
         allowed && (opt_in || !bt::is_connected(self.mac()))
     }
-    /// Queue one NDJSON event for every client (never blocks — each client's
-    /// writer thread drains its own queue). Drops clients whose writer has gone.
+    /// Queue without waiting for writers; drop disconnected clients or full queues.
     fn send_event(&self, ev: &Event) {
         let bytes = to_line(ev).into_bytes();
         let mut clients = self.clients.lock().unwrap();
@@ -266,8 +256,7 @@ impl Ctx {
         });
     }
 
-    /// Read the live WASAPI volume/mute into the snapshot; push only on change so
-    /// we don't spam clients. The caller's thread must have COM initialized.
+    /// Publish volume/mute changes. The calling thread must have COM initialized.
     fn sync_volume(&self) {
         let vol = volume::get().unwrap_or(0);
         let muted = volume::is_muted();
@@ -284,27 +273,19 @@ impl Ctx {
     }
 }
 
-/// Audio-ownership priority, following Apple's routing hierarchy:
-///
-///   1. Calls / FaceTime (highest)  — steals the audio from anything
-///   2. User-initiated playback     — steals it from other media
-///   3. Background audio / system sounds — ignored unless manually triggered
-///
-/// Reclaim after a loss only if this host held a call or playback session.
-/// Background audio waits for the BLE watcher; bounded retries avoid continuously
-/// reclaiming the AirPods from a phone call.
+/// Local audio priority for reclaiming a lost connection: capture, playback, then idle.
+/// The peer's priority is unknown, so retries are bounded to avoid repeated requests.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Tier {
-    /// Tier 1 — an app is capturing the AirPods microphone through us.
+    /// An app is capturing through NTPods.
     Call,
-    /// Tier 2 — a user-started playback session is running (SMTC says Playing).
+    /// SMTC reports playback or a non-system Core Audio session is active.
     Playback,
-    /// Tier 3 — nothing of ours is playing; a system sound at most.
+    /// No active capture or playback; system sounds alone do not qualify.
     Background,
 }
 
 impl Tier {
-    /// Tiers 1 and 2 own the route and are worth reclaiming; tier 3 is not.
     fn defends_audio(self) -> bool {
         self != Tier::Background
     }
@@ -392,10 +373,7 @@ fn dispatch_audio_request(mac: u64, intent: u64, why: &'static str) {
         "disconnect"
     };
     thread::spawn(move || match bt::request_audio(mac, intent) {
-        // Always log the Win32 codes, not just the bool. Every one of these has
-        // been logging `= false` with no way to tell why: 0 = ERROR_SUCCESS,
-        // 5 = access denied (needs elevation), 1168 = not found, 1167 = device
-        // not connected. The bool alone made the reclaim campaign undebuggable.
+        // Preserve each service's Win32 error code to distinguish connection failures.
         Some((a, b)) => {
             let ok = a == 0 || b == 0;
             log(&format!(
@@ -531,12 +509,10 @@ fn close_control_session(
     (stopped, closed, recovery_failed)
 }
 
-/// Don't fight for the buds again within this long of the last campaign.
+/// Avoid repeated reclaim attempts while another host may be using the AirPods.
 const RECLAIM_COOLDOWN: Duration = Duration::from_secs(60);
 
-/// Waits before each reclaim attempt, ~39 s in total.
-///
-/// A 10 s deadline missed the AAP return by 3 s in the 2026-08-31 Teams capture.
+/// Waits total 39 s; a captured Teams handoff took about 13 s to restore AAP.
 /// Recheck host activity between attempts and stop when it no longer needs audio.
 const RECLAIM_BACKOFF_MS: [u64; 8] = [1_000, 2_000, 3_000, 4_000, 5_000, 6_000, 8_000, 10_000];
 
@@ -553,10 +529,8 @@ fn force_audio_rebuild(mac: u64, cleanup: bool) {
     ));
 }
 
-/// Reclaim the audio route after a lower-tier event on another device took the
-/// AirPods away from a tier-1/2 session here. Runs on its own thread; leaves
-/// `connect_requested` set while it works so the AAP session re-opens the moment
-/// the link is back, and clears it if the campaign gives up.
+/// Wait for Windows to restore the link while local capture or playback remains active.
+/// Keep the connection request until the link returns or retries end.
 fn spawn_reclaim(ctx: &Ctx, tier: Tier, request: u64) {
     if !ctx.connect_requested.is_current(request) {
         return;
@@ -581,10 +555,7 @@ fn spawn_reclaim(ctx: &Ctx, tier: Tier, request: u64) {
                 log("reclaim: no longer requested — standing down");
                 break;
             }
-            // Re-check the tier: if the call ended or the playback stopped while we
-            // waited, we have nothing left to defend and asking for the buds would
-            // be a steal. This, not a deadline, is what ends a campaign against a
-            // phone that legitimately owns them.
+            // Stop waiting if this PC no longer needs the audio route.
             if !host_tier(&ctx).defends_audio() {
                 log("reclaim: host dropped to tier 3/background — standing down");
                 break;
@@ -596,8 +567,7 @@ fn spawn_reclaim(ctx: &Ctx, tier: Tier, request: u64) {
                 won = true;
                 break;
             }
-            // BluetoothSetServiceState returned error 87 for disconnected AirPods
-            // in the 2026-08-31 logs. Wait for Windows to restore the link.
+            // BluetoothSetServiceState can return error 87 while disconnected; wait for Windows.
             log(&format!(
                 "reclaim: attempt {} — AirPods still away, waiting for the link",
                 i + 1
@@ -611,8 +581,7 @@ fn spawn_reclaim(ctx: &Ctx, tier: Tier, request: u64) {
             log("reclaim: AirPods connected again");
             ctx.overlay("AirPods connected again");
         } else {
-            // Give the buds up: the phone kept them (its own tier 1), so stop
-            // asking. The BLE watcher re-arms on their next appearance.
+            // A new BLE visit or Windows connection can request another session.
             log("reclaim: gave up — the other device keeps the AirPods");
             ctx.connect_requested.release(request);
         }
@@ -1125,17 +1094,15 @@ fn service_mic(
     false
 }
 
-// ---- HR retry constants (mirror the Android HeartRateMonitor companion) ----
+// Heart-rate retry timing follows Android's HeartRateMonitor.
 /// Allow 12 s for the first reading: confidence filtering drops warm-up samples,
 /// and the first accepted sample takes about 6-8 s. Android waits 8 s.
 const HR_FIRST_SAMPLE_TIMEOUT_MS: u64 = 12_000;
 /// Gap after HRM_STATE before the stream start (Android's START_COMMAND_DELAY).
 const HR_START_COMMAND_DELAY_MS: u64 = 120;
 
-/// Sequence number for sensor stream control frames. iOS increments this per
-/// frame; whether the AirPods validate it is untested, so we count up too. Kept
-/// above 127 so it always encodes as the two-byte varint the captures show, and
-/// masked to 14 bits so it never overflows that encoding.
+/// Increment per sensor command as iOS does; device validation is untested.
+/// Keep 128..16383 to preserve the captured two-byte varint encoding.
 static HR_SEQ: AtomicU16 = AtomicU16::new(0);
 
 fn publish_head_tracking(ctx: &Ctx, tracking: &head_tracking::Tracker) {
@@ -1329,20 +1296,16 @@ const HR_MAX_ATTEMPTS: u32 = 4;
 
 /// How one retry campaign ended.
 enum HrOutcome {
-    /// The stream came up — a real sample was decoded; run_receiver keeps decoding.
+    /// A validated sample arrived; the receiver continues decoding.
     Live,
-    /// The user turned HR off mid-campaign (`hr_on` went false).
+    /// The request was disabled or superseded, or its session ended.
     Stopped,
-    /// The transport was lost (no driver), or the enable retries were exhausted with
-    /// only ACKs — give up; re-arms on the next connect / HR re-toggle.
+    /// No driver or no validated sample before retries ran out.
     GiveUp,
 }
 
-/// Enable/disable AirPods Pro 3 heart-rate monitoring. On → spawn a retry thread
-/// that re-sends the RTBuddy AACP 1.3 enable sequence until the first sample
-/// arrives (the stream almost never starts on the first attempt). Off → send the
-/// STOP frame, clear the reading, and let the retry thread notice `hr_on` and
-/// exit. The decoder itself is driven in `run_receiver` off `hr_on`.
+/// Enable retries or stop both firmware-specific streams and clear the reading.
+/// The generation prevents queued work from reviving a disabled stream.
 fn set_heart_rate(ctx: &Ctx, on: bool) {
     let gate = ctx.hr_commands.lock().unwrap();
     let on = on && {
@@ -1456,9 +1419,8 @@ fn expire_heart_rate(state: &mut Snapshot, now_ms: u64) -> bool {
     }
 }
 
-/// Start the HR retry campaign on its own thread — so the ~1 s of init sleeps and
-/// the up-to-8 s sample waits never block the command reader or the recv loop.
-/// Guarded by `hr_retrying` so two campaigns can't run over the one driver.
+/// Keep initialization sleeps and 12 s sample waits off the command and receive threads.
+/// `hr_retrying` permits only one worker on the shared driver.
 fn spawn_hr_retry(ctx: &Ctx) {
     if ctx.hr_retrying.swap(true, Ordering::SeqCst) {
         return;
@@ -1481,7 +1443,7 @@ fn spawn_hr_retry(ctx: &Ctx) {
 
 /// Retry HR enable on the existing channel, following Android's HeartRateMonitor.
 /// An ACK alone does not prove data will arrive; an insufficient MTU can prevent it.
-/// Keep a live stream open for readings and bound failed enables by HR_MAX_ATTEMPTS.
+/// Stop retrying after a validated reading or HR_MAX_ATTEMPTS.
 /// Never reconnect the shared audio/microphone channel for this optional sensor.
 fn hr_retry_campaign(ctx: &Ctx, generation: u64) -> HrOutcome {
     let mut attempt: u32 = 0;
@@ -1495,9 +1457,6 @@ fn hr_retry_campaign(ctx: &Ctx, generation: u64) -> HrOutcome {
                 return HrOutcome::GiveUp;
             }
         };
-        // (No "stop head tracking" first any more: the service it stopped, 0x0E, is the
-        // ACTIVITY classifier, not head tracking, and heart rate streams fine next to
-        // running motion services.)
         // AACP 1.3 session init (connect0/caps0/connect4/caps4), re-sent every attempt
         // so each retry re-establishes the session before the enable.
         let init: [(&[u8], u64); 4] = [
@@ -1515,18 +1474,13 @@ fn hr_retry_campaign(ctx: &Ctx, generation: u64) -> HrOutcome {
             }
             thread::sleep(Duration::from_millis(delay));
         }
-        // Enable + start, faithfully reproducing the working Android sequence
-        // (upstream PR #702): switch on the PPG engine with HRM_STATE (control 0x30),
-        // then start the 1 Hz heart-rate stream (service 19). The earlier
-        // `request_all_descriptors` guess is dropped (Android doesn't send it and it
-        // never helped); the 0x10 DEVMOTION6 stream is unrelated to HR and dropped.
+        // LibrePods PR #702 enables the PPG engine (0x30) before starting 1 Hz reports.
         if !hr_send(ctx, generation, &drv, &aap::HR_ENABLE) {
             return HrOutcome::Stopped;
         }
         thread::sleep(Duration::from_millis(HR_START_COMMAND_DELAY_MS));
-        // The HR "set interval" service differs by firmware (8*: 19; 9*: 84) and
-        // thibaup saw it vary — so set the 1 Hz interval on BOTH 84 and 19; the buds
-        // ignore the wrong one, and the decoder catches the reports on 19/20/84.
+        // Firmware 8* uses interval service 19; 9* uses 84. Send both for compatibility.
+        // Report IDs are discovered separately, with a 19/20/84 fallback.
         let s = next_hr_seq() as u8;
         if !hr_send(
             ctx,
@@ -1550,9 +1504,7 @@ fn hr_retry_campaign(ctx: &Ctx, generation: u64) -> HrOutcome {
             return HrOutcome::Stopped;
         } // 19
 
-        // Wait up to FIRST_SAMPLE_TIMEOUT for a REAL decoded reading. ACKs / a
-        // live-but-empty stream are ignored on purpose — they are exactly the state
-        // we are trying to get past.
+        // Acknowledgments and empty frames do not confirm a usable heart-rate stream.
         let wait_until = Instant::now() + Duration::from_millis(HR_FIRST_SAMPLE_TIMEOUT_MS);
         while Instant::now() < wait_until {
             if !hr_current(ctx, generation) {
@@ -1571,9 +1523,7 @@ fn hr_retry_campaign(ctx: &Ctx, generation: u64) -> HrOutcome {
             "HR retry: attempt={attempt} — no reading in {}s (stream_frames={streaming})",
             HR_FIRST_SAMPLE_TIMEOUT_MS / 1000
         ));
-        // No reading after this attempt. Do NOT rebuild / reconnect the L2CAP channel:
-        // that just re-opens the audio link for an optional feature. Give up after
-        // HR_MAX_ATTEMPTS; the user toggles HR off/on to retry.
+        // Exhausted sensor retries must not reconnect the shared audio channel.
         if attempt >= HR_MAX_ATTEMPTS {
             log(
                 "HR: no reading after the enable retries (ACKs only) — giving up; \
@@ -2287,8 +2237,6 @@ fn apply_command(ctx: &Ctx, cmd: Command) {
             }
         }
         Command::Connect => {
-            // The user accepted the prompt — let the session start, and ask the OS
-            // to (re)connect the audio in case the device was BT-disconnected.
             {
                 let mut state = ctx.state.lock().unwrap();
                 ctx.user_disconnected.store(false, Ordering::Release);
@@ -2309,9 +2257,7 @@ fn apply_command(ctx: &Ctx, cmd: Command) {
             }
         }
         Command::RebuildAudio => {
-            // Deliberately does NOT touch the AAP session: in the failure this
-            // exists for, the session is perfectly healthy and rebuilding it is
-            // both useless and disruptive. Only the audio services are toggled.
+            // Silent playback can occur with a healthy AAP session; request playback recovery.
             log("cmd: rebuild audio route (user)");
             ctx.overlay("Rebuilding the audio route…");
             let (mac, intent) = {
@@ -2331,14 +2277,8 @@ fn apply_command(ctx: &Ctx, cmd: Command) {
             });
         }
         Command::RepairConnection => {
-            // Force a clean reconnect: make sure the session is requested (in case we
-            // were waiting on a prompt) and ask run_receiver to drop + reopen the
-            // driver so a wedged / desynced link gets a fresh AAP session + ATT
-            // channel. The receiver reconnects audio after microphone cleanup.
-            // Debounce: each repair drops and reopens the exclusive driver handle.
-            // Clicking it three times in two seconds (the log shows exactly that)
-            // churns the devnode until it sticks in Code 38 and every later open
-            // fails — the "driver in an error state" the user ends up in.
+            // Repeated handle reopens can leave the devnode in Code 38; debounce repairs.
+            // The receiver reopens AAP and ATT after microphone cleanup.
             {
                 const REPAIR_DEBOUNCE: Duration = Duration::from_secs(5);
                 let mut last = ctx.last_repair.lock().unwrap();
@@ -2390,9 +2330,7 @@ fn apply_command(ctx: &Ctx, cmd: Command) {
             cancel_microphone_request(ctx);
             hearing::invalidate_session();
             silence_mic(ctx);
-            // Real disconnect: drop the control session AND ask the OS to
-            // disconnect the audio (toggle the A2DP/HFP services off). Never
-            // auto-reconnect on our own (a prompt is required).
+            // Release AAP and request audio disconnect after cleanup; block automatic reconnect.
             {
                 let _state = ctx.state.lock().unwrap();
                 ctx.wants_settings_refresh.store(false, Ordering::Release);
@@ -2746,8 +2684,7 @@ fn run_receiver(ctx: Ctx) {
     volume::init(); // COM for the CA volume duck (same MTA)
     log("run_receiver: media init done");
     let mut last_anc = 0u8;
-    // Hosts the AirPods report themselves connected to (AAP 0x2E), and our own
-    // radio address so we can tell ourselves apart from the phone.
+    // Match local radios against AAP 0x2E reports to identify this PC.
     let mut last_devices: Vec<(u64, [u8; 2])> = Vec::new();
     let local_radios = bt::local_radio_addresses();
     log(&format!(
@@ -2867,14 +2804,8 @@ fn run_receiver(ctx: Ctx) {
                 ctx.state.lock().unwrap().connected = false;
                 *ctx.driver_cell.lock().unwrap() = None;
                 ctx.push_state();
-                // Tell the two failures apart. If Windows has NO classic link to
-                // the AirPods, the devnode is simply not published and failing to
-                // open it is correct — wait. But if the OS *does* have them and we
-                // still cannot open the driver, the devnode is wedged (Code 38:
-                // the previous instance never unloaded), and no amount of retrying
-                // clears that — the daemon.log shows 1587 such failures in a row.
-                // Ask the elevated task to restart it; it re-checks the devnode and
-                // no-ops if it turns out healthy. Rate-limited to once every 2 min.
+                // A disconnected device may have no devnode. With a Windows link,
+                // request a rate-limited Code 38 check; the task leaves healthy nodes alone.
                 open_fails += 1;
                 if open_fails >= 4 && bt::is_connected(mac) && devnode::request_recovery(mac) {
                     log("run_receiver: driver wedged while the OS still has the AirPods — requested an elevated devnode restart");
@@ -2909,7 +2840,7 @@ fn run_receiver(ctx: Ctx) {
         {
             let mut st = ctx.state.lock().unwrap();
             st.connected = true;
-            st.link_stale = false; // fresh session — whatever was wedged is gone
+            st.link_stale = false;
             battery_ble::invalidate(&mut st);
             st.anc = 0;
         }
@@ -2928,8 +2859,7 @@ fn run_receiver(ctx: Ctx) {
         }
         let mut sensors = rtbuddy::Discovery::default();
         hr_decoder.set_report_service(None); // Device mappings belong to this connection.
-                                             // Re-arm the HR stream if the user had it on before the (re)connect —
-                                             // through the same retry path (the stream rarely starts first try).
+                                             // Reuse bounded retries when heart-rate monitoring survives a reconnect.
         if ctx.hr_on.load(Ordering::Relaxed) {
             spawn_hr_retry(&ctx);
         }
@@ -2959,14 +2889,11 @@ fn run_receiver(ctx: Ctx) {
         // Count heart-rate signatures separately from motion on the same transport.
         let mut hr_type19 = 0u32;
         let mut hr_type14 = 0u32; // activity-classifier (svc 14) frames
-                                  // Diagnose stale-"connected": throttled log of the raw driver status when
-                                  // it isn't a clean 2, so we can see what "cased" vs "both-out-resting"
-                                  // actually report (the teardown decision hinges on them differing).
+                                  // Throttle diagnostics for non-connected driver states.
         let mut status_diag = Instant::now();
         // Active capture uses its own PCM deadline and recovery policy.
         let mut last_data = Instant::now();
-        // ATT (PSM 0x001F) hearing-aid server diagnostics, polled from the driver
-        // and logged on change (DebugView never showed the driver's KdPrint).
+        // Poll ATT (PSM 0x001F) diagnostics and log only changes.
         let mut att_poll = Instant::now();
         let mut last_att: (i32, u32, u32, i32, u32) = (0, 0, 0, 0, 0);
         loop {
@@ -3268,8 +3195,6 @@ fn run_receiver(ctx: Ctx) {
                                 last_devices = devs;
                             }
                         }
-                        // Audio-route diagnostics — see aap::route_diag. Rare packets,
-                        // so logging them unconditionally costs nothing.
                         if let Some((op, dump)) = aap::route_diag(data) {
                             log(&format!(
                                 "route: 0x{op:02X} {} ({} bytes): {dump}",
@@ -3364,8 +3289,6 @@ fn run_receiver(ctx: Ctx) {
                                 ctx.push_state();
                             }
                         }
-                        // Conversational Awareness: the AirPods signal speech start/stop;
-                        // we (the host, single volume owner) duck/restore the volume.
                         if let Some(status) = aap::parse_conversational_awareness(data) {
                             // Preserve call volume during capture and undo any active duck.
                             if ctx.mic_on.load(Ordering::Acquire)
@@ -3377,7 +3300,6 @@ fn run_receiver(ctx: Ctx) {
                             }
                         }
                         if let Some((model, firmware, serial)) = aap::parse_metadata(data) {
-                            // Device identity (0x1D): store model/firmware/serial once.
                             let changed = {
                                 let _pending = ctx.settings_pending.lock().unwrap();
                                 let mut s = ctx.state.lock().unwrap();
@@ -3422,10 +3344,7 @@ fn run_receiver(ctx: Ctx) {
                             }
                         }
                         if let Some((primary, secondary)) = aap::parse_ear_detection(data) {
-                            // "In case" notification on the transition into the case.
-                            // Ear-detection reports both buds together (never partial,
-                            // unlike the battery packet) and comes over AAP — so this
-                            // is reliable with no BLE, hence no audio static.
+                            // AAP ear detection reports both buds, so case notifications need no BLE scan.
                             let now = [primary, secondary];
                             for i in 0..2 {
                                 if now[i] == aap::EarStatus::InCase
@@ -3497,8 +3416,8 @@ fn run_receiver(ctx: Ctx) {
                 // Capture changes wake this wait without shortening recovery.
                 thread::park_timeout(receiver_idle_wait(mic_on, head_tracking_enabled));
             }
-            // Reset local decoding after interruptions; STOP/START on weak links
-            // previously caused reconnects. Normal capture stop still uses service_mic.
+            // Reset decoder history without STOP/START, which can reconnect weak links.
+            // Normal capture stop still uses service_mic.
             if !ctx.mic_on.load(Ordering::Relaxed) {
                 decoder = None;
                 mic_announced = false;
@@ -3545,10 +3464,7 @@ fn run_receiver(ctx: Ctx) {
                     });
                 }
                 if release {
-                    // Which tier did we hold when the link went? That decides
-                    // whether the loss was legitimate under Apple's order (see
-                    // `Tier`) or a tier-3 event on another device jumping the
-                    // queue — an iPhone notification chime being the case here.
+                    // Local capture or playback permits a bounded wait for the connection to return.
                     let tier = host_tier(&ctx);
                     let cased =
                         recently_cased(last_battery_report, clock.elapsed().as_millis() as u64);
@@ -3573,11 +3489,7 @@ fn run_receiver(ctx: Ctx) {
                     hr_decoder.reset(); // drop HR carry across the reconnect
                     last_anc = 0;
                     if tier.defends_audio() && !cooling && !cased {
-                        // We were playing or on a call: a notification on the
-                        // phone doesn't outrank that. Keep `connect_requested`
-                        // set so the AAP session re-opens as soon as the audio
-                        // link is back, and let the campaign clear it if the
-                        // phone turns out to be holding them for real.
+                        // Keep AAP requested during recovery; the worker clears it on timeout.
                         spawn_reclaim(&ctx, tier, connection_request);
                     } else {
                         // A charging case disconnect is deliberate, even if a
@@ -3773,8 +3685,7 @@ fn main() {
         }
     }
 
-    // The data folder (log, heart-rate db, mic name). The MSI installs the exes in
-    // Program Files and never creates it, so make sure it exists before logging.
+    // Create per-user storage before logging; the installer only creates machine-wide paths.
     if let Ok(la) = std::env::var("LOCALAPPDATA") {
         let _ = std::fs::create_dir_all(format!("{la}\\NTPods"));
     }
@@ -4018,8 +3929,7 @@ fn main() {
         let c = ctx.clone();
         thread::spawn(move || poll_mic(c, receiver));
     }
-    // Volume poller: keep the Snapshot's volume/mute fresh (the daemon owns
-    // volume) so the tray renders it — runs regardless of a paired device.
+    // Poll volume even without paired AirPods so clients reflect the current output.
     {
         let c = ctx.clone();
         thread::spawn(move || {

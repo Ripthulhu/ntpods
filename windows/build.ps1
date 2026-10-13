@@ -17,6 +17,8 @@ param(
 $ErrorActionPreference = 'Stop'
 & python.exe (Join-Path $PSScriptRoot 'tests/test-localization.py')
 if ($LASTEXITCODE) { throw 'Localization checks failed.' }
+& python.exe (Join-Path $PSScriptRoot 'tests/test-aap-extract.py')
+if ($LASTEXITCODE) { throw 'AAP extraction checks failed.' }
 & (Join-Path $PSScriptRoot 'tests\test-build-version.ps1')
 $repo = Split-Path -Parent $PSScriptRoot
 $Out = [IO.Path]::GetFullPath($Out)

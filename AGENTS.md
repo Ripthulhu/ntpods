@@ -60,13 +60,41 @@ older design notes if they disagree.
 For visual changes, compare the affected view before and after in its relevant
 states, including light/dark and a narrow window. Check animation interruptions,
 cached data and missing data when they are affected. Keep unrelated styling unchanged.
+Keep the header centered and reserve space for status and action changes so the
+settings below do not jump. Apply device changes coherently across the header,
+artwork and controls; keep cached readings tied to the correct pair.
+
+When a UI change intentionally changes shared styles or behavior, update
+[DESIGN.md](DESIGN.md) and the matching `.impeccable` guidance in the same change.
+Check values against the implementation and compare with the committed previews
+in `docs/images`. Preserve the established design when fixing a regression;
+do not rewrite the guidelines to justify the regression.
 
 # Writing
 
-Use plain, direct language in documentation, UI text and comments. Cut filler,
-repeated disclaimers and explanations of obvious details. Keep technical facts,
-useful warnings and licensing notices. Project instructions should state the
-rules without conversation quotes, approval anecdotes or assistant work logs.
+Write for someone maintaining or using the project. Use plain language and
+concrete facts; remove filler, promotional claims and repeated explanations.
+Keep necessary warnings where the reader encounters a risky action.
+
+- Comments explain a constraint, protocol quirk, ownership rule or reason the
+  code cannot show. Prefer a short explanation; keep byte layouts and other
+  detail needed to implement the protocol correctly. Do not narrate statements,
+  recount change history, or add assistant commentary.
+- Check claims against the implementation, callers and configuration. Update
+  nearby comments when behavior changes; remove obsolete instructions. Keep
+  licensing, attribution, compiler and tooling directives, security constraints and
+  calibration details intact.
+- Keep one primary reference per topic and link to it. Describe current behavior and
+  reproducible procedures. Replace stale text instead of appending corrections,
+  testing diaries, installation logs or a history of attempts.
+- Keep observations, inferences and untested claims distinct. Hardware results
+  need the relevant version, model, firmware and test conditions. Preserve
+  useful evidence and limitations without turning them into session logs.
+- Keep project instructions durable. No direct user quotes, personal machine
+  details, conversation summaries or approval anecdotes in AGENTS.md.
+- For comment-only edits, verify executable text, strings and configuration are
+  unchanged. Treat doc examples as instructions: check their paths, arguments
+  and links without executing installation or hardware commands just to proofread.
 
 # Before every commit
 

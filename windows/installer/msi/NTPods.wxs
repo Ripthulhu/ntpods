@@ -1,13 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    NTPods.msi — built by build-msi.ps1 from a make-dist.ps1 folder:
-        wix build NTPods.wxs -arch x64 -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext
-            -d DistDir=<dist> -d Version=<x.y.z> -o NTPods.msi
-
-    Installs to Program Files. The real work (test-signing and installing the
-    drivers and the elevated helper tasks) is done by
-    msi-setup.ps1, the same steps install.ps1 runs for the zip install.
-    Settings, logs and heart-rate history stay in %LOCALAPPDATA%\NTPods.
+    Built by build-msi.ps1 from a make-dist.ps1 distribution.
+    msi-setup.ps1 handles driver signing, installation and elevated helper tasks.
+    App files go to Program Files; user data stays in %LOCALAPPDATA%\NTPods.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
@@ -48,9 +43,8 @@
     <Launch Condition="Installed OR (BOOTOPTIONS ~&gt;&lt; &quot;TESTSIGNING&quot;)"
             Message="Test Mode is required. These drivers are not Microsoft production-signed. Test Mode weakens Windows' driver-signature checks: enabling it on your everyday or work PC is a bad idea. Use a dedicated test PC.&#13;&#10;&#13;&#10;On that test PC:&#13;&#10;1. Save your BitLocker recovery key first (https://aka.ms/myrecoverykey). Changing boot settings can trigger recovery.&#13;&#10;2. If Secure Boot blocks Test Mode, turn it off in your firmware/BIOS.&#13;&#10;3. In an admin terminal run: bcdedit /set testsigning on&#13;&#10;4. Reboot and run this installer again. Setup does not change boot settings." />
 
-    <!-- The ACX mic driver only loads on Windows 11 22H2 (build 22621) or newer, so
-         the "ACX microphone" feature below only exists there. VersionNT/WindowsBuild
-         are frozen for compatibility on Windows 10+, hence the registry. -->
+    <!-- ACX requires build 22621 or newer. Read the registry because MSI's
+         VersionNT/WindowsBuild properties are frozen on Windows 10 and later. -->
     <Property Id="OSBUILD">
       <RegistrySearch Id="OsBuild" Root="HKLM" Key="SOFTWARE\Microsoft\Windows NT\CurrentVersion"
                       Name="CurrentBuildNumber" Type="raw" />
@@ -92,7 +86,7 @@
       <RegistryValue Root="HKLM" Key="Software\NTPods" Name="Drivers" Type="integer" Value="1" KeyPath="yes" />
     </Component>
 
-    <!-- Holds no files: this build always uses the hardened ACX microphone. -->
+    <!-- Retain the ACX feature marker for upgrade and uninstall tracking. -->
     <Component Id="MicAcxMarker" Directory="INSTALLFOLDER" Guid="B7C2E4A1-9D3F-4E6B-8A5C-1F0D2E3B4C57">
       <RegistryValue Root="HKLM" Key="Software\NTPods" Name="MicAcx" Type="integer" Value="1" KeyPath="yes" />
     </Component>
@@ -124,7 +118,7 @@
       </Feature>
     </Feature>
 
-    <!-- ==== custom actions (msi-setup.ps1, elevated, as SYSTEM) ==== -->
+    <!-- msi-setup.ps1 actions run elevated as SYSTEM. -->
     <!-- Folder properties end in "\", which would escape the closing quote on the
          command line, hence the trailing "." -->
 
@@ -172,8 +166,7 @@
                   Execute="deferred" Impersonate="no" Return="check" />
 
     <InstallExecuteSequence>
-      <!-- Before files are replaced or removed, stop the running copy (the script is
-           still there: it is only removed by RemoveFiles). -->
+      <!-- Stop the installed copy before RemoveFiles deletes its shutdown helper. -->
       <!-- Embedded: validate the old install and finish microphone shutdown before its uninstaller runs. -->
       <Custom Action="NTPodsPreflight" Before="InstallValidate" />
       <Custom Action="NTPodsStop" Before="RemoveFiles" Condition="Installed" />
@@ -187,7 +180,6 @@
       <ScheduleReboot After="InstallFinalize" Condition="(&amp;Drivers=3) AND NOT (REMOVE~=&quot;ALL&quot;) AND NOT (APPONLYUPGRADE=1 AND WIX_UPGRADE_DETECTED)" />
     </InstallExecuteSequence>
 
-    <!-- ==== UI: welcome, notes, features, progress ==== -->
     <ui:WixUI Id="WixUI_FeatureTree" />
     <WixVariable Id="WixUILicenseRtf" Value="$(sys.SOURCEFILEDIR)License.rtf" />
   </Package>

@@ -1,9 +1,6 @@
 namespace NTPods.WinUI.Services;
 
-/// Convenience facade over the runtime <see cref="Loc"/> service for code-picked
-/// strings (connection status, mute/unmute, mic state, tray, toasts). Delegates to
-/// the current culture, so these follow a live language switch the next time they're
-/// evaluated. Static XAML labels bind to {StaticResource Loc} directly.
+/// Code lookups use the current language; XAML binds to the same <see cref="Loc"/> instance.
 internal static class Localize
 {
     /// Look up a localized string by resw key (falls back to the key itself).

@@ -8,13 +8,13 @@ Native Windows desktop (WinUI 3).
 
 ## Users and purpose
 
-NTPods provides AirPods controls, battery levels and a microphone for Windows while keeping playback in stereo. Hardware testing uses Windows 11, an Intel AX200 and AirPods Pro 3; first-generation AirPods Pro have also been tested for core controls.
+NTPods provides AirPods controls, battery levels, AAC/AAC-ELD playback and a high-quality microphone for Windows 11 22H2 or newer, x64. Playback stays in stereo while the microphone is active. Supported features vary by model; see [model support](docs/WINDOWS-MODEL-SUPPORT.md).
 
 ## Capabilities and constraints
 
 Keep the Rust daemon, driver interfaces and WinUI behavior. Track confirmed settings, pending changes, unsupported features and errors separately. Use control availability and accessible help for routine status. Keep active microphone use, recovery and actionable errors visible.
 
-Preserve existing A2DP playback drivers and codec settings, including Alternative A2DP. Visual changes must not alter Bluetooth connections, microphone streaming, startup registration or device settings.
+NTPods replaces the supported AirPods playback driver and offers AAC and AAC-ELD through the same output device. It does not require Alternative A2DP. Installation backs up the previous driver for restoration on uninstall. Visual changes must not alter Bluetooth connections, audio streaming, startup registration or device settings.
 
 ## Appearance
 

@@ -1,7 +1,7 @@
 # AirPods control, battery and sensor protocol
 
-This describes the Windows implementation as of 0.2.19. It is a reverse-engineered
-reference, not an Apple specification. Packet offsets are zero-based; hex values
+This reference describes NTPods' reverse-engineered Windows implementation.
+Packet offsets are zero-based; hex values
 have a `0x` prefix. `H → B` means host to buds and `B → H` means buds to host.
 
 “Implemented” below means the code constructs or accepts that format. Hardware
@@ -134,7 +134,7 @@ Adaptive strength and Pro 3 Allow Off can apply without an immediate echo. Their
 successfully sent values are stored as requests, without inventing a report.
 Adaptive strength requires a confirmed Adaptive listening mode. Pro 3/9A348
 reconnect reports were coarse (0, 50, 100); that observation did not establish
-three audible levels. The current app sends the full 0–100 range and the user
+three audible levels. The current app sends the full 0–100 range and listening checks
 confirmed an audible effect. A macOS comparison should retain both the requested
 value and each later report.
 
@@ -250,7 +250,8 @@ parses descriptor announcements with bounded field counts and dictionary lengths
 into an entire Bluetooth packet; sequence varints and wrappers change its size.
 
 Head tracking uses [head_tracking.rs](../windows/daemon/src/head_tracking.rs).
-The outgoing payload is field 1 sequence, field 8 ServiceSettings containing
+A recognized device descriptor selects the native path described below. Without
+one, the firmware fallback uses this format. The outgoing payload is field 1 sequence, field 8 ServiceSettings containing
 field 1 service, field 2 value `2`, field 3 five bytes `01 period_us_LE32`.
 Period 40,000 µs starts reporting; zero stops it. Public firmware major 8+ uses
 service `16`, older recognized firmware service `14`. A received sample requires
@@ -285,7 +286,7 @@ the AACP 1.3 CONNECT/CAPABILITIES sequence for services 0 and 4, enables control
 `0x30=1`, then requests 1,000,000 µs intervals on services `84` and `19`. Unlike the
 head-tracking writer, `hr_stream` includes top-level field 2=`2` and a seven-bit
 sequence. Disabling requests interval zero on both services. Existing descriptor
-and raw PPG packet builders remain research helpers. Normal startup now requests
+and raw PPG packet builders remain research helpers. Normal startup requests
 sensor descriptors once per connection.
 
 The HR decoder accepts live log types `1`/`3`, report services `19`/`20`/`84`, and
@@ -364,7 +365,7 @@ its read returned ATT `0x0E` (Unlikely Error). Find Information located its CCCD
 but reading that descriptor returned `0x0A` (Attribute Not Found). Neither
 Custom Transparency nor notification settings were written during these checks.
 
-Host identity is the leading explanation, not a confirmed Windows fix. In the
+Host identity may explain this access failure, but a Windows fix is unverified. In the
 Tahoe pairing capture, the buds requested the host's SDP Device ID before the
 first successful read; Tahoe replied with Apple vendor `0x004C` and vendor source
 `0x0001`. No hearing-enable command preceded that read.

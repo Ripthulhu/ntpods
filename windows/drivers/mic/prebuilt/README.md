@@ -1,12 +1,10 @@
-# Prebuilt NTPodsMic driver package
+# Legacy microphone package
 
-The compiled virtual-microphone driver (`AudioCodec.sys` + `.inf` + `.cat`) so you
-can install it **without building it** — no Visual Studio / C++ / WDK required.
+These upstream `AudioCodec` binaries predate the current access policy and PCM
+bridge contract. They are retained for reference and are not packaged by the
+build. Do not install them or combine them with the current daemon.
 
-`audiocodec.cat` was generated from exactly these two files with
-`inf2cat /driver:. /os:10_X64`. **Rebuilding the driver or editing the INF means
-regenerating the catalog** (WDK machine), otherwise the package won't install.
-
-To install, run the release folder's `install.ps1` from an **admin** PowerShell —
-it test-signs the `.sys` + `.cat` with a local cert and uses `devcon` to (re)create
-the `ROOT\AudioCodec` device, so a virtual microphone appears in Sound > Input.
+Use the MSI or ZIP from a complete [Windows build](../../../../docs/BUILD-WINDOWS.md).
+It compiles the matching driver, regenerates its catalog and configures the
+intended user's access before creating `ROOT\NTPodsMicACX`. The old single-driver
+installer refuses to run because it bypasses that setup.

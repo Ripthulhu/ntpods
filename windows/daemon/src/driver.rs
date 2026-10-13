@@ -1,5 +1,4 @@
-//! Bridge to the NTPodsAAP kernel driver. Cloneable + thread-safe so the
-//! background receive loop and the tray's ANC-send can share one handle.
+//! Shared NTPodsAAP driver handle for the daemon's receive and command threads.
 
 use std::ffi::c_void;
 use std::io;
@@ -340,8 +339,7 @@ impl Driver {
         }
     }
 
-    /// Driver connection state (2 = connected). Reads a state variable only —
-    /// no L2CAP I/O, so it never disturbs the audio link.
+    /// Driver connection state (2 = connected), read without L2CAP traffic.
     pub fn status(&self) -> io::Result<u32> {
         let mut out = [0u8; 32];
         require_reply(

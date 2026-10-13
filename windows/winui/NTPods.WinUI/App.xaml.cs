@@ -17,22 +17,20 @@ public partial class App : Application
     private TrayController? _tray;
     private AppInstance? _instance;
 
-    // Reuse one island window and show connection notifications on false-to-true transitions.
+    // Reuse the island window to avoid WinUI theme teardown on dismissal.
     private IslandWindow? _island;
     private readonly IslandPresence _islandPresence = new();
     private readonly MicrophoneNotifications _micNotifications = new();
     internal GlobalHotkey? MicHotkey { get; private set; }
     internal int MicHotkeyError { get; private set; }
     private Snapshot? _latestSnapshot;
-    // Last-seen model number (from the 0x1D metadata), so message-mode island
-    // popups can show the right device render even without a full Snapshot.
+    // Retain artwork identity for messages that arrive without a snapshot.
     private string _lastModel = "";
     private bool _quitting;
 
     public App()
     {
-        // InitializeComponent loads App.xaml, which creates the single Loc instance
-        // (<services:Loc x:Key="Loc"/>); its ctor publishes Loc.Instance for code.
+        // App.xaml creates the Loc instance shared by code and XAML.
         InitializeComponent();
     }
 
@@ -67,12 +65,10 @@ public partial class App : Application
             client: Daemon);
         _tray.Show();
 
-        // Show daemon overlays in the island on the UI thread.
         Daemon.OverlayReceived += (title, body) =>
             _window.DispatcherQueue.TryEnqueue(() => ShowIslandMessage(title, body));
 
-        // Drive the tray's tooltip / menu / icon badge from daemon state. Snapshots
-        // arrive on a background thread; marshal to the UI thread (same as the window).
+        // Daemon callbacks arrive on a background thread; tray updates require the UI thread.
         Daemon.SnapshotReceived += s =>
             _window.DispatcherQueue.TryEnqueue(() => _tray?.UpdateSnapshot(s));
         Daemon.ConnectionChanged += connected =>
@@ -141,9 +137,7 @@ public partial class App : Application
             if (_island is null)
             {
                 _island = new IslandWindow();
-                // The island hides + reuses itself after each slide-out (it never
-                // calls Window.Close, which fail-fasts in WinUI's theme teardown).
-                // Keep the Closed handler only as a shutdown safety net.
+                // Dismissal hides the island; Closed is only a shutdown fallback.
                 _island.Closed += (_, _) => _island = null;
             }
             _island.ShowConnected(snapshot);
@@ -178,10 +172,7 @@ public partial class App : Application
         }
     }
 
-    /// The tray "Quit": stop the daemon too and exit. On Windows one front-end
-    /// runs at a time, and this app spawned the daemon, so quitting it should not
-    /// leave a headless ntpodsd lingering. (Closing the *window* only hides to
-    /// the tray — the daemon stays; Quit is the full teardown.)
+    /// Quit waits for daemon shutdown; closing the main window only hides it to the tray.
     public async void ExitApp()
     {
         if (_quitting) return;

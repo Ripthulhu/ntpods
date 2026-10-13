@@ -26,7 +26,6 @@
             <TextBlock Text="{Binding [HeartRateSubtitle_Text], Source={StaticResource Loc}}"
                        Foreground="{ThemeResource AppleSecondaryBrush}" FontSize="13"
                        TextWrapping="Wrap" />
-            <!-- Current BPM on the left, min/avg/max of the window on the right. -->
             <Grid ColumnSpacing="16">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
@@ -47,17 +46,13 @@
                            Style="{ThemeResource CaptionTextBlockStyle}"
                            Foreground="{ThemeResource AppleSecondaryBrush}" />
             </Grid>
-            <!-- What the graph shows: live (last minute) or a past session from the
-                 daemon's heart-rate database. The list refreshes when it opens. -->
             <ComboBox x:Name="HistoryPicker"
                       Header="{Binding [HeartRateHistory_Header], Source={StaticResource Loc}}"
                       AutomationProperties.Name="{Binding [HeartRateHistory_Header], Source={StaticResource Loc}}"
                       HorizontalAlignment="Stretch"
                       DropDownOpened="HistoryPicker_DropDownOpened"
                       SelectionChanged="HistoryPicker_SelectionChanged" />
-            <!-- Full-width graph of the recent readings (like HeartRateMiniGraph in
-                 upstream PR #702): the scale's BPM on the left axis, a guide per axis
-                 label, and the value under the pointer on hover. Drawn in code-behind. -->
+            <!-- Graph layout follows LibrePods' HeartRateMiniGraph (PR #702). -->
             <Grid ColumnSpacing="8" Height="140">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />

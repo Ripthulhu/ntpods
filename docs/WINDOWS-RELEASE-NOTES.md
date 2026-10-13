@@ -8,60 +8,56 @@
 > Secure Boot can block Test Mode. Save your BitLocker recovery key before
 > changing either setting; Windows may ask for it at the next boot.
 
-Use **NTPods.msi** for the setup wizard. **NTPods-Windows.zip** contains the same app and drivers
-with `install.ps1` for manual installation from an administrator PowerShell.
-Both require Windows 11 22H2 or newer, x64, and Test Mode already enabled.
-Neither installer changes Secure Boot, Memory Integrity or Test Mode for you.
-After uninstalling the drivers, turn Test Mode off and restore any Secure Boot
-setting you changed. See [Microsoft's test-signing documentation](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/the-testsigning-boot-configuration-option).
+## Installation
+
+Use **NTPods.msi** for the setup wizard. **NTPods-Windows.zip** contains the same
+app and drivers with `install.ps1` for manual installation from an administrator
+PowerShell. Both require Windows 11 22H2 or newer, x64, and Test Mode already
+enabled. Neither installer changes Secure Boot, Memory Integrity or Test Mode.
+After removing the drivers, turn Test Mode off and restore any Secure Boot
+setting you changed. See
+[Microsoft's test-signing documentation](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/the-testsigning-boot-configuration-option).
+
+## Playback
 
 The packages replace the playback driver for AirPods 1–4, Pro 1–3 and the original
-Max (Lightning and USB-C), using verified Apple AudioSink IDs. Pro 1 and Pro 3
-have passed short hardware checks; the other models are available to test.
-AAC and AAC-ELD share that AirPods output; both offer Best effort and
-Manual kbps settings under **Playback and microphone**. No separate speaker or
-per-app routing is needed. Initial driver replacement may require selecting the
-output again. Codec changes keep the same output.
+Max (Lightning and USB-C), using model-qualified Apple AudioSink IDs. AAC and
+AAC-ELD share the paired AirPods output. Initial driver replacement may require
+selecting that output again; later codec changes keep it.
 
-An initial connection rejection now gets two automatic retries. Disconnecting
-or changing the selected pair cancels the wait.
+Choose the codec under **Playback and microphone**. AAC is the default. Each
+codec saves its own Best effort or Manual bitrate. AAC-ELD also offers
+**Variable (experimental)** with a 256 kbps peak limit; it has encoder coverage
+but no recorded hardware pass. Best effort selects the highest supported rate
+and does not adapt to radio conditions.
 
-AAC remains the default. A pair without a supported AAC-ELD profile uses AAC
-with its saved bitrate setting. The codec menu keeps the saved preference, and
-its tooltip shows the codec in use. Bitrate controls follow the active or
-attempted codec, so a rejected AAC bitrate can be corrected during fallback.
-Stream failures and invalid manual bitrates still report errors.
+If the pair lacks a supported AAC-ELD profile, NTPods uses AAC with its saved
+bitrate. The menu keeps the preferred codec, and its tooltip shows the one in
+use. Unsupported manual rates and stream failures report errors. Stop recording
+and wait for microphone recovery before changing playback settings.
 
-Failed upgrades also restore the original driver-backup records, so the previous
-installer can still repair or uninstall the app.
+Keep NTPods running, or enable Start with Windows. Playback stops if its backend
+stops. During uninstall, keep supported pairs connected so setup can restore
+their saved playback drivers. For pairs connected for the first time after
+installation, there may be no saved provider; restoration then uses Microsoft's
+Bluetooth audio driver. If a pair was absent during uninstall, reconnect it and
+run `restore-playback.ps1` from the extracted Windows ZIP as administrator.
+Unlisted models keep their current provider.
 
-AAC-ELD uses plain ELD without SBR, constant bitrate and two access units per
-packet with a 48 kHz RTP clock, following the
-[USBPods fork tested on Pro 3](https://github.com/han-um/USBPods-Pico2W-2-way-audio-implement/blob/d18d083bc52de3143d8d922c4abaae865cc0dc28/src/btstack/btstack_avdtp_source.c).
-Best effort selects the highest supported rate; it does not adapt to radio
-conditions.
+## Compatibility
 
-Keep NTPods running for playback, or enable Start with Windows. If the backend
-stops, playback stops too. Keep the AirPods connected during uninstall to restore
-the previous playback provider. Its package is retained during installation.
-A pair first connected after installation may bind automatically; without a
-saved prior binding, uninstall restores Microsoft's Bluetooth audio driver.
-Unlisted models keep their current provider. Available controls depend on model
-and firmware; see the [model list](https://github.com/Ripthulhu/ntpods/blob/main/docs/WINDOWS-MODEL-SUPPORT.md#native-playback).
+AirPods Pro 1 (6F21) and Pro 3 (9A348) passed short AAC/AAC-ELD stereo checks on an
+Intel AX200, including 70-second AAC-ELD playback. Pro 3 also kept stereo during
+short microphone captures and after stopping. Pro 1's high-quality microphone
+is disabled. Other models, long sessions and repeated lifecycle checks remain
+unverified with the native playback driver.
 
-Short tests on AirPods Pro 3 (A3063, firmware 9A348) with Intel AX200 confirmed
-stereo AAC at 256 kbps, AAC-ELD at 128, 192 and 256 kbps, and working volume and
-mute. Both codecs kept stereo playback during 20-second microphone captures
-and after microphone stop and recovery. Codec changes kept the same Windows
-output.
-
-First-generation AirPods Pro (A2084, firmware 6F21) also passed AAC at 256 kbps
-and AAC-ELD at 128, 192 and 256 kbps. Both models completed continuous 70-second
-AAC-ELD tests without audible dropouts. Pro 1's high-quality microphone remains
-disabled. Long sessions, repeated lifecycle tests and other models remain
-untested. See the
+Available controls depend on model and firmware. Head tracking displays raw
+movement; Custom Transparency, hearing controls and AAC-ELD Variable mode still
+need hardware validation. See the
+[model list](https://github.com/Ripthulhu/ntpods/blob/main/docs/WINDOWS-MODEL-SUPPORT.md),
 [playback test guide](https://github.com/Ripthulhu/ntpods/blob/main/windows/playback/TESTING.md)
-and [validation record](https://github.com/Ripthulhu/ntpods/blob/main/docs/WINDOWS-VALIDATION.md).
+and [validation results](https://github.com/Ripthulhu/ntpods/blob/main/docs/WINDOWS-VALIDATION.md).
 
 The ACX microphone driver's licensing issue remains unresolved. Retain all bundled
 licenses and notices; see

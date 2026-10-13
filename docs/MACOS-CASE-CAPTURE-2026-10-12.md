@@ -1,12 +1,10 @@
-# Case and sensor captures, 2026-10-12
+# Pro 3 case and sensor protocol findings
 
-AirPods Pro 3 on 9A348, using the Tahoe Intel AX200 VM described in the
-[capture guide](MACOS-PROTOCOL-CAPTURE.md). Two runs covered removing the buds,
-returning them, closing the lid and connecting the charger. The second run
-connected the charger while the lid was open, then closed it.
-
-The observed battery, charging and lid fields agree with NTPods. Other
-messages remain partially decoded or unused.
+Evidence: AirPods Pro 3 firmware 9A348, captured on 2026-10-12 with the
+[Tahoe Intel AX200 VM](MACOS-PROTOCOL-CAPTURE.md). Battery, charging and lid fields
+agree with NTPods. The captures also identify sensor descriptors, native motion
+reports and settings that remain partly decoded. These are host-to-bud traces;
+they do not expose all communication between the buds and case.
 
 ## Battery and case results
 
@@ -22,21 +20,17 @@ The BLE check resolved private addresses with the paired identity key before
 filtering advertisement types. All matching Apple manufacturer reports were
 type `0x07`; none of another type matched that identity in either run.
 
-An isolated harness included production
-[battery_ble.rs](../windows/daemon/src/battery_ble.rs) unchanged and ran
-`parse_keys` and `Keys::decode` through Windows BCrypt. It compared results with
-an independent interpretation of the captured fields:
+Production [battery_ble.rs](../windows/daemon/src/battery_ble.rs) decoded the
+captured manufacturer data through Windows BCrypt and matched an independent
+interpretation of the fields:
 
 | Run | Apple manufacturer reports checked | Reports accepted for the paired buds | Disagreements |
 | --- | ---: | ---: | ---: |
 | Bud removal, return and charger | 816 | 106 | 0 |
 | Charger with lid open, then closed | 742 | 96 | 0 |
 
-Keys and captured payloads passed through process memory and stdin, without
-writing NTPods' key cache. This checked the decoder rather than the Windows
-advertisement watcher or UI. AAP battery and wear fields were checked against
-`parse_battery`, `parse_ear_detection` and their state handling in
-[aap.rs](../windows/daemon/src/aap.rs).
+This validates the decoder on these captures, not the Windows watcher or UI.
+AAP battery and wear results also match [aap.rs](../windows/daemon/src/aap.rs).
 
 ## Closed-case reporting
 
@@ -44,9 +38,9 @@ In the first run, the last matching BLE report preceded the AAP case-charging
 report by about 255 ms. The case therefore reported charging through the live
 control connection even though no later matching BLE report arrived.
 
-In the second run, BLE reported the case charging at 21:44:37.563 UTC and the
-lid closed at 21:44:51.604. The last matching report arrived at 21:44:54.341;
-none followed through 21:46:37. Scanning continued and received other devices.
+In the second run, the last matching BLE report arrived 2.737 seconds after the
+lid-closed report; none followed during the next 103 seconds. Scanning continued
+and received other devices.
 The controller used active 30 ms scan windows every 300 ms, without duplicate
 filtering. That 10% scan duty cycle cannot establish that the buds transmitted
 nothing over the air.
@@ -118,8 +112,8 @@ The names below come from the buds' dictionaries. The two runs agree:
 | 20 | `HeartRate` | 601 | 126 | 1258 / 1505 |
 
 The pinned community decoder assigns SPL0/HostLibHID/HeartRate to 17/18/19;
-those fixed labels are shifted on this firmware. NTPods already accepts heart
-rate on services 19, 20 and 84, and uses motion service 16 on firmware 8+.
+those fixed labels differ on this firmware. NTPods discovers matching descriptors
+before using firmware fallbacks; see the [sensor reference](WINDOWS-AIRPODS-CONTROL-PROTOCOL.md#sensors).
 
 The HeartRate HID descriptor independently confirms report ID 1 as 17 data
 bytes plus the ID, matching NTPods' 18-byte record. Its first data field is
@@ -161,8 +155,7 @@ This matches LibrePods' custom Transparency layout:
 
 Only this unchanged value was observed; individual field effects need
 controlled testing. The similar hearing-assistance layout at `0x002A` has a
-different header, so its encoder cannot be reused unchanged. NTPods did not
-implement custom Transparency settings at capture time. The later
+different header, so its encoder cannot be reused unchanged. NTPods'
 [experimental implementation](WINDOWS-AIRPODS-CONTROL-PROTOCOL.md#att-settings)
 uses UUID discovery, bounds and finite-float checks, preservation of unknown
 bytes and readback after writes. Its Windows read failure and acoustic testing
@@ -210,17 +203,11 @@ incomplete. Neither run contains an Apply Staged Assets request or response,
 including nested messages. These exchanges do not establish a firmware
 installation or another battery path after the control connection closes.
 
-### Wearing and movement follow-up
+### Primary-bud handoff
 
-The wearing and movement capture ran from 22:12:48 to 22:14:36 UTC. It began with
-the buds in the case, then covered putting both in the ears and marked head
-turns/nods. User confirmations follow the physical actions, so their timestamps
-are not exact insertion times.
-
-The link connected once at frame 317, with no HCI disconnect event afterward.
-Role `0x08` changed from `01 00 01 00` to `02 00 01 01` at frame 2144
-(22:13:17.839 UTC). The reference mapping identifies a left-to-right primary
-handoff. A second set of sensor announcements followed at frames 2174–2210;
+A separate wearing/movement capture recorded a primary-bud handoff without an
+HCI disconnect. Role `0x08` changed from `01 00 01 00` to `02 00 01 01`
+at frame 2144. The reference mapping identifies a left-to-right primary handoff. A second set of sensor announcements followed at frames 2174–2210;
 their sequence restarted and log type changed from 3 to 1. These changes
 therefore do not require a new Bluetooth connection.
 
@@ -241,17 +228,10 @@ The Transparency characteristic remained unchanged across 21 reads and eight
 writes; each value matched the earlier 104-byte configuration. No new ATT
 discovery changed the UUID mapping.
 
-No new AAP opcode family or UARP asset tag appeared. Completed HSML/VERS assets
-matched the case runs byte for byte. UARP also repeated discovery and added
-downstream acknowledgments. Four transfers were incomplete; three later assets
-contained only their headers, so their missing contents cannot be called
-unchanged. Reused asset IDs require separating transfers by their announcement.
-Fourteen MTIC assets completed, with some new lengths but no established event
-field meanings. No firmware apply command appeared. The capture contains
-13,425 frames with no drops, truncation or Lua errors. Wireshark's native
-dissector marks one Read Clock command-complete event at frame 1037 malformed;
-the frame is fully captured. That unresolved warning concerns HCI clock
-decoding, outside the AAP fields analyzed here.
+HSML/VERS assets matched the case runs; MTIC lengths varied without established
+field meanings. Incomplete transfers cannot establish unchanged contents, and
+reused asset IDs require separating transfers by announcement. No firmware apply
+command appeared.
 
 ### Active SPL0 probes
 
@@ -267,7 +247,7 @@ service 18 in nested field 1 and report bytes in nested field 3. A feature
 write maps to field 8 with service 18, type 2 and the complete report bytes;
 field 9 acknowledges it.
 
-The final SPL0 capture tested `01 40 42 0F 00`, using the 1,000,000 µs
+A worn-bud SPL0 capture tested `01 40 42 0F 00`, using the 1,000,000 µs
 interval encoding known from the other sensors. Both buds were in the ears.
 Readback confirmed that exact value, and a native input listener then ran for
 12 seconds. It received zero callbacks. The wire capture also contains no
@@ -288,19 +268,14 @@ Waiting one second between a write and readback worked in the final run;
 the cause of the earlier local failures remains unverified. Acknowledgments
 and retained configuration alone do not establish a working stream.
 
-The final capture has 388 frames, with no drops, truncation, Lua errors,
-malformed markers or HCI connection/disconnection events. All 15 AAP messages
-are SPL0 RTBuddy transactions. Raw captures and the bounded probe helpers stay
-outside Git. No SPL0 decoder or sound-level UI was added.
+SPL0 remains undecoded. Acknowledged configuration writes alone do not justify
+a sound-level display.
 
 ### Native head-tracking comparison
 
-A temporary CoreMotion app requested headphone motion through macOS. Direct
-launch over SSH left authorization undetermined and produced no motion reports.
-Launching through LaunchServices displayed the Motion prompt; after approval,
-two captures received live service-16
-reports. The JXA callback counter stayed at zero, so these results use the
-Bluetooth capture rather than the app's counter.
+An authorized CoreMotion headphone-motion request produced live service-16
+reports in two captures. The probe's JXA callback counter did not advance;
+measurements below come from Bluetooth packets.
 
 Both runs use field-8 feature writes with report type 2:
 
@@ -328,14 +303,12 @@ the zero-interval write, before its acknowledgment; nothing follows the
 acknowledgment during the remaining 3.38 seconds. The first run has no
 reports after its zero-interval write and a 3.41-second capture tail.
 
-At capture time, NTPods accepted field 7 with 58 data bytes and log types 1/3.
-The later [sensor implementation](WINDOWS-AIRPODS-CONTROL-PROTOCOL.md#sensors)
-also accepts these macOS envelopes. The two-byte service prefix must not
+The [sensor implementation](WINDOWS-AIRPODS-CONTROL-PROTOCOL.md#sensors)
+accepts these macOS envelopes. The two-byte service prefix must not
 shift sensor offsets when comparing the 58-byte packed form with the
 56-byte report data. Their field units and pose interpretation remain
-unverified. Both probes stopped and exited; Bluetooth stayed with Tahoe.
-Neither capture has drops, truncation or RTBuddy parse errors. Each has 11
-native Wireshark Read Clock warnings on fully captured HCI frames; those
+unverified. Neither capture has drops, truncation or RTBuddy parse errors.
+Each has 11 native Wireshark Read Clock warnings on fully captured HCI frames; those
 warnings remain unresolved and do not concern the sensor payloads.
 
 ### Sources
@@ -348,15 +321,12 @@ warnings remain unresolved and do not concern the sensor payloads.
 
 ## Capture quality and limits
 
-The first and second case runs contain 9,146 and
-8,808 frames, with no capture drops or truncated frames. Fresh FastConnect setup
-provides channel mappings. Three local guards fix valid empty-tail reads in the
-pinned Lua dissectors; twelve synthetic tests pass, including malformed-length
-checks. Both traces then decode without Lua errors. Raw captures and the pinned
-upstream checkout are unchanged. Separate bounded parsers checked capabilities,
-RTBuddy dictionaries, HID report sizes and complete UARP assets in both runs.
-The capability, protobuf and dictionary parsers also passed synthetic truncation
-checks. Only sanitized summaries were saved.
+The two case traces have 9,146 and 8,808 frames, with no capture drops or
+truncation. Fresh FastConnect setup supplies channel mappings. Local empty-tail
+guards were needed for the pinned Lua dissectors; bounded parsers checked
+capabilities, RTBuddy dictionaries, HID sizes and complete UARP assets. The
+wearing and native-motion captures include unresolved Wireshark Read Clock
+warnings on complete HCI frames, outside the AAP fields analyzed here.
 
 The captures show traffic between this host and the buds. They do not expose
 all bud-to-bud or bud-to-case radio traffic, prove every field's meaning, or

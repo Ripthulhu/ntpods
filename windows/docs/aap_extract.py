@@ -14,7 +14,7 @@ import sys
 
 AAP_HEADER = bytes([0x04, 0x00, 0x04, 0x00])
 
-# opcode (byte after the 04 00 04 00 header) -> human name
+# Names for the little-endian AAP opcode at offset 4.
 OPCODES = {
     0x04: "battery",
     0x06: "ear-detection",
@@ -27,7 +27,7 @@ OPCODES = {
     0x17: "rtbuddy (heart-rate)",
 }
 
-# control-command id (byte after opcode 0x09) -> human name
+# Control ID at offset 6, after the two-byte opcode.
 CONTROL_IDS = {
     0x0D: "ANC (1=off 2=NC 3=transparency 4=adaptive)",
     0x26: "adaptive/personalized volume",
@@ -37,11 +37,10 @@ CONTROL_IDS = {
     0x34: "allow-off",
 }
 
-# battery component id -> name; status byte -> meaning
 BATT_COMPONENT = {0x01: "headphone", 0x02: "right", 0x04: "left", 0x08: "case"}
 BATT_STATUS = {0x01: "charging", 0x02: "not-charging", 0x04: "disconnected", 0x05: "charging-in-case"}
 
-# grab runs of hex bytes: "04 00 04 00", "04:00:04:00", or "04000400"
+# Accept contiguous hex bytes or space/colon separators.
 HEX_RUN = re.compile(r"(?:[0-9a-fA-F]{2}[\s:]*){4,}")
 
 
@@ -56,8 +55,8 @@ def to_bytes(token: str) -> bytes:
 
 
 def annotate(b: bytes) -> str:
-    if len(b) >= 5 and b[:4] == AAP_HEADER:
-        op = b[4]
+    if len(b) >= 6 and b[:4] == AAP_HEADER:
+        op = int.from_bytes(b[4:6], "little")
         name = OPCODES.get(op, f"opcode 0x{op:02x} (UNKNOWN)")
         extra = ""
         if op == 0x09 and len(b) >= 8:
@@ -77,9 +76,10 @@ def annotate(b: bytes) -> str:
                 parts.append(f"{comp}={level}%/{status}")
                 base += 5
             extra = "  " + "  ".join(parts)
-        elif op == 0x06 and len(b) >= 7:
-            ear = {0x00: "in-ear", 0x02: "in-case", 0x03: "disconnected"}
-            extra = f"  primary={ear.get(b[5], hex(b[5]))} secondary={ear.get(b[6], hex(b[6]))}"
+        elif op == 0x06 and len(b) >= 8:
+            ear = {0x00: "in-ear", 0x01: "out-of-ear", 0x02: "in-case",
+                   0x03: "disconnected", 0x04: "transitional"}
+            extra = f"  primary={ear.get(b[6], hex(b[6]))} secondary={ear.get(b[7], hex(b[7]))}"
         return f"{name}{extra}"
     return "(non-AAP)"
 
@@ -89,7 +89,7 @@ def main() -> None:
     for line in sys.stdin:
         for m in HEX_RUN.finditer(line):
             b = to_bytes(m.group())
-            if len(b) >= 5 and b[:4] == AAP_HEADER:
+            if len(b) >= 6 and b[:4] == AAP_HEADER:
                 seen += 1
                 hexs = " ".join(f"{x:02x}" for x in b)
                 print(f"{annotate(b):<48}  {hexs}")

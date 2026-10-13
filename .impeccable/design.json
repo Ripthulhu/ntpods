@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-10-11T10:17:44Z",
+  "generatedAt": "2026-10-13T11:59:32Z",
   "title": "Design System: NTPods WinUI",
   "extensions": {
     "platform": {
@@ -15,12 +15,18 @@
         "windows/winui/NTPods.WinUI/Controls/NoiseControlCard.xaml.cs",
         "windows/winui/NTPods.WinUI/Controls/ListeningModeLayout.cs",
         "windows/winui/NTPods.WinUI/Controls/FeaturesCard.xaml",
-        "windows/winui/NTPods.WinUI/Controls/BatteryCard.xaml"
+        "windows/winui/NTPods.WinUI/Controls/BatteryCard.xaml",
+        "windows/winui/NTPods.WinUI/Controls/DeviceHeader.xaml",
+        "windows/winui/NTPods.WinUI/Services/SectionTransitions.cs",
+        "windows/winui/NTPods.WinUI/Services/ArtworkTransitions.cs",
+        "windows/winui/NTPods.WinUI/Popup/IslandView.xaml",
+        "windows/winui/NTPods.WinUI/Popup/IslandWindow.cs",
+        "windows/winui/NTPods.WinUI/Popup/IslandMotion.cs"
       ],
       "previewScope": "HTML layout examples; use the XAML controls for native appearance and interaction.",
       "primaryText": "WinUI TextFillColorPrimaryBrush",
       "highContrast": "Custom colors map to SystemColorWindowColor, SystemColorWindowTextColor, SystemColorHighlightColor and SystemColorHighlightTextColor.",
-      "inheritedTemplates": ["DefaultButtonStyle", "DefaultToggleButtonStyle", "DefaultToggleSwitchStyle", "TextBox", "ComboBox", "RadioButtons", "Slider", "NavigationView", "MenuFlyout", "InfoBar"],
+      "inheritedTemplates": ["DefaultButtonStyle", "DefaultToggleButtonStyle", "DefaultToggleSwitchStyle", "TextBox", "ComboBox", "RadioButtons", "Slider", "MenuFlyout", "InfoBar"],
       "themePairs": {
         "NTPodsAccentBrush": ["accent-light", "accent-dark"],
         "AppleToggleColor": ["toggle-light", "toggle-dark"],
@@ -60,16 +66,16 @@
     },
     "typographyMeta": {
       "page-title": { "displayName": "Page title", "purpose": "App settings heading; inherits the native theme font." },
-      "device-title": { "displayName": "Device name", "purpose": "Centered, wrapping device name." },
+      "device-title": { "displayName": "Device name", "purpose": "Centered single-line device name with ellipsis and a reserved header height." },
       "section-title": { "displayName": "Section title", "purpose": "Secondary-color label above an inset group." },
-      "body": { "displayName": "Row label", "purpose": "Settings labels and expander headings." },
-      "status": { "displayName": "Status and helper", "purpose": "Descriptions, pending requests and capability state." },
+      "body": { "displayName": "Row label", "purpose": "Settings labels and expander headings at normal weight." },
+      "status": { "displayName": "Status and helper", "purpose": "Supporting text and actionable errors; routine pending or unavailable detail belongs in control states and accessible help." },
       "label": { "displayName": "Compact label", "purpose": "Listening modes and battery parts." }
     },
     "elevation": {
       "groups": "Solid fills without custom shadows or outer borders.",
       "selection": "Refracting glass capsule with a fine rim and soft shadow; native fallback uses a one-DIP AppleDividerBrush border.",
-      "nativeSurfaces": "Menu, tooltip and control feedback use WinUI templates.",
+      "nativeSurfaces": "Standard menus, tooltips and control feedback use WinUI templates; the tray uses its own XAML/acrylic window.",
       "serialPrivacy": "The serial field alone uses AcrylicBrush with TintOpacity 0.55 and TintLuminosityOpacity 0.9."
     },
     "interaction": {
@@ -85,17 +91,17 @@
       "name": "Inset group, light",
       "kind": "card",
       "refersTo": "group-light",
-      "description": "Light group with a native body label and secondary helper text.",
-      "html": "<section class=\"ds-group-light\"><span class=\"ds-group-title\">Automatic ear detection</span><p class=\"ds-group-helper\">Pause playback when you remove an earbud.</p></section>",
-      "css": ".ds-group-light{background:#FFFFFF;color:CanvasText;border-radius:24px;padding:20px;font-family:'Segoe UI',sans-serif}.ds-group-title{font-size:16px}.ds-group-helper{font-size:13px;color:#636366;margin:6px 0 0}"
+      "description": "Light group with the native body label style.",
+      "html": "<section class=\"ds-group-light\"><span class=\"ds-group-title\">Automatic pause</span></section>",
+      "css": ".ds-group-light{background:#FFFFFF;color:CanvasText;border-radius:24px;padding:20px;font-family:'Segoe UI',sans-serif}.ds-group-title{font-size:16px}"
     },
     {
       "name": "Inset group, dark",
       "kind": "card",
       "refersTo": "group-dark",
-      "description": "Dark group using the paired surface and secondary text resources.",
-      "html": "<section class=\"ds-group-dark\"><span class=\"ds-group-dark-title\">Automatic ear detection</span><p class=\"ds-group-dark-helper\">Pause playback when you remove an earbud.</p></section>",
-      "css": ".ds-group-dark{color-scheme:dark;background:#1C1C1E;color:CanvasText;border-radius:24px;padding:20px;font-family:'Segoe UI',sans-serif}.ds-group-dark-title{font-size:16px}.ds-group-dark-helper{font-size:13px;color:#A1A1A6;margin:6px 0 0}"
+      "description": "Dark group with the native body label style.",
+      "html": "<section class=\"ds-group-dark\"><span class=\"ds-group-dark-title\">Automatic pause</span></section>",
+      "css": ".ds-group-dark{color-scheme:dark;background:#1C1C1E;color:CanvasText;border-radius:24px;padding:20px;font-family:'Segoe UI',sans-serif}.ds-group-dark-title{font-size:16px}"
     },
     {
       "name": "Quiet action",
@@ -135,15 +141,12 @@
     "keyCharacteristics": [],
     "rules": [],
     "dos": [
-      "Do use theme resources for custom fills and preserve Windows high-contrast mappings.",
-      "Do keep localized labels, visible keyboard focus and accessible names on custom compositions.",
-      "Do display confirmed, pending, unavailable and error states distinctly.",
-      "Do reuse the existing device artwork and proportional image scaling."
+      "Reuse the native controls, shared theme resources and motion helpers. Preserve keyboard focus, accessible names, high contrast and reduced motion.",
+      "Keep routine status in the control state, tooltip or accessible help. Show actionable errors once and keep active microphone or recovery state visible.",
+      "Keep settings centered, side margins scrollable and the scrollbar at the window edge. State changes must not shift stable content.",
+      "Check long translated labels, different models, missing readings and interrupted animations alongside light, dark and narrow layouts.",
+      "Use the committed images in `docs/images` as appearance references, checking them against the current source before replacing them. Keep README screenshots prominent and the video secondary. Capture sharp images at high resolution and videos with 60 distinct frames per second; leave space between the app and island and remove capture-tool highlights. Preview data stays isolated from real device commands."
     ],
-    "donts": [
-      "Show Off according to the model and Allow Off setting; hide it while Adaptive is expanded.",
-      "Don't treat a drag preview or an outgoing request as confirmed device state.",
-      "Don't replace native input and accessibility behavior with a visual-only control."
-    ]
+    "donts": []
   }
 }

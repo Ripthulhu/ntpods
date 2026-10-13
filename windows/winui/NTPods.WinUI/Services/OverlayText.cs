@@ -2,14 +2,9 @@ using System.Collections.Generic;
 
 namespace NTPods.WinUI.Services;
 
-/// The daemon (Rust) emits overlay/notification text in English. Map the fixed
-/// phrases to the app's localized resources so toasts and the island match the UI
-/// language. Interpolated bodies (battery %, device names) are passed through
-/// unchanged for now — localizing those needs the daemon to send keys, not text.
+/// Maps known English notification phrases to localized resources.
 public static class OverlayText
 {
-    // English daemon body → resource key. Reuses the ANC / status keys the rest of
-    // the UI already uses.
     private static readonly Dictionary<string, string> Exact = new()
     {
         ["Off"] = "Anc_Off",
@@ -40,9 +35,7 @@ public static class OverlayText
             if (!string.IsNullOrEmpty(s)) return s;
         }
 
-        // Interpolated bodies (battery %, connect/case events): translate the known
-        // English fragments the daemon emits, leaving the numbers. Order matters —
-        // multi-word phrases before the bare "Case ".
+        // Replace longer phrases before "Case " so battery and lid messages still match.
         var t = body;
         t = t.Replace("Case battery low —", Localize.Get("Overlay_CaseBatteryLow"));
         t = t.Replace("Battery low —", Localize.Get("Overlay_BatteryLow"));

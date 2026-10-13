@@ -1,27 +1,16 @@
 <#
-    NTPods ZIP installer. NTPods.msi uses the same shared installation steps.
+    ZIP installer for Windows 11 22H2 or newer. Uses the same setup functions as
+    NTPods.msi: sign and install the AAP, ACX microphone and playback drivers;
+    copy the apps to Program Files; register helper tasks and startup entries.
+    The distribution includes all inputs; development tools are not required.
 
-    Test-signs and installs the kernel drivers:
-      • NTPodsAAP  — opens the AirPods AAP L2CAP channel (battery, ANC, mic, …).
-      • NTPodsMic  — a virtual microphone so any app can use the AirPods mic.
-                     Hardened ACX driver; Windows 11 22H2 or newer only.
-      • NTPodsAudio — replaces the paired AirPods playback driver for AAC/AAC-ELD.
-    Then copies the daemon + WinUI app to %ProgramFiles%\NTPods, registers the
-    two elevated helper tasks (driver recovery, mic rename) and adds the apps to
-    startup (the WinUI app launches minimised to the tray).
+    Use a test PC. Before running as administrator:
+      1. Save the BitLocker recovery key.
+      2. Disable Secure Boot if it blocks test signing.
+      3. Run bcdedit /set testsigning on, then reboot.
 
-    Run as administrator after you have:
-      1. Backed up your BitLocker recovery key.
-      2. Disabled Secure Boot in your firmware/BIOS.
-      3. Enabled test signing:  bcdedit /set testsigning on   (then rebooted).
-
-    The distribution includes the driver packages, catalogs, devcon and apps.
-    Setup uses PowerShell Authenticode signing; no development tools are needed
-    on the test PC.
-
-    Usage (elevated):  powershell -ExecutionPolicy Bypass -File .\install.ps1
-    With BitLocker on it asks you to confirm the recovery key is saved; -Yes
-    skips that question (unattended installs).
+    Usage: powershell -ExecutionPolicy Bypass -File .\install.ps1
+    -Yes skips the BitLocker recovery-key confirmation for unattended installs.
 #>
 param([switch]$Yes, [ValidateSet('auto', 'acx')][string]$MicDriver = 'acx')
 $ErrorActionPreference = 'Stop'
@@ -30,7 +19,7 @@ $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $dest = Join-Path $env:ProgramFiles 'NTPods'
 $sid = Get-CurrentUserSid
 
-# ---- 0. preflight: check before changing certificates or drivers ------------
+# Validate before changing certificates or drivers.
 Write-Warning 'NTPods requires Test Mode, which weakens Windows driver-signature checks. These experimental drivers are not Microsoft production-signed. Do not enable Test Mode on your everyday or work PC for NTPods; use a dedicated test PC.'
 if (-not (Test-Admin)) { throw 'Run this from an ADMINISTRATOR PowerShell.' }
 Assert-UserSid $sid
@@ -74,14 +63,13 @@ if ($missing) {
     throw "This install folder is incomplete. Download the release again. Missing:`n  " + ($missing -join "`n  ")
 }
 
-# ---- 1. validate protected destinations before driver changes ---------------
+# Validate protected destinations before driver changes.
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
 Assert-ProtectedInstallPath $dest
 Stop-NTPods
 $setupDir = Initialize-SetupDirectory
 Remove-SetupLeftovers $env:LOCALAPPDATA
 
-# ---- 2. drivers -----------------------------------------------------------
 $work = Join-Path $setupDir "drivers-$([guid]::NewGuid())"
 $transactionId = [guid]::NewGuid().ToString()
 try {
@@ -92,8 +80,6 @@ finally {
     }
 }
 
-# ---- 3. copy the apps -------------------------------------------------------
-# The daemon owns the driver + AAP session + mic; the WinUI app is its IPC client.
 Write-Host "==> Copying the apps to $dest"
 Assert-ProtectedInstallPath $dest
 foreach ($f in 'ntpodsd.exe', 'avcodec-61.dll', 'avutil-59.dll', 'swresample-5.dll', 'ntpods-aac-encoder.exe', 'ntpods-eld-encoder.exe', 'fdk-aac.dll', 'fix-driver.ps1', 'rename-mic.ps1', 'setup-common.ps1', 'audio-driver.ps1', 'restore-playback.ps1', 'stop-ntpods.ps1', 'msi-setup.ps1', 'uninstall.ps1') {
@@ -107,16 +93,13 @@ Copy-Item (Join-Path $here 'licenses') $dest -Recurse -Force
 # installed copy so startup and the scheduled tasks don't get blocked or prompted.
 Get-ChildItem $dest -Recurse -File | Unblock-File
 
-# ---- 4. elevated on-demand helper tasks -------------------------------------
 Register-NTPodsTasks $dest $sid
 New-Item -Path 'HKLM:\SOFTWARE\NTPods' -Force | Out-Null
 Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\NTPods' -Name InstalledUserSid -Value $sid
 Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\NTPods' -Name InstallKind -Value 'zip'
 
-# ---- 5. auto-start at login -------------------------------------------------
-# The daemon runs in the user's session to access their audio devices.
-# WinUI starts hidden (--tray). These are the same Run values used by the app's
-# "Start with Windows" setting.
+# The daemon needs the user's audio session. These Run values also back the
+# app's Start with Windows setting; --tray keeps the window hidden at login.
 Write-Host '==> Adding the daemon + WinUI app to startup...'
 $startup = Get-StartupDir $env:APPDATA
 foreach ($l in 'NTPods Daemon.lnk', 'NTPods.lnk') {   # older installs used shortcuts

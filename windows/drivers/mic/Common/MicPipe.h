@@ -6,11 +6,8 @@ Module Name:
 
 Abstract:
 
-    NTPods hi-res microphone bridge (Phase 2). A global ring buffer that
-    user mode fills with decoded PCM over an IOCTL, and the ACX capture stream
-    engine drains one packet per notification tick (see StreamEngine.cpp
-    ProcessPacket). Exposed to user mode through a control device
-    (\\.\NTPodsMic).
+    The daemon writes decoded PCM to \\.\NTPodsMic. The ACX capture engine
+    reads the shared ring once per notification tick.
 
     PCM format: mono, 16-bit, 48000 Hz.
 
@@ -34,9 +31,7 @@ Environment:
     CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_WRITE_DATA)
 
 //
-// IOCTL: user mode reads a capture-activity counter (ULONG). It advances every
-// time an app pulls a capture packet, so the tray can tell when the mic is
-// actually being recorded and auto-enable/disable the hi-res stream.
+// The first ULONG counts packets filled by the capture engine, including silence.
 // If the output buffer holds 8 bytes, a second ULONG reports running capture
 // streams; the original 4-byte result is retained for older callers.
 // Value (precomputed): 0x00226004.
@@ -65,10 +60,8 @@ MicPipeInit(
 
 //
 // Create the control device (\Device\NTPodsMic + \DosDevices\NTPodsMic)
-// that exposes IOCTL_NTPODS_MIC_WRITE_PCM. Driver-scoped and created once;
-// safe to call again (returns STATUS_SUCCESS if already created). Best-effort:
-// a failure here must not fail device add (the mic still enumerates, just with
-// no user-mode feed yet).
+// that exposes the PCM IOCTLs. Returns success if it already exists.
+// Device add tolerates failure; the capture endpoint then produces silence.
 //
 NTSTATUS
 MicPipeCreateControlDevice(
@@ -98,10 +91,8 @@ MicPipeRead(
 );
 
 //
-// Publish how many bytes the capture side pulls per tick (called from
-// CStreamEngine::AllocateRtPackets). The ring's latency trim keeps at least two
-// of these buffered, so a client that captures in large chunks doesn't underrun
-// on every read.
+// CCaptureStreamEngine::AllocateRtPackets supplies the capture packet size.
+// Backlog trimming retains at least two packets, within MIC_RT_MAX_PACKET_BYTES.
 //
 VOID
 MicPipeSetPacketSize(

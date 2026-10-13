@@ -1,7 +1,5 @@
 //! Bounded heart-rate decoding with device-announced report IDs and legacy fallback.
 
-// ---- constants (mirror the Kotlin companion object) ----
-
 const AACP_RTBUDDY_HEADER_LENGTH: usize = 12;
 const MAX_RTBUDDY_PAYLOAD_LENGTH: usize = 16 * 1024;
 
@@ -23,17 +21,13 @@ const KNOWN_HEART_RATE_STATUS_TAILS: [[u8; 3]; 6] = [
 const FIELD_LOG_TYPE: u32 = 2;
 const FIELD_SERVICE: u32 = 1;
 const FIELD_COMMAND_PAYLOAD: u32 = 3;
-// Services that carry HR REPORTS, per the maintainer + thibaup (Discord 2026-08-13):
-// 8* firmware sets AND reports on 19 (HEARTRATE); 9* firmware sets on 84
-// (HEARTRATE_COMMAND) but the readings arrive on 20. Accept all three so we catch the
-// data whichever service the firmware reports on.
+// Legacy report IDs from LibrePods PR #702 and the maintainer's firmware notes:
+// 8* uses service 19; 9* enables on 84 and reports on 20. Discovery takes precedence.
 const HEART_RATE_REPORT_SERVICES: [u64; 3] = [84, 20, 19];
 const HEART_RATE_PAYLOAD_LENGTH: usize = 18;
 const HEART_RATE_BPM_OFFSET: usize = 1;
-/// Byte 2 is the sensor's confidence: ~20 while the PPG warms up, then 160..240
-/// once it locks (measured on Windows 2026-09-29; matches SAGIRIxr's PR #702
-/// data). Warm-up readings can be wildly off yet still inside 30..220 (SAGIRIxr saw
-/// 169 and 137 at rest), so gate on confidence rather than trusting the range.
+/// Confidence is about 20 during warm-up and 160..240 once locked (LibrePods PR #702
+/// and Windows captures). Warm-up BPM can pass the range check, so filter on confidence too.
 const HEART_RATE_CONFIDENCE_OFFSET: usize = 2;
 const MIN_HEART_RATE_CONFIDENCE: u8 = 0x80;
 const HEART_RATE_STATUS_TAIL_OFFSET: usize = 15;
@@ -57,8 +51,6 @@ const WIRE_FIXED32: u8 = 5;
 /// type=0x0004, service=0x0004, opcode=0x0017, descriptor=0x00100000 — the
 /// AACP/RTBuddy SensorDataWX frame prefix (first 10 bytes of the 12-byte header).
 const RTBUDDY_FRAME_PREFIX: [u8; 10] = [0x04, 0x00, 0x04, 0x00, 0x17, 0x00, 0x00, 0x00, 0x10, 0x00];
-
-// ---- proto scaffolding ----
 
 struct ProtoField {
     number: u32,
@@ -86,7 +78,7 @@ struct VarintRead {
     next_index: usize,
 }
 
-/// One HEARTRATE(19) command: its candidate payload byte-slices.
+/// Candidate payloads from one heart-rate command, independent of its service ID.
 struct HeartRateCommand {
     payload_candidates: Vec<Vec<u8>>,
 }
@@ -190,8 +182,7 @@ impl RtBuddyHeartRateDecoder {
     }
 }
 
-/// Classify a reassembled frame; returns a validated sample (BPM + confidence) if (and only if) it is a
-/// live HEARTRATE record with an accepted payload.
+/// Accept only live heart-rate frames with a valid payload, BPM and confidence.
 fn classify_frame(frame: &[u8], report_service: Option<u8>) -> Option<HrSample> {
     let top_level = parse_proto_message(frame, AACP_RTBUDDY_HEADER_LENGTH, frame.len())?;
 
@@ -454,14 +445,11 @@ fn read_varint(data: &[u8], start: usize, end: usize) -> Option<VarintRead> {
     None
 }
 
-// ---- byte-array helpers (mirror the Kotlin extension functions) ----
-
 fn read_le16(data: &[u8], offset: usize) -> usize {
     (data[offset] as usize) | ((data[offset + 1] as usize) << 8)
 }
 
-/// Diagnostic: does this chunk contain an RTBuddy live-frame prefix? Used only
-/// for logging whether the AirPods are actually streaming HR frames.
+/// Diagnostic prefix check; it does not validate a heart-rate reading.
 pub fn contains_frame_prefix(data: &[u8]) -> bool {
     index_of_prefix(data, &RTBUDDY_FRAME_PREFIX, 0).is_some()
 }

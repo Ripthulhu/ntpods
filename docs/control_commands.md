@@ -1,243 +1,68 @@
-# Control Commands
+# AACP control commands
 
-This catalog includes identifiers extracted from Apple's stack that NTPods does
-not expose or accept. The [Windows protocol reference](WINDOWS-AIRPODS-CONTROL-PROTOCOL.md)
-lists the implemented allowlist, model gates and confirmation behavior. Device
-support must be established separately from an identifier's presence here.
+The catalog records identifiers extracted from Apple's Bluetooth stack (build
+23B5044l). Some are unimplemented or have unverified values. The
+[Windows protocol reference](WINDOWS-AIRPODS-CONTROL-PROTOCOL.md#setting-values-and-confirmation)
+lists NTPods' accepted controls, model gates and confirmation behavior.
 
-AACP control commands use the 16-bit opcode `9`. Each command is seven bytes plus the four-byte header (`04 00 04 00`).
+Control packets are eleven bytes:
 
-An AACP packet is formatted as:
-
-`04 00 04 00 [opcode, little endian] [data]`
-
-Control commands use this layout:
-
-```
+```text
 04 00 04 00 09 00 [identifier] [data1] [data2] [data3] [data4]
 ```
 
-Unused bytes are `0x00`. In the observed packets, `data3` and `data4` are always zero. `data2`
-usually carries a separate setting for the second bud, such as its long-press mode, or a second
-state variable for one feature, such as Hearing Aid.
+The opcode is `0x0009`, little-endian. Unused value bytes are zero.
+Most listed commands use one value byte. Two-byte commands can carry per-bud
+settings or paired state fields.
 
-## Identifiers and details 
+| ID | Reference name | Value bytes |
+| --- | --- | --- |
+| `0x01` | Mic Mode | `0x00` = Automatic, `0x01` = Right, `0x02` = Left. |
+| `0x05` | Button Send Mode | One byte; logged as "Set Button Send Mode: %d", meaning unverified. |
+| `0x06` | Owns connection | `0x01` = own, `0x00` = doesn't own. |
+| `0x0A` | Ear Detection | `0x01` = enabled, `0x02` = disabled. |
+| `0x12` | VoiceTrigger for Siri | `0x01` = enabled, `0x02` = disabled. |
+| `0x14` | SingleClickMode | One byte; values unverified. |
+| `0x15` | DoubleClickMode | One byte; values unverified. |
+| `0x16` | ClickHoldMode | Right byte, then left byte; `0x01` = Noise control, `0x05` = Siri. |
+| `0x17` | DoubleClickInterval | `0x00` = Default, `0x01` = Slower, `0x02` = Slowest. |
+| `0x18` | ClickHoldInterval | 0x00 = Default, `0x01` = Slower, `0x02` = Slowest. |
+| `0x1A` | ListeningModeConfigs | Bitmask, Off mode = `0x01`, ANC=`0x02`, Transparency = `0x04`, Adaptive = `0x08`. |
+| `0x1B` | OneBudANCMode | `0x01` = enabled, `0x02` = disabled |
+| `0x1C` | CrownRotationDirection | `0x01` = reversed, `0x02` = default. |
+| `0x0D` | ListeningMode | 1 = Off, 2 = noise cancellation, 3 = transparency, 4 = adaptive. |
+| `0x1E` | AutoAnswerMode | One byte; values unverified. |
+| `0x1F` | Chime Volume | First byte 0–100, second byte `0x50` in LibrePods' Android rewrite writer. |
+| `0x20` | Connect Automatically | `0x01` = enabled, `0x02` = disabled. |
+| `0x23` | VolumeSwipeInterval | `0x01` = Default, `0x02` = Longer, `0x03` = Longest in LibrePods' Android rewrite UI. |
+| `0x24` | Call Management Config | `[0x00, 0x03]` = usual single/double-press layout; `[0x00, 0x02]` = flipped. This device setting alone does not integrate call gestures with Windows apps. |
+| `0x25` | VolumeSwipeMode | `0x01` = enabled, `0x02` = disabled |
+| `0x26` | Adaptive Volume Config | `0x01` = enabled, `0x02` = disabled |
+| `0x27` | Software Mute config | One byte; values unverified. |
+| `0x28` | Conversation Detect config | `0x01` = enabled, `0x02` = disabled |
+| `0x29` | SSL | One byte; values unverified. |
+| `0x2C` | Hearing Aid Enrolled and Hearing Aid Enabled | Enrolled byte, then enabled byte; `0x01` = enabled, `0x02` = disabled |
+| `0x2E` | AutoANC Strength | 0 to 100. |
+| `0x2F` | HPS Gain Swipe (swipe to adjust amplification) | One byte; values unverified. |
+| `0x30` | HRM enable/disable state | One byte; values unverified. |
+| `0x31` | In Case Tone config | `0x01` = enabled, `0x02` = disabled |
+| `0x32` | Siri Multitone config | One byte; values unverified. |
+| `0x33` | Hearing Assist config | `0x01` = enabled, `0x02` = disabled |
+| `0x34` | Allow Off Option for Listening Mode config | `0x01` = enabled, `0x02` = disabled |
+| `0x35` | Sleep Detection config | `0x01` = enabled, `0x02` = disabled |
+| `0x36` | Allow Auto Connect | `0x01` = allow, `0x02` = disallow |
+| `0x37` | PPE Toggle config | One byte; values unverified. |
+| `0x38` | Personal Protective Equipment Cap Level config | One byte; values unverified. |
+| `0x39` | Raw Gestures config | Bitmask, single press = `0x01`, double press = `0x02`, triple press = `0x04`, long press = `0x08`. |
+| `0x3A` | Temporary Pairing Config | `0x01` = Temporary, `0x02` = Permanent |
+| `0x3B` | Dynamic End of Charge config | `0x01` = enabled, `0x02` = disabled in NTPods. |
+| `0x3C` | System Siri message config | One byte; values unverified. |
+| `0x3D` | Hearing Aid Generic config | One byte; values unverified. |
+| `0x3E` | Uplink EQ Bud config | One byte; values unverified. |
+| `0x3F` | Uplink EQ Source config | One byte; values unverified. |
+| `0x40` | In Case Tone Volume | 0 to 100. |
+| `0x41` | Disable Button Input config | One byte; values unverified. |
 
-| Command identifier | Description                                    |
-| ------------------ | ---------------------------------------------- |
-| 0x01               | Mic Mode                                       |
-| 0x05               | Button Send Mode                               |
-| 0x06               | Owns connection                                |
-| 0x0A               | Ear Detection                                  |
-| 0x12               | VoiceTrigger for Siri                          |
-| 0x14               | SingleClickMode                                |
-| 0x15               | DoubleClickMode                                |
-| 0x16               | ClickHoldMode                                  |
-| 0x17               | DoubleClickInterval                            |
-| 0x18               | ClickHoldInterval                              |
-| 0x1A               | ListeningModeConfigs                           |
-| 0x1B               | OneBudANCMode                                  |
-| 0x1C               | CrownRotationDirection                         |
-| 0x0D               | ListeningMode                                  |
-| 0x1E               | AutoAnswerMode                                 |
-| 0x1F               | Chime Volume                                   |
-| 0x20               | Connect Automatically                          |
-| 0x23               | VolumeSwipeInterval                            |
-| 0x24               | Call Management Config                         |
-| 0x25               | VolumeSwipeMode                                |
-| 0x26               | Adaptive Volume Config                         |
-| 0x27               | Software Mute config                           |
-| 0x28               | Conversation Detect config                     |
-| 0x29               | SSL                                            |
-| 0x2C               | Hearing Aid Enrolled and Hearing Aid Enabled   |
-| 0x2E               | AutoANC Strength                               |
-| 0x2F               | HPS Gain Swipe                                 |
-| 0x30               | HRM enable/disable state                       |
-| 0x31               | In Case Tone config                            |
-| 0x32               | Siri Multitone config                          |
-| 0x33               | Hearing Assist config                          |
-| 0x34               | Allow Off Option for Listening Mode config     |
-| 0x35               | Sleep Detection config                         |
-| 0x36               | Allow Auto Connect                             |
-| 0x37               | PPE Toggle config                              |
-| 0x38               | Personal Protective Equipment Cap Level config |
-| 0x39               | Raw Gestures config                            |
-| 0x3A               | Temporary Pairing Config                       |
-| 0x3B               | Dynamic End of Charge config                   |
-| 0x3C               | System Siri message config                     |
-| 0x3D               | Hearing Aid Generic config                     |
-| 0x3E               | Uplink EQ Bud config                           |
-| 0x3F               | Uplink EQ Source config                        |
-| 0x40               | In Case Tone Volume                            |
-| 0x41               | Disable Button Input config                    |
-
-## Command Details
-
-### 0x01 - Mic Mode
-Format: Single value (1 byte)
-Values: `0x00` = Automatic, `0x01` = Right, `0x02` = Left.
-
-### 0x05 - Button Send Mode
-Format: Single value (1 byte)
-Additional notes: Logged as "Set Button Send Mode: %d". May involve context updates for button handling.
-
-### 0x06 - Owns connection
-Format: Single value (1 byte)
-Values: `0x01` = own, `0x00` = doesn't own.
-
-### 0x0A - Ear Detection
-Format: Single value (1 byte)
-Values: `0x01` = enabled, `0x02` = disabled.
-
-### 0x12 - VoiceTrigger for Siri
-Format: Single value (1 byte)
-Values: `0x01` = enabled, `0x02` = disabled.
-
-### 0x14 - SingleClickMode
-Format: Single value (1 byte)
-
-### 0x15 - DoubleClickMode
-Format: Single value (1 byte)
-
-### 0x16 - ClickHoldMode
-Format: Two values (2 bytes; First byte = right bud, Second byte = left bud).  
-Values: `0x01` = Noise control, `0x05` = Siri.  
-
-### 0x17 - DoubleClickInterval
-Format: Single value (1 byte)
-Values: 0x00 = Default, `0x01` = Slower, `0x02` = Slowest.  
-
-### 0x18 - ClickHoldInterval
-Format: Single value (1 byte)
-Values: 0x00 = Default, `0x01` = Slower, `0x02` = Slowest.  
-
-### 0x1A - ListeningModeConfigs
-Format: Single value (1 byte)
-Values: Bitmask, Off mode = `0x01`, ANC=`0x02`, Transparency = 0x04, Adaptive = `0x08`.  
-
-### 0x1B - OneBudANCMode
-Format: Single value (1 byte)
-Values: `0x01` = enabled, `0x02` = disabled
-
-### 0x1C - CrownRotationDirection
-Format: Single value (1 byte)
-Values: `0x01` = reversed, `0x02` = default.  
-
-### 0x0D - ListeningMode
-Format: Single value (1 byte)
-Values: 1 = Off, 2 = noise cancellation, 3 = transparency, 4 = adaptive.  
-
-### 0x1E - AutoAnswerMode
-Format: Single value (1 byte)
-
-### 0x1F - Chime Volume
-Format: Two values (2 bytes), followed by two zero bytes.
-Values: First byte 0 to 100, second byte `0x50` in LibrePods' Android rewrite writer.
-
-### 0x20 - Connect Automatically
-Format: Single value (1 byte)
-Values: `0x01` = enabled, `0x02` = disabled.
-
-### 0x23 - VolumeSwipeInterval
-Format: Single value (1 byte)
-Values: `0x01` = Default, `0x02` = Longer, `0x03` = Longest in LibrePods' Android rewrite UI.
-
-### 0x24 - Call Management Config
-Format: Two values (2 bytes), followed by two zero bytes.
-Values: `[0x00, 0x03]` = usual single/double-press layout; `[0x00, 0x02]` = flipped.
-This device setting alone does not integrate call gestures with Windows apps.
-
-### 0x25 - VolumeSwipeMode
-Format: Single value (1 byte)
-Values: `0x01` = enabled, `0x02` = disabled
-
-### 0x26 - Adaptive Volume Config
-Format: Single value (1 byte)
-Values: `0x01` = enabled, `0x02` = disabled
-
-### 0x27 - Software Mute config
-Format: Single value (1 byte)
-
-### 0x28 - Conversation Detect config
-Format: Single value (1 byte)
-Values: `0x01` = enabled, `0x02` = disabled
-
-### 0x29 - SSL
-Format: Single value (1 byte)
-
-### 0x2C - Hearing Aid Enrolled and Hearing Aid Enabled
-Format: Two values (2 bytes; First byte - enrolled, Second byte = enabled)
-Values: `0x01` = enabled, `0x02` = disabled
-
-### 0x2E - AutoANC Strength
-Format: Single value (1 byte)
-Values: 0 to 100.  
-
-### 0x2F - HPS Gain Swipe (swipe to adjust amplification)
-Format: Single value (1 byte)
-
-### 0x30 - HRM enable/disable state
-Format: Single value (1 byte)
-
-### 0x31 - In Case Tone config
-Format: Single value (1 byte)
-Values: `0x01` = enabled, `0x02` = disabled
-
-### 0x32 - Siri Multitone config
-Format: Single value (1 byte)
-
-### 0x33 - Hearing Assist config
-Format: Single value (1 byte)
-Values: `0x01` = enabled, `0x02` = disabled
-
-### 0x34 - Allow Off Option for Listening Mode config
-Format: Single value (1 byte)
-Values: `0x01` = enabled, `0x02` = disabled
-
-### 0x35 - Sleep Detection config
-Format: Single value (1 byte)
-Values: `0x01` = enabled, `0x02` = disabled
-
-### 0x36 - Allow Auto Connect
-Format: Single value (1 byte)
-Values: `0x01` = allow, `0x02` = disallow
-
-### 0x37 - PPE Toggle config
-Format: Single value (1 byte)
-
-### 0x38 - Personal Protective Equipment Cap Level config
-Format: Single value (1 byte)
-
-### 0x39 - Raw Gestures config
-Format: Single value (1 byte)
-Values: Bitmask, single press = `0x01`, double press = `0x02`, triple press = `0x04`, long press = `0x08`.  
-
-### 0x3A - Temporary Pairing Config
-Format: Single value (1 byte)
-Values: `0x01` = Temporary, `0x02` = Permanent
-
-### 0x3B - Dynamic End of Charge config
-Format: Single value (1 byte)
-
-### 0x3C - System Siri message config
-Format: Single value (1 byte)
-
-### 0x3D - Hearing Aid Generic config
-Format: Single value (1 byte)
-
-### 0x3E - Uplink EQ Bud config
-Format: Single value (1 byte)
-
-### 0x3F - Uplink EQ Source config
-Format: Single value (1 byte)
-
-### 0x40 - In Case Tone Volume
-Format: Single value (1 byte)
-Values: 0 to 100.  
-
-### 0x41 - Disable Button Input config
-Format: Single value (1 byte)
-
-> [!NOTE]
-> These identifiers were extracted from the iOS 19.1 Beta (23B5044l) Bluetooth stack. Known value
-> ranges are listed above; unspecified values remain unverified.
+An identifier's presence in Apple's stack does not establish support on every
+AirPods model. Keep unknown values unknown, and require device evidence before
+adding them to the Windows write allowlist.

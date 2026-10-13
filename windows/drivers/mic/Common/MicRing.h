@@ -7,7 +7,7 @@
 #define MIC_RING_BYTES 0x8000u
 #define MIC_RING_HIGH_WATERMARK 0x3C00u
 #define MIC_RING_TARGET_BYTES 0x2580u
-// At 48 kHz PCM16, 100 ms leaves room for two packets plus one packet of jitter.
+// A 100 ms packet at 48 kHz PCM16 mono leaves room in the ring for three packets.
 #define MIC_RT_MAX_PACKET_BYTES 9600u
 static_assert(3u * MIC_RT_MAX_PACKET_BYTES <= MIC_RING_BYTES, "Capture packets exceed the PCM ring");
 

@@ -68,13 +68,13 @@ changes language. `Localize.Get()` uses the same service for code lookups.
 
 To add a language, translate a copy of `Strings/en-US`, add its embedded resource
 to the project, and register the culture in `Loc.cs` and the language selector.
-The project also compiles the `.resw` files into `resources.pri`; keep that file
+The project also compiles the `.resw` files into `ntpods-winui.pri`; keep that file
 in the distribution.
 
 ## Design
 
 Follow [DESIGN.md](../../DESIGN.md) and [AGENTS.md](../../AGENTS.md) when changing
-the interface. The approved design uses one focused settings page, rounded
+the interface. The app uses one focused settings page, rounded
 sections, AirPods artwork and the LibrePods-inspired listening control and
 notification island. Keep motion, typography and spacing consistent with the
 existing controls.

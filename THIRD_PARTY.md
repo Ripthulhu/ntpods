@@ -88,7 +88,7 @@ permission to relicense or redistribute the combined driver.
 
 ## FFmpeg
 
-The AAC-ELD decoder and optional AAC-LC playback encoder dynamically link
+The AAC-ELD decoder and AAC-LC playback encoder dynamically link
 FFmpeg 7.1 LGPL-3.0-or-later shared libraries, pinned to
 the BtbN monthly build `autobuild-2026-07-31-14-10`, source revision
 `n7.1.5-12-g1fdbca85aa`, and archive SHA-256
@@ -102,7 +102,7 @@ Experimental downloads include the exact FFmpeg source and matching BtbN build
 recipes, with pinned hashes. Dependency source archives are not bundled; see
 [source archive notes](docs/FFMPEG-SOURCES.md) for the contents and limitations.
 
-## Optional AAC-ELD playback encoder
+## AAC-ELD playback encoder
 
 AAC-ELD playback uses a separate worker linked to FDK-AAC 2.0.3. The worker's
 original code is MIT-licensed; FDK retains its own license. Packages include

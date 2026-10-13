@@ -18,8 +18,7 @@ const HA_ON_33: [u8; 11] = [
     0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x33, 0x01, 0x00, 0x00, 0x00,
 ];
 
-/// Wake the buds' ATT server so the outbound ATT client channel can open. Does NOT
-/// touch noise control (no Transparency switch).
+/// Enable hearing assistance to open ATT without changing the listening mode.
 fn wake(drv: &Driver) {
     let _ = drv.send(&HA_ON_2C);
     thread::sleep(Duration::from_millis(400));
@@ -48,8 +47,7 @@ fn round(drv: &Driver, label: &str, pdu: &[u8], out: &mut Vec<String>, buf: &mut
     n
 }
 
-/// Probe the AirPods' GATT server as a client. Wakes it, then sends the standard
-/// discovery requests, dumping raw replies for us to interpret.
+/// Discover primary services and record raw replies and notifications.
 pub fn probe(drv: &Driver) -> Vec<String> {
     let _transaction = crate::hearing::HEARING_STATE
         .lock()
@@ -91,11 +89,9 @@ pub fn probe(drv: &Driver) -> Vec<String> {
         start = last_end + 1;
     }
 
-    // Subscribe to every NOTIFY characteristic found in the discovery dump, then
-    // listen. Value handles from the enumerated char list; the CCCD (0x2902) sits at
-    // valHandle+1 (verified: hearing-aid char 0x2A has its CCCD at 0x2B). The driver's
-    // att_recv is a FIFO drain, so clear stale frames first for the responses to line
-    // up with the request we just sent.
+    // Fixed handles from a captured characteristic list, with CCCDs at value handle + 1.
+    // These subscriptions are not derived from this probe's service discovery.
+    // Drain stale frames before each write because ATT replies share one FIFO.
     let notify_vh: [u16; 7] = [0x0007, 0x000A, 0x000D, 0x0010, 0x0018, 0x0021, 0x002A];
     out.push("gatt-probe: === subscribing NOTIFY chars ===".into());
     for &vh in &notify_vh {
@@ -121,8 +117,7 @@ pub fn probe(drv: &Driver) -> Vec<String> {
         ));
     }
 
-    // Listen ~15 s for Handle Value Notifications (0x1B) / Indications (0x1D). Log the
-    // source handle + payload hex so we can spot anything sensor/HR-shaped.
+    // Listen for up to 30 half-second reads; notifications can end reads early.
     drain(drv, &mut buf);
     out.push("gatt-probe: === listening ~15s ===".into());
     let mut notifs = 0u32;
@@ -154,8 +149,7 @@ pub fn probe(drv: &Driver) -> Vec<String> {
     out
 }
 
-/// Drain any queued/stale ATT frames (the driver's att_recv is FIFO), so the next
-/// send/recv pair lines up. Stops on the first empty read.
+/// Drain at most eight queued ATT frames, stopping on the first empty read.
 fn drain(drv: &Driver, buf: &mut [u8]) {
     for _ in 0..8 {
         if drv.att_recv(120, buf).unwrap_or(0) == 0 {

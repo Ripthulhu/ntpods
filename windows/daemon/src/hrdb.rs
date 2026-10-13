@@ -1,16 +1,6 @@
-//! Heart-rate tracking database — a dedicated SQLite file,
-//! `%LOCALAPPDATA%\NTPods\heart-rate.sqlite3`, kept apart from everything else.
-//!
-//! Schema (v1):
-//! - `sessions`: one row per monitoring run — the AirPods' address, when the first
-//!   reading arrived, and when monitoring stopped (HR switched off or the buds
-//!   disconnected; NULL while open or if the daemon died mid-session).
-//! - `samples`: every validated reading — its session, Unix time in ms, BPM, and
-//!   the sensor's confidence byte (payload[2]; 160..240 once locked).
-//!
-//! Writes go through a channel to one writer thread, so the AAP receive loop never
-//! waits on the disk. If the database can't be opened, tracking is disabled and
-//! logged once; heart rate itself keeps working.
+//! Heart-rate history in `%LOCALAPPDATA%\NTPods\heart-rate.sqlite3`.
+//! A writer thread keeps disk I/O off the AAP receiver. Failure to open the database
+//! disables history without stopping live readings. Session end times remain NULL after a crash.
 
 use std::sync::mpsc::{self, Sender};
 use std::thread;
@@ -34,7 +24,7 @@ enum Event {
     },
 }
 
-/// Handle to the writer thread; cheap to clone into `Ctx`.
+/// Cloneable handle to the database writer.
 #[derive(Clone)]
 pub struct HrDb {
     tx: Option<Sender<Event>>,
@@ -48,8 +38,7 @@ fn now_ms() -> i64 {
 }
 
 impl HrDb {
-    /// Open (or create) the database and start the writer thread. `log` is the
-    /// daemon's logger, so failures land in daemon.log.
+    /// Open the database and start its writer; log errors without disabling the sensor.
     pub fn open(log: fn(&str)) -> HrDb {
         let path = match std::env::var("LOCALAPPDATA") {
             Ok(la) => std::path::Path::new(&la)

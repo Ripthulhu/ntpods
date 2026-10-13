@@ -77,7 +77,7 @@ CodecC_EvtAcxPinSetDataFormat(
 
 Routine Description:
 
-    This ACX pin callback sets the device/mixed format.
+    The capture format is fixed; format changes are unsupported.
 
 Return Value:
 
@@ -89,8 +89,6 @@ Return Value:
     UNREFERENCED_PARAMETER(DataFormat);
 
     PAGED_CODE();
-
-    // NOTE: update device/mixed format here.
 
     return STATUS_NOT_SUPPORTED;
 }
@@ -221,9 +219,7 @@ Capture_AllocateSupportedFormats(
     // Allocate the formats this circuit supports.
     //
 
-    // Offer 48000 Hz only: NTPods always feeds decoded audio resampled to
-    // 48 kHz, so exposing 44100 too made apps (e.g. Voice Recorder) open at
-    // 44100 and play our 48 kHz samples ~8% slow (deep/robotic).
+    // The daemon supplies 48 kHz PCM; advertising another rate changes playback speed.
     RETURN_NTSTATUS_IF_FAILED(AllocateFormat(Pcm48000c1, Circuit, Device, &formatPcm48000c1));
 
     ///////////////////////////////////////////////////////////

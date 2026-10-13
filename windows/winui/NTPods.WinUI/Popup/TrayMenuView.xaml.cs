@@ -10,10 +10,7 @@ using Microsoft.UI.Xaml.Media.Imaging;
 
 namespace NTPods.WinUI.Popup;
 
-/// The content of the custom tray menu: a themed, icon-per-row list rendered as a
-/// UserControl so it follows the app theme and carries per-item artwork (things the
-/// WinUI MenuFlyout / native Win32 menu can't do in the tray). Pure view — the
-/// window owns positioning + dismissal; actions are surfaced as callbacks.
+/// Tray menu content; the host window handles positioning, dismissal and action callbacks.
 public sealed partial class TrayMenuView : UserControl
 {
     public Action<byte>? OnAnc;

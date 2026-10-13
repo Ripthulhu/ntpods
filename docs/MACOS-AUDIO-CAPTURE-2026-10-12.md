@@ -1,11 +1,12 @@
-# Tahoe audio capture, 2026-10-12
+# Tahoe audio protocol findings
 
-AirPods Pro 3 on 9A348, Tahoe 26.7.1 (25G241), and the patched Intel AX200 VM
+Evidence: captured on 2026-10-12 with AirPods Pro 3 firmware 9A348,
+Tahoe 26.7.1 (25G241), and the patched Intel AX200 VM
 described in the [capture guide](MACOS-PROTOCOL-CAPTURE.md). This run used CVSD
 hands-free capture and Apple AAC-ELD playback. It did not exercise the AACP
 microphone route used by NTPods.
 
-## Capture reconstruction
+## Capture scope
 
 The first session contains pairing and profile setup; the second contains the
 microphone check. They have 15,329 and
@@ -16,18 +17,11 @@ decoding for the verified USB controller. Its first 15,329 frames belong to
 the pairing session; subtract 15,329 from later merged frame numbers to locate
 them in the original microphone trace.
 
-The unmodified Lua dissector reported two errors in the pairing trace: an empty tail
-in CaseInfo `0x23` and an empty certificate in `0x27`. These are parser limits
-on complete packets. HFP and AVDTP decoding is unaffected. AACP channel setup
-and other AACP messages decode in the merged trace. Later local empty-tail guards
-removed both errors without changing the capture; see the
-[case capture checks](MACOS-CASE-CAPTURE-2026-10-12.md#capture-quality-and-limits).
+Complete CaseInfo `0x23` and certificate `0x27` packets needed empty-tail guards
+in the pinned Lua dissector. HFP and AVDTP decoding was unaffected; see
+[capture limits](MACOS-CASE-CAPTURE-2026-10-12.md#capture-quality-and-limits).
 
 ## Microphone and return to playback
-
-Fresh pairing and a Bluetooth toggle restored profile setup. HFP completed its
-service handshake, but CoreAudio lost its input after a profile reconnection.
-Restarting CoreAudio restored the 8 kHz mono input. The user confirmed it worked.
 
 Both the Settings input meter and Voice Memos negotiated HFP codec 1 (CVSD).
 Successful eSCO connection events report CVSD air mode, a 12-slot interval
@@ -47,7 +41,7 @@ codec identification comes from HFP negotiation and the HCI connection event.
 
 No AACP `0x58` start, stop or uplink appears. The ACL connection and configured
 AAC-ELD playback channel remain present across microphone use. Later playback
-starts on that channel without codec reconfiguration. The user started playback
+starts on that channel without codec reconfiguration. Playback was started
 separately, so the gap before Start is not a recovery-delay measurement. This
 run also does not verify simultaneous stereo playback during capture or acoustic
 channel separation afterward.
@@ -79,18 +73,19 @@ Raw traces, merged captures and unredacted logs remain outside Git.
 
 ## Intel controller and microphone eligibility
 
-The running VM loads IntelBTPatcher 2.5.1, BlueToolFixup 2.7.2 and Lilu 1.7.2.
+At capture time, the VM loaded IntelBTPatcher 2.5.1, BlueToolFixup 2.7.2 and
+Lilu 1.7.2.
 Setup records identify IntelBTPatcher as the
 [lshbluesky 2.5.1 release](https://github.com/lshbluesky/IntelBluetoothFirmware/releases/tag/v2.5.1),
 whose source includes the upstream Tahoe changes and later BLE fixes. This is
 release provenance, not an independent hash check of the running kext.
-IORegistry confirms the custom AX200NativeComposite personality is active.
-IntelBluetoothFirmware is disabled in the saved working config and is not loaded;
-the passed-through controller already has running firmware. The live Bluetooth
-NVRAM values match the [BlueToolFixup instructions](https://github.com/acidanthera/BrcmPatchRAM/blob/2.7.2/README.md#bluetoolfixupkext),
+The captured IORegistry showed the AX200NativeComposite personality active.
+IntelBluetoothFirmware was disabled in the saved config and was not loaded;
+the passed-through controller had running firmware. The captured Bluetooth
+NVRAM values matched the [BlueToolFixup instructions](https://github.com/acidanthera/BrcmPatchRAM/blob/2.7.2/README.md#bluetoolfixupkext),
 including 14 zero bytes for `bluetoothInternalControllerInfo`.
 
-System Information reports `THIRD_PARTY_DONGLE`. Saved controller logs classify
+System Information reported `THIRD_PARTY_DONGLE`. Captured controller logs classify
 the external adapter with chipset value zero. Inspection of this build's x86-64
 `bluetoothd` shows that its WBS, UWBS and stereo capability checks reject that
 value. The UWBS Mac branch identifies supported Broadcom chipsets starting with
@@ -104,7 +99,7 @@ Hackintosh reports describe a separate
 including an AX200/Pro 3 test. The proposed
 [BlueToolFixup FastConnect patch](https://github.com/acidanthera/BrcmPatchRAM/pull/38)
 bypasses a failed Bluetooth clock check during A2DP startup. It does not enable
-microphone codecs. Our trace already demonstrates AAC-ELD playback without it.
+microphone codecs. This trace demonstrates AAC-ELD playback without it.
 [Earlier microphone reports](https://www.reddit.com/r/hackintosh/comments/mab9hp/native_intelbluetoothfirmwarekext_engaging/)
 describe firmware-dependent HFP failures and warm-boot workarounds; those tests
 predate Tahoe's studio-quality feature.
@@ -116,6 +111,5 @@ support for an AX200 VM. Apple's
 documents an EU restriction, but that API lists iOS, iPadOS and Mac Catalyst.
 Its restriction alone cannot explain native macOS Voice Memos behavior.
 
-No kext, controller identity, region or codec preference was changed during this
-investigation. A follow-up needs to trace studio-recording eligibility separately
-and check required controller commands before testing any capability override.
+Studio-recording eligibility and its required controller commands remain
+unresolved. The HFP capability checks alone do not justify an override.

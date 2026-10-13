@@ -1,23 +1,16 @@
 <#
-    Show the ACX microphone under the connected device's name in Windows apps.
-    Requires administrator access to the endpoint registry properties.
+    Rename the ACX microphone to match the connected device without restarting
+    audio. Requires administrator access to the endpoint registry properties.
 
-    Two ways in:
-      * The "NTPods Rename Mic" scheduled task (RunLevel Highest), which
-        install.ps1 registers. The daemon writes the name to
-        %LOCALAPPDATA%\NTPods\micname.txt and fires the task with
-        `schtasks /run` (daemon/src/rename.rs). No -Name, runs hidden.
-      * By hand, elevated:   .\rename-mic.ps1 "AirPods Pro"
-
-    Match ROOT\NTPodsMicACX and update PKEY_Device_DeviceDesc only when the name
-    changes. Renaming does not restart the audio service.
+    The installed helper task reads %LOCALAPPDATA%\NTPods\micname.txt.
+    To supply a name manually, run elevated: .\rename-mic.ps1 -Name "AirPods Pro"
 #>
 param([string]$Name)
 $ErrorActionPreference = 'Stop'
 
 $dir = Join-Path $env:LOCALAPPDATA 'NTPods'
 function Log([string]$msg) {
-    $line = '{0:yyyy-MM-ddTHH:mm:ss.fffZ} {1}' -f (Get-Date).ToUniversalTime(), $msg  # UTC, like daemon.log
+    $line = '{0:yyyy-MM-ddTHH:mm:ss.fffZ} {1}' -f (Get-Date).ToUniversalTime(), $msg
     Write-Host $line
 }
 
@@ -66,9 +59,8 @@ try {
 
         $matched++
         if ($desc -ceq $Name) { Log "$id already '$Name'"; continue }
-        # The key belongs to Audiosrv/TrustedInstaller; Administrators only get
-        # SetValue on it, so OpenSubKey(..., $true) (full KEY_WRITE) is denied even
-        # elevated. Ask for exactly what the ACL grants.
+        # Administrators can set these values but lack full KEY_WRITE rights;
+        # OpenSubKey(..., $true) would fail even when elevated.
         $w = $root.OpenSubKey("$id\Properties",
             [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree,
             [Security.AccessControl.RegistryRights]::QueryValues -bor [Security.AccessControl.RegistryRights]::SetValue)

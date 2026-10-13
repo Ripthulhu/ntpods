@@ -1,7 +1,7 @@
 /*
     topo.cpp — topology miniport. See common.h.
 
-    Just a microphone pin bridged straight to the wave filter: no volume or mute
+    A microphone pin bridged straight to the wave filter: no volume or mute
     nodes, so Windows uses its own software volume for the endpoint.
 */
 #include "common.h"

@@ -7,11 +7,10 @@
 > everyday or work PC is a bad idea. Use a dedicated test PC. Save your BitLocker
 > recovery key before changing Test Mode or Secure Boot.
 
-Baseline: `188e45df20259b616ce155be812086259d1a2488`, Windows 11 x64 / ACX only.
-The current source version is `0.1.26`. The installed version is tracked in
-`WINDOWS-VALIDATION.md`.
-Building does not install or load drivers. Hardware testing and Microsoft signing
-are required before production deployment. See `THIRD_PARTY.md` for licensing issues.
+This build targets Windows 11 x64 with ACX audio drivers. Building does not
+install or load drivers. Hardware testing and Microsoft signing are required
+before production deployment. See [THIRD_PARTY.md](../THIRD_PARTY.md) for licensing
+issues.
 
 ## Toolchain
 
@@ -37,6 +36,9 @@ dotnet tool install --global wix --version 5.0.2
 wix extension add -g WixToolset.UI.wixext/5.0.2 WixToolset.Util.wixext/5.0.2
 .\windows\build.ps1
 ```
+
+Pass `-Version X.Y.Z` when creating a release. Without it, the app and MSI use
+their source defaults; CI supplies its nightly or tag version as described below.
 
 The script verifies FFmpeg and FDK-AAC, uses locked Rust/NuGet dependencies, runs
 unit tests and encoder round trips, builds all three drivers and both encoder workers
@@ -64,9 +66,9 @@ and the installed drivers before choosing this path.
 
 Binary uploads are opt-in. The repository variable
 `NTPODS_PUBLISH_BUILDS` must equal `true` before the Windows workflow can upload
-binary artifacts or publish a release. This fork has enabled experimental
-downloads; the licensing issue in `THIRD_PARTY.md` remains unresolved and is
-disclosed in every release. Tests and compilation still run with uploads off.
+binary artifacts or publish a release. The licensing issue in
+[THIRD_PARTY.md](../THIRD_PARTY.md) remains unresolved and is disclosed in the
+release notes. Tests and compilation still run with uploads off.
 
 When publishing is enabled, the workflow packages the MSI, a ZIP for manual
 installation, checksums and build metadata. Every release starts with

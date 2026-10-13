@@ -84,8 +84,7 @@
                 </ResourceDictionary>
             </ResourceDictionary.ThemeDictionaries>
 
-            <!-- Live localization service — the ONE Loc instance; code shares it via
-                 Loc.Instance (published from its ctor). UI text binds {StaticResource Loc}. -->
+            <!-- Code and XAML share this instance so language changes stay synchronized. -->
             <services:Loc x:Key="Loc" />
 
             <SolidColorBrush x:Key="ToggleSwitchFillOn" Color="{ThemeResource AppleToggleColor}" />

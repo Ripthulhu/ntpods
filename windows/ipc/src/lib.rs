@@ -87,7 +87,7 @@ fn deserialize_stop_delay<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32,
     }
 }
 
-/// Battery levels (percent), each optional — a packet may carry only some.
+/// Battery percentages; a packet may report only some components.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Battery {
     pub left: Option<u8>,
@@ -126,12 +126,8 @@ pub struct BatteryFreshness {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub connected: bool,
-    /// The AAP session is nominally up (`connected`) but the channel has gone
-    /// silent — the AirPods are attached to Windows yet not talking to us, so the
-    /// hi-res mic and every live notification are dead. The app surfaces "Repair
-    /// connection" on this, because `connected` alone stays true forever in that
-    /// state and used to hide the button exactly when it was needed.
-    /// (serde default: older snapshots.)
+    /// Idle AAP transport has failed while Windows still reports a connection.
+    /// Silence alone does not mark the link stale.
     #[serde(default)]
     pub link_stale: bool,
     pub dev_name: String,
@@ -172,10 +168,7 @@ pub struct Snapshot {
     pub mic_state: String,
     #[serde(default)]
     pub mic_error: Option<String>,
-    /// The virtual mic driver is loaded (its NTPodsMic control device opens).
-    /// False on Windows before 10 2004, where the installer skips the mic driver,
-    /// or when its install failed; the app then greys out the mic controls.
-    /// (serde default: older snapshots.)
+    /// The NTPodsMic control device opens and supports flushing queued PCM.
     #[serde(default)]
     pub mic_available: bool,
     /// Global permission for the AirPods microphone, retained for older clients.
@@ -200,7 +193,7 @@ pub struct Snapshot {
     pub conversation_volume: u8,
     /// Adaptive/Personalized Volume: adjust the volume to the environment.
     pub adaptive_volume: bool,
-    /// Allow the "Off" option in noise control (vs. only ANC/Transparency/Adaptive).
+    /// Allow the Off listening mode on models that expose this setting.
     pub allow_off: bool,
     /// Allow Off sent successfully to Pro 3, but not yet reported by the AirPods.
     #[serde(default)]
@@ -240,8 +233,8 @@ pub struct Snapshot {
     /// Pause on ear removal and resume only playback paused by this app.
     #[serde(default = "default_auto_pause")]
     pub auto_pause: bool,
-    /// System output volume 0..=100 (the default render endpoint — the AirPods
-    /// when they're active). Owned by the daemon so it can duck for CA.
+    /// Volume 0..=100 for native AirPods playback, otherwise the default output.
+    /// The daemon owns volume changes and Conversation Awareness ducking.
     pub volume: u8,
     /// The output is muted.
     pub muted: bool,
@@ -265,8 +258,7 @@ pub struct Snapshot {
     pub playback_aac_eld_bitrate: PlaybackBitrate,
     #[serde(default)]
     pub playback_bitrate_kbps: Option<u32>,
-    /// Latest validated heart-rate BPM (AirPods Pro 3 RTBuddy). `None` when HR
-    /// monitoring is off or no sample has been decoded yet. Opt-in (drains battery).
+    /// Latest validated BPM; absent while disabled, before a sample or after expiry.
     pub heart_rate: Option<u16>,
     #[serde(default)]
     pub heart_rate_enabled: bool,
@@ -281,9 +273,8 @@ pub struct Snapshot {
     pub head_tracking_state: String,
     #[serde(default)]
     pub head_tracking_error: Option<String>,
-    /// Device metadata parsed from the 0x1D packet (model number, firmware, serial).
-    /// Empty until that packet arrives. The serial is sensitive — the app keeps
-    /// this info hidden behind a reveal toggle. (serde default: older snapshots.)
+    /// Metadata from packet 0x1D, retained across reconnects to the same pair.
+    /// The serial is sensitive and remains hidden until revealed in the app.
     #[serde(default)]
     pub model: String,
     #[serde(default)]
@@ -442,8 +433,7 @@ pub struct ConnectedDevice {
     pub address: String,
     /// True when this entry is one of our own radios.
     pub is_this_pc: bool,
-    /// Best-effort human label: the Windows name when the device happens to be
-    /// paired here, else a type guess, else "Unknown device".
+    /// "This PC", a Windows pairing name, or "Other device" for an unpaired host.
     pub name: String,
     /// Device kind for the UI to pick an icon: "pc", "phone", "laptop", "watch",
     /// "tablet", "audio" or "unknown".
@@ -458,8 +448,7 @@ pub mod feature {
     pub const ALLOW_OFF: u8 = 0x34;
 }
 
-/// Client → daemon. (Volume stays client-side via WASAPI — not the exclusive
-/// resource — so it isn't routed through the daemon.)
+/// Client commands, including volume changes, are handled by the daemon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Command {
@@ -541,9 +530,7 @@ pub enum Command {
     },
     /// Mute/unmute the output.
     ToggleMute,
-    /// Enable/disable AirPods Pro 3 heart-rate monitoring (opt-in; off by
-    /// default because it drains battery). On sends the RTBuddy enable sequence;
-    /// off sends the stop frame and clears `heart_rate`.
+    /// Opt-in heart-rate monitoring; disabling stops reporting and clears the reading.
     SetHeartRate {
         on: bool,
     },
@@ -579,26 +566,15 @@ pub enum Command {
         ambient_noise_reduction: f32,
         own_voice: f32,
     },
-    /// Start the AAP session (the user accepted the "connect?" prompt).
+    /// Request AAP and Windows audio connections.
     Connect,
-    /// Rebuild the Windows audio route without touching the AAP session: toggle
-    /// the AirPods' audio services off and on, which is exactly what pressing
-    /// Disconnect then Connect does by hand.
-    ///
-    /// For the failure where the buds go silent while EVERYTHING reports healthy —
-    /// the AAP channel at Ok(2), the Bluetooth device connected, the endpoint OK,
-    /// the AirPods still selected — and so nothing can detect it automatically.
-    /// One click instead of changing noise mode and restarting the video.
+    /// Rebuild playback without requesting AAP repair.
     RebuildAudio,
-    /// Force a clean reconnect (the "Repair connection" button): re-assert the
-    /// connect request AND drop the current driver so the daemon reopens a fresh
-    /// AAP session + ATT channel — used to recover a wedged / desynced link where
-    /// the OS still shows the AirPods connected but our session is stale.
+    /// Reopen AAP and ATT after microphone cleanup and any pending audio recovery.
     RepairConnection,
     /// Refresh reported settings through a fresh AAP session, only while capture is idle.
     RefreshDeviceSettings,
-    /// Release the AAP control session (the "Disconnect" button). Stops
-    /// controlling the AirPods without stealing the audio link from the OS.
+    /// Disconnect AAP and audio after microphone cleanup; block automatic reconnect.
     Disconnect,
     /// Rename the AirPods (sends the 0x1A rename command).
     SetName {
@@ -626,8 +602,7 @@ pub enum Event {
     },
     /// A notification for the client to render with its overlay UI.
     Overlay { title: String, body: String },
-    /// The device is nearby (BLE) but not connected — the client shows a
-    /// clickable card; a click sends `Command::Connect`.
+    /// Report a nearby device that the client may offer to connect.
     ConnectPrompt { name: String },
     CommandResult {
         command: String,

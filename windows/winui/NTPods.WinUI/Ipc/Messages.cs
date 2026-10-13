@@ -3,9 +3,7 @@ using System.Text.Json.Serialization;
 
 namespace NTPods.WinUI.Ipc;
 
-// The IPC contract mirrors windows/ipc/src/lib.rs (serde, snake_case, tagged by
-// `event` / `cmd`). Every field is spelled with an explicit [JsonPropertyName] so
-// the wire names never depend on a naming policy.
+// Keep wire names and event/cmd tags in sync with windows/ipc/src/lib.rs.
 
 /// Battery levels (percent), each optional — a packet may carry only some.
 public sealed class Battery
@@ -15,7 +13,6 @@ public sealed class Battery
     [JsonPropertyName("case")] public byte? Case { get; set; }
     [JsonPropertyName("headphone")] public byte? Headphone { get; set; }
 
-    // Per-component charging flag (mirrors the daemon's ipc::Battery).
     [JsonPropertyName("left_charging")] public bool LeftCharging { get; set; }
     [JsonPropertyName("right_charging")] public bool RightCharging { get; set; }
     [JsonPropertyName("case_charging")] public bool CaseCharging { get; set; }
@@ -78,10 +75,7 @@ public sealed class Snapshot
     [JsonPropertyName("device_id")] public string DeviceId { get; set; } = "";
     [JsonPropertyName("connected")] public bool Connected { get; set; }
 
-    /// The session is nominally up but the AAP channel has gone silent: the AirPods
-    /// are attached to Windows yet not talking to the daemon, so the hi-res mic and
-    /// live notifications are dead. Surfaces "Repair connection" -- Connected alone
-    /// stays true forever in that state and used to hide the button exactly then.
+    /// The daemon detected a stale AAP session; Connected alone does not imply usable controls.
     [JsonPropertyName("link_stale")] public bool LinkStale { get; set; }
     [JsonPropertyName("dev_name")] public string DevName { get; set; } = "";
     [JsonPropertyName("battery")] public Battery Battery { get; set; } = new();
@@ -146,8 +140,7 @@ public sealed class Snapshot
     [JsonPropertyName("head_tracking_state")] public string HeadTrackingState { get; set; } = "idle";
     [JsonPropertyName("head_tracking_error")] public string? HeadTrackingError { get; set; }
 
-    // Device metadata from the 0x1D packet (empty until it arrives). Serial is
-    // sensitive — the Settings page keeps these hidden behind a reveal toggle.
+    // AAP 0x1D metadata includes the serial number; keep it behind the Settings reveal toggle.
     [JsonPropertyName("model")] public string Model { get; set; } = "";
     [JsonPropertyName("firmware")] public string Firmware { get; set; } = "";
     [JsonPropertyName("serial")] public string Serial { get; set; } = "";
@@ -183,13 +176,11 @@ public sealed class ConnectedDevice
         "laptop" => "\uE7F8",  // Laptop
         "phone" => "\uE8EA",   // CellPhone
         "tablet" => "\uE70A",  // Tablet
-        "watch" => "\uE916",   // Stopwatch-ish; closest stock glyph for a watch
+        "watch" => "\uE916",   // Stopwatch glyph used for watches
         "audio" => "\uE7F6",   // Headphone
         _ => "\uE783",         // Error/unknown
     };
 
-    /// "This PC" is shown plainly; anything else carries its address so an
-    /// unidentified device is still recognisable.
     public string Detail => IsThisPc ? Address : Address;
 }
 
@@ -202,7 +193,6 @@ public static class Feature
 }
 
 /// The raw control id for Adaptive-Audio noise strength (value 0..=100).
-/// (Named ControlId to avoid clashing with Microsoft.UI.Xaml.Controls.Control.)
 public static class ControlId
 {
     public const byte AdaptiveNoiseStrength = 0x2E; // 46
@@ -408,10 +398,7 @@ public sealed class DisconnectCmd
     [JsonPropertyName("cmd")] public string Cmd => "disconnect";
 }
 
-/// Toggle the AirPods' audio services off and on -- what Disconnect + Connect does
-/// by hand -- WITHOUT touching the AAP session. For the failure where the sound
-/// stops while the session, the Bluetooth device and the endpoint all stay healthy,
-/// which nothing can detect automatically.
+/// Restart audio services while preserving the AAP control session.
 public sealed class RebuildAudioCmd
 {
     [JsonPropertyName("cmd")] public string Cmd => "rebuild_audio";
@@ -446,7 +433,7 @@ public abstract record DaemonEvent
     /// A transient notification rendered in the island.
     public sealed record Overlay(string Title, string Body) : DaemonEvent;
 
-    /// Device nearby (BLE) but not connected — show a clickable "Connect?" card.
+    /// BLE proximity notification; the UI checks connection state before offering Connect.
     public sealed record ConnectPrompt(string Name) : DaemonEvent;
     public sealed record CommandResult(string Command, ulong RequestId, bool Ok, string Message) : DaemonEvent;
     public sealed record HeadTracking(ulong TimestampMs, short Horizontal, short Vertical) : DaemonEvent;
@@ -481,10 +468,7 @@ public static class Wire
             switch (tag)
             {
                 case "state":
-                    // The snapshot is flattened alongside the tag (serde
-                    // `Event::State(Snapshot)` with `#[serde(tag = "event")]`
-                    // inlines the struct's fields), so deserialize the whole
-                    // object into a Snapshot; the extra "event" key is ignored.
+                    // Serde flattens Snapshot beside the event tag; deserialize the whole object.
                     var snap = root.Deserialize<Snapshot>(Json) ?? new Snapshot();
                     if (snap.Battery is null || snap.BatterySource is null || snap.BatteryFreshness is { IsValid: false } ||
                         snap.DeviceControls is null || snap.DeviceControlsPending is null ||

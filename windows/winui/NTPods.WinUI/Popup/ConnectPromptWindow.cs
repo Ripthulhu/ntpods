@@ -11,9 +11,7 @@ using Windows.Graphics;
 
 namespace NTPods.WinUI.Popup;
 
-/// Borderless connection prompt for nearby AirPods. The window must activate to
-/// receive button clicks. It closes on timeout, connection or dismissal and
-/// contains windowing failures so they do not terminate the app.
+/// Nearby connection prompt; activation is required for its buttons to receive clicks.
 public sealed class ConnectPromptWindow : Window
 {
     private readonly DispatcherQueueTimer _autoClose;
@@ -25,7 +23,6 @@ public sealed class ConnectPromptWindow : Window
 
         var display = string.IsNullOrWhiteSpace(name) ? Localize.Get("Device_DefaultName") : name;
 
-        // ---- Content: a rounded acrylic card built in code (no XAML needed) ----
         // The event has no model metadata; use the shared artwork fallback.
         var image = new Image
         {
@@ -76,8 +73,7 @@ public sealed class ConnectPromptWindow : Window
         panel.Children.Add(connect);
         panel.Children.Add(dismiss);
 
-        // Solid, opaque, theme-matched background — an acrylic backdrop on this
-        // small tool window left a white window edge showing around the card.
+        // An opaque background avoids the white edge produced by acrylic on this tool window.
         var root = new Grid { RequestedTheme = AppSettings.Theme };
         if (Application.Current.Resources.TryGetValue("SolidBackgroundFillColorBaseBrush", out var bg) && bg is Brush bgBrush)
             root.Background = bgBrush;
@@ -124,7 +120,7 @@ public sealed class ConnectPromptWindow : Window
         }
     }
 
-    /// Size to content and centre on the display's work area, then round the corners.
+    /// Fit the content above the bottom edge of the nearest display's work area.
     private void Prepare()
     {
         double scale = (Content as FrameworkElement)?.XamlRoot?.RasterizationScale ?? 1.0;
@@ -158,8 +154,7 @@ public sealed class ConnectPromptWindow : Window
         var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
         int pref = DWMWCP_ROUND;
         DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, ref pref, sizeof(int));
-        // Windows 11 paints a border colour around every window — that's the white
-        // edge around the card. DWMWA_COLOR_NONE removes it.
+        // Suppress DWM's border around the card.
         int none = unchecked((int)0xFFFFFFFE); // DWMWA_COLOR_NONE
         DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, ref none, sizeof(int));
     }

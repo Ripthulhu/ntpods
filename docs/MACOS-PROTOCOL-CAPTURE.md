@@ -7,16 +7,16 @@ notifications and settings that NTPods does not yet handle.
 
 ## Capture point and limits
 
-The local Tahoe setup passes a USB Bluetooth controller from Windows through
+The reference Tahoe setup passes a USB Bluetooth controller from Windows through
 WSL to QEMU. Capture that WSL USB bus with `usbmon` and `dumpcap`, beginning
 before controller handover. This retains controller initialization and L2CAP
 channel setup, which the dissectors need to identify later packets.
 
-The prepared guest is x86-64 Tahoe 26.7.1 (25G241), using an Intel AX200
+The reference captures used x86-64 Tahoe 26.7.1 (25G241), with an Intel AX200
 USB controller (`8087:0029`) through usbipd, WSL's virtual USB host and QEMU
-xHCI. Its saved working OpenCore configuration enables IntelBTPatcher,
+xHCI. Its saved OpenCore configuration enabled IntelBTPatcher,
 BlueToolFixup, AX200NativeComposite and VMHide, with `-btlfxboardid`; the Intel
-firmware uploader is disabled. Record the versions loaded in the guest with
+firmware uploader was disabled. Record the versions loaded in the guest with
 each capture. These compatibility changes and the Intel controller can affect
 feature negotiation and timing. Repeat host-specific findings on physical Apple
 hardware before applying them to all Macs.
@@ -36,70 +36,34 @@ payloads. Apple's [Bluetooth logging resources](https://developer.apple.com/feed
 are an optional second capture source; do not treat an empty log as proof that
 the earbuds sent nothing.
 
-## Local Tahoe capture kit
+## Capture procedure
 
-The existing `AirPods-Tahoe` folder contains the VM launchers, capture controls,
-guest log collector and a pinned Apple Wireshark dissector. Raw sessions live
-in its `Captures` folder, outside this repository.
-The launcher names below refer to that local lab folder. On another host,
-collect an equivalent full USB/HCI trace and action markers with usbmon or
-Apple's Bluetooth logging tools, then follow the same runs and decoding checks.
+Use usbmon/dumpcap for a passed-through USB controller, or Apple's Bluetooth
+logging tools on a physical Mac. The local Tahoe launcher and analysis helpers
+are not distributed with NTPods.
 
-1. Finish any pending Windows driver restart. Quit NTPods normally and confirm
-   its microphone and playback recovery have finished. Keep a wired keyboard
-   and a mouse that do not depend on the controller being passed through.
-2. Open **Start Tahoe.cmd** and wait for macOS and its SSH connection. Record
-   the macOS build, model/firmware, controller, VM/extension versions and the
-   current NTPods source revision for the comparison.
-3. Open **Start Bluetooth Capture.cmd** before controller handover. It starts
-   the bounded USB trace and matching guest log session. Use **Capture Status.cmd**
-   to confirm it is running.
-4. Open **GiveBluetoothToTahoe.cmd**, approve Windows' administrator prompt and
-   connect the chosen AirPods pair in macOS. Leave other pairs in their cases.
-5. Use **Mark Capture.cmd** immediately before each action. Wait for the device
-   response before changing another setting. Record the visible or audible
-   result as well as the marker.
-6. Open **Stop Bluetooth Capture.cmd** while the VM is still running. It stops
-   the USB trace and copies the guest logs. Check the status and collected files.
-7. Open **ReturnBluetoothToWindows.cmd**, then **Stop Tahoe.cmd**. Confirm the
-   controller is back in Windows before reopening NTPods.
+1. Finish pending driver restarts. Quit NTPods normally and allow microphone
+   recovery to finish before transferring its controller. Keep a wired keyboard
+   and mouse available.
+2. Record the source revision, macOS build, AirPods model/firmware, controller
+   and loaded extension versions.
+3. Start the USB capture before controller handover so it includes controller
+   initialization and L2CAP channel setup. Start guest Bluetooth/audio logging
+   at the same time. Bound the recording to 15 minutes or 256 MiB.
+4. Attach the controller to macOS and connect one AirPods pair. Other pairs and
+   unrelated USB devices should not share the captured bus.
+5. Record a timestamped marker immediately before each action. Wait for its
+   response before changing another setting; record any audible or visible
+   effect separately.
+6. Stop capture and collect guest logs while the VM is still running. Check
+   capture statistics, truncation and parser errors before interpreting results.
+7. Return the controller to Windows and verify it is available before restarting
+   NTPods.
 
-The capture stops at 15 minutes or 256 MiB of USB traffic. Use Stop even after
-the limit so the guest logs are collected. At startup, the helper rejects
-unrelated devices on the monitored WSL USB bus. Do not import other devices
-onto that bus during the run.
-If guest log collection fails, the logs remain in `~/AirPods-Captures` in Tahoe.
-
-The first live controller run on 2026-10-12 collected 7,355 USB frames,
-including 3,505 decoded Bluetooth frames, with no dropped or truncated frames
-and no Lua errors. Controller initialization, LE reports and SDP decoded.
-Connection attempts timed out, followed by an authentication-failure disconnect;
-the saved Pro 3 pairing needs renewal. This validates the capture point, but
-does not yet establish an AAP or audio result. The earlier controller-free
-smoke test contained only 24 USB frames.
-
-The later reconnect capture collected 16,513 frames
-with no drops or Lua errors. Three ACL connections succeeded, but repeated SDP
-channel requests received no response. The earbuds terminated those links after
-12.9, 21.3 and 28.2 seconds with reason `0x13` (Remote User Terminated Connection).
-Guest logs reported `BT_ERROR_L2CAP_SIGNALMAN_TIMEOUT`. The disconnect reason
-does not identify the cause.
-
-That run contained no authentication or encryption exchange, completed SDP
-channel, AACP handshake or audio negotiation. QuickTime had no AirPods input,
-so recording never started. It establishes a service-discovery failure in this
-Intel VM and leaves the macOS microphone transport untested.
-
-After fresh pairing and a Bluetooth toggle, the next run completed HFP, AACP
-and AVDTP setup. Restarting CoreAudio restored the missing input. Settings and
-Voice Memos then selected CVSD over eSCO; playback used Apple AAC-ELD before
-and after capture. No AACP `0x58` microphone stream appeared. See the
-[2026-10-12 audio capture results](MACOS-AUDIO-CAPTURE-2026-10-12.md) for the
-wire evidence, encoder settings and limits of this Intel VM comparison.
-
-The [case and charging captures](MACOS-CASE-CAPTURE-2026-10-12.md) checked AAP
-and BLE battery reports against NTPods, including charger and lid transitions.
-They also catalogue traffic the app does not yet interpret.
+The [audio findings](MACOS-AUDIO-CAPTURE-2026-10-12.md) document the VM's
+AAC-ELD playback and CVSD hands-free recording. It did not use the AAP microphone
+route. The [case and sensor findings](MACOS-CASE-CAPTURE-2026-10-12.md) cover
+battery fields, charger/lid transitions, descriptor discovery and unknown traffic.
 
 ## Runs
 
@@ -129,49 +93,31 @@ Adaptive or newer sensors on Pro 1 is not a protocol failure.
 
 ## Decode and compare
 
-The buttons call `support/capture-session.py`. From the kit folder in WSL,
-the equivalent commands are:
-
-```sh
-sudo python3 support/capture-session.py start
-sudo python3 support/capture-session.py status
-sudo python3 support/capture-session.py mark "mic-start"
-sudo python3 support/capture-session.py stop
-python3 support/analyze-capture.py latest
-```
-
-Use a short, single-line marker. Start and Stop control both USB capture and
-guest logging; neither command transfers Bluetooth. The analysis command also
-accepts a session's `bluetooth.pcapng` or `manifest.json` path instead of `latest`.
-
-Run analysis as the ordinary WSL user after stopping. It uses TShark and
-`support/tahoe-wireshark.lua` to produce
-`summary.json`, `timeline.tsv` and `analysis-errors.txt`. Root execution disables
-Lua in this setup. Keep the summary, markers and original trace together.
+Decode with TShark/Wireshark and the
+[pinned Apple dissectors](https://github.com/pabloaul/apple-wireshark/tree/2e9822247195fad2f79c729010308c33a29546ea).
+Keep the trace, action markers, tool versions and parse errors together. Run Lua
+dissection as an ordinary user; the local TShark setup disables Lua under root.
 
 When capture starts with the controller already attached, Linux may not send
 its USB descriptors again. Do not detach the guest controller just to obtain
 them: that disrupted Tahoe's existing Bluetooth session in the local test.
-For a verified AX200 bus/address, use the analyzer's `--usb-device BUS:ADDRESS`
-option. It restricts forced Bluetooth decoding to that device, checks the bus
-against the manifest and records the override in the summary. Verify the
-address for each session; USB addresses can change after reattachment.
+Identify the controller's USB bus/address and, if needed, restrict Decode As
+Bluetooth to that device. Record any override with the trace. Verify the address
+for every session; it can change after reattachment.
 
 Check that the trace contains Bluetooth traffic, includes the connection setup,
 and has no truncated frames or Lua errors. A zero Bluetooth count needs capture
-or dissection investigation before any protocol conclusion. Check `dumpcap.log`,
-pcapng interface statistics and USB errors for drops; the summary does not
-extract a dropped-packet count.
+or dissection investigation before any protocol conclusion. Check dumpcap's output,
+pcapng interface statistics and USB errors for drops.
 
-The analyzer passes the full trace to TShark with two-pass dissection. TShark
+Use the full trace with TShark's two-pass dissection. TShark
 4.2.2 reassembles USB HCI transfers and enables ACL reassembly by default.
 Check `usb.urb_id`, `usb.urb_type`, `usb.data_flag`, `usb.data_len`,
-`hci_usb.msg.*` and `bthci_acl.reassembled_in` when validating the first real
-Bluetooth trace. Outgoing data normally appears on submission; incoming data
-appears on completion. Retain both records for completion status. Existing
-synthetic tests cover H4 dissection, not reconstruction of a live USB Bluetooth
-session. USB timestamps describe the host/controller exchange, not RF delivery
-or sound reaching the ear.
+`hci_usb.msg.*` and `bthci_acl.reassembled_in` when validating USB
+reconstruction. Outgoing data normally appears on submission; incoming data
+appears on completion. Retain both records for completion status. Synthetic H4
+fixtures alone do not verify live USB reconstruction. USB timestamps describe
+the host/controller exchange, not RF delivery or sound reaching the ear.
 
 Resolve connection handles, L2CAP PSM/CID mappings and direction before comparing
 payloads. Reassemble ACL fragments and separate independent connections. Dynamic

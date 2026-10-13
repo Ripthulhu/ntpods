@@ -8,18 +8,12 @@
 #include "common.h"
 #include <wdmsec.h>
 
-// ---- kernel new -------------------------------------------------------
-
 PVOID operator new(size_t Size, POOL_FLAGS Flags, ULONG Tag)
 {
     return ExAllocatePool2(Flags, Size, Tag);  // zeroed
 }
 
-// ---- ring --------------------------------------------------------------------
-// The same ring as ../mic/Common/MicPipe.cpp: the daemon writes decoded PCM, the
-// capture stream reads it. Capacity ~341 ms; a write that pushes the backlog past
-// ~160 ms trims it back to ~100 ms, which covers the uplink's jitter (see #7).
-
+// The 341 ms ring trims backlogs above 160 ms to 100 ms, retaining a buffer for uplink jitter.
 #define RING_BYTES     0x8000u
 #define RING_HIGH      0x3C00u  // ~160 ms
 #define RING_TARGET    0x2580u  // ~100 ms
@@ -58,7 +52,7 @@ VOID MicRingWrite(_In_reads_bytes_(Len) const VOID* Data, _In_ ULONG Len)
         g_Count++;
     }
     if (g_Count > RING_HIGH) {
-        // Whole samples only, or everything after this would be garbled.
+        // Keep the remaining PCM16 samples aligned.
         ULONG excess = (g_Count - RING_TARGET) & ~1u;
         g_Tail = (g_Tail + excess) % RING_BYTES;
         g_Count -= excess;
@@ -66,9 +60,7 @@ VOID MicRingWrite(_In_reads_bytes_(Len) const VOID* Data, _In_ ULONG Len)
     KeReleaseSpinLock(&g_RingLock, irql);
 }
 
-// The daemon keeps writing while nobody captures, so the ring holds ~100 ms of old
-// audio by the time a stream starts. Drop it, or every recording opens with a
-// snippet of whatever the mic heard before.
+// Drop audio retained before capture starts so a recording cannot expose earlier speech.
 VOID MicRingFlush()
 {
     KIRQL irql;
@@ -105,19 +97,12 @@ VOID MicRingRead(_Out_writes_bytes_(Len) PVOID Out, _In_ ULONG Len)
     KeReleaseSpinLock(&g_RingLock, irql);
 }
 
-// ---- control device (\\.\NTPodsMic) ----------------------------------------------
-// A plain WDM device next to PortCls's FDO. PortCls owns the driver's dispatch
-// table, so every major function goes through RouteIrp: IRPs for the control
-// device are handled here, everything else goes to PortCls unchanged.
-
+// Route control-device IRPs separately; PortCls owns the audio device's dispatch table.
 static PDEVICE_OBJECT  g_Control;
 static PDRIVER_DISPATCH g_PcDispatch[IRP_MJ_MAXIMUM_FUNCTION + 1];
 static PDRIVER_UNLOAD  g_PcUnload;
 
-// The control device carries this in its extension. It is recognised by it, not
-// by comparing with g_Control: after the audio device is removed, g_Control is
-// cleared but a handle the daemon still holds keeps the object alive, and its
-// IRPs must never reach PortCls, which would read them as its own device.
+// Handles can keep the control device alive after g_Control is cleared; its IRPs must still bypass PortCls.
 #define CONTROL_MAGIC 'lCTN'
 typedef struct { ULONG Magic; } CONTROL_EXT;
 
@@ -133,7 +118,7 @@ static NTSTATUS CreateControlDevice(_In_ PDRIVER_OBJECT Driver)
     DECLARE_CONST_UNICODE_STRING(sddl, L"D:P(A;;GA;;;SY)(A;;GRGWGX;;;BA)(A;;GRGW;;;WD)");
     DECLARE_CONST_UNICODE_STRING(ntName, L"\\Device\\NTPodsMic");
     DECLARE_CONST_UNICODE_STRING(link, L"\\DosDevices\\NTPodsMic");
-    // Any fixed GUID works here; it only names the security class of the object.
+    // Private security class for the control device.
     static const GUID classGuid =
         { 0x5c0f3a1e, 0x8d2b, 0x4f6a, { 0x9e, 0x31, 0x7b, 0x42, 0xa8, 0x6d, 0x10, 0xc5 } };
 
@@ -141,8 +126,7 @@ static NTSTATUS CreateControlDevice(_In_ PDRIVER_OBJECT Driver)
         return STATUS_SUCCESS;
     }
     PDEVICE_OBJECT dev = NULL;
-    // Exclusive: one feeder at a time. Two writers interleaving in the ring sound
-    // like static.
+    // One feeder prevents interleaved PCM from separate writers.
     NTSTATUS status = IoCreateDeviceSecure(Driver, sizeof(CONTROL_EXT), (PUNICODE_STRING)&ntName, FILE_DEVICE_UNKNOWN,
                                            FILE_DEVICE_SECURE_OPEN, TRUE, &sddl, &classGuid, &dev);
     if (!NT_SUCCESS(status)) {
@@ -221,15 +205,12 @@ static NTSTATUS RouteIrp(_In_ PDEVICE_OBJECT Device, _Inout_ PIRP Irp)
         return ControlIrp(Irp);
     }
     PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
-    // The control device would keep the driver loaded after the audio device
-    // goes away, so it goes with it.
+    // Delete the control device on audio-device removal so it cannot keep the driver loaded.
     if (stack->MajorFunction == IRP_MJ_PNP && stack->MinorFunction == IRP_MN_REMOVE_DEVICE) {
         DeleteControlDevice();
     }
     return g_PcDispatch[stack->MajorFunction](Device, Irp);
 }
-
-// ---- adapter -------------------------------------------------------------------
 
 static NTSTATUS InstallSubdevice(_In_ PDEVICE_OBJECT Device, _In_opt_ PIRP Irp, _In_ PRESOURCELIST Resources,
                                  _In_ PCWSTR Name, _In_ REFCLSID PortClass,
@@ -266,8 +247,7 @@ static NTSTATUS StartDevice(_In_ PDEVICE_OBJECT Device, _In_ PIRP Irp, _In_ PRES
     PUNKNOWN wave = NULL, topo = NULL;
 
     MicRingInit();
-    // Without the control device the daemon can't feed us, but the endpoint still
-    // works (silence), so a failure here doesn't fail the start.
+    // If control-device creation fails, the capture endpoint still opens with silence.
     (VOID)CreateControlDevice(Device->DriverObject);
 
     NTSTATUS status = InstallSubdevice(Device, Irp, Resources, L"Topology", CLSID_PortTopology,

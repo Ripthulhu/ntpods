@@ -1,14 +1,10 @@
-# Prebuilt NTPodsAAP driver package
+# Legacy AAP package files
 
-The compiled driver (`NTPodsAAP.sys` + `.inf` + `.cat`) so you can install
-**without building it** — no Visual Studio / C++ / WDK required.
+This directory is retained from upstream and is not used by the current build.
+It does not contain a complete, current driver package. Do not install it or
+combine it with the current daemon.
 
-Install (admin PowerShell, Test Mode — see [the Windows README](../../../README.md)):
-```powershell
-& "..\install.ps1" -PackageDir ".\"
-```
-`install.ps1` creates a test certificate, signs these files, trusts the cert and
-installs the driver. Then run `ntpods-winui.exe`, which starts the daemon
-(`ntpodsd.exe`) itself.
-
-Neither the daemon (Rust) nor the WinUI app (C#) needs a C++ toolchain either.
+Use the MSI or ZIP from a complete [Windows build](../../../../docs/BUILD-WINDOWS.md).
+That build compiles the driver from source; its installer sets the intended
+user's access policy before loading it. The old single-driver installer refuses
+to run because it bypasses that policy.

@@ -16,8 +16,7 @@ public sealed partial class MultipointCard : UserControl
         InitializeComponent();
     }
 
-    /// Render the device list from a daemon Snapshot. The card hides itself until
-    /// the first 0x2E arrives, so it never shows an empty shell.
+    /// Hide the card when the snapshot has no reported hosts.
     public void Update(Snapshot s)
     {
         List<ConnectedDevice> devices = s.Multipoint ?? new();

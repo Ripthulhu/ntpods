@@ -40,10 +40,9 @@ root="$(find "$tmp/x" -maxdepth 1 -type d -name 'ffmpeg*' | head -1)"
 
 mkdir -p "$dest/include" "$dest/lib" "$dest/bin" "$dest/licenses"
 cp -r "$root"/include/libavcodec "$root"/include/libavutil "$root"/include/libswresample "$dest/include/"
-# import libs — both MSVC (.lib) and MinGW (.dll.a)
+# Import libraries for MSVC (.lib) and MinGW (.dll.a).
 cp "$root"/lib/avcodec.lib "$root"/lib/avutil.lib "$root"/lib/swresample.lib "$dest/lib/"
 cp "$root"/lib/libavcodec.dll.a "$root"/lib/libavutil.dll.a "$root"/lib/libswresample.dll.a "$dest/lib/"
-# runtime DLLs
 cp "$root"/bin/avcodec-61.dll "$root"/bin/avutil-59.dll "$root"/bin/swresample-5.dll "$dest/bin/"
 # Preserve the bundle's upstream license and build/source information.
 find "$root" -maxdepth 1 -type f \( -iname '*license*' -o -iname '*readme*' \) -exec cp {} "$dest/licenses/" \;

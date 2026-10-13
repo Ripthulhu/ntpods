@@ -1,95 +1,128 @@
-# NTPodsMic — virtual audio (microphone) driver (ACX)
+# NTPods ACX microphone driver
 
-> This hardened build supports the ACX microphone on Windows 11 22H2 or newer.
-> The upstream PortCls alternative remains in [`../mic-portcls`](../mic-portcls),
-> but does not implement the hardened control contract and is not supported by
-> this build's installer or daemon.
+The microphone driver exposes a 48 kHz mono PCM16 capture endpoint on Windows 11
+22H2 or newer. The daemon decodes AirPods AAC-ELD audio and feeds the driver;
+recording apps use the Windows endpoint. See the
+[microphone architecture](../../docs/hires-mic/PLAN.md) for the audio path.
 
-The virtual-microphone driver for the [hi-res mic feature](../../docs/hires-mic/PLAN.md):
-Windows exposes an NTPods microphone endpoint. The daemon feeds it decoded
-AAC-ELD audio from the AirPods; recording apps use the Windows endpoint.
+Playback uses the separate `NTPodsAudio` driver on the AirPods AudioSink service.
+Its shared render code lives in this directory's `Common/Render*` files; the
+microphone device itself has only a capture circuit. See
+[AirPods playback](../../playback/README.md).
 
-## Origin / license
+The upstream [PortCls alternative](../mic-portcls) is retained for reference.
+The current daemon and installer do not support it.
 
-This is based on the **Microsoft ACX `AudioCodec` sample** from
-[microsoft/Windows-driver-samples](https://github.com/microsoft/Windows-driver-samples/tree/main/audio/Acx/Samples)
-(**Microsoft Public License, MS-PL**, retained in
-[`Microsoft-Public-License.txt`](../../../licenses/Microsoft-Public-License.txt)), chosen because:
+## Origin and license
 
-- it provides a ROOT-enumerated software audio device;
-- it includes a capture circuit (`Common/CaptureCircuit.cpp`);
-- it uses ACX on KMDF, also used by the `NTPodsAAP` driver.
+This driver is based on Microsoft's
+[ACX AudioCodec sample](https://github.com/microsoft/Windows-driver-samples/tree/main/audio/Acx/Samples),
+which provides a ROOT-enumerated software device, a capture circuit and ACX on
+KMDF. The sample's Microsoft Public License is retained in
+[Microsoft-Public-License.txt](../../../licenses/Microsoft-Public-License.txt).
+See [THIRD_PARTY.md](../../../THIRD_PARTY.md) for the unresolved licensing of
+NTPods' additions.
 
-NTPods replaces the sample capture source with PCM supplied from user mode over
-an IOCTL. An optional render circuit sends playback PCM back to user mode.
+NTPods replaces the sample audio source with PCM supplied over an IOCTL. Build
+the matching driver, daemon and installer together using
+[BUILD-WINDOWS.md](../../../docs/BUILD-WINDOWS.md). The complete installer creates
+`ROOT\NTPodsMicACX` and provisions access before loading the driver. The old
+single-driver installer refuses to run; [prebuilt](prebuilt/README.md) binaries
+do not implement the current contract.
 
-## Status
+## Control bridge
 
-This checkout must be built with the matching daemon and installer. Its driver
-changes need the Windows checks below before deployment:
-
-- The complete installer provisions the intended user's SID, signs the test
-  package, and creates `ROOT\NTPodsMicACX`. The old single-driver `install.ps1`
-  refuses to run because it bypassed that setup.
-- The Windows build exposes the microphone and an experimental stereo playback
-  endpoint. The app defaults to the existing Windows playback path.
-- **PCM bridge**: `Common/MicPipe.{h,cpp}` provides a spin-locked ring buffer and a
-  control device `\\.\NTPodsMic` with `IOCTL_NTPODS_MIC_WRITE_PCM`
-  (`0x0022A000`). `StreamEngine::ProcessPacket` drains the ring instead of the
-  sample's WAV/tone dummy; an underrun reads as silence.
-- **Buffer limit**: the uplink and the capture timer run on independent
-  clocks, so the ring used to creep up to full and stay there, adding its whole
-  capacity as a fixed delay. It now trims back to ~100 ms whenever the
-  backlog passes ~160 ms (never below two capture packets). The AirPods send
-  30 ms per packet, but gaps of up to ~100 ms between packets are normal, and a
-  32 ms target crackled on every late one. Thanks to [@Gab4545](https://github.com/Gab4545) for
-  diagnosing it.
-- **Capture-activity counter**: `IOCTL_NTPODS_MIC_STATUS` advances while an
-  app records, which is how the daemon auto-starts and auto-stops the AAP uplink.
-- The capture circuit is restricted to **48 kHz mono 16-bit** (what the decoded
-  AirPods stream is resampled to).
-
-The upstream binaries in [`prebuilt/`](prebuilt) do **not** contain this checkout's
-control ACL, exclusive-producer, flush, or capture-count changes. Do not package
-them with the hardened daemon; build and sign the matching source instead.
-
-## Build
-
-From the repository root, run `./windows/build.ps1` with the toolchain pinned in
-[BUILD-WINDOWS.md](../../../docs/BUILD-WINDOWS.md). It builds both drivers, the
-daemon and UI, then creates the complete experimental MSI. Builds do not install
-anything. Install the generated MSI, or use `install.ps1` from its complete
-distribution on a prepared test system. The installer configures both driver
-ACLs before starting them; the scripts in this driver source directory do not.
-
-See [the microphone plan](../../docs/hires-mic/PLAN.md) for protocol notes.
-
-## Control bridge contract
-
-The installer provisions `AllowedUserSid` (REG_SZ) under
-`HKLM\SYSTEM\CurrentControlSet\Services\NTPodsMicACX\Parameters` before creating
-the device. The producer handle allows SYSTEM and that canonical local/domain
-account SID only. Missing or invalid configuration allows SYSTEM only. This ACL
-does not change normal applications' access to the Windows microphone endpoint.
+The installer sets `AllowedUserSid` (REG_SZ) under
+`HKLM\SYSTEM\CurrentControlSet\Services\NTPodsMicACX\Parameters`.
+The `\\.\NTPodsMic` producer handle permits SYSTEM and that canonical local/domain
+account SID. Missing or invalid configuration permits SYSTEM only. This ACL does
+not restrict recording apps' ordinary access to the Windows microphone endpoint.
 Only one producer handle can be open.
 
-- `WRITE_PCM` (`0x0022A000`): 2–8192 input bytes, even length, no output. PCM is
-  always 48 kHz mono PCM16. Oversized or misaligned writes are rejected.
-- `STATUS` (`0x00226004`): no input. A 4-byte output returns the capture activity
-  counter. An output of at least 8 bytes additionally returns the number of
-  running ACX capture streams as a second DWORD.
-- `FLUSH` (`0x0022A008`): no buffers. Clears queued PCM immediately; the endpoint
-  stays present and emits silence until fed again. Daemon mute/off transitions
-  must stop writes and issue this operation under their producer lock.
+| Request | Input | Output |
+| --- | --- | --- |
+| `WRITE_PCM` (`0x0022A000`) | 2–8192 bytes, even length, 48 kHz mono PCM16 | None |
+| `STATUS` (`0x00226004`) | None | 4-byte capture activity counter; at least 8 bytes also returns running capture-stream count |
+| `FLUSH` (`0x0022A008`) | None | None |
 
-Opening or closing the producer clears buffered speech, as do the first capture
-start and last capture stop. The ring performs at most two bounded bulk copies
-per read/write; silence filling happens outside the spin lock. Existing jitter
-limits remain approximately 100 ms target / 160 ms high watermark, with larger
-capture packet sizes taken into account. Actual latency and long-call drift
-still require hardware measurement.
+Invalid sizes are rejected. The status counter advances while an app records,
+allowing the daemon to detect capture demand. `FLUSH` clears queued speech while
+keeping the endpoint present; it emits silence until PCM arrives again. Daemon
+mute and stop transitions must stop writes and flush under the producer lock.
 
-Portable checks (no driver is loaded):
+Opening or closing the producer, starting the first capture, and stopping the
+last capture also clear the ring. Reads and writes use at most two bounded
+copies under the spin lock; underrun silence is filled after releasing it.
+
+The jitter buffer normally trims a backlog above 160 ms back to 100 ms.
+For larger capture packets, the target holds at least two packets and the high
+watermark at least three. These limits accommodate bursty uplink packets without
+allowing clock drift to grow the delay indefinitely. Thanks to
+[@Gab4545](https://github.com/Gab4545) for diagnosing the original buffer buildup.
+
+## Capture timing
+
+The capture pin permits one hardware stream (`MaxStreams = 1`). Windows' shared
+audio engine distributes it to recording apps. Competing direct kernel-streaming
+capture must fail instead of consuming samples intended for another stream.
+
+The timer tracks delay correction in 100 ns units and converts it to PCM byte
+position after subtracting it from elapsed time. Position queries cannot move
+backwards after a delayed callback. Overdue completions are queued through the
+timer rather than called recursively. Packet numbers and start timestamps are
+published together. The first packet starts at RUN; a query before its completion
+returns `STATUS_DEVICE_NOT_READY`. The internal packet counter is 64-bit.
+
+RT buffers require exactly two nonempty packets aligned to PCM16 samples. Each
+packet is at most 9,600 bytes (100 ms). The same maximum is advertised through
+`DEVPKEY_KsAudio_PacketSize_Constraints2`; longer periods are rejected. The shared
+constraint helper advertises a 4 ms minimum and a 5 ms RAW processing quantum.
+These advertised values do not establish the period Windows chooses for a client.
+
+Only event-driven hardware capture is supported. A single timer-driven buffer
+returns `STATUS_NOT_SUPPORTED`: this engine does not implement ACX's required
+page-aligned storage and incremental filling for that mode. An application's
+timer-based WASAPI loop is distinct from the hardware buffer mode used by the
+shared audio engine.
+
+The circuit has no hardware volume node. Windows applies microphone levels in
+software for shared-mode clients; exclusive-mode clients bypass that processing.
+
+These rules follow Microsoft's [ACX streaming contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/audio/acx-streaming),
+[packet timestamp contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/acxstreams/nc-acxstreams-evt_acx_stream_get_capture_packet),
+and [pin stream limit](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/acxpin/ns-acxpin-acx_pin_config).
+
+## Shared playback bridge
+
+`Common/RenderPipe.*` is compiled into the separate AudioSink playback driver.
+It exposes one `\\.\NTPodsPlayback_<12-digit-address>` control device per pair,
+with an exclusive backend handle and the installed-user/SYSTEM access policy.
+Normal applications use the Windows output endpoint.
+
+| Request | Input | Output |
+| --- | --- | --- |
+| `READ_PCM` (`0x00226400`) | None | Buffer: 4–1920 bytes, divisible by 4; returns 0 to capacity bytes of available 48 kHz stereo PCM16 |
+| `STATUS` (`0x00226404`) | None | Exactly 48 bytes |
+| `SET_PROVIDER` (`0x0022A408`) | Two DWORDs: version `1`, ready `0` or `1` | None |
+
+The version-3 status layout is eight DWORDs (version, sample rate, channels, bits
+per sample, running streams, queued frames, dropped frames, generation), followed
+by a 64-bit Bluetooth address and two DWORDs (provider ready, device online).
+The backend checks the address before routing audio.
+
+Every queue reset advances its generation; the backend must discard pending PCM
+and encoded audio when it changes. The ring holds at most 100 ms and drops oldest
+frames on overflow. Reads complete immediately. Provider closure, the last render
+pause, power-down and removal clear queued audio. A provider marked unready stops
+accepting PCM without removing an already available endpoint during codec changes.
+
+The authoritative layouts are in [`RenderPipe.h`](Common/RenderPipe.h), with
+provider and buffering rules in `RenderProvider.h` and `RenderRing.h`.
+
+## Checks
+
+The full Windows build runs the bridge, render and packet-constraint tests.
+A portable microphone check can also run from this driver directory:
 
 ```sh
 c++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined \
@@ -97,91 +130,10 @@ c++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined \
 /tmp/ntpods-mic-bridge-test
 ```
 
-These exercise the same request validator, SID validator and ring implementation
-compiled into the driver. Driver Verifier, producer ACLs, capture transitions,
-and multi-client audio behavior also need the isolated Windows test setup.
+It exercises production request/SID validation, ring buffering, timing arithmetic,
+delayed callbacks, resume offsets and malformed packet layouts without loading
+the driver. It cannot measure Bluetooth clock drift or capture glitches.
 
-## Capture timing and sharing
-
-The capture pin exposes one hardware stream (`MaxStreams = 1`). Windows' shared
-audio engine distributes that stream to ordinary recording apps. A competing
-direct kernel-streaming capture must fail instead of consuming samples meant
-for another capture. Concurrent shared-mode Sound Recorder and Discord still
-need to be checked with this driver build.
-
-The timer keeps its delay correction in 100 ns units and converts it to PCM byte
-position only after subtracting it from elapsed time. Position queries cannot
-move backwards after a delayed callback. Overdue completions are queued through
-the timer rather than called recursively. Packet numbers and their start
-timestamps are published together; the first packet starts at the RUN timestamp,
-and a query before the first completion returns `STATUS_DEVICE_NOT_READY`.
-The internal packet counter is 64-bit so the schedule survives the public
-32-bit counter wrapping during long sessions. RT buffers require exactly two
-nonempty packets with lengths that do not split a PCM16 sample.
-Each packet is limited to 9,600 bytes (100 ms). The same maximum is advertised
-through `DEVPKEY_KsAudio_PacketSize_Constraints2` before the endpoint is exposed.
-Longer periods are rejected instead of losing speech to the ring's latency cap.
-
-The circuit exposes no hardware volume node: Windows applies microphone levels
-in software. The previous sample volume node only remembered its value and never
-changed the samples. Shared-mode level changes still need an installed recording
-check; Windows software endpoint volume does not apply to exclusive-mode clients.
-
-Only event-driven hardware capture is supported. A single timer-driven buffer
-returns `STATUS_NOT_SUPPORTED`: ACX requires page-aligned, page-divisible storage
-at offset zero and incremental filling for that mode, which this packet engine
-does not implement. Direct/exclusive timer-driven clients are outside this
-build's supported scope. Ordinary shared-mode app compatibility still requires
-the Windows checks above; an application's timer-based WASAPI loop is distinct
-from the hardware buffer mode used by the shared audio engine.
-
-The portable checks cover the production timing arithmetic, a simulated
-30-minute timeline, delayed callbacks, resume offsets, malformed packet layouts,
-rejection of 200 ms packets, and lossless buffering at the maximum supported
-period with a steady producer. They do not measure the Bluetooth/PCM clock difference or prove that
-real capture remains glitch-free. Timer stalls, pause/resume, concurrent apps,
-producer exit and Driver Verifier still need hardware checks.
-
-These rules follow Microsoft's [ACX streaming contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/audio/acx-streaming),
-[packet timestamp contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/acxstreams/nc-acxstreams-evt_acx_stream_get_capture_packet),
-and [pin stream limit](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/acxpin/ns-acxpin-acx_pin_config).
-
-## Experimental playback
-
-`windows/build.ps1` passes `/p:NTPodsExperimentalPlayback=true` to enable
-`NTPODS_EXPERIMENTAL_PLAYBACK=1` in both driver projects. Direct solution builds
-default to off unless given that property.
-This adds `Speakers (NTPods Experimental)`, a 48 kHz PCM16 stereo endpoint.
-Select it inside a playback application; its interface is marked
-`NeverSetAsDefaultEndpoint` so Windows cannot replace the normal system output.
-This flag also prevents setting it as the global default manually.
-
-The exclusive `\\.\NTPodsPlayback` reader uses the same installed
-`AllowedUserSid` and SYSTEM ACL as the microphone bridge. Open it with
-`GENERIC_READ`. Normal applications send sound through Windows; they never open
-this control device.
-
-| Request | Input | Output |
-| --- | --- | --- |
-| `READ_PCM` (`0x00226400`) | None | 4–1920 bytes, divisible by 4; returns the queued stereo frames, possibly zero bytes |
-| `STATUS` (`0x00226404`) | None | Exactly 32 bytes: eight little-endian DWORDs |
-
-The status fields are version (`2`), sample rate (`48000`), channels (`2`), bits
-per sample (`16`), running streams, queued frames, dropped frames and stream
-generation. Every queue reset advances the generation, including a last-client
-pause followed immediately by a new start. Consumers must discard pending PCM
-and encoded audio when it changes. Reads complete immediately; transmission is
-paced from the sample count.
-
-Windows mixes clients into one render stream. The shared timer consumes two
-event-driven buffers, each at most 9,600 bytes (50 ms stereo). Missing or partial
-end-of-stream packets produce silence. The PCM ring holds at most 100 ms and
-drops its oldest frames on overflow. Without a reader, playback is discarded.
-Reader closure, the last render pause, power-down and removal clear queued
-audio. No kernel read remains pending and no PCM enters driver logs.
-
-`tests/render_bridge_test.cpp` checks stereo copying, overflow, packet ordering,
-end-of-stream bounds, packet-number wrap and a 60-second sample clock. The
-microphone tests still cover the shared timer arithmetic. Endpoint enumeration,
-installed playback, sleep/resume, removal, Driver Verifier and Bluetooth latency
-remain hardware checks; the opt-in driver has not been installed.
+Installed checks must cover producer ACLs, concurrent shared-mode recording,
+level changes, pause/resume, producer exit, sleep/removal and Driver Verifier.
+See [WINDOWS-VALIDATION.md](../../../docs/WINDOWS-VALIDATION.md) for hardware coverage.

@@ -206,10 +206,7 @@ fn set_audio_services(mac: u64, connect: bool, sink_only: bool, intent: u64) -> 
         }
     }
 }
-/// Windows' own record of a paired device: its friendly name and Class of Device.
-/// Authoritative when it exists — it is what Windows shows the user — but it only
-/// covers devices paired to THIS machine, so a phone sharing the AirPods with us
-/// usually is not in here.
+/// Windows device name and Class of Device; peers known only to the AirPods may be absent.
 pub fn paired_device(addr: u64) -> Option<(String, u32)> {
     unsafe { device_info(addr).map(|d| (utf16_name(&d.szName), d.ulClassofDevice)) }
 }
@@ -234,10 +231,8 @@ pub fn kind_from_cod(cod: u32) -> &'static str {
     }
 }
 
-/// Every local Bluetooth radio address. Needed to read the AirPods' "connected
-/// devices" list (AAP 0x2E): an address in it that is NOT one of ours is another
-/// host sharing the buds with us. Returns all of them because a machine can have
-/// more than one adapter and we do not know which one the buds are paired through.
+/// All local radio addresses, used to identify this PC in AAP 0x2E host reports.
+/// Include every adapter because the AirPods may be paired through any of them.
 pub fn local_radio_addresses() -> Vec<u64> {
     unsafe {
         let mut out = Vec::new();
@@ -661,12 +656,8 @@ mod audio_intent_tests {
         assert!(gate.enter(&intent, true).is_none());
     }
 }
-/// True if Windows currently holds a **classic link** to this device.
-///
-/// The `BLUETOOTH_DEVICE_SEARCH_PARAMS` flags are OR'd filters, so asking only
-/// for `fReturnConnected` returns only currently-connected devices. This is NOT
-/// what `find_airpods()` does: it also passes `fReturnRemembered`, so it matches
-/// a merely *paired* device and can never be used as a liveness check.
+/// Check the current Classic Bluetooth link, not just pairing history.
+/// Search flags are OR'd: including `fReturnRemembered` would also return disconnected pairs.
 pub fn is_connected(mac: u64) -> bool {
     unsafe {
         let mut params: BLUETOOTH_DEVICE_SEARCH_PARAMS = zeroed();
@@ -727,17 +718,11 @@ fn utf16_name(buf: &[u16]) -> String {
     String::from_utf16_lossy(&buf[..end])
 }
 
-/// Name patterns of Apple-chip audio devices that speak the AAP protocol — not
-/// just AirPods but Beats too (Powerbeats, Beats Fit Pro, Studio Buds, Solo,
-/// Studio3, Flex…), which share the same H1/W1 chip and endpoint. Matched
-/// case-insensitively against the paired device's name.
+/// Case-insensitive discovery hints; a matching name alone does not establish AAP support.
 const AAP_NAME_HINTS: &[&str] = &["airpod", "beats"];
 
-/// Bluetooth addresses of every device Windows has published the AAP service for,
-/// i.e. every devnode under `Enum\BTHENUM\{74ec2172-...}_VID&...`. Those are the
-/// devices our AAP driver binds to, whatever the user has named them. The address
-/// is the 12 hex digits before `_C00000000` in the instance id, e.g.
-/// `7&3549f023&2&282D7FB83C8B_C00000000`. Readable without admin.
+/// Addresses from Windows AAP service devnodes, including renamed devices.
+/// The 12 hex digits before `_C00000000` in a BTHENUM instance identify the peer.
 fn aap_service_addresses() -> Vec<u64> {
     use windows_sys::Win32::System::Registry::{
         RegCloseKey, RegEnumKeyExW, RegOpenKeyExW, HKEY, HKEY_LOCAL_MACHINE, KEY_READ,

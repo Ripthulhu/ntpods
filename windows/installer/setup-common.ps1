@@ -1,10 +1,6 @@
 <#
-    Shared install steps for install.ps1 (zip install) and msi-setup.ps1 (the MSI's
-    custom actions). Dot-source it; it only defines functions.
-
-    Everything per-user takes the user's SID and folders explicitly, because the
-    MSI runs these steps as SYSTEM, where HKCU and $env:LOCALAPPDATA belong to
-    SYSTEM and not to the person installing.
+    Shared setup functions for the ZIP installer and MSI custom actions.
+    Per-user steps take explicit account paths and SID because MSI runs as SYSTEM.
 #>
 
 $script:RunKeyPath = 'Software\Microsoft\Windows\CurrentVersion\Run'
@@ -120,10 +116,8 @@ function Test-SecureBoot {
     try { Confirm-SecureBootUEFI -ErrorAction Stop } catch { $null }
 }
 
-# BitLocker protection on the system drive. Changing Secure Boot or the boot
-# options (testsigning) can make it ask for the recovery key at the next boot.
-# WMI rather than Get-BitLockerVolume (missing on some editions) or manage-bde
-# (its output is translated). Needs admin; $false when it can't be read.
+# WMI avoids an edition-specific cmdlet and localized manage-bde output.
+# Requires admin; unreadable protection state returns $false.
 function Test-BitLocker {
     try {
         $v = Get-CimInstance -Namespace 'root\CIMV2\Security\MicrosoftVolumeEncryption' `
@@ -140,12 +134,11 @@ is saved to your Microsoft account) or print it from an admin terminal with:
   manage-bde -protectors -get C:
 '@
 
-# Only the hardened ACX device is supported by this build.
+# ACX requires Windows 11 22H2 or newer.
 function Test-MicSupported {
     [Environment]::OSVersion.Version.Build -ge 22621
 }
 
-# Older Windows and the unhardened PortCls driver are outside this build.
 function Resolve-MicDriver([string]$choice) {
     if ($choice -notin 'auto', 'acx' -or -not (Test-MicSupported)) {
         throw 'This build requires Windows 11 22H2 or newer and the hardened ACX microphone.'
@@ -153,9 +146,7 @@ function Resolve-MicDriver([string]$choice) {
     'acx'
 }
 
-# Run a native tool, echo its output, and fail on an exit code outside $ok.
-# (Native stderr must not become a terminating error under 'Stop', so the
-# preference is relaxed for the call itself.)
+# Native stderr must not terminate the call before its exit code is checked.
 function Invoke-Tool([string]$what, [int[]]$ok, [scriptblock]$cmd) {
     $ErrorActionPreference = 'Continue'
     $out = & $cmd 2>&1 | Out-String
@@ -167,9 +158,7 @@ function Invoke-Tool([string]$what, [int[]]$ok, [scriptblock]$cmd) {
 . (Join-Path $PSScriptRoot 'stop-ntpods.ps1')
 . (Join-Path $PSScriptRoot 'audio-driver.ps1')
 
-# Published names (oemNN.inf) of driver-store packages with this original INF
-# name (and provider, when given). Uses DISM rather than parsing `pnputil
-# /enum-drivers`, whose labels are translated on non-English Windows.
+# DISM exposes package names without parsing localized pnputil output.
 function Get-DriverPackages([string]$infName, [string[]]$provider) {
     @(Get-WindowsDriver -Online -ErrorAction Stop | Where-Object {
             (Split-Path -Leaf $_.OriginalFileName) -eq $infName -and
@@ -210,9 +199,7 @@ function Set-StartupMode([string]$userSid, [ValidateSet('on', 'off')][string]$mo
     }
 }
 
-# Remove every copy of a test certificate from the machine stores. Uses the
-# X509Store API (the same one that adds them): piping the Cert: provider into
-# Remove-Item left all of them in place when run as SYSTEM from the MSI.
+# Use X509Store because Cert: provider removal can fail under SYSTEM.
 function Remove-TestCert([string]$subject) {
     foreach ($name in 'My', 'Root', 'TrustedPublisher') {
         $s = New-Object System.Security.Cryptography.X509Certificates.X509Store($name, 'LocalMachine')
@@ -241,7 +228,7 @@ function Remove-SetupLeftovers([string]$localAppData) {
         }
 }
 
-# ---- drivers ------------------------------------------------------------------
+# Driver installation and rollback.
 function Get-DriverCheckpointPath {
     Join-Path $env:ProgramData 'NTPods\driver-rollback'
 }
@@ -462,10 +449,7 @@ function Assert-MicDevice([string]$hardwareId) {
     }
 }
 
-# $root holds the driver packages and installation tools.
-# (the dist / install dir). The packages are copied to $work and signed there, so
-# the files the MSI installed stay byte-identical (a repair would otherwise see
-# them as changed). $micDriver: auto | acx, see Resolve-MicDriver.
+# Sign copies in $work to preserve the installed file hashes used by MSI repair.
 function Install-NTPodsDrivers([string]$root, [string]$work, [string]$micDriver = 'auto', [string]$userSid, [string]$transactionId) {
     Assert-UserSid $userSid
     if ((Resolve-MicDriver $micDriver) -ne 'acx') { throw 'This experimental build supports only the hardened ACX microphone on Windows 11 22H2 or newer.' }
@@ -512,11 +496,10 @@ function Install-NTPodsDrivers([string]$root, [string]$work, [string]$micDriver 
         Invoke-Tool 'Installing NTPodsAAP (pnputil)' @(0, 259, 3010) { pnputil /add-driver $aap.inf /install }
         Assert-AapBinding
 
-        # NTPodsMic: ROOT-enumerated device, via devcon. Remove both kinds first, so
-        # switching between ACX and PortCls never leaves two mics side by side.
+        # Remove legacy PortCls and existing ACX devices to avoid duplicate mics.
         Write-Host '==> Removing any existing mic device...'
         Remove-MicDevices $devcon
-        # Old mic packages pile up in the driver store otherwise (one per install).
+        # Remove superseded packages so upgrades do not accumulate driver-store copies.
         foreach ($oem in @($saved.Packages | Where-Object { $_.Name -in 'AudioCodec.inf', 'NTPodsMicPC.inf' } | ForEach-Object Published)) {
             Invoke-Tool 'Removing the old microphone package' @(0, 3010) { pnputil /delete-driver $oem /uninstall /force }
         }
@@ -571,11 +554,8 @@ function Remove-MicDriverPackages {
     }
 }
 
-# ---- elevated on-demand helper tasks -----------------------------------------
-# The unelevated daemon invokes these pre-authorized elevated tasks:
-# - Fix Driver checks and recovers its AAP devnode after repeated open failures.
-# - Rename Mic reads micname.txt and updates the virtual microphone's name.
-# Both run as the installing user, whose LOCALAPPDATA holds micname.txt.
+# The daemon requests elevated driver recovery and mic renaming through these tasks.
+# Run as the installing user, whose LOCALAPPDATA holds the request files.
 function Register-NTPodsTasks([string]$scriptDir, [string]$userSid) {
     Assert-UserSid $userSid
     Assert-ProtectedInstallPath $scriptDir

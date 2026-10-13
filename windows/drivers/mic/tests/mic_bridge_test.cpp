@@ -106,8 +106,7 @@ static void buffer_checks()
     MicRingFlush(&ring);
     assert(MicRingTake(&ring, bytes, sizeof(bytes)) == 0);
 
-    // A malicious/overflowing packet-size hint cannot overflow arithmetic or
-    // disable the cap, and normal large capture packets retain their cushion.
+    // Invalid size hints cannot bypass the cap; valid hints retain two packets.
     for (unsigned hint : {0u, 1u, 3840u, 9600u, 0xffffffffu}) {
         MicRingFlush(&ring);
         for (unsigned i = 0; i < 40; ++i) {
@@ -143,7 +142,7 @@ static void timing_checks()
         assert(MicPositionBytes(0, 100000ull * packet, 0, bytesPerSecond)
             == 960ull * packet);
     }
-    // Multiplication before division overflowed after sufficiently long uptime.
+    // Long uptimes must not overflow the time-to-byte conversion.
     constexpr unsigned long long longHns = 250000000000000ull;
     assert(MicPositionBytes(0, longHns, 0, bytesPerSecond) == 2400000000000ull);
     assert(MicBytesToHns(960, bytesPerSecond) == 100000);
@@ -171,7 +170,7 @@ static void timing_checks()
 
 static void capture_period_checks()
 {
-    // A 200 ms period used to pass allocation, then lose speech to ring trimming.
+    // Reject 200 ms packets: the ring cannot retain two of them without trimming speech.
     assert(!MicRtPacketLayoutValid(2, 19200));
     assert(MicRtPacketLayoutValid(2, MIC_RT_MAX_PACKET_BYTES));
     MicRing ring = {};

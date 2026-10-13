@@ -6,8 +6,8 @@ been tested on hardware.
 The recorded Windows hardware checks used AirPods Pro 3, firmware 9A348, and an
 Intel AX200. First-generation Pro A2084 has also passed connection, battery,
 listening-mode, automatic-pause and native AAC/AAC-ELD playback checks on that
-adapter. Additional checks are
-recorded in WINDOWS-VALIDATION.md; other models remain unverified on hardware.
+adapter. See the [validation results](WINDOWS-VALIDATION.md); other models remain
+unverified on hardware.
 
 Native playback is available for the [models listed below](#native-playback).
 Playback support does not enable the high-quality microphone on older models.
@@ -64,17 +64,18 @@ sent request separate from a device confirmation. Unknown models retain
 conservative report-based controls; newer microphone, EQ, heart-rate and movement
 streams stay disabled.
 
-Live movement uses sensor service 14 before firmware 8 and service 16 on newer
-firmware, following LibrePods. The decoder accepts the 58-byte movement record
-and rejects the shorter activity records. Movement support on Pro 1 and Max 1
+Live movement uses the advertised motion service when available. The fallback
+uses service 14 before firmware 8 and service 16 on newer firmware, following
+LibrePods. The decoder validates 56/58-byte motion records and their envelopes;
+it rejects unrelated activity records. Movement support on Pro 1 and Max 1
 comes from their head-tracking hardware; LibrePods' separate `HEAD_GESTURES` flag
 is not a complete list of models with motion sensors. Windows movement data on
 these older models still needs validation. Pro 1 A2084 on 6F21 timed out without
 accepted movement samples, so its movement support remains unresolved. One
 protocol difference to investigate is the rewrite's AACP 1.3 initialization;
-NTPods starts its ordinary control session with 1.2. Max 2 also needs sensor
-descriptor discovery: another Windows implementation found its motion stream on
-advertised service 6. Motion hardware alone does not establish NTPods graph
+NTPods starts its ordinary control session with 1.2. Another Windows implementation
+found Max 2 motion on advertised service 6; NTPods' descriptor discovery still
+needs a check on that model. Motion hardware alone does not establish NTPods graph
 support. NTPods does not provide head-tracked spatial playback.
 
 Firmware gates accept public build strings and legacy dotted versions. Metadata

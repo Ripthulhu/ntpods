@@ -10,7 +10,7 @@ checks have passed; other models are available for owners to test. See the
 Download **NTPods.msi** from [releases](https://github.com/Ripthulhu/ntpods/releases)
 and install with drivers selected. Enable Start with Windows or open NTPods after
 login; playback requires its backend. Restart if requested. The ZIP includes the
-same files for [manual installation](../README.md).
+same files for [manual installation](../../docs/BUILD-WINDOWS.md#development-installation).
 
 ## Check each codec
 
@@ -26,10 +26,13 @@ same files for [manual installation](../README.md).
    Check the codec tooltip: a pair without a supported AAC-ELD profile should use
    AAC with its saved bitrate while the menu keeps your AAC-ELD preference.
    Record that as AAC fallback, not an AAC-ELD pass.
-   Check that each codec keeps its own bitrate choice.
+   Check that each codec keeps its own bitrate choice. Test **Variable
+   (experimental)** separately; its 256 kbps peak limit must fit the peer's
+   capabilities. A successful constant-bitrate run does not verify Variable mode.
 5. Switch codecs in both directions. Windows should retain the same output and
    default selection. No per-app output change should be needed.
-6. On models with NTPods microphone support, record with **Microphone (NTPods)**
+6. On models with NTPods microphone support, record with the input named after
+   your AirPods with **(NTPods)** at the end (or **Microphone (NTPods)** before rename)
    while stereo plays. Stop recording and check both earbuds. Also test
    removing/reinserting buds during recording.
 7. Keep supported pairs connected, uninstall and confirm playback returns through

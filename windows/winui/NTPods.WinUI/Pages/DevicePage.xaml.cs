@@ -46,8 +46,7 @@ public sealed partial class DevicePage : UserControl
         ApplyExperimentalVisibility();
     }
 
-    /// Re-read the experimental opt-in (call after the Settings toggle changes so the
-    /// cards appear/disappear without an app restart).
+    /// Apply the experimental preference and animate any resulting layout change.
     public void RefreshExperimentalVisibility()
     {
         _sections.Capture();
@@ -96,10 +95,6 @@ public sealed partial class DevicePage : UserControl
         HearingAidCard.Update(s);
         TransparencyCard.Update(s);
 
-        // Disable every interactive control while there's no proper connection — a
-        // disconnected/desynced link can't apply commands, so the controls shouldn't
-        // look actionable (Battery stays as an informational read-out). Use "Reparar
-        // ligação" in the header to force a clean reconnect.
         bool on = s.Connected;
         VolumeCard.IsEnabled = on;
         NoiseControlCard.IsEnabled = on;

@@ -13,7 +13,7 @@ check its model and hardware test coverage.
 | [Model support](WINDOWS-MODEL-SUPPORT.md) | Capability profiles and which models have passed hardware checks |
 | [Hardware validation](WINDOWS-VALIDATION.md) | Test conditions, results and unresolved failures |
 | [Audio timing](WINDOWS-AUDIO-LATENCY.md) | Windows buffering, clocks and latency measurements |
-| [Microphone research](WINDOWS-MIC-PROTOCOL-RESEARCH.md) | Earlier upstream findings and the reasons for recovery changes |
+| [Microphone research](WINDOWS-MIC-PROTOCOL-RESEARCH.md) | Pinned upstream sources, clock assumptions and recovery constraints |
 
 ## Transport map
 
@@ -38,11 +38,11 @@ is evidence of that report, not a capture of the case's own radio exchange.
 - **Hardware checked:** the validation record names the model, firmware and
   observed outcome. A successful write alone does not confirm a setting changed.
 - **Reference-derived:** the mapping comes from a named upstream implementation
-  or capture. It still needs comparison on our hardware when marked unverified.
+  or capture. It still needs hardware comparison when marked unverified.
 - **Unknown:** we have bytes or a suspected purpose without enough evidence to
   assign semantics. Keep the uncertainty with the field or command.
 
-Current local checks cover Pro 3 on firmware 9A348 and selected first-generation
+Recorded hardware checks cover Pro 3 on firmware 9A348 and selected first-generation
 Pro features. A shared parser or catalog entry does not establish the same
 behavior on every AirPods generation. Consult the model table for each feature.
 
@@ -56,7 +56,7 @@ when those older tables differ from the implementation.
 Record its direction, transport, opcode, offset, width, byte order, valid values
 and length checks. Link the parser or sender and its regression case. For a
 hardware claim, add the model/firmware and capture frame numbers to the private
-evidence record, then publish a sanitized description in the validation log.
+evidence record, then publish a sanitized result in the validation matrix.
 Use synthetic fixtures for keys, addresses and audio-bearing packets.
 
 Keep unresolved fields visible in the protocol reference. Do not infer a

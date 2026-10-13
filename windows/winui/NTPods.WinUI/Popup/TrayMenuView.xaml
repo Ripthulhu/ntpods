@@ -8,10 +8,6 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     mc:Ignorable="d">
 
-    <!-- A custom, themed tray menu (the WinUI MenuFlyout clipped in SecondWindow
-         mode, and the native Win32 menu can't carry per-item icons or follow the
-         app theme). The whole window IS this rounded card; items are flat buttons
-         with an icon + label, à la the Riot/Discord tray menus. -->
     <UserControl.Resources>
         <!-- Flat full-width row with a subtle hover/press highlight. -->
         <Style x:Key="MenuRow" TargetType="Button">

@@ -9,11 +9,7 @@ using Microsoft.UI.Xaml.Controls.Primitives;
 
 namespace NTPods.WinUI.Controls;
 
-/// Hearing assistance (AirPods Pro 3, experimental). A per-person audiogram (8-band
-/// hearing loss in dB HL, left + right) plus amplification / balance / tone sliders
-/// and conversation boost. The daemon enables hearing-assist over AAP, switches to
-/// Transparency, and writes it all to the ATT/GATT. Changes are debounced (each
-/// apply is a ~1.3 s enable + ATT round-trip).
+/// Experimental hearing assistance with an eight-band audiogram in dB HL for each ear.
 public sealed partial class HearingAidCard : UserControl
 {
     private DaemonClient? _client;
@@ -40,9 +36,7 @@ public sealed partial class HearingAidCard : UserControl
     private string _deviceId = "";
     private bool _supported;
     private bool _applying;
-    // Long-ish: filling in the audiogram touches many boxes in a row and each apply
-    // is a heavy ATT round-trip on the daemon, so coalesce a burst of edits into one
-    // apply once the user pauses (the daemon also drops superseded applies).
+    // Coalesce audiogram edits to avoid a device round-trip for each field.
     private readonly DispatcherTimer _debounce = new() { Interval = TimeSpan.FromMilliseconds(1500) };
 
     public HearingAidCard()

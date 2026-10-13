@@ -21,9 +21,7 @@ const IOCTL_NTPODS_MIC_STATUS: u32 = 0x0022_6004;
 const IOCTL_NTPODS_MIC_FLUSH: u32 = 0x0022_A008;
 const MAX_PCM_SAMPLES: usize = 4096;
 
-/// Which mic driver is loaded, for the log. Both expose the same `\\.\NTPodsMic`,
-/// so the handle can't tell; the running kernel service can: ACX is the
-/// `NTPodsMicACX` service (drivers/mic), PortCls is `NTPodsMicPC` (drivers/mic-portcls).
+/// Identify ACX or legacy PortCls by its service; both use `\\.\NTPodsMic`.
 pub fn driver_kind() -> &'static str {
     use windows_sys::Win32::System::Services::{
         CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatus, SC_MANAGER_CONNECT,
@@ -60,9 +58,8 @@ pub struct MicPipe {
     handle: HANDLE,
 }
 
-// One tray owns the single exclusive handle and uses it from the receive thread
-// (writes) and the status-poll thread (reads); both DeviceIoControl paths are
-// independent, so sharing the handle is safe.
+// The daemon shares this handle between receive writes and status reads;
+// the driver's independent DeviceIoControl paths permit concurrent use.
 unsafe impl Send for MicPipe {}
 unsafe impl Sync for MicPipe {}
 
@@ -94,8 +91,7 @@ impl MicPipe {
         }
     }
 
-    /// Number of running capture streams in the Windows audio engine. `None` = the DeviceIoControl failed (handle dead / device gone), so the
-    /// caller can reopen.
+    /// Running Windows capture streams; `None` tells the caller to reopen the failed handle.
     pub fn status(&self) -> Option<u32> {
         let mut out = [0u8; 8];
         let mut returned = 0u32;
@@ -164,11 +160,7 @@ impl MicPipe {
     }
 }
 
-/// Self-healing holder for the virtual-mic pipe. The device may not be enumerated yet
-/// when the daemon starts at boot, and the handle can later break (mic driver
-/// reinstalled / device re-plugged) — either used to leave the mic dead until a daemon
-/// restart. All mic access goes through this cell, which (re)opens the pipe on demand
-/// so audio + mic recover on their own. Cheap Mutex; the write path is uncontended.
+/// Serializes mic access and reopens the handle after enumeration delays or driver removal.
 pub struct MicPipeCell {
     inner: Mutex<Option<MicPipe>>,
     enabled: AtomicBool,
@@ -178,7 +170,7 @@ pub struct MicPipeCell {
 }
 
 impl MicPipeCell {
-    /// Try to open once up front; a failure here is fine — it reopens on first use.
+    /// Attempt the first open; later access retries if the device is unavailable.
     pub fn new() -> MicPipeCell {
         MicPipeCell {
             inner: Mutex::new(MicPipe::open()),

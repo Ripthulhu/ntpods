@@ -10,11 +10,7 @@ using Windows.Graphics;
 
 namespace NTPods.WinUI.Popup;
 
-/// A borderless, themed, self-dismissing window that hosts <see cref="TrayMenuView"/>
-/// as the tray's context menu. Replaces the WinUI MenuFlyout (which clipped to ~1
-/// char in H.NotifyIcon's SecondWindow host) and the native Win32 menu (no per-item
-/// icons, no app theme). It appears at the cursor, growing up from the tray, and
-/// closes when it loses focus or an item is chosen. Every windowing call is guarded.
+/// Hosts the themed tray menu in its own window to avoid H.NotifyIcon flyout clipping.
 public sealed class TrayMenuWindow : Window
 {
     private const double MenuWidthDip = 260;
@@ -59,7 +55,7 @@ public sealed class TrayMenuWindow : Window
         Closed += (_, _) => _closed = true;
     }
 
-    /// Populate + show the menu at the current cursor position.
+    /// Refresh and resize an already visible menu.
     public void UpdateSnapshot(Snapshot snapshot)
     {
         if (_closed) return;
@@ -81,8 +77,7 @@ public sealed class TrayMenuWindow : Window
             _display = DisplayArea.GetFromPoint(_anchor, DisplayAreaFallback.Nearest);
             // Destination DPI must be selected before measuring the menu.
             AppWindow.Move(_anchor);
-            // Realize the HWND + lay out the content; final placement happens in
-            // OnViewLoaded once the rasterization scale is known.
+            // Finish placement after Loaded supplies the content's rasterization scale.
             AppWindow.Show(true);
         }
         catch { SafeClose(); }
@@ -112,7 +107,7 @@ public sealed class TrayMenuWindow : Window
                 AppWindow.Resize(new SizeInt32(bounds.Width, bounds.Height));
             if (AppWindow.Position.X != bounds.X || AppWindow.Position.Y != bounds.Y)
                 AppWindow.Move(new PointInt32(bounds.X, bounds.Y));
-            // Take focus so the first click-away deactivates (and dismisses) us.
+            // Taking focus lets the first click outside dismiss the menu.
             if (!_positioned)
                 try { SetForegroundWindow(WinRT.Interop.WindowNative.GetWindowHandle(this)); } catch { }
             _positioned = true;
@@ -122,7 +117,7 @@ public sealed class TrayMenuWindow : Window
 
     private void OnActivated(object sender, WindowActivatedEventArgs args)
     {
-        // Only dismiss on genuine focus loss after we've placed + shown the menu.
+        // Ignore activation changes during initial placement.
         if (_positioned && args.WindowActivationState == WindowActivationState.Deactivated)
             SafeClose();
     }

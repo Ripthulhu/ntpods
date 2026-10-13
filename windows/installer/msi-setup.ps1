@@ -1,15 +1,9 @@
 <#
-    Custom actions for NTPods.msi. The MSI runs this elevated, as SYSTEM, from the
-    install folder, and passes who is installing (their SID and profile folders).
+    MSI custom actions for installation, removal and driver rollback/commit.
+    Runs as SYSTEM from the install folder; per-user steps use the supplied
+    account SID and profile paths.
 
-      -Action install         register the helper tasks,
-                              and with -Drivers also test-sign + install the drivers
-                              (-MicDriver acx, Windows 11 only)
-      -Action remove-drivers  remove the drivers and the test certificate
-      -Action uninstall       stop NTPods, remove the helper tasks and startup entries
-      -Action stop            stop NTPods so its files can be replaced
-
-    Output goes to the MSI log and to %ProgramData%\NTPods\setup-<GUID>.log.
+    Output goes to the MSI log and %ProgramData%\NTPods\setup-<GUID>.log.
 #>
 param(
     [Parameter(Mandatory)][ValidateSet('install', 'remove-drivers', 'uninstall', 'stop', 'rollback', 'commit')][string]$Action,

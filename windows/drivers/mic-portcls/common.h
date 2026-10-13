@@ -1,12 +1,7 @@
 /*
-    NTPodsMicPC — the NTPods virtual microphone on PortCls/WaveRT.
-
-    One of NTPods' two mic drivers. The ACX one in ../mic only loads on Windows
-    11 22H2+ (and is the default there); PortCls exists on Windows 10 and 11
-    alike, so this one covers everything older (issue #14) and can be picked on
-    Windows 11 too. It is capture only: one mono 16-bit 48 kHz endpoint fed by the
-    daemon through the same control device and IOCTLs as the ACX driver
-    (\\.\NTPodsMic), so ntpodsd works with either.
+    Legacy PortCls/WaveRT microphone, excluded from the current installer.
+    One mono 16-bit 48 kHz endpoint, fed through \\.\NTPodsMic with the
+    WRITE_PCM and four-byte STATUS IOCTLs shared with the ACX driver.
 
     Files:
       driver.cpp  DriverEntry, IRP routing, adapter start, control device, ring
@@ -29,15 +24,13 @@
 #define TOPO_PIN_MIC      0
 #define TOPO_PIN_BRIDGE   1
 
-// The one format: 48 kHz, 16-bit, mono. The daemon's ELD decoder produces exactly
-// this, so no conversion happens anywhere.
+// The daemon supplies 48 kHz PCM16 mono after decoding and resampling.
 #define MIC_RATE       48000
 #define MIC_CHANNELS   1
 #define MIC_BITS       16
 #define MIC_BLOCK      (MIC_CHANNELS * MIC_BITS / 8)
 
-// Same codes as ../mic/Common/MicPipe.h: the daemon doesn't know which driver it
-// talks to.
+// Shared with ../mic/Common/MicPipe.h; this legacy driver has no FLUSH IOCTL.
 #define IOCTL_NTPODS_MIC_WRITE_PCM \
     CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_WRITE_DATA)
 #define IOCTL_NTPODS_MIC_STATUS \

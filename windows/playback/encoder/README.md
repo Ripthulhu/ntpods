@@ -1,6 +1,6 @@
 # AAC-ELD encoder
 
-This worker encodes 48 kHz stereo PCM for the Apple AAC-ELD playback experiment.
+This worker encodes 48 kHz stereo PCM for AirPods AAC-ELD playback.
 The normal build includes the worker and its separate FDK library in the MSI and ZIP.
 
 ## Build and check
@@ -73,11 +73,11 @@ FDK grants no patent license.
 Codec settings follow the no-SBR profile in
 [USBPods' Pro 3 playback implementation](https://github.com/han-um/USBPods-Pico2W-2-way-audio-implement/blob/d18d083bc52de3143d8d922c4abaae865cc0dc28/src/btstack/btstack_avdtp_source.c#L1678-L1724),
 with the selected bitrate capped at 256 kbps.
-Successful local encoding does not establish AirPods playback or coexistence
-with Windows audio.
+See [playback support](../README.md) for tested models and remaining hardware
+checks. An encoder round trip alone does not establish Bluetooth playback support.
 
 The VBR option uses the rate-control API in the pinned FDK source:
 `libAACenc/include/aacenc_lib.h` documents `AACENC_BITRATEMODE` and
 `AACENC_PEAK_BITRATE`; `libAACenc/src/aacenc.cpp` defines mode 5's nominal rate.
 The round-trip tests cover silence, stereo tones, noise and transients, plus the
-per-frame size limit. This profile has not been validated on AirPods hardware.
+per-frame size limit. VBR has not been validated on AirPods hardware.

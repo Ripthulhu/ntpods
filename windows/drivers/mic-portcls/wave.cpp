@@ -8,8 +8,6 @@
 */
 #include "common.h"
 
-// ---- descriptors -----------------------------------------------------------------
-
 static KSDATARANGE_AUDIO CaptureRange = {
     {
         sizeof(KSDATARANGE_AUDIO), 0, 0, 0,
@@ -99,8 +97,6 @@ static BOOLEAN IsOurFormat(_In_ PKSDATAFORMAT Format)
            wfx->wBitsPerSample == MIC_BITS && wfx->nBlockAlign == MIC_BLOCK;
 }
 
-// ---- capture stream ----------------------------------------------------------------
-
 class CCaptureStream : public IMiniportWaveRTStream, public CUnknown
 {
 public:
@@ -160,9 +156,7 @@ VOID CCaptureStream::Advance(_In_ LONGLONG Qpc)
     ULONGLONG bytes = (due - m_Samples) * MIC_BLOCK;
     m_Samples = due;
 
-    // Position always moves by the full amount so it stays in step with time; if
-    // nobody polled for longer than the buffer (it shouldn't happen) only the last
-    // buffer's worth is actually filled.
+    // Advance the clock across missed polls, but fill at most one cyclic buffer.
     ULONG fill = bytes > m_BufferSize ? m_BufferSize : (ULONG)bytes;
     ULONG newPos = (ULONG)((m_Pos + bytes) % m_BufferSize);
     ULONG at = (newPos + m_BufferSize - fill) % m_BufferSize;
@@ -293,8 +287,6 @@ STDMETHODIMP_(NTSTATUS) CCaptureStream::GetClockRegister(_Out_ KSRTAUDIO_HWREGIS
 {
     return STATUS_NOT_IMPLEMENTED;
 }
-
-// ---- miniport ------------------------------------------------------------------------
 
 class CWaveMiniport : public IMiniportWaveRT, public CUnknown
 {

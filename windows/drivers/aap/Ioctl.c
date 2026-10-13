@@ -36,11 +36,7 @@ VOID LpEvtIoStop(WDFQUEUE Queue, WDFREQUEST Request, ULONG ActionFlags)
     InterlockedExchange(&ctx->Stopping, 1);
 }
 
-//
-// The app closed its handle (clean exit OR crash -> the OS closes it for us).
-// Release the L2CAP channel so it doesn't leak. LpDisconnect is idempotent and
-// runs at PASSIVE_LEVEL, which is where EvtFileClose is called.
-//
+// Close runs at PASSIVE_LEVEL; LpStopChannels tolerates repeated cleanup.
 VOID
 LpEvtFileClose(
     _In_ WDFFILEOBJECT FileObject

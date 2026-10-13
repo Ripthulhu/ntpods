@@ -1,21 +1,24 @@
-# Vendored FFmpeg (fetched, not committed)
+# FFmpeg build dependencies
 
-The daemon links a tiny slice of **FFmpeg 7.1** (`avcodec` / `avutil` /
-`swresample`) to decode the AirPods' hi-res **AAC-ELD** microphone stream.
+NTPods uses FFmpeg 7.1's `avcodec`, `avutil` and `swresample` libraries for AAC-ELD
+microphone decoding and AAC playback encoding. Headers, import libraries and DLLs
+are downloaded during the build and are not committed.
 
-These libraries are **fetched at build time**, not committed — the FFmpeg headers
-alone are ~28k lines, which is pure noise in the repo/PR. Only this note and the
-license live here.
+From the repository root, run:
 
-- **Fetch:** run `../fetch-ffmpeg.sh` (CI does it automatically before building the
-  daemon). It downloads a pinned FFmpeg 7.1 LGPL **shared** build from
-  [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds), verifies its
-  SHA256, and drops the headers + import libs (both MSVC `.lib` and MinGW
-  `.dll.a`) + DLLs into `include/`, `lib/`, `bin/` here.
-- **License:** this bundle is **LGPL v3+** (`avcodec_license()` and its bundled
-  license confirm `--enable-version3`) — see `LICENSE-ffmpeg.txt` and the
-  repository's GPL-3.0 text incorporated by LGPL-3.0.
-  The `-lgpl-shared` build ships the runtime DLLs (`avcodec-61.dll`,
-  `avutil-59.dll`, `swresample-5.dll`) alongside the app.
-- **Updating:** bump `URL` / `URL_SHA256` in `fetch-ffmpeg.sh` when moving versions
-  (keep the `av*-NN.dll` SONAMEs in sync with what the app loads).
+```sh
+bash windows/daemon/fetch-ffmpeg.sh
+```
+
+The script verifies a pinned [BtbN shared build](https://github.com/BtbN/FFmpeg-Builds)
+and writes headers to `include/`, MSVC and MinGW import libraries to `lib/`, and
+runtime DLLs to `bin/`. Packages ship `avcodec-61.dll`, `avutil-59.dll` and
+`swresample-5.dll` beside the app.
+
+This bundle is LGPL v3 or later (`--enable-version3`). Keep `LICENSE-ffmpeg.txt`
+and the bundled notices with it. The matching source and build recipes are
+documented in [FFMPEG-SOURCES.md](../../../../docs/FFMPEG-SOURCES.md).
+
+When updating, change `URL` and `URL_SHA256` in `fetch-ffmpeg.sh`, the pinned
+archives in `windows/fetch-release-sources.ps1`, and the source notes together.
+Keep the DLL names in the build and packaging scripts matched to the new version.

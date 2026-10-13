@@ -12,8 +12,7 @@ use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL, COINIT_MULTITHREADED, STGM_READ,
 };
 
-/// Join the process MTA for the calling thread. Idempotent-safe (a second call
-/// returns S_FALSE). Every daemon thread that touches volume must call this.
+/// Initialize COM MTA on each daemon thread before it accesses volume.
 pub fn init() {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
@@ -172,9 +171,7 @@ fn is_application_session(result: windows::core::HRESULT) -> bool {
     result == windows::Win32::Foundation::S_FALSE
 }
 
-/// Conversational Awareness volume ducking. The AirPods only *signal* the state
-/// (status byte of the 0x4B event) — the host lowers/restores the media volume.
-/// Mirrors the app's MediaController::handle_conversational_awareness.
+/// Host volume ducking driven by the AirPods' 0x4B Conversation Awareness events.
 pub struct ConvDuck {
     // CA can be disabled from an IPC thread, so retain a marshalled reference.
     active: Option<DuckedEndpoint<AgileReference<IAudioEndpointVolume>>>,
@@ -210,8 +207,7 @@ impl ConvDuck {
         });
     }
 
-    /// Restore the pre-duck volume immediately (e.g. the user turned CA off while
-    /// it was mid-duck — no end event will come, so we'd be stuck low otherwise).
+    /// Disabling Conversation Awareness may omit the end event; restore any owned duck.
     pub fn restore(&mut self) {
         restore_duck(&mut self.active);
     }

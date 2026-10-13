@@ -1,8 +1,5 @@
-// Minimal AAC-ELD decoder shim over FFmpeg libavcodec + libswresample (LGPL).
-// Exposes a small, version-stable C ABI so the Rust side never touches
-// AVCodecContext internals. Decodes AAC-ELD access units and resamples whatever
-// rate the decoder produces to a fixed 48 kHz mono s16 (matching the virtual
-// mic's capture format). The source clock still requires hardware validation.
+// AAC-ELD decoding through FFmpeg libavcodec + libswresample (LGPL).
+// The C ABI keeps FFmpeg structs out of Rust and returns 48 kHz mono s16 PCM.
 #include <libavcodec/avcodec.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/frame.h>
@@ -20,9 +17,7 @@
 // excess queued samples without this conversion. Verify against actual 9A348
 // recordings before accepting pitch and long-run drift; the ASC alone is not proof.
 #define IN_RATE 64000
-// The AirPods mic runs a few dB quiet with lots of headroom; a make-up gain
-// brings it up to a comfortable level (applied on the float before resampling,
-// so swr clamps cleanly if a loud transient would exceed full scale).
+// Apply microphone gain with tanh soft limiting before resampling to s16.
 #define GAIN 3.0f
 
 typedef struct {

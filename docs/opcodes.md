@@ -17,9 +17,9 @@ for observed but unimplemented messages.
 | 0x0006       | Host        | [Ear detection](AAP%20Definitions.md#ear-detection)                     |
 | 0x0008       | Host        | Primary bud role; remaining flags incompletely decoded              |
 | 0x0009       | Both        | [Control commands](control_commands.md)                      |
-| 0x000D       | Accessory   | Audio source req                          |
-| 0x000E       | Host        | Audio source resp                         |
-| 0x000F       | Accessory   | [Notification register](AAP%20Definitions.md#requesting-notifications)            |
+| 0x000D       | Accessory   | Audio source request                          |
+| 0x000E       | Host        | Audio source response                         |
+| 0x000F       | Accessory   | [Notification subscription](AAP%20Definitions.md#requesting-notifications)            |
 | 0x0010       | Accessory   | Smart routing relay           |
 | 0x0011       | Host        | Smart routing response     |
 | 0x0014       | Accessory   | Send connected device MAC                                          |
@@ -27,15 +27,15 @@ for observed but unimplemented messages.
 | 0x0019       | Host        | Stem press                                  |
 | 0x001A       | Accessory   | Rename device                                                      |
 | 0x001B       | Accessory   | Timestamp                                    |
-| 0x001D       | Host        | [Device Information](device-info.md)                         |
+| 0x001D       | Host        | [Device information](device-info.md)                         |
 | 0x001E       | Accessory   | External Accessory session packet (reference label)                 |
 | 0x0022       | Accessory   | CaseInfo request                                                   |
 | 0x0023       | Host        | CaseInfo response; field meanings incomplete                        |
 | 0x0029       | Accessory   | Country code (reference label)                                     |
 | 0x002B       | Host        | Stream State Info (reference label); bounded diagnostics in NTPods  |
-| 0x002D       | Accessory   | List of connected dev. req      |
+| 0x002D       | Accessory   | Connected-host list request      |
 | 0x002E       | Host        | List of connected devices    |
-| 0x0030       | Accessory   | BLE keys req                                  |
+| 0x0030       | Accessory   | BLE key request                                  |
 | 0x0031       | Host        | BLE keys response                             |
 | 0x004B       | Host        | [Conversation awareness](AAP%20Definitions.md#conversational-awareness)        |
 | 0x004C       | Host        | Adaptive Volume message; payload meanings unknown                   |

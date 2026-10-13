@@ -2,6 +2,10 @@
 
 # NTPods
 
+AirPods controls, battery levels and a microphone for Windows 11 x64.
+Based on [arctumn/NTPods](https://github.com/arctumn/ntpods) and
+[LibrePods](https://github.com/librepods-org/librepods).
+
 > [!WARNING]
 > These experimental builds require Windows **Test Mode (test signing)**. The
 > drivers are not Microsoft production-signed; setup signs them locally with a
@@ -10,15 +14,11 @@
 > Secure Boot can block Test Mode, and changing either setting can trigger
 > BitLocker recovery. Save your recovery key before changing boot settings.
 
-AirPods controls, battery levels and a microphone for Windows 11 x64.
-Based on [arctumn/NTPods](https://github.com/arctumn/ntpods) and
-[LibrePods](https://github.com/librepods-org/librepods).
+[Download](https://github.com/Ripthulhu/ntpods/releases) ·
+[Installation](#installing-on-windows) ·
+[Model support](docs/WINDOWS-MODEL-SUPPORT.md)
 
 ## Preview
-
-
-https://github.com/user-attachments/assets/44b47894-22f6-49f1-a891-99ce0b7346bc
-
 
 <p align="center">
   <picture>
@@ -31,6 +31,13 @@ https://github.com/user-attachments/assets/44b47894-22f6-49f1-a891-99ce0b7346bc
 
 <p align="center"><img src="docs/images/dynamic-island.png" alt="Dynamic Island showing Adaptive mode and battery levels" width="440"></p>
 
+<details>
+<summary>Video preview</summary>
+
+https://github.com/user-attachments/assets/44b47894-22f6-49f1-a891-99ce0b7346bc
+
+</details>
+
 ## Features
 
 - Listening-mode controls with an adjustable Adaptive slider.
@@ -38,25 +45,20 @@ https://github.com/user-attachments/assets/44b47894-22f6-49f1-a891-99ce0b7346bc
 - Three-band EQ, Conversation Awareness and Personalized Volume.
 - AAC and AAC-ELD playback through one AirPods output, with separate bitrate settings.
 - Automatic pause when you remove an earbud. Manually paused audio stays paused.
-- A 48 kHz mono microphone while playback stays stereo, with automatic,
-  timed, always-active and manual controls, plus a configurable global shortcut.
+- A 48 kHz mono microphone on supported models while playback stays stereo,
+  with automatic start, a stop delay, keep-active and manual modes, and a keyboard shortcut.
 - Live head tracking and heart rate on supported models.
 - A Dynamic Island popup and Start with Windows.
 
-Tested with an Intel AX200 and AirPods Pro 3 on firmware 9A348. First-generation
-AirPods Pro also passed battery, listening-mode, automatic-pause and native
-AAC/AAC-ELD playback checks.
-Features vary by model and firmware; see [model support](docs/WINDOWS-MODEL-SUPPORT.md).
+### Compatibility
 
-Microphone recovery briefly interrupts playback. Short recordings and twenty
-start/stop cycles passed; longer recordings, latency, drift, Discord and interrupted
-recovery still need testing. See [test results](docs/WINDOWS-VALIDATION.md).
-The replacement AAC/AAC-ELD playback driver passed short Pro 1 and Pro 3 stereo
-checks, including playback during and after microphone capture on Pro 3.
-Longer tests remain pending.
+Requires Windows 11 22H2 or newer, x64. Hardware testing covers an Intel AX200
+with AirPods Pro 3 and first-generation AirPods Pro. Features and test coverage vary by model;
+see [model support](docs/WINDOWS-MODEL-SUPPORT.md) and
+[validation](docs/WINDOWS-VALIDATION.md).
 
-This build uses the Windows 11 ACX microphone driver. Older Windows versions
-are untested. For Android or Linux, use [LibrePods](https://github.com/librepods-org/librepods).
+Stopping or recovering the high-quality microphone briefly interrupts playback.
+For Android or Linux, use [LibrePods](https://github.com/librepods-org/librepods).
 
 ## Installing on Windows
 
@@ -69,8 +71,8 @@ Upstream nightly builds do not include this fork's changes.
 Both downloads include an experimental playback driver for AirPods 1–4,
 Pro 1–3 and the original Max (Lightning and USB-C). See the
 [playback model list](docs/WINDOWS-MODEL-SUPPORT.md#native-playback) for test status.
-It replaces the paired AirPods output driver, with AAC/AAC-ELD and Best effort or
-Manual kbps settings under **Playback and microphone**. NTPods must stay running
+It replaces the paired AirPods output driver, with AAC/AAC-ELD and separate
+bitrate settings under **Playback and microphone**. NTPods must stay running
 for playback. No extra speaker or per-app routing is needed. Keep the AirPods
 connected during uninstall to restore their saved driver, or Windows playback
 when no prior binding was saved; see the

@@ -1,6 +1,16 @@
-# IPC contract checks
+# Windows tests
 
-Run with Rust/Cargo and the .NET 10 SDK installed:
+Run commands from the repository root. The complete build and test entry point is
+[`windows/build.ps1`](../build.ps1); see the
+[toolchain requirements](../../docs/BUILD-WINDOWS.md).
+
+`python windows/tests/test-aap-extract.py` checks ear-state decoding in the
+[capture helper](../docs/aap_extract.py), including truncated packets, unknown
+values and command-line output. It also runs in the complete build.
+
+## IPC contract
+
+For the IPC checks alone, install Rust/Cargo and the .NET 10 SDK, then run:
 
 ```powershell
 pwsh -File windows/tests/test-ipc.ps1
@@ -60,6 +70,11 @@ Microphone policy checks cover the unchanged automatic default, delay bounds,
 pending versus confirmed choices, manual demand, the permission toggle and recovery.
 They also check microphone notifications for repeated snapshots, reconnects,
 manual stops and changes between capture policies.
+
+`dotnet run --project windows/tests/SensorUi --configuration Release` checks
+heart-rate graph caching, downsampling, exact sample selection and timestamp gaps.
+It uses the production data helper without creating a WinUI window or connecting
+to the sensors.
 
 ## Global microphone shortcut
 

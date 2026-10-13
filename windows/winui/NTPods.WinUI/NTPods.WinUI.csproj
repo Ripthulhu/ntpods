@@ -6,7 +6,7 @@
     <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
     <RootNamespace>NTPods.WinUI</RootNamespace>
 
-    <!-- The tray's pref.rs launches this exe by name; keep it exact. -->
+    <!-- Installer shortcuts and startup entries depend on this executable name. -->
     <AssemblyName>ntpods-winui</AssemblyName>
     <Version>0.1.26</Version>
 
@@ -18,8 +18,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
 
-    <!-- Unpackaged + self-contained: a plain .exe that runs next to the other
-         NTPods exes without MSIX and without a machine-wide runtime install. -->
+    <!-- The MSI ships the app and its runtime without MSIX registration. -->
     <WindowsPackageType>None</WindowsPackageType>
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
     <SelfContained>true</SelfContained>
@@ -28,25 +27,19 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
 
-    <!-- Localization: en-US is the default/base language baked into resources.pri.
-         Add a language by copying Strings\en-US to Strings\<lang> (e.g. pt-PT).
-         We opt out of the default .resw globbing and include Strings explicitly so
-         the resources are added exactly once (no duplicate-item build error). -->
+    <!-- Disable default discovery because Strings is included explicitly below. -->
     <DefaultLanguage>en-US</DefaultLanguage>
     <EnableDefaultPRIResourceItems>false</EnableDefaultPRIResourceItems>
   </PropertyGroup>
 
   <ItemGroup>
     <EmbeddedResource Include="..\..\device-models.json" LogicalName="ntpods.device-models.json" />
-    <!-- UI strings (x:Uid + code lookups) compiled into resources.pri. -->
+    <!-- Retain the resource index required by the unpackaged app. -->
     <PRIResource Include="Strings\**\*.resw" />
   </ItemGroup>
 
   <ItemGroup>
-    <!-- The same .resw embedded so the runtime Loc service can parse them into its
-         culture -> key -> value map. This backs live language switching (bindings to
-         {StaticResource Loc}) which works on the unpackaged build, unlike x:Uid /
-         PrimaryLanguageOverride. LogicalName = loc.<culture>. -->
+    <!-- Loc reads embedded strings for live language switching; keep these in sync with Loc.Cultures. -->
     <EmbeddedResource Include="Strings\en-US\Resources.resw" LogicalName="loc.en-US" />
     <EmbeddedResource Include="Strings\pt-PT\Resources.resw" LogicalName="loc.pt-PT" />
     <EmbeddedResource Include="Strings\fr-FR\Resources.resw" LogicalName="loc.fr-FR" />
@@ -75,9 +68,7 @@
     <Content Include="Assets\app.ico">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
-    <!-- All product/art PNGs via a wildcard — the full AirPods render set (buds /
-         left / right / case / full, per model) copied from the Android app's
-         res-apple drawables. Wildcard so new art ships without listing each file. -->
+    <!-- Include new artwork without maintaining a second file list. -->
     <Content Include="Assets\*.png">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>

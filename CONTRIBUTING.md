@@ -39,7 +39,7 @@ hardware observations and unresolved interpretations distinct.
 ## Build and test
 
 Install the tools listed in [BUILD-WINDOWS.md](docs/BUILD-WINDOWS.md). From the
-repository root, PowerShell 7 runs the full build and test suite:
+repository root, PowerShell 7 runs the build and its automated checks:
 
 ```powershell
 ./windows/build.ps1
@@ -78,8 +78,8 @@ cargo test --locked --features experimental-playback --manifest-path windows/dae
 
 [windows/tests/README.md](windows/tests/README.md) describes the checks.
 Driver changes also need the C/C++ tests run by `windows/build.ps1`.
-[WINDOWS-VALIDATION.md](docs/WINDOWS-VALIDATION.md) records hardware results and
-the tests still needed. A passing unit test does not establish hardware support.
+[WINDOWS-VALIDATION.md](docs/WINDOWS-VALIDATION.md) summarizes hardware coverage
+and remaining checks. Unit tests alone cannot establish hardware support.
 
 ## Making changes
 

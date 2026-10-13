@@ -28,8 +28,7 @@ public sealed partial class DeviceHeader : UserControl
     private readonly RenameRequest _rename = new();
     private readonly DispatcherTimer _renameTimeout = new() { Interval = TimeSpan.FromSeconds(10) };
 
-    // The artwork family currently shown, so we only reload the image when the
-    // detected model actually changes (snapshots arrive several times a second).
+    // Avoid decoding the same artwork on every snapshot.
     private string? _artFamily;
     private string _deviceId = "";
     private bool _linkStale;
@@ -76,16 +75,11 @@ public sealed partial class DeviceHeader : UserControl
         StaleDot.Visibility = _linkStale ? Visibility.Visible : Visibility.Collapsed;
         ConnectButton.Content = Localize.Get(_linkStale ? "Action_Repair" : "HeaderConnectBtn.Content");
         ConnectButton.Visibility = !s.Connected || _linkStale ? Visibility.Visible : Visibility.Collapsed;
-        // Rename + Disconnect only make sense while connected. Repair is offered
-        // while disconnected AND while the link is stale -- the AirPods attached to
-        // Windows but no longer talking to the daemon. In that state Connected stays
-        // true forever, so keying Repair off it alone hid the button exactly when it
-        // was needed, and the only way to surface it was to turn Bluetooth off.
+        // Repair must remain available when Windows is connected but the AAP link is stale.
         RenameBtn.Visibility = s.Connected ? Visibility.Visible : Visibility.Collapsed;
         DisconnectButton.Visibility = s.Connected ? Visibility.Visible : Visibility.Collapsed;
         RepairButton.Visibility = (!s.Connected || s.LinkStale) ? Visibility.Visible : Visibility.Collapsed;
-        // "Restore audio" is the opposite case to Repair: the session is fine, the
-        // sound is not. Only useful while connected.
+        // Playback can fail while the control session remains connected.
         RebuildAudioButton.Visibility = s.Connected ? Visibility.Visible : Visibility.Collapsed;
         DeviceActionsSeparator.Visibility = Visibility.Visible;
         if (!s.Connected) { CancelRename(); ExitEdit(); }

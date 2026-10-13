@@ -2,8 +2,7 @@
     Driver.c - driver entry and device creation.
 --*/
 
-// INITGUID (via initguid.h) must precede the headers so DEFINE_GUID emits the
-// GUID *data* here (exactly one TU). Other .c files get extern declarations.
+// Define GUID storage in this translation unit; other files use extern declarations.
 #include <initguid.h>
 #include "NTPodsAAP.h"
 #include <ntstrsafe.h>
@@ -86,23 +85,16 @@ LpEvtDeviceAdd(
     status = LpAssignDeviceSecurity(Driver, DeviceInit);
     if (!NT_SUCCESS(status)) return status;
 
-    // We are the function driver for the AAP service PDO exposed by BTHENUM.
     WDF_PNPPOWER_EVENT_CALLBACKS_INIT(&pnpPower);
     pnpPower.EvtDevicePrepareHardware = LpEvtDevicePrepareHardware;
     pnpPower.EvtDeviceReleaseHardware = LpEvtDeviceReleaseHardware;
     pnpPower.EvtDeviceSurpriseRemoval = LpEvtDeviceSurpriseRemoval;
-    // The L2CAP/ATT teardown must run HERE, not in ReleaseHardware: WDF stops the
-    // default I/O target before ReleaseHardware, so BRBs submitted there never
-    // reach bthport. SelfManagedIoSuspend runs while the target is still started.
+    // Close channels before WDF stops the I/O target; ReleaseHardware is too late for BRBs.
     pnpPower.EvtDeviceSelfManagedIoSuspend = LpEvtDeviceSelfManagedIoSuspend;
     pnpPower.EvtDeviceSelfManagedIoRestart = LpEvtDeviceSelfManagedIoRestart;
     WdfDeviceInitSetPnpPowerEventCallbacks(DeviceInit, &pnpPower);
 
-    // Track the user-mode handle lifetime so we can release the L2CAP channel
-    // when the app exits, including cleanup after a crash.
-    // AutoForwardCleanupClose = WdfFalse: these CREATE/CLOSE IRPs belong to our
-    // user-mode device interface, not the Bluetooth stack below us, so WDF must
-    // complete them here rather than forwarding them down to bthport.
+    // Handle cleanup releases channels even after a crash; complete these IRPs here, not in bthport.
     WDF_FILEOBJECT_CONFIG_INIT(
         &fileConfig, LpEvtFileCreate, LpEvtFileClose, LpEvtFileCleanup);
     fileConfig.AutoForwardCleanupClose = WdfFalse;

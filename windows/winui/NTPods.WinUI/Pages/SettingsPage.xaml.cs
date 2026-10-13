@@ -6,9 +6,7 @@ using Microsoft.UI.Xaml.Controls;
 
 namespace NTPods.WinUI.Pages;
 
-/// The settings view: theme picker, default front-end switch, refresh, and About.
-/// Theme changes are surfaced to the host (which owns the themed root) via the
-/// ThemeChanged event; everything else is self-contained.
+/// App preferences and device metadata; the host applies theme and feature-visibility changes.
 public sealed partial class SettingsPage : UserControl
 {
     private DaemonClient? _client;
@@ -29,8 +27,7 @@ public sealed partial class SettingsPage : UserControl
     /// Raised when the user picks a theme. The host applies it to the window root.
     public event Action<ElementTheme>? ThemeChanged;
 
-    /// Raised when the experimental opt-in changes, so the host can refresh the
-    /// DevicePage experimental-card visibility live.
+    /// Notifies the host to refresh the device page's experimental controls.
     public event Action? ExperimentalVisibilityChanged;
 
     private bool _applyingLang;
@@ -56,7 +53,6 @@ public sealed partial class SettingsPage : UserControl
 
         RefreshStartupSetting();
 
-        // App version in the About card (for bug reports).
         try
         {
             var v = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
@@ -67,7 +63,7 @@ public sealed partial class SettingsPage : UserControl
         InitLanguageCombo();
     }
 
-    /// Select the persisted UI language on load, without firing the restart hint.
+    /// Select the saved language without writing it back during initialization.
     private void InitLanguageCombo()
     {
         _applyingLang = true;
@@ -90,11 +86,9 @@ public sealed partial class SettingsPage : UserControl
         if (_applyingLang) return;
         var tag = (LanguageCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
         AppSettings.SetLanguageTag(tag);
-        Loc.Instance.SetCulture(tag); // live — every {StaticResource Loc} binding re-fetches
+        Loc.Instance.SetCulture(tag);
     }
 
-    /// Set the theme radio to the persisted choice on startup, without re-firing
-    /// ThemeChanged (the host applies the saved theme itself).
     public void InitThemeSelector(int index)
     {
         if (index >= 0 && index <= 2) ThemeButtons.SelectedIndex = index;
@@ -103,13 +97,11 @@ public sealed partial class SettingsPage : UserControl
     private void ThemeButtons_SizeChanged(object sender, SizeChangedEventArgs e) =>
         ThemeButtons.MaxColumns = e.NewSize.Width < 400 ? 1 : 3;
 
-    /// Set the experimental toggle to the persisted value on startup (without
-    /// re-firing the change event).
     public void InitExperimentalSetting() => ExperimentalSetting.IsOn = AppSettings.EnableExperimental;
 
     private void ExperimentalSetting_Toggled(object sender, RoutedEventArgs e)
     {
-        AppSettings.SetEnableExperimental(ExperimentalSetting.IsOn); // persist across restarts
+        AppSettings.SetEnableExperimental(ExperimentalSetting.IsOn);
         ExperimentalVisibilityChanged?.Invoke();
     }
 
@@ -226,7 +218,7 @@ public sealed partial class SettingsPage : UserControl
     private void Theme_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         var index = ThemeButtons.SelectedIndex;
-        AppSettings.SetThemeIndex(index); // persist across restarts
+        AppSettings.SetThemeIndex(index);
         ThemeChanged?.Invoke(index switch
         {
             1 => ElementTheme.Light,
@@ -235,7 +227,7 @@ public sealed partial class SettingsPage : UserControl
         });
     }
 
-    /// Fill the (hidden-by-default) device-info card from the 0x1D metadata.
+    /// Refresh nearby-battery preferences and the hidden device metadata.
     public void UpdateDeviceInfo(Snapshot s)
     {
         _nearbyReported = s.BleScanWhileConnected;

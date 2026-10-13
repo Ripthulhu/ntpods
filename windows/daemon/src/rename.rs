@@ -23,11 +23,9 @@ pub fn apply(dev_name: &str) {
         };
         let dir = format!("{la}\\NTPods");
         let _ = std::fs::create_dir_all(&dir);
-        // Publish the name for the elevated task to read.
         if std::fs::write(format!("{dir}\\micname.txt"), &name).is_err() {
             return;
         }
-        // Fire the on-demand elevated task (registered by install.ps1; no UAC).
         let _ = Command::new("schtasks")
             .args(["/run", "/tn", TASK_NAME])
             .creation_flags(CREATE_NO_WINDOW)

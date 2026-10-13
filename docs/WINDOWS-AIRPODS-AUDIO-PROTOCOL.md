@@ -1,12 +1,11 @@
 # AirPods audio protocol
 
-This describes the playback and microphone paths implemented in NTPods through
-0.2.19, checked against source on 2026-10-13. It is a reference for comparing a
-macOS capture with NTPods. Implemented behavior, local hardware results and
-unresolved fields are identified separately.
+NTPods implements AAC and Apple AAC-ELD playback over AVDTP, and a separate
+AAC-ELD microphone uplink over AAP. This reference covers their packet formats,
+lifecycle and known limits.
 
-The earlier [microphone research](WINDOWS-MIC-PROTOCOL-RESEARCH.md) preserves
-pinned upstream sources and the history of the clock and recovery assumptions.
+The [microphone sources](WINDOWS-MIC-PROTOCOL-RESEARCH.md) explain the
+clock and recovery assumptions.
 [Windows validation](WINDOWS-VALIDATION.md#native-playback-driver-and-bitrate-controls)
 records hardware results; [model support](WINDOWS-MODEL-SUPPORT.md) owns the
 capability list.
@@ -208,8 +207,8 @@ PCM confirms readiness; silence after Stop does not prove stereo playback works.
 The decoder uses ASC `F8 E6 30 00`: AOT 39, mono, 48 kHz coding configuration,
 480 samples per decoded AU. FFmpeg output must be mono float at 48 kHz with 480
 finite samples and no corruption flags. NTPods applies gain 3 with a `tanh`
-limiter and resamples using the inherited **64 kHz presentation-clock
-assumption** to the 48 kHz Windows input. This gives about 360 output samples
+limiter and resamples using the inherited 64 kHz presentation-clock
+assumption to the 48 kHz Windows input. This gives about 360 output samples
 per AU, or 7.5 ms, after resampler delay. The ASC alone does not establish that
 clock. Local speech pitch/speed checks support it; a calibrated long recording
 and macOS trace are still needed.

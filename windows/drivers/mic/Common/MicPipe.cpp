@@ -48,8 +48,7 @@ static BOOLEAN MicPipeWrite(_In_reads_bytes_(Len) PVOID Data, _In_ ULONG Len,
     // put old speech back after the last producer handle closes.
     BOOLEAN accepted = FALSE;
     if (Producer != NULL && g_FeederFile == Producer) {
-        // The daemon can notice the last capture stop one poll later. Treat
-        // that late PCM as normal cancellation without refilling the ring.
+        // Accept and discard late PCM while the daemon detects the last capture stop.
         accepted = g_CaptureStreams == 0 || MicRingWrite(&g_Ring, Data, Len,
             (ULONG)InterlockedCompareExchange(&g_PacketSize, 0, 0)) ? TRUE : FALSE;
     }
@@ -89,7 +88,7 @@ VOID MicPipeRead(_Out_writes_bytes_(Len) PVOID Out, _In_ ULONG Len)
         taken = MicRingTake(&g_Ring, Out, Len);
         KeReleaseSpinLock(&g_Lock, irql);
     }
-    // Large capture buffers never extend the spin-lock hold time.
+    // Zero-fill outside the lock; only copying the bounded ring needs serialization.
     RtlZeroMemory((PUCHAR)Out + taken, Len - taken);
 }
 

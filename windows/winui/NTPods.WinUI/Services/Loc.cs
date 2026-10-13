@@ -6,24 +6,13 @@ using System.Xml.Linq;
 
 namespace NTPods.WinUI.Services;
 
-/// Runtime localization service — an Angular-style translate service. All UI text
-/// binds to this indexer (via the {loc:Loc} markup extension or Get() in code);
-/// changing the culture raises the indexer PropertyChanged so every binding
-/// re-evaluates and the whole UI switches language LIVE, no restart. This sidesteps
-/// x:Uid / PrimaryLanguageOverride, which don't work on the unpackaged build.
-///
-/// The strings come from the same Strings/<culture>/Resources.resw files (embedded
-/// as "loc.<culture>" and parsed into a culture -> key -> value map at startup), so
-/// translations aren't duplicated.
+/// Loads embedded .resw strings and refreshes bindings when the UI language changes.
 public sealed class Loc : INotifyPropertyChanged
 {
     public const string Fallback = "en-US";
     private static readonly string[] Cultures = { "en-US", "pt-PT", "fr-FR", "es-ES" };
 
-    // The ONE instance: App.xaml declares <services:Loc x:Key="Loc"/>, whose ctor
-    // publishes itself here so code (Localize.Get -> Loc.Instance) and XAML
-    // ({StaticResource Loc}) share it. There is no static `new()` — a second
-    // instance would split the culture (code in one language, bindings in another).
+    // Share App.xaml's instance so code and XAML use the same language.
     public static Loc Instance { get; private set; } = null!;
 
     private readonly Dictionary<string, Dictionary<string, string>> _map =
@@ -57,8 +46,7 @@ public sealed class Loc : INotifyPropertyChanged
     public string Get(string key) => this[key];
     public string Get(string key, params object[] args) => string.Format(this[key], args);
 
-    /// Switch the UI language live. "" / unknown → the system default. No-op if
-    /// unchanged; otherwise notifies every binding to re-fetch.
+    /// An empty tag uses the system language; an unsupported tag falls back to en-US.
     public void SetCulture(string tag)
     {
         var c = string.IsNullOrWhiteSpace(tag) ? SystemDefault() : tag;
@@ -67,9 +55,7 @@ public sealed class Loc : INotifyPropertyChanged
         _culture = c;
         var h = PropertyChanged;
         if (h is null) return;
-        // WinUI (unlike WPF) doesn't reliably refresh `{Binding [key]}` on an
-        // "Item[]" notification — raise the "all properties changed" signal (empty
-        // string) so every binding sourced on this object re-fetches.
+        // WinUI indexer bindings also need the empty-name notification to refresh reliably.
         h(this, new PropertyChangedEventArgs(string.Empty));
         h(this, new PropertyChangedEventArgs("Item[]"));
     }
@@ -80,9 +66,7 @@ public sealed class Loc : INotifyPropertyChanged
         try
         {
             var asm = typeof(Loc).Assembly;
-            // Find the embedded resw by name — exact LogicalName first, else any
-            // manifest name containing the culture (in case a namespace prefix or
-            // mangling was applied), so loading never silently returns empty.
+            // Resource names may include a namespace prefix when LogicalName is not preserved.
             var names = asm.GetManifestResourceNames();
             var resName = System.Array.Find(names, n => n == $"loc.{culture}")
                 ?? System.Array.Find(names, n => n.Contains(culture) && n.EndsWith(".resw", StringComparison.OrdinalIgnoreCase))
@@ -98,8 +82,7 @@ public sealed class Loc : INotifyPropertyChanged
                 if (!string.IsNullOrEmpty(name) && value is not null)
                 {
                     dict[name!] = value;
-                    // Also index under a dot-free alias so XAML bindings can use
-                    // [SettingsTitle_Text] (a dot in the indexer path is ambiguous).
+                    // Dots are ambiguous in XAML indexer paths; expose underscore aliases too.
                     var alias = name!.Replace('.', '_');
                     if (alias != name) dict[alias] = value;
                 }

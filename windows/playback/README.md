@@ -35,10 +35,12 @@ Each codec remembers its own bitrate setting:
 | --- | --- |
 | Best effort | Highest implemented rate within the peer's advertised limit and packet budget. |
 | Manual | Chosen kbps: AAC 96–512; AAC-ELD 128–256. Unsupported rates report an error. |
+| Variable (experimental) | AAC-ELD only, with a 256 kbps peak limit. Requires the peer and packet budget to support that limit. |
 
 Best effort does not adapt to radio conditions. AAC targets the selected rate
-within its frame-size limit. AAC-ELD uses constant bitrate; individual frames
-can vary by one byte. Codec and bitrate changes restart the Bluetooth stream
+within its frame-size limit. AAC-ELD Best effort and Manual use constant bitrate;
+individual frames can vary by one byte. Variable mode changes bitrate with the
+content and has offline encoder coverage only. Codec and bitrate changes restart the Bluetooth stream
 without removing the Windows output.
 
 A failed stream supplies silence and offers Retry. Closing or crashing the
@@ -94,17 +96,7 @@ Automated checks cover packet validation, cancellation, per-device PCM isolation
 buffer limits, bitrate settings, and encoder pitch/stereo output. AAC round trips
 use FFmpeg; AAC-ELD round trips use FDK's own decoder.
 
-Short hardware checks passed on AirPods Pro 3 (A3063, firmware 9A348) with an
-Intel AX200: AAC at 256 kbps and AAC-ELD at 128, 192 and 256 kbps played separate
-left and right channels. Volume and mute worked, and codec changes kept the same
-Windows output. Stereo stayed correct during 20-second microphone captures and
-after microphone stop and recovery with both codecs.
-
-First-generation AirPods Pro (A2084, firmware 6F21) passed the same AAC and
-AAC-ELD bitrate checks on that adapter. Both models also completed continuous
-70-second AAC-ELD runs at 256 kbps without audible dropouts. Pro 1's high-quality
-microphone remains disabled.
-
-Long sessions, repeated start/stop and reconnect cycles, sleep/resume, uninstall
-recovery and other models still need testing. See the
-[validation record](../../docs/WINDOWS-VALIDATION.md).
+Recorded Pro 1 and Pro 3 checks cover both codecs and 70-second AAC-ELD playback.
+Pro 3 also passed short stereo/microphone coexistence checks. Long sessions,
+repeated start/stop, sleep/resume, uninstall recovery and other models remain
+untested. See the [validation results](../../docs/WINDOWS-VALIDATION.md).

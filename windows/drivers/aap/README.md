@@ -1,15 +1,14 @@
-# NTPodsAAP — Windows AAP L2CAP driver
+# NTPodsAAP Bluetooth driver
 
-Open-source KMDF Bluetooth **profile driver** that lets Windows talk to AirPods
-over Apple's Accessory Protocol (AAP). AAP runs on a classic-Bluetooth **L2CAP
-channel at PSM `0x1001`**, which Windows user-mode Winsock cannot open (only
-RFCOMM is exposed; raw L2CAP `connect()` fails with `WSAENETDOWN`). This driver
+The KMDF Bluetooth profile driver lets Windows talk to AirPods over Apple's
+Accessory Protocol (AAP). AAP runs on a classic-Bluetooth L2CAP channel at PSM
+`0x1001`, which Windows user-mode Bluetooth Winsock cannot open. This driver
 opens that channel in kernel mode and bridges it to user space via
 `DeviceIoControl`, so NTPods can read battery levels and change listening modes.
 
-## Development build
+## Access and request handling
 
-Build from source; the checked-in prebuilt package does not contain these changes.
+Build from source; the checked-in prebuilt files are obsolete.
 The elevated installer must set the `AllowedUserSid` REG_SZ value under
 `HKLM\SYSTEM\CurrentControlSet\Services\NTPodsAAP\Parameters` before binding the
 driver. Its protected registry key may be written only by administrators/SYSTEM.
@@ -26,8 +25,8 @@ On cancellation/deadline, the child request is canceled and must complete before
 its buffers are released. A malfunctioning lower driver that never completes a
 canceled IRP cannot safely be abandoned by this driver.
 
-Handle cleanup and PnP suspend close both AAP and ATT, using the address saved for
-each channel. The unused ATT server has been removed; legacy server-status fields
+Handle cleanup and PnP suspend close all channels, using the address saved for
+each channel. ATT is an outbound client; legacy server-status fields
 remain zero/unsupported. The driver only opens an outbound ATT client on demand.
 
 A parallel dispatch queue forwards requests into four sequential queues: control,
@@ -44,8 +43,14 @@ The Rust transport opens the device with `FILE_FLAG_OVERLAPPED`, using a separat
 manual-reset event and `OVERLAPPED` per call. Calls request cancellation after
 20 seconds, including queueing time, and wait for completion before releasing any
 buffers. This requires a completing lower stack, just like the kernel BRB wait.
-The old synchronous handle would serialize calls before the separate driver
-queues could help. The IOCTL ABI and account/device restrictions are unchanged.
+Synchronous handles would serialize calls before the separate driver queues
+could help.
+
+## Checks
+
+Run the C/C++ commands below from this driver directory. Run the Cargo command
+from the repository root after fetching FFmpeg as described in
+[CONTRIBUTING.md](../../../CONTRIBUTING.md).
 
 Portable boundary check (no driver installation):
 
@@ -76,13 +81,13 @@ ANC/STOP sends remain responsive during idle receive polling, and that the
 Windows audio profiles keep working. These hardware checks are not replaced by
 the portable policy test.
 
-## Transport research, 2026-10-11
+## Transport constraints
 
 - Microsoft's [L2CAP transfer contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/bthddi/ns-bthddi-_brb_l2ca_acl_transfer)
   allows reads and writes simultaneously. Its [channel-open documentation](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/bthddi/ns-bthddi-_brb_l2ca_open_channel)
   states that incoming packets are discarded when the configured MTU queue fills.
   Serializing every operation behind a long ATT open could therefore lose AAP
-  microphone frames. The new receive queues remove that local source of delay;
+  microphone frames. Separate receive queues remove that local source of delay;
   they cannot repair radio loss or time spent decoding in user mode.
 - [WdfRequestForwardToIoQueue](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestforwardtoioqueue)
   returns queued request ownership to the framework. The forwarding queue must
@@ -97,27 +102,25 @@ the portable policy test.
   The deployed byte-count interpretation is retained until a hardware trace
   resolves that discrepancy. No code was copied from either reference.
 
-Pending hardware checks: AAP packet continuity during ATT settings/probes, send
-latency under microphone capture, cancel/disconnect during both receive types,
-daemon crash, radio removal and sleep/resume with Driver Verifier. The current
-MTU and ten-MTU input queue remain unchanged; larger buffers would conceal stalls
-and do not replace those checks.
+The receive queue holds ten MTUs. Hardware checks must measure AAP continuity and
+send latency during ATT operations and microphone capture; buffering alone cannot
+establish whether concurrent traffic remains responsive.
 
 ## How it binds
 
 AirPods advertise an SDP service with UUID `{74ec2172-0bad-4d01-8f77-997b2be0722a}`
 (taken from LibrePods on Linux). Windows enumerates a devnode
 `BTHENUM\{74ec2172-...}_VID&0001004c_PID&2027` for it. Our INF matches that
-hardware ID, so Windows loads this driver as the **function driver for the AAP
-service PDO**, with the Bluetooth stack as its parent I/O target. It calls
+service UUID, so Windows loads this driver as the function driver for the AAP
+service PDO, with the Bluetooth stack as its parent I/O target. It calls
 `BthAllocateBrb` and submits `BRB_L2CA_OPEN_CHANNEL` to open PSM `0x1001` outbound.
-No filter driver is needed (unlike PS3/BthPS3), because AirPods advertise the
-service. Architecture reference: MS `bthecho` sample + `nefarius/BthPS3`.
+AirPods advertise the service, so it needs no filter driver. Architecture
+references are Microsoft's `bthecho` sample and `nefarius/BthPS3`.
 
 The INF leaves `ProductType` unrestricted so both ordinary Windows 11 and
 Enterprise multi-session can select the model. Multi-session reports product
-type 3; the old workstation-only `NTamd64.10.0.1..16299` excluded it. The x64
-architecture and existing minimum build 16299 are preserved. See Microsoft's
+type 3. The INF targets x64 builds from 16299; the complete NTPods package requires
+Windows 11 for ACX. See Microsoft's
 [TargetOSVersion documentation](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/inf-manufacturer-section).
 
 The native regression test asks SetupAPI to select the real INF for workstation
@@ -143,36 +146,36 @@ inf_target_test.exe NTPodsAAP.inf
 
 ## IOCTL contract (for the user-mode transport)
 
-Device interface GUID `{C0FFEE00-1337-4A5B-9E6F-A1B2C3D4E5F6}`, `FILE_DEVICE 0x8000`:
-`CONNECT 0x800 {u64 addr; u16 psm}`, `DISCONNECT 0x801`, `SEND 0x802` (raw bytes),
-`RECEIVE 0x803` (raw bytes out), `GET_STATUS 0x804`.
+Device interface GUID: `{C0FFEE00-1337-4A5B-9E6F-A1B2C3D4E5F6}`.
+The base IOCTLs use device type `0x8000`, buffered I/O and function numbers
+`0x800`–`0x806` for CONNECT, DISCONNECT, SEND, RECEIVE, GET_STATUS, ATT_SEND and
+ATT_RECEIVE. Packed inputs and outputs are defined in
+[`NTPodsAAP.h`](NTPodsAAP.h); the function numbers are not complete IOCTL values.
 
 ## Build
 
-Needs VS2022/2026 with the C++ workload + Windows SDK/WDK (matching build numbers,
-e.g. 28000). From a Developer prompt:
+Use the toolchain in [BUILD-WINDOWS.md](../../../docs/BUILD-WINDOWS.md) and run
+`windows/build.ps1` from the repository root for the complete package. To compile
+only this driver from its directory in a VS2022 Developer prompt:
 
 ```
-msbuild NTPodsAAP.vcxproj /p:Configuration=Release /p:Platform=x64
+msbuild NTPodsAAP.vcxproj /p:Configuration=Release /p:Platform=x64 /p:WindowsTargetPlatformVersion=10.0.26100.0 /p:NTPodsExperimentalPlayback=true /p:EnableInf2cat=false /p:SignMode=Off
 ```
 
-Then generate the catalog from a folder holding `NTPodsAAP.sys` + `.inf`:
-
-```
-inf2cat /driver:<pkg-dir> /os:10_X64
-```
+The complete build generates catalogs and packages the matching daemon and
+drivers. Compiling this project alone does not produce an installer.
 
 ## Install and validation
 
-Use `NTPods.msi` or `install.ps1` from a complete generated distribution. The
+Use the generated MSI or `install.ps1` from a complete Windows ZIP. The
 central installer sets the intended user's protected registry value before the
-driver is bound, verifies the package, and installs both drivers together. The
+driver is bound, verifies the package, and installs the matching drivers together. The
 old single-driver `install.ps1` deliberately fails without changing the machine.
 Do not install the upstream `prebuilt/` binaries: they lack this hardening.
 
-Initial AirPods hardware checks are recorded in
-[WINDOWS-VALIDATION.md](../../../docs/WINDOWS-VALIDATION.md), including the remaining
-capture and recovery failures. A test package needs a prepared test system; a
+AirPods hardware coverage and remaining checks are recorded in
+[WINDOWS-VALIDATION.md](../../../docs/WINDOWS-VALIDATION.md).
+A test package needs a prepared test system; a
 normal release needs Microsoft driver signing and the hardware checks listed above.
 
 The upstream transport uses L2CAP Basic mode. ATT (PSM `0x001F`) opens lazily on the
@@ -223,4 +226,5 @@ radio has already removed it.
 and completing Bluetooth substitutes. It checks access boundaries, MTUs,
 concurrent I/O, cancellation, failed opens/closes and remote disconnect cleanup.
 Build it with `cl /W4 /WX /EHsc /std:c++17` like the existing concurrency test.
-Hardware transport, codec playback and Driver Verifier remain untested.
+Codec playback has limited model coverage; congestion, driver stress and
+Driver Verifier still require hardware testing. See the validation reference above.
