@@ -32,6 +32,14 @@ for (var index = 0; index < lines.Length; ++index)
     }
     Check(s.PlaybackBitrateKbps == (raw.RootElement.TryGetProperty("playback_bitrate_kbps", out var actualBitrate) && actualBitrate.ValueKind != JsonValueKind.Null
         ? actualBitrate.GetUInt32() : (uint?)null), "The active bitrate must remain separate from the saved preferences.");
+    Check(s.PlaybackDelayReporting == (raw.RootElement.TryGetProperty("playback_delay_reporting", out var delayReporting) && delayReporting.GetBoolean()) &&
+        s.PlaybackDelayTenthsMs == (raw.RootElement.TryGetProperty("playback_delay_tenths_ms", out var delay) && delay.ValueKind != JsonValueKind.Null
+            ? delay.GetUInt16() : (ushort?)null) &&
+        s.PlaybackBufferTargetMs == (raw.RootElement.TryGetProperty("playback_buffer_target_ms", out var bufferTarget) && bufferTarget.ValueKind != JsonValueKind.Null
+            ? bufferTarget.GetUInt16() : (ushort?)null) &&
+        s.PlaybackBufferError == (raw.RootElement.TryGetProperty("playback_buffer_error", out var bufferError) && bufferError.ValueKind != JsonValueKind.Null
+            ? bufferError.GetString() : null),
+        "Negotiated reporting, earbud-reported delay and requested buffer target must remain separate across IPC.");
     Check(s.BleScanWhileConnected == (raw.RootElement.TryGetProperty("ble_scan_while_connected", out var scanDuringPlayback) && scanDuringPlayback.GetBoolean()),
         "Playback battery scan preference changed across IPC");
     Check(s.BatteryLive == (raw.RootElement.TryGetProperty("battery_live", out var liveBattery) && liveBattery.GetBoolean()),
@@ -49,6 +57,14 @@ for (var index = 0; index < lines.Length; ++index)
         hearing.ValueKind != JsonValueKind.Null ? hearing.GetBoolean() : (bool?)null) &&
         s.HearingAidRevision == (raw.RootElement.TryGetProperty("hearing_aid_revision", out var hearingRevision) ? hearingRevision.GetUInt64() : 0),
         "Reported hearing state and its revision must survive IPC; missing state stays unknown.");
+    var expectedHearing = raw.RootElement.TryGetProperty("hearing_aid_settings", out var hearingSettings) && hearingSettings.ValueKind != JsonValueKind.Null
+        ? hearingSettings.Deserialize<HearingAidSettings>() : null;
+    Check((s.HearingAidSettings is null ? expectedHearing is null : s.HearingAidSettings.SameValues(expectedHearing)) &&
+        s.HearingAidEditable == (raw.RootElement.TryGetProperty("hearing_aid_editable", out var hearingEditable) && hearingEditable.GetBoolean()) &&
+        s.HearingAidPending == (raw.RootElement.TryGetProperty("hearing_aid_pending", out var hearingPending) && hearingPending.GetBoolean()) &&
+        s.HearingAidError == (raw.RootElement.TryGetProperty("hearing_aid_error", out var hearingError) && hearingError.ValueKind != JsonValueKind.Null
+            ? hearingError.GetString() : null),
+        "Hearing curves, per-ear tuning, pending and error states must survive IPC without supplying defaults.");
     Check(s.LoudSoundReduction == (raw.RootElement.TryGetProperty("loud_sound_reduction", out var reduction) &&
         reduction.ValueKind != JsonValueKind.Null ? reduction.GetBoolean() : (bool?)null) &&
         s.LoudSoundReductionPending == (raw.RootElement.TryGetProperty("loud_sound_reduction_pending", out var reductionPending) && reductionPending.GetBoolean()) &&
@@ -117,10 +133,14 @@ for (var index = 0; index < lines.Length; ++index)
             "Legacy snapshots must keep Windows playback and must not claim native playback support.");
         Check(s.PlaybackAacBitrate == new PlaybackBitrate() && s.PlaybackAacEldBitrate == new PlaybackBitrate() && s.PlaybackBitrateKbps is null,
             "Missing bitrate preferences default to Best effort without inventing a current bitrate.");
+        Check(!s.PlaybackDelayReporting && s.PlaybackDelayTenthsMs is null && s.PlaybackBufferTargetMs is null && s.PlaybackBufferError is null,
+            "Older snapshots must leave playback delay and buffer targets unknown.");
         Check(s.Transparency is null && !s.TransparencyPending && s.TransparencyError is null,
             "Older snapshots must leave Transparency settings unknown.");
         Check(s.HearingAidEnabled is null && s.HearingAidRevision == 0,
             "Older snapshots must not manufacture a hearing-assistance report.");
+        Check(s.HearingAidSettings is null && !s.HearingAidEditable && !s.HearingAidPending && s.HearingAidError is null,
+            "Older snapshots must leave the saved audiogram and tuning unknown.");
         Check(s.MicRecording, "Legacy fixture must exercise an old recording=true state");
         Check(s.ConversationalAwarenessPending is null, "Legacy fixture cannot claim a pending setting");
         Check(s.AdaptiveStrengthRequested is null, "Legacy fixture cannot claim a sent strength");
@@ -247,6 +267,17 @@ string[] malformed = ["", " ", "{", "null", "true", "12", "\"text\"", "[]", "[{}
 foreach (var json in malformed)
     Check(Wire.ParseEvent(json) is null, $"Malformed event must be ignored without throwing: {json}");
 
+foreach (string key in new[] { "playback_delay_tenths_ms", "playback_buffer_target_ms" })
+    foreach (string value in new[] { "-1", "65536", "1.5", "true", "\"60\"" })
+        Check(Wire.ParseEvent($"{{\"event\":\"state\",\"{key}\":{value}}}") is null,
+            "Delay and buffer values must fit an unsigned 16-bit integer or be null.");
+foreach (string value in new[] { "null", "1", "\"true\"" })
+    Check(Wire.ParseEvent($"{{\"event\":\"state\",\"playback_delay_reporting\":{value}}}") is null,
+        "Delay reporting support must be a boolean.");
+foreach (string value in new[] { "1", "false", "{}" })
+    Check(Wire.ParseEvent($"{{\"event\":\"state\",\"playback_buffer_error\":{value}}}") is null,
+        "A buffer error must be text or null.");
+
 foreach (var (mode, bestEffort, kbps) in new[] { ("aac", true, 256u), ("aac_eld", false, 256u), ("aac_eld", true, 192u) })
 {
     string json = JsonSerializer.Serialize(new Dictionary<string, object> {
@@ -282,6 +313,44 @@ foreach (string key in new[] { "transparency_pending", "transparency_error" })
     Check(Wire.ParseEvent("{\"event\":\"state\",\"" + key + "\":1}") is null, "Malformed Transparency state must be rejected.");
 
 string[] malformedPresence = ["0", "1", "\"true\"", "[]"];
+var hearingState = new JsonObject { ["event"] = "state", ["hearing_aid_settings"] = JsonSerializer.SerializeToNode(Hearing()) };
+Check(Wire.ParseEvent(hearingState.ToJsonString()) is DaemonEvent.State { Snapshot.HearingAidSettings: { } hearingRoundtrip } &&
+    hearingRoundtrip.SameValues(Hearing()), "Asymmetric hearing curves and tuning must survive C# parsing.");
+Check(Wire.ParseEvent(hearingState.ToJsonString()) is DaemonEvent.State { Snapshot.HearingAidEditable: false },
+    "An older daemon's hearing settings must remain read-only without explicit editability.");
+foreach (bool editable in new[] { false, true })
+{
+    var state = hearingState.DeepClone();
+    state["hearing_aid_editable"] = editable;
+    Check(Wire.ParseEvent(state.ToJsonString()) is DaemonEvent.State parsed && parsed.Snapshot.HearingAidEditable == editable,
+        "Explicit hearing editability must survive C# parsing.");
+}
+foreach (string key in hearingState["hearing_aid_settings"]!.AsObject().Select(pair => pair.Key).ToArray())
+{
+    var missing = hearingState.DeepClone();
+    missing["hearing_aid_settings"]!.AsObject().Remove(key);
+    Check(Wire.ParseEvent(missing.ToJsonString()) is null, $"Missing hearing field {key} must be rejected.");
+    var nullValue = hearingState.DeepClone();
+    nullValue["hearing_aid_settings"]![key] = null;
+    Check(Wire.ParseEvent(nullValue.ToJsonString()) is null, $"Null hearing field {key} must be rejected.");
+}
+foreach (var (key, value) in new[] {
+    ("left_amplification", -1.01f), ("right_amplification", 1.01f), ("left_tone", -1.01f), ("right_tone", 1.01f),
+    ("left_ambient_noise_reduction", -0.01f), ("right_ambient_noise_reduction", 1.01f), ("own_voice", 1.01f) })
+{
+    var invalid = hearingState.DeepClone();
+    invalid["hearing_aid_settings"]![key] = value;
+    Check(Wire.ParseEvent(invalid.ToJsonString()) is null, "Out-of-range hearing settings must be rejected.");
+}
+foreach (string key in new[] { "left_eq", "right_eq" })
+foreach (string curve in new[] { "[]", "[1,2,3,4,5,6,7]", "[1,2,3,4,5,6,7,8,9]", "[0,1,2,3,4,5,6,-1]", "[0,1,2,3,4,5,6,91]", "[0,1,2,3,4,5,6,1e40]", "[0,1,2,3,4,5,6,null]", "[0,1,2,3,4,5,6,\"NaN\"]" })
+{
+    var invalid = hearingState.DeepClone();
+    invalid["hearing_aid_settings"]![key] = JsonNode.Parse(curve);
+    Check(Wire.ParseEvent(invalid.ToJsonString()) is null, "Hearing curves must contain exactly eight finite thresholds in range.");
+}
+foreach (string key in new[] { "hearing_aid_pending", "hearing_aid_editable", "hearing_aid_error", "hearing_aid_settings" })
+    Check(Wire.ParseEvent("{\"event\":\"state\",\"" + key + "\":1}") is null, "Malformed hearing readback state must be rejected.");
 foreach (string present in malformedPresence)
 {
     string json = "{\"event\":\"state\",\"battery_freshness\":{\"left\":{\"live\":true,\"present\":" + present +
@@ -342,12 +411,30 @@ output.Add(Wire.ToLine(new SetPlaybackBitrateCmd { Mode = "aac_eld", BestEffort 
 output.Add(Wire.ToLine(new GetTransparencyCmd()).TrimEnd('\n'));
 foreach (bool enabled in new[] { false, true })
     output.Add(Wire.ToLine(new SetTransparencyCmd { Settings = Transparency(enabled) }).TrimEnd('\n'));
+output.Add(Wire.ToLine(new GetHearingAidCmd()).TrimEnd('\n'));
 foreach (ulong id in new ulong[] { 0, 73 })
-    output.Add(Wire.ToLine(new SetHearingAidCmd { RequestId = id, On = true, Amplification = .5f }).TrimEnd('\n'));
+{
+    string line = Wire.ToLine(new SetHearingAidCmd { RequestId = id, On = true, Expected = Hearing(), Settings = Hearing() });
+    using var command = JsonDocument.Parse(line);
+    Check(command.RootElement.GetProperty("expected").Deserialize<HearingAidSettings>()!.SameValues(Hearing()) &&
+        command.RootElement.GetProperty("settings").Deserialize<HearingAidSettings>()!.SameValues(Hearing()),
+        "Each hearing write must carry its caller's exact baseline as well as the requested values.");
+    output.Add(line.TrimEnd('\n'));
+}
+output.Add(Wire.ToLine(new SetHearingAidCmd { RequestId = 74, On = false }).TrimEnd('\n'));
+foreach (ushort? target in new ushort?[] { null, 60, 80, 100, 120, 140 })
+    output.Add(Wire.ToLine(new SetPlaybackBufferCmd { TargetMs = target, RestoreMs = target.HasValue ? (ushort)150 : null }).TrimEnd('\n'));
 File.WriteAllLines(args[1], output);
 Console.WriteLine($"C#: {lines.Length} production/legacy events, VBR/Transparency roundtrips and malformed-input checks passed");
 
 static TransparencySettings Transparency(bool enabled) => new() {
     Enabled = enabled, LeftAmplification = -1, RightAmplification = 1, LeftTone = -0.25f, RightTone = 0.5f,
     LeftConversationBoost = true, RightConversationBoost = false, LeftAmbientNoiseReduction = 0, RightAmbientNoiseReduction = 1
+};
+
+static HearingAidSettings Hearing() => new() {
+    LeftEq = [5, 10, 15, 20, 25, 30, 35, 40], RightEq = [10, 15, 20, 25, 30, 35, 40, 45],
+    LeftAmplification = -0.25f, RightAmplification = 0.5f, LeftTone = -0.5f, RightTone = 0.25f,
+    LeftConversationBoost = true, RightConversationBoost = false,
+    LeftAmbientNoiseReduction = 0.25f, RightAmbientNoiseReduction = 0.75f, OwnVoice = 0.5f
 };

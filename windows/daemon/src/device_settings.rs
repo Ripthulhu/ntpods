@@ -108,6 +108,9 @@ impl PendingSettings {
         state.loud_sound_reduction = None;
         state.loud_sound_reduction_pending = false;
         state.loud_sound_reduction_error = None;
+        state.hearing_aid_settings = None;
+        state.hearing_aid_pending = false;
+        state.hearing_aid_error = None;
         state.transparency = None;
         state.transparency_pending = false;
         state.transparency_error = None;

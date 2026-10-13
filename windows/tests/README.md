@@ -8,6 +8,11 @@ Run commands from the repository root. The complete build and test entry point i
 [capture helper](../docs/aap_extract.py), including truncated packets, unknown
 values and command-line output. It also runs in the complete build.
 
+`pwsh -File windows/tests/test-bluetooth-host-identity.ps1` checks the
+[host identity helper](../../docs/BLUETOOTH-HOST-IDENTITY.md), including backup,
+rollback and restoration. It uses isolated fixtures and leaves the Bluetooth
+registry and controller untouched. The complete build runs this check too.
+
 ## IPC contract
 
 For the IPC checks alone, install Rust/Cargo and the .NET 10 SDK, then run:

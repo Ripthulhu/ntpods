@@ -110,6 +110,11 @@
   <data name="MicEnableBtn.Content" xml:space="preserve"><value>Use the microphone</value></data>
 
   <!-- HearingAidCard -->
+  <data name="HearingAid.TurnOff" xml:space="preserve"><value>Turn off hearing assistance</value></data>
+  <data name="HearingAid.EnableUnconfirmed" xml:space="preserve"><value>Hearing assistance may still be on. Try turning it off.</value></data>
+  <data name="HearingAid.ReadOnly" xml:space="preserve"><value>These hearing settings can be read, but their format is not supported for editing.</value></data>
+  <data name="HearingAid.ReadFirst" xml:space="preserve"><value>Read the saved hearing settings before enabling or editing hearing assistance.</value></data>
+  <data name="HearingAid.InvalidAudiogram" xml:space="preserve"><value>Enter a value from 0 to 90 dB HL for every frequency in both ears.</value></data>
   <data name="HearingAidTitle.Text" xml:space="preserve"><value>Hearing assistance</value></data>
   <data name="HearingAid.Unconfirmed" xml:space="preserve"><value>Hearing settings were not confirmed. Check the connection and try again.</value></data>
   <data name="HearingAidSubtitle.Text" xml:space="preserve"><value>Amplify the world around you through your AirPods (Pro 3).</value></data>

@@ -1,14 +1,10 @@
 //! Custom Transparency ATT settings, separate from hearing assistance.
 //! Layout: LibrePods android/rewrite 34076c85, Transparency.kt; Pro 3 macOS captures.
 
-use crate::{driver::Driver, hearing};
+use crate::{att_settings::Characteristic, driver::Driver, hearing};
 use ntpods_ipc::TransparencySettings;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-// ATT UUIDs are little-endian, unlike their printed form.
-const SERVICE: [u8; 16] = [
-    0x4e, 0xe0, 0xef, 0x92, 0x34, 0x56, 0x33, 0x99, 0xa6, 0x45, 0xb7, 0xb7, 0x2b, 0x08, 0x98, 0x77,
-];
 const CHARACTERISTIC: [u8; 16] = [
     0x90, 0x53, 0x4d, 0x74, 0xaf, 0x9e, 0x03, 0x94, 0xdb, 0x45, 0xab, 0xf7, 0xc1, 0x1c, 0x62, 0xd5,
 ];
@@ -99,78 +95,10 @@ fn patch(value: &mut [u8], requested: &TransparencySettings) {
     }
 }
 
-fn no_attribute(response: &[u8], request: &[u8]) -> bool {
-    let [opcode @ (0x06 | 0x08), start_lo, start_hi, end_lo, end_hi, ..] = request else {
-        return false;
-    };
-    let [0x01, failed, handle_lo, handle_hi, 0x0a] = response else {
-        return false;
-    };
-    let start = u16::from_le_bytes([*start_lo, *start_hi]);
-    let end = u16::from_le_bytes([*end_lo, *end_hi]);
-    let handle = u16::from_le_bytes([*handle_lo, *handle_hi]);
-    // Pro 3 can report the last searched handle rather than the requested start.
-    failed == opcode && start != 0 && (start..=end).contains(&handle)
-}
-
 fn discover(
     exchange: &mut impl FnMut(&[u8]) -> Result<Vec<u8>, String>,
-) -> Result<Option<(u16, u8)>, String> {
-    let mut service_request = vec![0x06, 0x01, 0x00, 0xff, 0xff, 0x00, 0x28];
-    service_request.extend_from_slice(&SERVICE);
-    let service = exchange(&service_request)?;
-    if no_attribute(&service, &service_request) {
-        return Ok(None);
-    }
-    let [0x07, start_lo, start_hi, end_lo, end_hi] = service.as_slice() else {
-        return Err("Custom Transparency service discovery failed.".into());
-    };
-    let mut start = u16::from_le_bytes([*start_lo, *start_hi]);
-    let end = u16::from_le_bytes([*end_lo, *end_hi]);
-    if start == 0 || start >= end {
-        return Err("Custom Transparency service range is invalid.".into());
-    }
-    let mut found = None;
-    for _ in 0..16 {
-        let mut request = vec![0x08];
-        request.extend_from_slice(&start.to_le_bytes());
-        request.extend_from_slice(&end.to_le_bytes());
-        request.extend_from_slice(&[0x03, 0x28]);
-        let response = exchange(&request)?;
-        if no_attribute(&response, &request) {
-            return Ok(found);
-        }
-        let [0x09, each @ (7 | 21), entries @ ..] = response.as_slice() else {
-            return Err("Custom Transparency characteristic discovery failed.".into());
-        };
-        if entries.is_empty() || entries.len() % *each as usize != 0 {
-            return Err("Custom Transparency characteristic list is incomplete.".into());
-        }
-        let mut previous = start - 1;
-        for entry in entries.chunks_exact(*each as usize) {
-            let declaration = u16::from_le_bytes([entry[0], entry[1]]);
-            let handle = u16::from_le_bytes([entry[3], entry[4]]);
-            if declaration <= previous || declaration > end || handle <= declaration || handle > end
-            {
-                return Err("Custom Transparency characteristic range is invalid.".into());
-            }
-
-            if entry[5..] == CHARACTERISTIC {
-                if found.is_some() || entry[2] & 0x02 == 0 || entry[2] & 0x0c == 0 {
-                    return Err(
-                        "Custom Transparency does not expose a unique writable setting.".into(),
-                    );
-                }
-                found = Some((handle, if entry[2] & 0x08 != 0 { 0x12 } else { 0x52 }));
-            }
-            previous = declaration;
-        }
-        if previous == end {
-            return Ok(found);
-        }
-        start = previous + 1;
-    }
-    Err("Custom Transparency discovery exceeded the service limit.".into())
+) -> Result<Option<Characteristic>, String> {
+    crate::att_settings::discover(exchange, &CHARACTERISTIC, "Custom Transparency")
 }
 
 fn transaction(
@@ -180,18 +108,26 @@ fn transaction(
     if requested.is_some_and(|value| !value.is_valid()) {
         return Err("Custom Transparency values are out of range.".into());
     }
-    let Some((handle, write_opcode)) = discover(&mut exchange)? else {
+    let Some(Characteristic {
+        handle,
+        write_opcode,
+    }) = discover(&mut exchange)?
+    else {
         return Ok(None);
     };
     let read = [0x0a, handle as u8, (handle >> 8) as u8];
     let response = exchange(&read)?;
     let Some(value) = response.strip_prefix(&[0x0b]) else {
-        return Err("Could not read Custom Transparency.".into());
+        return Err(hearing::att_error(
+            "Could not read Custom Transparency.",
+            &response,
+        ));
     };
     let current = parse(value)?;
     let Some(requested) = requested.filter(|requested| **requested != current) else {
         return Ok(Some(current));
     };
+    let write_opcode = write_opcode.ok_or("Custom Transparency is read-only on these AirPods.")?;
     let mut value = value.to_vec();
     patch(&mut value, requested);
     let mut write = vec![write_opcode, handle as u8, (handle >> 8) as u8];
@@ -202,7 +138,10 @@ fn transaction(
     }
     let response = exchange(&read)?;
     let Some(value) = response.strip_prefix(&[0x0b]) else {
-        return Err("Could not confirm Custom Transparency.".into());
+        return Err(hearing::att_error(
+            "Could not confirm Custom Transparency.",
+            &response,
+        ));
     };
     // The caller compares this confirmed state with the request before reporting success.
     parse(value).map(Some)
@@ -244,6 +183,7 @@ pub(super) fn read_enabled(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::att_settings::{no_attribute, SERVICE};
 
     fn value() -> Vec<u8> {
         let mut value = vec![0; VALUE_LEN];
@@ -328,7 +268,10 @@ mod tests {
                 Ok(response)
             })
             .unwrap(),
-            Some((0x35, 0x12))
+            Some(Characteristic {
+                handle: 0x35,
+                write_opcode: Some(0x12)
+            })
         );
         assert!(exchanges.next().is_none());
         assert_eq!(discover(&mut |_| Ok(vec![1, 6, 1, 0, 0x0a])).unwrap(), None);
@@ -418,7 +361,7 @@ mod tests {
             (0x2f, 0x35, 0x0a),
             (0x34, 0x41, 0x0a),
             (0x34, 0x34, 0x0a),
-            (0x34, 0x35, 0x02),
+            (0x34, 0x35, 0x04),
         ] {
             let mut response = declaration(value_handle);
             response[2..4].copy_from_slice(&u16::to_le_bytes(declaration_handle));

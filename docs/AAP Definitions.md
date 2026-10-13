@@ -242,7 +242,7 @@ command.
 
 | Control | Captured values | Limit |
 | --- | --- | --- |
-| `0x0B` | 60, 150 | Reference name Jitter Buffer; units and effect unverified |
+| `0x0B` | 60, 150 | Reference name Jitter Buffer; [Tahoe's sender](MACOS-AUDIO-CAPTURE-2026-10-12.md#buffer-control-encoding-in-the-saved-daemon) uses millisecond targets and a four-byte value; effects on these captured models remain unverified |
 | `0x38` | 82 | Reference name PPE cap level; units and writable range unverified |
 | `0x1A/0x32/0x3D` | `0E/01/01` | Observed together during setup; no additional semantics established |
 

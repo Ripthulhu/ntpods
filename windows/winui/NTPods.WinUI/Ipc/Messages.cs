@@ -49,6 +49,33 @@ public sealed record PlaybackBitrate
     };
 }
 
+public sealed record HearingAidSettings
+{
+    [JsonRequired, JsonPropertyName("left_eq")] public float[] LeftEq { get; init; } = [];
+    [JsonRequired, JsonPropertyName("right_eq")] public float[] RightEq { get; init; } = [];
+    [JsonRequired, JsonPropertyName("left_amplification")] public float LeftAmplification { get; init; }
+    [JsonRequired, JsonPropertyName("right_amplification")] public float RightAmplification { get; init; }
+    [JsonRequired, JsonPropertyName("left_tone")] public float LeftTone { get; init; }
+    [JsonRequired, JsonPropertyName("right_tone")] public float RightTone { get; init; }
+    [JsonRequired, JsonPropertyName("left_conversation_boost")] public bool LeftConversationBoost { get; init; }
+    [JsonRequired, JsonPropertyName("right_conversation_boost")] public bool RightConversationBoost { get; init; }
+    [JsonRequired, JsonPropertyName("left_ambient_noise_reduction")] public float LeftAmbientNoiseReduction { get; init; }
+    [JsonRequired, JsonPropertyName("right_ambient_noise_reduction")] public float RightAmbientNoiseReduction { get; init; }
+    [JsonRequired, JsonPropertyName("own_voice")] public float OwnVoice { get; init; }
+    [JsonIgnore] public bool IsValid => ValidCurve(LeftEq) && ValidCurve(RightEq) &&
+        InRange(LeftAmplification, -1, 1) && InRange(RightAmplification, -1, 1) &&
+        InRange(LeftTone, -1, 1) && InRange(RightTone, -1, 1) &&
+        InRange(LeftAmbientNoiseReduction, 0, 1) && InRange(RightAmbientNoiseReduction, 0, 1) &&
+        InRange(OwnVoice, 0, 1);
+
+    private static bool InRange(float value, float min, float max) => float.IsFinite(value) && value >= min && value <= max;
+    private static bool ValidCurve(float[]? curve) => curve is { Length: 8 } && curve.All(value => InRange(value, 0, 90));
+
+    public bool SameValues(HearingAidSettings? other) => other is not null &&
+        LeftEq.SequenceEqual(other.LeftEq) && RightEq.SequenceEqual(other.RightEq) &&
+        this with { LeftEq = other.LeftEq, RightEq = other.RightEq } == other;
+}
+
 public sealed record TransparencySettings
 {
     [JsonRequired, JsonPropertyName("enabled")] public bool Enabled { get; init; }
@@ -108,12 +135,20 @@ public sealed class Snapshot
     [JsonPropertyName("playback_aac_bitrate")] public PlaybackBitrate PlaybackAacBitrate { get; set; } = new();
     [JsonPropertyName("playback_aac_eld_bitrate")] public PlaybackBitrate PlaybackAacEldBitrate { get; set; } = new();
     [JsonPropertyName("playback_bitrate_kbps")] public uint? PlaybackBitrateKbps { get; set; }
+    [JsonPropertyName("playback_delay_reporting")] public bool PlaybackDelayReporting { get; set; }
+    [JsonPropertyName("playback_delay_tenths_ms")] public ushort? PlaybackDelayTenthsMs { get; set; }
+    [JsonPropertyName("playback_buffer_target_ms")] public ushort? PlaybackBufferTargetMs { get; set; }
+    [JsonPropertyName("playback_buffer_error")] public string? PlaybackBufferError { get; set; }
     [JsonPropertyName("conversational_awareness")] public bool ConversationalAwareness { get; set; }
     [JsonPropertyName("conversational_awareness_pending")] public bool? ConversationalAwarenessPending { get; set; }
     [JsonPropertyName("conversation_volume")] public byte ConversationVolume { get; set; } = 25;
     [JsonPropertyName("adaptive_volume")] public bool AdaptiveVolume { get; set; }
     [JsonPropertyName("hearing_aid_enabled")] public bool? HearingAidEnabled { get; set; }
     [JsonPropertyName("hearing_aid_revision")] public ulong HearingAidRevision { get; set; }
+    [JsonPropertyName("hearing_aid_settings")] public HearingAidSettings? HearingAidSettings { get; set; }
+    [JsonPropertyName("hearing_aid_editable")] public bool HearingAidEditable { get; set; }
+    [JsonPropertyName("hearing_aid_pending")] public bool HearingAidPending { get; set; }
+    [JsonPropertyName("hearing_aid_error")] public string? HearingAidError { get; set; }
     [JsonPropertyName("loud_sound_reduction")] public bool? LoudSoundReduction { get; set; }
     [JsonPropertyName("loud_sound_reduction_pending")] public bool LoudSoundReductionPending { get; set; }
     [JsonPropertyName("loud_sound_reduction_error")] public string? LoudSoundReductionError { get; set; }
@@ -275,6 +310,13 @@ public sealed class SetPlaybackBitrateCmd
     [JsonPropertyName("variable")] public bool Variable { get; init; }
 }
 
+public sealed class SetPlaybackBufferCmd
+{
+    [JsonPropertyName("cmd")] public string Cmd => "set_playback_buffer";
+    [JsonPropertyName("target_ms")] public ushort? TargetMs { get; init; }
+    [JsonPropertyName("restore_ms")] public ushort? RestoreMs { get; init; }
+}
+
 public sealed class SetFeatureCmd
 {
     [JsonPropertyName("cmd")] public string Cmd => "set_feature";
@@ -373,19 +415,18 @@ public sealed class SetLoudSoundReductionCmd
     [JsonPropertyName("on")] public bool On { get; init; }
 }
 
+public sealed class GetHearingAidCmd
+{
+    [JsonPropertyName("cmd")] public string Cmd => "get_hearing_aid";
+}
+
 public sealed class SetHearingAidCmd
 {
     [JsonPropertyName("cmd")] public string Cmd => "set_hearing_aid";
     [JsonPropertyName("request_id")] public ulong RequestId { get; init; }
     [JsonPropertyName("on")] public bool On { get; init; }
-    [JsonPropertyName("left_eq")] public float[] LeftEq { get; init; } = new float[8];
-    [JsonPropertyName("right_eq")] public float[] RightEq { get; init; } = new float[8];
-    [JsonPropertyName("amplification")] public float Amplification { get; init; }
-    [JsonPropertyName("balance")] public float Balance { get; init; }
-    [JsonPropertyName("tone")] public float Tone { get; init; }
-    [JsonPropertyName("conversation_boost")] public bool ConversationBoost { get; init; }
-    [JsonPropertyName("ambient_noise_reduction")] public float AmbientNoiseReduction { get; init; }
-    [JsonPropertyName("own_voice")] public float OwnVoice { get; init; }
+    [JsonPropertyName("expected")] public HearingAidSettings? Expected { get; init; }
+    [JsonPropertyName("settings")] public HearingAidSettings? Settings { get; init; }
 }
 
 public sealed class ConnectCmd
@@ -481,7 +522,7 @@ public static class Wire
                         snap.PlaybackBitrateKbps is < 96 or > 512 ||
                         snap.HeadTrackingState is not ("idle" or "starting" or "streaming" or "error" or "waiting_for_ear") ||
                         snap.AdaptiveStrengthRequested is > 100 || snap.ConversationVolume > 100 ||
-                        snap.Transparency is { IsValid: false } ||
+                        snap.Transparency is { IsValid: false } || snap.HearingAidSettings is { IsValid: false } ||
                         snap.Eq is { IsValid: false } || snap.EqPending is { IsValid: false }) return null;
                     return new DaemonEvent.State(snap);
 

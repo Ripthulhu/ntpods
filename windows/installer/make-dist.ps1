@@ -62,6 +62,7 @@ foreach ($old in 'lp-mic-rename.exe') {
 # Installer and helper scripts.
 Copy-Item (Join-Path $installer 'install.ps1')        $Out -Force
 Copy-Item (Join-Path $installer 'setup-common.ps1')   $Out -Force
+Copy-Item (Join-Path $win 'bluetooth-host-identity.ps1') $Out -Force
 Copy-Item (Join-Path $installer 'audio-driver.ps1')  $Out -Force
 Copy-Item (Join-Path $installer 'restore-playback.ps1') $Out -Force
 Copy-Item (Join-Path $installer 'stop-ntpods.ps1')    $Out -Force
@@ -109,7 +110,7 @@ if (-not (Test-Path $pri)) {
 # Required installer inputs.
 $required = @(
     'install.ps1', 'uninstall.ps1', 'setup-common.ps1', 'audio-driver.ps1', 'msi-setup.ps1', 'fix-driver.ps1', 'rename-mic.ps1', 'tools\devcon.exe', 'tools\audio-binding.exe',
-    'restore-playback.ps1',
+    'restore-playback.ps1', 'bluetooth-host-identity.ps1',
     'licenses\LICENSE', 'licenses\THIRD_PARTY.md', 'licenses\Microsoft-Public-License.txt', 'licenses\LICENSE-ffmpeg.txt',
     'licenses\NOTICE-FDK.txt', 'licenses\LICENSE-encoder.txt', 'licenses\FDK-AAC-source.zip',
     'driver\NTPodsAAP.inf', 'driver\NTPodsAAP.sys', 'driver\ntpodsaap.cat',

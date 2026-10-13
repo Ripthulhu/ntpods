@@ -56,7 +56,7 @@ $required = @(
     'driver-audio\NTPodsAudio.sys', 'driver-audio\ntpodsaudio.cat', 'driver-audio\NTPodsAudio.inf',
     'tools\devcon.exe', 'tools\audio-binding.exe', 'audio-driver.ps1', 'ntpodsd.exe', 'avcodec-61.dll', 'avutil-59.dll', 'swresample-5.dll',
     'ntpods-aac-encoder.exe', 'ntpods-eld-encoder.exe', 'fdk-aac.dll',
-    'winui\ntpods-winui.exe', 'fix-driver.ps1', 'rename-mic.ps1'
+    'winui\ntpods-winui.exe', 'fix-driver.ps1', 'rename-mic.ps1', 'bluetooth-host-identity.ps1'
 ) | ForEach-Object { Join-Path $here $_ }
 $missing = @($required | Where-Object { -not (Test-Path $_) })
 if ($missing) {
@@ -82,7 +82,7 @@ finally {
 
 Write-Host "==> Copying the apps to $dest"
 Assert-ProtectedInstallPath $dest
-foreach ($f in 'ntpodsd.exe', 'avcodec-61.dll', 'avutil-59.dll', 'swresample-5.dll', 'ntpods-aac-encoder.exe', 'ntpods-eld-encoder.exe', 'fdk-aac.dll', 'fix-driver.ps1', 'rename-mic.ps1', 'setup-common.ps1', 'audio-driver.ps1', 'restore-playback.ps1', 'stop-ntpods.ps1', 'msi-setup.ps1', 'uninstall.ps1') {
+foreach ($f in 'ntpodsd.exe', 'avcodec-61.dll', 'avutil-59.dll', 'swresample-5.dll', 'ntpods-aac-encoder.exe', 'ntpods-eld-encoder.exe', 'fdk-aac.dll', 'fix-driver.ps1', 'rename-mic.ps1', 'setup-common.ps1', 'audio-driver.ps1', 'restore-playback.ps1', 'stop-ntpods.ps1', 'msi-setup.ps1', 'uninstall.ps1', 'bluetooth-host-identity.ps1') {
     Copy-Item (Join-Path $here $f) $dest -Force
 }
 # The WinUI app ships as a self-contained folder.
@@ -106,12 +106,17 @@ foreach ($l in 'NTPods Daemon.lnk', 'NTPods.lnk') {   # older installs used shor
     Remove-Item (Join-Path $startup $l) -Force -ErrorAction SilentlyContinue
 }
 Set-RunValues $sid (Join-Path $dest 'ntpodsd.exe') (Join-Path $dest 'winui\ntpods-winui.exe')
+& (Join-Path $dest 'bluetooth-host-identity.ps1') -Action Install -TransactionId $transactionId
 } catch {
     $failure = $_
+    try { & (Join-Path $here 'bluetooth-host-identity.ps1') -Action Rollback -TransactionId $transactionId }
+    catch { Write-Warning "Bluetooth identity recovery failed: $_ The original backup was retained." }
     try { Restore-NTPodsDriverCheckpoint $here $transactionId }
     catch { throw "Installation failed: $failure Driver recovery failed: $_ Backup retained at $(Get-DriverCheckpointPath)." }
     throw $failure
 }
+try { & (Join-Path $dest 'bluetooth-host-identity.ps1') -Action Commit -TransactionId $transactionId }
+catch { Write-Warning "Installation completed, but Bluetooth identity transaction cleanup failed: $_" }
 try { Complete-NTPodsDriverTransaction $transactionId }
 catch { Write-Warning "Installation completed, but backup cleanup failed at $(Get-DriverCheckpointPath). Remaining backup files may be incomplete. $_" }
 

@@ -57,6 +57,46 @@ function Assert-TrustedInstallEntry([string]$path) {
     }
 }
 
+function Get-IdentityRemovalPath {
+    Join-Path $env:ProgramData 'NTPods\identity-removal'
+}
+
+function Prepare-IdentityRemoval([string]$root, [string]$transactionId) {
+    if ([string]::IsNullOrEmpty($transactionId) -or $transactionId.Length -gt 512) { throw 'An identity removal transaction ID is required.' }
+    $path = Get-IdentityRemovalPath
+    if (Test-Path -LiteralPath $path) { throw "An earlier Bluetooth identity removal needs recovery: $path" }
+    New-Item -ItemType Directory -Path $path -ErrorAction Stop | Out-Null
+    try {
+        [IO.File]::WriteAllText((Join-Path $path 'transaction.txt'), $transactionId)
+        foreach ($name in 'msi-setup.ps1', 'setup-common.ps1', 'bluetooth-host-identity.ps1', 'stop-ntpods.ps1', 'audio-driver.ps1') {
+            Copy-Item -LiteralPath (Join-Path $root $name) -Destination $path -ErrorAction Stop
+        }
+        @(Get-InstallTree $path) | Out-Null
+    } catch {
+        $target = [IO.Path]::GetFullPath($path)
+        if ($target -ine [IO.Path]::GetFullPath((Join-Path $env:ProgramData 'NTPods\identity-removal'))) { throw 'Unsafe identity removal cleanup path.' }
+        Remove-Item -LiteralPath $target -Recurse -Force
+        throw
+    }
+}
+
+function Assert-IdentityRemovalTransaction([string]$transactionId) {
+    $path = Get-IdentityRemovalPath
+    if (-not (Test-Path -LiteralPath $path)) { return $false }
+    @(Get-InstallTree $path) | Out-Null
+    $owner = Join-Path $path 'transaction.txt'
+    if ((Get-Item -LiteralPath $owner).Length -gt 2048 -or
+        [IO.File]::ReadAllText($owner) -cne $transactionId) { throw 'The identity removal files belong to another transaction; they were retained.' }
+    $true
+}
+
+function Remove-IdentityRemoval([string]$transactionId) {
+    if (-not (Assert-IdentityRemovalTransaction $transactionId)) { return }
+    $path = [IO.Path]::GetFullPath((Get-IdentityRemovalPath))
+    if ($path -ine [IO.Path]::GetFullPath((Join-Path $env:ProgramData 'NTPods\identity-removal'))) { throw 'Unsafe identity removal cleanup path.' }
+    Remove-Item -LiteralPath $path -Recurse -Force
+}
+
 # Never execute an elevated task from a directory the interactive user can edit.
 function Get-InstallTree([string]$path) {
     $entry = Get-Item -LiteralPath $path -Force

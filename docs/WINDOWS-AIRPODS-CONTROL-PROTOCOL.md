@@ -334,15 +334,17 @@ remain unresolved.
 
 ## ATT settings
 
-[hearing.rs](../windows/daemon/src/hearing.rs) uses fixed ATT handles inherited
-from LibrePods. They are implementation assumptions requiring comparison on each
-model/firmware; normal operation does not discover these characteristics by UUID.
+[hearing.rs](../windows/daemon/src/hearing.rs) and
+[transparency.rs](../windows/daemon/src/transparency.rs) share
+[UUID discovery](../windows/daemon/src/att_settings.rs) for hearing settings and
+Custom Transparency. Loud Sound Reduction still uses its fixed upstream handle;
+that assumption needs comparison on each model/firmware.
 
 | Handle | Operation | Current format |
 | --- | --- | --- |
 | `0x001B` | Loud Sound Reduction | Read response `0B value`, value `0`/`1`; write `12 1B 00 value`, require `13`, then read back |
-| `0x002A` | Hearing-assistance settings | Read at least 104 value bytes; preserve other bytes, modify listed offsets, then write the whole value and require `13` |
-| `0x002B` | Settings CCCD | Write `01 00` to enable notifications |
+| Discovered (`0x002A` in captures) | Hearing-assistance settings | Read 104 value bytes; validate the format, both audiograms and per-ear controls; preserve the header; use the advertised write method and confirm by readback |
+| `0x002B` in captures | Settings CCCD | macOS subscribes here; NTPods does not change hearing subscriptions |
 
 Separate custom Transparency settings were identified in the
 [macOS captures](MACOS-CASE-CAPTURE-2026-10-12.md#custom-transparency-and-accommodation)
@@ -358,24 +360,68 @@ and its ACK instead. It exposes the float32 enable flag at offset 0 and
 per-ear amplification/tone (−1–1), Conversation Boost (0/1), and ambient-noise
 reduction (0–1) at the offsets below. It sends no settings when opened or at startup.
 The Pro family may attempt discovery; older 100-byte layouts remain unsupported.
-Audible effects and persistence of these writes still need hardware checks.
+Pro 3 reads, writes, an audible adjustment and restoration passed with the Apple
+host identity. Persistence across reconnects remains unverified; see
+[hardware coverage](WINDOWS-VALIDATION.md#controls-batteries-and-sensors).
 
-The Pro 3 / 9A348 Windows check on 2026-10-13 discovered this characteristic but
-its read returned ATT `0x0E` (Unlikely Error). Find Information located its CCCD,
-but reading that descriptor returned `0x0A` (Attribute Not Found). Neither
-Custom Transparency nor notification settings were written during these checks.
+The saved Pro 3 / 9A348 captures from Tahoe 26.7.1 (25G241) on the AX200 contain
+successful 104-byte reads of both Custom Transparency and hearing settings. The
+four hearing values are identical, with zero per-ear curves; this does not
+verify reading or retaining a fitted audiogram. In the pairing
+trace, encryption completed before ATT opened on BR/EDR PSM `0x001F`. Tahoe
+subscribed to each characteristic before reading it. Both reads were requested
+before AACP Connect; the hearing response also arrived before that exchange.
+Both reads succeeded before the buds' `0x2C`/`0x33` state reports, and the host
+sent neither hearing-enable control in that trace. This establishes that
+the Intel adapter can carry these reads. It does not establish hearing-write
+semantics.
 
-Host identity may explain this access failure, but a Windows fix is unverified. In the
-Tahoe pairing capture, the buds requested the host's SDP Device ID before the
+Hearing settings use characteristic UUID `A4120005-95C5-4D6F-9098-0F0B41457E0A`.
+The captured properties are `0x16` (Read, Write Without Response, Notify).
+NTPods discovers the value handle and uses Write Command (`0x52`) when only
+Write Without Response is advertised. If Write is advertised, it uses Write
+Request (`0x12`) and requires the exact `0x13` response. A characteristic that
+advertises only Read remains readable. Each write requires matching readback;
+there is no notification consumer or fixed CCCD write.
+
+Four successful hearing reads, across connection, case and wearing captures,
+return header `02 00 60 00`. NTPods accepts this exact 104-byte layout for
+read-only display, with the same scalar and audiogram validation. It blocks
+enable and edits before sending any hearing controls. Other unknown headers
+remain unsupported. The existing formats with byte 2 equal to `0` or `0x64`
+remain editable when the characteristic advertises writes. Their original
+header is preserved; the writer does not force `0x64`. No hearing-value write
+was captured, so header semantics and hardware write behavior remain unresolved.
+
+Windows 11 with AX200 and Pro 3 A3064 / 9A348 returned ATT `0x0E` for both
+values without the Apple host identity. Reads succeeded after applying it and
+restarting Windows, without re-pairing. Custom Transparency enable and per-ear
+noise reduction of `0.125` produced an audible change and matching readback;
+restoration preserved the separate hearing settings. NTPods 0.2.26 independently
+read both restored values. The Windows SDP response has not yet been captured.
+
+In the Tahoe pairing capture, the buds requested the host's SDP Device ID before the
 first successful read; Tahoe replied with Apple vendor `0x004C` and vendor source
 `0x0001`. No hearing-enable command preceded that read.
 [LibrePods main](https://github.com/librepods-org/librepods/blob/efccc4499b2c1fd2ac243e975ae1f42d8e828ffd/README.md#vendorid-spoofing)
 requires Apple Device ID spoofing for these settings, and its
 [connection code](https://github.com/librepods-org/librepods/blob/efccc4499b2c1fd2ac243e975ae1f42d8e828ffd/android/app/src/main/java/me/kavishdevar/librepods/services/AirPodsService.kt#L2659)
-opens ATT only with `vendor_id_hook` enabled. NTPods does not publish or override
-the local Device ID. Windows advertises its own
+opens ATT only with `vendor_id_hook` enabled. NTPods setup configures Windows'
 [Device ID record](https://learn.microsoft.com/en-us/windows-hardware/drivers/bluetooth/bluetooth-host-radio-support#how-to-change-the-device-id-profile-record-published-by-windows);
-the documented identity overrides were absent on the test PC.
+there is no app toggle.
+
+Microsoft documents `DIDVendorID` and `DIDVendorIDSource` DWORD overrides under
+`HKLM\SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters`. These affect the
+local host identity for all Bluetooth peers. Setup backs up each original
+value's presence, type and contents for restoration on uninstall. Adding a
+second SDP record does not establish which record the buds use.
+The [LibrePods maintainer reports identity caching](https://github.com/librepods-org/librepods/issues/558#issuecomment-4360325275),
+so a reconnect alone may not refresh it; Bluetooth restart or re-pairing may be
+needed. ATT `0x0E` is a generic Unlikely Error, not a diagnosis of identity
+rejection. NTPods already requests authenticated and encrypted ATT links.
+The [host identity reference](BLUETOOTH-HOST-IDENTITY.md) describes installation,
+recovery and the required Windows restart. Building alone changes no registry
+values.
 
 Tahoe subscribes before reading, but that sequence does not establish that
 subscription is required. The
@@ -391,7 +437,7 @@ allowlist. Settings offsets relative to the characteristic value are:
 
 | Offset | Field |
 | --- | --- |
-| 2 | Mode byte set to `0x64` |
+| 0–3 | Preserved header; captured `02 00 60 00` is read-only |
 | 4 / 52 | Left/right eight-band audiogram, eight little-endian float32 values |
 | 36 / 84 | Left/right amplification |
 | 40 / 88 | Tone |
@@ -399,14 +445,37 @@ allowlist. Settings offsets relative to the characteristic value are:
 | 48 / 96 | Ambient-noise reduction |
 | 100 | Own voice |
 
-The writer clamps input amplification to 0–1, balance to −1–1, then derives
-left/right amplification as `amp ∓ balance/2` (clamped to −1–1). Tone is −1–1;
-noise reduction and own voice are 0–1. An ATT write ACK confirms receipt only;
-hearing settings do not have the Loud Sound Reduction path's readback check.
+Hearing assistance has an explicit read operation that sends no enable command
+or notification subscription. Enabling or editing requires that successful read
+in the current connection, complete eight-band curves for both ears and a known
+AAP enabled state. Before any enable command or settings write, the backend
+compares the caller's original baseline with the latest confirmed state, reads
+again and rejects any mismatch. A refresh by another client cannot authorize an
+older draft. It retains the original value across the enable sequence,
+preserves opaque bytes and requires matching settings and
+header on readback. Discovery repeats after a new enable before choosing the
+write handle and method.
+
+The editor starts from those confirmed per-ear values. Scalar edits retain both
+audiograms and untouched per-ear controls, including noise reduction and own
+voice. Empty or incomplete curves are rejected. The supported editor range is
+0–90 dB HL for each threshold, −1–1 for each ear's amplification and tone, and
+0–1 for noise reduction and own voice. Unsupported values are rejected rather
+than clamped. Failed reads or writes require another read before editing; a
+reconnect clears the saved baseline. The UI uses a session-bound editability
+flag; missing flags from older backends default to read-only. Disable remains
+available after a read failure. A failed new enable requests AAP-only disable while that request still
+owns the connection; cleanup failure is reported. The editor keeps a recovery
+Off action available until the AirPods report Off. Hearing reads and enable/edit
+requests require an idle microphone and defer new microphone startup until they
+finish. Disabling assistance remains available during recording.
 Transactions share one lock. A failed ambiguous ATT transaction requires a new
 connection before retry because late read responses and write ACKs lack handles.
 Custom Transparency enable requires a confirmed inactive hearing-assistance
-`0x2C` report on hearing-capable models. Hearing-assistance enable first reads
+`0x2C` report on hearing-capable models. The complete `02 00 00 00` payload is an
+inactive, unenrolled state observed in both the Pro 3 macOS capture and Windows
+test. An unset enabled byte is not accepted for other enrollment values.
+Hearing-assistance enable first reads
 Custom Transparency under the same lock and rejects an active setting. Reads
 and disable requests remain available. A firmware that exposes ATT only after
 hearing-assistance enable may fail this check; it needs a verified wake sequence.

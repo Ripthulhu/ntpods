@@ -130,10 +130,16 @@ not implemented.
 
 Heart rate, hearing assistance and multipoint remain experimental. Custom
 Transparency offers per-ear amplification, tone, ambient-noise reduction and
-Conversation Boost after reading the current settings. Its Windows hardware
-check failed at readback with ATT error `0x0E`; successful writes and audible
-changes remain unverified. Hearing assistance uses a separate eight-band
-audiogram. Neither feature is the native three-band EQ.
+Conversation Boost after reading the current settings. On Pro 3, the
+[Apple Bluetooth identity](BLUETOOTH-HOST-IDENTITY.md) allowed reads, writes
+and an audible Custom Transparency adjustment, with restoration confirmed by
+readback. Hearing assistance uses a separate eight-band
+audiogram. Use **Read** before enabling or editing hearing assistance; all eight
+thresholds for each ear must be available. Captured formats whose write behavior
+is unresolved are displayed read-only; Off remains available. Scalar changes
+preserve those curves and untouched per-ear controls. A changed connection or failed request requires
+a fresh read, and writes are confirmed by readback. Neither feature is the native
+three-band EQ.
 
 Find My and firmware updates are not implemented. SPL0 sensor messages have no
 verified measurement scale and no UI. See the

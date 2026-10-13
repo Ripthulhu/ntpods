@@ -18,6 +18,12 @@ After removing the drivers, turn Test Mode off and restore any Secure Boot
 setting you changed. See
 [Microsoft's test-signing documentation](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/the-testsigning-boot-configuration-option).
 
+Setup configures an Apple Bluetooth identity for AirPods features such as Custom
+Transparency. This changes the PC's identity to all Bluetooth devices and needs
+a Windows restart when first applied. Setup saves the original values and
+restores them on uninstall. See the
+[host identity reference](https://github.com/Ripthulhu/ntpods/blob/main/docs/BLUETOOTH-HOST-IDENTITY.md).
+
 ## Playback
 
 The packages replace the playback driver for AirPods 1–4, Pro 1–3 and the original
@@ -53,8 +59,9 @@ is disabled. Other models, long sessions and repeated lifecycle checks remain
 unverified with the native playback driver.
 
 Available controls depend on model and firmware. Head tracking displays raw
-movement; Custom Transparency, hearing controls and AAC-ELD Variable mode still
-need hardware validation. See the
+movement. Custom Transparency passed a Pro 3 adjustment and restoration check
+with the Apple host identity. The captured hearing profile remains read-only;
+hearing edits and AAC-ELD Variable mode still need hardware validation. See the
 [model list](https://github.com/Ripthulhu/ntpods/blob/main/docs/WINDOWS-MODEL-SUPPORT.md),
 [playback test guide](https://github.com/Ripthulhu/ntpods/blob/main/windows/playback/TESTING.md)
 and [validation results](https://github.com/Ripthulhu/ntpods/blob/main/docs/WINDOWS-VALIDATION.md).

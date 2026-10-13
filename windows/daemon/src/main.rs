@@ -7,6 +7,7 @@
 
 mod a2dp;
 mod aap;
+mod att_settings;
 mod battery_ble;
 mod bt;
 mod connection_request;
@@ -124,6 +125,8 @@ struct Ctx {
     mic_preference: Arc<Mutex<()>>,
     #[cfg(feature = "experimental-playback")]
     playback_selection: Arc<Mutex<playback::Selection>>,
+    #[cfg(feature = "experimental-playback")]
+    playback_buffer: Arc<Mutex<Option<Arc<playback::BufferActive>>>>,
     mic_demand: Arc<Mutex<mic_lifecycle::Demand>>,
     mic_clock: Instant,
     hr_commands: Arc<Mutex<()>>,
@@ -227,6 +230,11 @@ impl Ctx {
                 None
             };
             s.hearing_aid_revision = hearing_revision;
+            if !s.connected || s.link_stale || !hearing::has_current_read() {
+                s.hearing_aid_settings = None;
+            }
+            s.hearing_aid_editable =
+                s.hearing_aid_settings.is_some() && hearing::can_edit_current_read();
             s.mic_available = self.pipe.is_open();
             if matches!(s.mic_state.as_str(), "idle" | "unavailable") {
                 s.mic_state = if s.mic_available {
@@ -705,6 +713,19 @@ fn persist_microphone_policy(preferences: String) {
 }
 
 fn playback_allows_microphone(state: &Snapshot) -> bool {
+    if state.playback_buffer_target_ms.is_some() {
+        return false;
+    }
+    // Hearing Off remains available during capture; pending edits only block a new uplink.
+    if state.hearing_aid_pending
+        && !state.mic_uplink_active
+        && !matches!(
+            state.mic_state.as_str(),
+            "starting" | "capturing" | "stopping" | "recovering"
+        )
+    {
+        return false;
+    }
     if state.playback_native_driver {
         state.playback_state == "ready"
     } else {
@@ -751,6 +772,8 @@ fn manual_microphone_start_allowed(
         Err("Microphone unavailable")
     } else if !state.connected || state.link_stale || !connection_requested {
         Err("Connect AirPods to start the microphone")
+    } else if state.hearing_aid_pending {
+        Err("Hearing settings are changing")
     } else if !playback_allows_microphone(state) {
         Err("Playback is changing")
     } else if matches!(state.mic_state.as_str(), "stopping" | "recovering") {
@@ -1057,6 +1080,8 @@ fn service_mic(
             publish_mic(ctx, mic, ear_allowed);
             let (elapsed, packets, age) = mic.stop_progress(now);
             log(&format!("mic stop: reset did not confirm shutdown; elapsed={elapsed}ms packets_after_stop={packets} last_audio_age={age:?}ms; one targeted reconnect, explicit retry required"));
+            #[cfg(feature = "experimental-playback")]
+            playback::stop_buffer(ctx);
             let _ = driver.disconnect();
             force_audio_rebuild(ctx.mac(), true);
             // The fallback is the last attempt; a fresh control connection and
@@ -1681,6 +1706,147 @@ fn loud_sound_request(ctx: &Ctx, requested: Option<bool>) {
     }
 }
 
+#[derive(Clone, Copy)]
+struct HearingRequest {
+    request_id: u64,
+    on: bool,
+    expected: Option<ipc::HearingAidSettings>,
+    settings: Option<ipc::HearingAidSettings>,
+}
+
+impl HearingRequest {
+    fn matches_baseline(&self, current: Option<ipc::HearingAidSettings>) -> bool {
+        self.expected.is_some() && self.expected == current
+    }
+}
+
+fn hearing_request(ctx: &Ctx, requested: Option<HearingRequest>) {
+    let disabling = requested.is_some_and(|request| !request.on);
+    let work = {
+        let _write = ctx.settings_write.lock().unwrap();
+        // Reserve the idle check through pending publication against microphone START.
+        let _preference = ctx.mic_preference.lock().unwrap();
+        let driver = ctx.driver_cell.lock().unwrap().clone();
+        let authorized = hearing::authorization();
+        let mut state = ctx.state.lock().unwrap();
+        let error = if !state.connected
+            || state.link_stale
+            || !device_models::hearing_aid(&state)
+            || ctx.user_disconnected.load(Ordering::Acquire)
+            || ctx.shutting_down.load(Ordering::Acquire)
+            || driver.is_none()
+        {
+            Some("Connect supported AirPods before changing hearing assistance.")
+        } else if !disabling && state.hearing_aid_pending {
+            Some("Wait for the current hearing-settings request to finish.")
+        } else if !disabling
+            && (ctx.capture_active.load(Ordering::Acquire)
+                || ctx.mic_on.load(Ordering::Acquire)
+                || !matches!(state.mic_state.as_str(), "idle" | "unavailable")
+                || ctx.pipe.status().is_some_and(|streams| streams != 0))
+        {
+            Some("Stop recording and wait for microphone recovery before reading or changing hearing settings.")
+        } else if requested.is_some_and(|request| {
+            request.on
+                && (request.settings.is_none_or(|s| !s.is_valid())
+                    || request.expected.is_none_or(|s| !s.is_valid()))
+        }) {
+            Some("Complete, valid audiograms and hearing settings are required.")
+        } else if requested.is_some_and(|request| request.on)
+            && (state.hearing_aid_settings.is_none() || !hearing::has_current_read())
+        {
+            Some("Read the existing audiograms before enabling or editing hearing assistance.")
+        } else if requested.is_some_and(|request| request.on) && !hearing::can_edit_current_read() {
+            Some("These hearing settings are read-only in NTPods.")
+        } else if requested.is_some_and(|request| {
+            request.on && !request.matches_baseline(state.hearing_aid_settings)
+        }) {
+            Some("Hearing settings changed since this edit began. Read them again before editing.")
+        } else if requested.is_some_and(|request| request.on)
+            && hearing::reported_state().0.is_none()
+        {
+            Some("Reconnect to confirm whether hearing assistance is enabled before changing it.")
+        } else {
+            None
+        };
+        state.hearing_aid_error = error.map(str::to_owned);
+        if let Some(error) = error {
+            if requested.is_none() {
+                state.hearing_aid_settings = None;
+            }
+            if let Some(request) = requested {
+                ctx.send_event(&Event::CommandResult {
+                    command: "set_hearing_aid".into(),
+                    request_id: request.request_id,
+                    ok: false,
+                    message: error.into(),
+                });
+            }
+            None
+        } else {
+            if requested.is_none() {
+                state.hearing_aid_settings = None;
+            }
+            state.hearing_aid_pending = true;
+            Some((driver.unwrap(), hearing::next_gen(), authorized))
+        }
+    };
+    ctx.push_state();
+    if let Some((driver, gen, authorized)) = work {
+        let ctx = ctx.clone();
+        thread::spawn(move || {
+            let result = match requested {
+                Some(request) => hearing::apply(
+                    &driver,
+                    gen,
+                    request.on,
+                    authorized,
+                    request.expected,
+                    request.settings,
+                ),
+                None => {
+                    hearing::read(&driver, gen).map(|value| value.map(hearing::Applied::Settings))
+                }
+            };
+            let _write = ctx.settings_write.lock().unwrap();
+            if !hearing::is_current(gen) {
+                return;
+            }
+            let mut state = ctx.state.lock().unwrap();
+            state.hearing_aid_pending = false;
+            let outcome = match result {
+                Ok(Some(hearing::Applied::Settings(settings))) => {
+                    state.hearing_aid_settings = Some(settings);
+                    state.hearing_aid_error = None;
+                    Ok(())
+                }
+                Ok(Some(hearing::Applied::Disabled)) => {
+                    state.hearing_aid_error = None;
+                    Ok(())
+                }
+                Err(error) => {
+                    log(&format!("Hearing settings: {error}"));
+                    state.hearing_aid_settings = None;
+                    state.hearing_aid_error = Some(error.clone());
+                    Err(error)
+                }
+                Ok(None) => return,
+            };
+            drop(state);
+            if let Some(request) = requested {
+                ctx.send_event(&Event::CommandResult {
+                    command: "set_hearing_aid".into(),
+                    request_id: request.request_id,
+                    ok: outcome.is_ok(),
+                    message: outcome.err().unwrap_or_default(),
+                });
+            }
+            drop(_write);
+            ctx.push_state();
+        });
+    }
+}
+
 fn transparency_request(ctx: &Ctx, requested: Option<ipc::TransparencySettings>) {
     let work = {
         let _write = ctx.settings_write.lock().unwrap();
@@ -1736,7 +1902,10 @@ fn transparency_request(ctx: &Ctx, requested: Option<ipc::TransparencySettings>)
                         state.transparency_error = requested.filter(|s| *s != value)
                             .map(|_| "AirPods did not apply Custom Transparency. Read the settings and try again.".into());
                     }
-                    Err(error) => state.transparency_error = Some(error),
+                    Err(error) => {
+                        log(&format!("Custom Transparency: {error}"));
+                        state.transparency_error = Some(error);
+                    }
                     Ok(None) => return,
                 }
             }
@@ -1953,13 +2122,14 @@ fn reserve_native_playback_transition(state: &mut Snapshot) {
 }
 
 fn native_reconnect_allowed(state: &Snapshot, mic_on: bool) -> bool {
-    !state.playback_native_driver
-        || (!mic_on
-            && !state.mic_uplink_active
-            && !matches!(
-                state.mic_state.as_str(),
-                "starting" | "capturing" | "stopping" | "recovering"
-            ))
+    state.playback_buffer_target_ms.is_none()
+        && (!state.playback_native_driver
+            || (!mic_on
+                && !state.mic_uplink_active
+                && !matches!(
+                    state.mic_state.as_str(),
+                    "starting" | "capturing" | "stopping" | "recovering"
+                )))
 }
 
 fn apply_command(ctx: &Ctx, cmd: Command) {
@@ -1975,7 +2145,11 @@ fn apply_command(ctx: &Ctx, cmd: Command) {
         let guard = ctx.mic_preference.lock().unwrap();
         let mut state = ctx.state.lock().unwrap();
         if !native_reconnect_allowed(&state, ctx.mic_on.load(Ordering::Acquire)) {
-            state.playback_error = Some("Stop the microphone before reconnecting audio.".into());
+            state.playback_error = Some(if state.playback_buffer_target_ms.is_some() {
+                "End the buffer trial before reconnecting audio. If restoration failed, disconnect first."
+            } else {
+                "Stop the microphone before reconnecting audio."
+            }.into());
             drop(state);
             ctx.push_state();
             return;
@@ -2024,6 +2198,20 @@ fn apply_command(ctx: &Ctx, cmd: Command) {
                 let _ = mode;
                 ctx.state.lock().unwrap().playback_error =
                     Some("Playback codecs are unavailable in this build.".into());
+                ctx.push_state();
+            }
+        }
+        Command::SetPlaybackBuffer {
+            target_ms,
+            restore_ms,
+        } => {
+            #[cfg(feature = "experimental-playback")]
+            playback::set_buffer(ctx, target_ms, restore_ms);
+            #[cfg(not(feature = "experimental-playback"))]
+            {
+                let _ = (target_ms, restore_ms);
+                ctx.state.lock().unwrap().playback_buffer_error =
+                    Some("Native playback is unavailable in this build.".into());
                 ctx.push_state();
             }
         }
@@ -2148,93 +2336,22 @@ fn apply_command(ctx: &Ctx, cmd: Command) {
         Command::SetHeadTracking { on } => {
             set_head_tracking(ctx, on);
         }
+        Command::GetHearingAid => hearing_request(ctx, None),
         Command::SetHearingAid {
             request_id,
             on,
-            left_eq,
-            right_eq,
-            amplification,
-            balance,
-            tone,
-            conversation_boost,
-            ambient_noise_reduction,
-            own_voice,
+            expected,
+            settings,
         } => {
-            let (gen, driver) = {
-                let _write = ctx.settings_write.lock().unwrap();
-                let state = ctx.state.lock().unwrap();
-                if !state.connected || state.link_stale || !device_models::hearing_aid(&state) {
-                    ctx.send_event(&Event::CommandResult {
-                        command: "set_hearing_aid".into(),
-                        request_id,
-                        ok: false,
-                        message: "Connect supported AirPods before changing hearing assistance."
-                            .into(),
-                    });
-                    return;
-                }
-                (hearing::next_gen(), ctx.driver_cell.lock().unwrap().clone())
-            };
-            // Runs on its own thread — hearing::apply has ~1.3 s of enable settle
-            // sleeps + ATT round-trips and must not block the command pump. Stamp a
-            // generation first so newer settings supersede queued work.
-            if let Some(drv) = driver {
-                let ctx2 = ctx.clone();
-                thread::spawn(move || {
-                    match hearing::apply(
-                        &drv,
-                        gen,
-                        on,
-                        &left_eq,
-                        &right_eq,
-                        amplification,
-                        balance,
-                        tone,
-                        conversation_boost,
-                        ambient_noise_reduction,
-                        own_voice,
-                    ) {
-                        Ok(Some(s)) if hearing::is_current(gen) => {
-                            log(&s);
-                            ctx2.send_event(&Event::CommandResult {
-                                command: "set_hearing_aid".into(),
-                                request_id,
-                                ok: true,
-                                message: String::new(),
-                            });
-                            if request_id == 0 {
-                                ctx2.overlay(if on {
-                                    "Hearing settings acknowledged."
-                                } else {
-                                    "Hearing assistance disable request sent."
-                                });
-                            }
-                        }
-                        Ok(_) => {}
-                        Err(e) => {
-                            log(&format!("hearing aid FAILED: {e}"));
-                            if hearing::is_current(gen) {
-                                ctx2.send_event(&Event::CommandResult {
-                                    command: "set_hearing_aid".into(),
-                                    request_id,
-                                    ok: false,
-                                    message: e,
-                                });
-                                if request_id == 0 {
-                                    ctx2.overlay("Hearing settings could not be applied.");
-                                }
-                            }
-                        }
-                    }
-                });
-            } else {
-                ctx.send_event(&Event::CommandResult {
-                    command: "set_hearing_aid".into(),
+            hearing_request(
+                ctx,
+                Some(HearingRequest {
                     request_id,
-                    ok: false,
-                    message: "Reconnect the AirPods, then try again.".into(),
-                });
-            }
+                    on,
+                    expected,
+                    settings,
+                }),
+            );
         }
         Command::Connect => {
             {
@@ -3555,6 +3672,8 @@ fn run_receiver(ctx: Ctx) {
         close_head_tracking(&ctx, &driver, &motion_refresh);
         cancel_microphone_request(&ctx);
         mic_stats.finish("session-closed");
+        #[cfg(feature = "experimental-playback")]
+        playback::stop_buffer(&ctx);
         let (stop_result, close_result, rebuild_failed) = close_control_session(
             mic.uplink_active,
             || driver.send(&aap::STOP_AUDIO),
@@ -3582,6 +3701,9 @@ fn run_receiver(ctx: Ctx) {
         reset_device_settings(&ctx);
         {
             let mut s = ctx.state.lock().unwrap();
+            if close_result.is_ok() {
+                s.playback_buffer_target_ms = None;
+            }
             ctx.wants_settings_refresh.store(false, Ordering::Release);
             s.connected = false;
             clear_heart_rate(&mut s);
@@ -3762,6 +3884,8 @@ fn main() {
         clients: Arc::new(Mutex::new(Vec::new())),
         settings_pending: Arc::new(Mutex::new(device_settings::PendingSettings::default())),
         settings_write: Arc::new(Mutex::new(())),
+        #[cfg(feature = "experimental-playback")]
+        playback_buffer: Arc::new(Mutex::new(None)),
         mic_preference: Arc::new(Mutex::new(())),
         #[cfg(feature = "experimental-playback")]
         playback_selection: Arc::new(Mutex::new(playback::Selection::new(playback_mode))),
@@ -3964,6 +4088,95 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pending_hearing_settings_block_new_microphones_without_stopping_capture() {
+        for (native, playback) in [(false, "windows"), (true, "ready")] {
+            let mut state = super::Snapshot {
+                connected: true,
+                model: "A3063".into(),
+                firmware: "9A348".into(),
+                mic_state: "idle".into(),
+                playback_native_driver: native,
+                playback_state: playback.into(),
+                ..Default::default()
+            };
+            assert!(super::playback_allows_microphone(&state));
+            state.hearing_aid_pending = true;
+            assert!(!super::playback_allows_microphone(&state));
+            assert_eq!(
+                super::manual_microphone_start_allowed(&state, true, true),
+                Err("Hearing settings are changing")
+            );
+            // Only the Off request can become pending once the microphone is reserved.
+            for phase in ["starting", "capturing", "stopping", "recovering"] {
+                state.mic_state = phase.into();
+                assert!(super::playback_allows_microphone(&state));
+            }
+            state.mic_state = "idle".into();
+            state.mic_uplink_active = true;
+            assert!(super::playback_allows_microphone(&state));
+            state.playback_buffer_target_ms = Some(60);
+            assert!(!super::playback_allows_microphone(&state));
+            state.playback_buffer_target_ms = None;
+            state.mic_uplink_active = false;
+            state.hearing_aid_pending = false;
+            assert!(super::playback_allows_microphone(&state));
+        }
+    }
+
+    #[test]
+    fn hearing_edits_keep_the_callers_baseline_across_other_clients_reads() {
+        let baseline: ntpods_ipc::HearingAidSettings = serde_json::from_value(serde_json::json!({
+            "left_eq": [5,10,15,20,25,30,35,40], "right_eq": [10,15,20,25,30,35,40,45],
+            "left_amplification": -0.25, "right_amplification": 0.5,
+            "left_tone": -0.5, "right_tone": 0.25,
+            "left_conversation_boost": true, "right_conversation_boost": false,
+            "left_ambient_noise_reduction": 0.25, "right_ambient_noise_reduction": 0.75,
+            "own_voice": 0.5,
+        }))
+        .unwrap();
+        let draft = ntpods_ipc::HearingAidSettings {
+            left_tone: 0.5,
+            ..baseline
+        };
+        let request = super::HearingRequest {
+            request_id: 1,
+            on: true,
+            expected: Some(baseline),
+            settings: Some(draft),
+        };
+        assert!(request.matches_baseline(Some(baseline)));
+        let mut newer = baseline;
+        newer.left_eq[0] = 40.;
+        assert!(
+            !request.matches_baseline(Some(newer)),
+            "another client's refresh must not authorize stale curves"
+        );
+        assert!(!request.matches_baseline(None));
+        assert!(!super::HearingRequest {
+            expected: None,
+            ..request
+        }
+        .matches_baseline(Some(baseline)));
+    }
+
+    #[test]
+    fn buffer_trial_and_failed_restore_block_microphone_and_reconnect() {
+        let mut state = super::Snapshot {
+            playback_native_driver: true,
+            playback_state: "ready".into(),
+            ..Default::default()
+        };
+        assert!(super::playback_allows_microphone(&state));
+        assert!(super::native_reconnect_allowed(&state, false));
+        state.playback_buffer_target_ms = Some(60);
+        for error in [None, Some("Restore failed".to_owned())] {
+            state.playback_buffer_error = error;
+            assert!(!super::playback_allows_microphone(&state));
+            assert!(!super::native_reconnect_allowed(&state, false));
+        }
+    }
+
     #[test]
     fn receiver_keeps_motion_and_microphone_waits_short() {
         for (mic_on, head_tracking_enabled, expected_ms) in [

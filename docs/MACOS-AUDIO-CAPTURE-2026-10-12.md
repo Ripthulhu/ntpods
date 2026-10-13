@@ -71,6 +71,73 @@ capture does not establish that NTPods' hardware-tested packet format is wrong.
 
 Raw traces, merged captures and unredacted logs remain outside Git.
 
+## Delay reporting and low-latency mode
+
+The pairing trace separates delay reporting from buffer control:
+
+| Frame | Direction | Observation |
+| --- | --- | --- |
+| 5136 / 5164 | Buds to host | AAC and Apple vendor codec capabilities both include Delay Reporting, category `08 00` |
+| 5177 | Host to buds | AAC-ELD SetConfiguration includes that category; host SEID is 6 |
+| 5204 | Buds to host | DelayReport addresses host SEID 6 and carries `05 DC`: 1,500 units of 0.1 ms, or 150 ms |
+| 5215 | Host to buds | Accepts the report, before the Open response at frame 5221 |
+
+macOS logs add 30 ms of RTP packet grouping to the 150 ms sink report and expose
+180 ms to the audio system. This accounting does not measure acoustic latency
+or identify how much of the sink delay is an adjustable buffer. The merged
+pairing/microphone trace contains one report and its acknowledgement; it has no
+AACP control `0x0B` or later delay report during microphone use or resumed
+playback. That microphone session used CVSD/HFP, not NTPods' AACP uplink.
+
+The guest logs report low-latency gaming support as local `0`, remote `1`, and
+reject dynamic latency as unsupported. This establishes a host-side restriction
+in this VM; it does not establish the command sequence for entering that mode.
+[Apple requires Apple silicon for Mac Game Mode](https://support.apple.com/en-us/105118),
+so the Intel-style VM cannot provide a normal Game Mode transition capture.
+
+### Buffer-control encoding in the saved daemon
+
+Static inspection of the same guest's `/usr/sbin/bluetoothd`, x86-64 slice,
+connects jitter-buffer targets to AACP control `0x0B`. The complete universal
+file is 23,555,568 bytes, SHA-256
+`93f3afbf2bb7d84855ae1f2b24c9a222250f33c2808a7b80094bae15c0f62f65`.
+Addresses below are unslid virtual addresses for this build.
+
+| Address | Observation |
+| --- | --- |
+| `0x100447EA8` | Chooses a 16-bit target from the mode table at `0x100A79FD2`; unlisted modes use 150 |
+| `0x100453C0D`–`0x100453C20` | Reads that target from the audio object's `+0x2C4` field and calls the common sender with control ID `0x0B` |
+| `0x10044F839` / `0x10044FD4A` | Converts a reported delay from tenths of a millisecond to milliseconds, then subtracts the same stored target without rescaling; the adjustment log explicitly uses milliseconds |
+| `0x1000BE084` | AACP implementation writes opcode `09 00`, the control ID, then four little-endian value bytes |
+| `0x1002B366C` | Configuration paths select 150 or 500 under different platform and capability checks |
+| `0x100498CCB` → `0x1005A8460` → `0x1000469A6` → `0x100046A58` | Bluetooth path of `GetAdaptiveLatencyJitterBufferLevel` returns a cached host audio-object value at `+0x10`; it sends no read request |
+| `0x1002A1DD0` | Incoming control dispatcher routes `0x0B` to `Unsupported control type` at `0x1002A269C` |
+
+The mode table contains targets 30, 60, 80, 100, 120, 140, 150 and 300; 500
+appears in separate configuration paths. These are host implementation values;
+the capture does not show the earbuds accepting them. The common sender
+dispatches through a device-specific implementation. Predicate `0x1002948AA`
+checks specific product IDs and firmware versions for some configuration paths;
+it is not a complete modern-model support list. The inspected code establishes
+the available AACP encoding and intended units, without proving every model
+supports it.
+
+For control `0x0B`, that serializer produces body `09 00 0B 3C 00 00 00` for
+60 and `09 00 0B 2C 01 00 00` for 300. A decoder that reads only the first
+value byte would misread the latter as 44. These examples exclude the outer
+AACP header and are derived from code, not observed writes in this capture.
+Neither 30 as a usable minimum nor 150 as every device's original setting is
+verified. The cached getter and incoming dispatcher do not establish a remote
+readback command, and an AVDTP DelayReport does not identify the AACP target.
+NTPods' [temporary buffer trial](WINDOWS-AUDIO-LATENCY.md#earbud-delay-and-buffer-control)
+therefore requires an explicit restoration value. A completed send confirms
+neither application by the earbuds nor return to their original setting.
+
+Static analysis also finds delivery-speed factors 1.0, 1.1 and 0.9; it does not
+establish a complete transition sequence for NTPods.
+Controller flush timing is separate: function `0x10044F910` normally selects
+a 200 ms flush timeout for target 150, and 60 ms for target 30.
+
 ## Intel controller and microphone eligibility
 
 At capture time, the VM loaded IntelBTPatcher 2.5.1, BlueToolFixup 2.7.2 and

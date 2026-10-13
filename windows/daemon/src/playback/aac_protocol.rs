@@ -25,6 +25,7 @@ pub fn select_codec_at(
     mut capabilities: &[u8],
     preference: ntpods_ipc::PlaybackBitrate,
 ) -> io::Result<Option<([u8; 6], u32)>> {
+    super::protocol::supports_delay_reporting(capabilities)?;
     let mut transport = false;
     let mut codec = None;
     let mut seen = 0u16;

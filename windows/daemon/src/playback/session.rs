@@ -23,9 +23,13 @@ pub struct Session {
     cancel: Arc<AtomicBool>,
     closing: bool,
     interrupted: Box<dyn Fn() -> bool>,
+    buffer: Option<super::buffer::Stream>,
     pub mtu: usize,
     pub bitrate: u32,
     pub variable: bool,
+    pub delay_reporting: bool,
+    // AVDTP reports use 100-microsecond units, not measured end-to-end latency.
+    pub delay_report: Option<u16>,
 }
 
 pub fn driver_ready(driver: &Driver, address: u64) -> io::Result<()> {
@@ -67,9 +71,12 @@ impl Session {
             cancel,
             closing: false,
             interrupted: Box::new(interrupted),
+            buffer: None,
             mtu: 0,
             bitrate: 0,
             variable: false,
+            delay_reporting: false,
+            delay_report: None,
         };
         open_signaling_with_retry(
             || session.open_channel(address, 0),
@@ -112,11 +119,12 @@ impl Session {
                         "Playback capability discovery timed out",
                     ));
                 }
-                let caps = match session.request(GET_CAPABILITIES, &[seid << 2]) {
-                    Ok(caps) => caps,
-                    Err(error) if error.kind() == io::ErrorKind::Unsupported => continue,
-                    Err(error) => return Err(error),
-                };
+                let caps =
+                    match discover_capabilities(|signal| session.request(signal, &[seid << 2])) {
+                        Ok(caps) => caps,
+                        Err(error) if request_not_supported(&error, GET_CAPABILITIES) => continue,
+                        Err(error) => return Err(error),
+                    };
                 return Ok(Some((seid, caps)));
             },
             on_mode,
@@ -145,6 +153,7 @@ impl Session {
             return Err(error);
         }
         session.state = StreamState::Configured;
+        session.delay_reporting = selected.delay_reporting;
         session.request(OPEN, &[session.seid << 2])?;
         session.state = StreamState::Open;
         session.mtu = session.open_channel(address, 1)?;
@@ -163,14 +172,24 @@ impl Session {
                     return Err(invalid("Media MTU is too small for this bitrate"));
                 }
                 session.bitrate = mode.bitrate(preference, maximum)?;
-                let config = configuration_at(session.seid, session.bitrate);
-                let mut request = vec![session.seid << 2];
-                request.extend_from_slice(&config[4..]);
+                let (request, config) =
+                    eld_reconfiguration(session.seid, session.bitrate, session.delay_reporting);
                 session.request(RECONFIGURE, &request)?;
                 session.selected_config = config;
             }
         }
         Ok(session)
+    }
+
+    pub fn set_buffer(&mut self, stream: super::buffer::Stream) {
+        self.buffer = Some(stream);
+    }
+
+    fn stop_buffer(&mut self) -> io::Result<()> {
+        if let Some(buffer) = &mut self.buffer {
+            buffer.stop()?;
+        }
+        Ok(())
     }
 
     fn open_channel(&self, address: u64, channel: u32) -> io::Result<usize> {
@@ -269,7 +288,8 @@ impl Session {
         } else {
             &self.source_caps
         };
-        let Some((reply, action)) = peer_response(packet, self.state, caps)? else {
+        let Some((reply, action)) = peer_response(packet, self.state, caps, self.delay_reporting)?
+        else {
             return Ok(false);
         };
         crate::log(&format!(
@@ -281,14 +301,35 @@ impl Session {
         self.send(0, &reply)?;
         match action {
             PeerAction::None => {}
-            PeerAction::Start => self.state = StreamState::Streaming,
+            PeerAction::Start => {
+                // A peer START does not establish that Windows is producing PCM.
+                self.state = StreamState::Streaming;
+            }
             PeerAction::Suspend => self.state = StreamState::Open,
             PeerAction::Close => {
                 self.state = StreamState::Idle;
                 self.peer_ended = true;
+                self.delay_reporting = false;
+                self.delay_report = None;
+            }
+            PeerAction::DelayReport(delay) => {
+                if self.delay_report != Some(delay) {
+                    crate::log(&format!(
+                        "playback signaling: {} earbud-reported delay {}.{} ms",
+                        self.mode.name(),
+                        delay / 10,
+                        delay % 10
+                    ));
+                }
+                self.delay_report = Some(delay);
             }
         }
         if matches!(action, PeerAction::Suspend | PeerAction::Close) {
+            if let Err(error) = self.stop_buffer() {
+                crate::log(&format!(
+                    "playback: buffer cleanup after peer stop failed: {error}"
+                ));
+            }
             return Err(io::Error::new(
                 io::ErrorKind::ConnectionAborted,
                 "AirPods ended playback",
@@ -319,6 +360,7 @@ impl Session {
         Ok(())
     }
     pub fn suspend(&mut self) -> io::Result<()> {
+        self.stop_buffer()?;
         if self.state == StreamState::Streaming {
             self.request(SUSPEND, &[self.seid << 2])?;
             self.state = StreamState::Open;
@@ -330,6 +372,9 @@ impl Session {
             self.request(START, &[self.seid << 2]).map(|_| ())
         })?;
         self.state = StreamState::Streaming;
+        if let Some(buffer) = &mut self.buffer {
+            buffer.started();
+        }
         Ok(())
     }
 }
@@ -347,6 +392,7 @@ fn signal_name(signal: u8) -> &'static str {
         SUSPEND => "SUSPEND",
         ABORT => "ABORT",
         GET_ALL_CAPABILITIES => "GET_ALL_CAPABILITIES",
+        DELAY_REPORT => "DELAY_REPORT",
         _ => "UNKNOWN",
     }
 }
@@ -357,6 +403,33 @@ struct Configuration {
     seid: u8,
     config: Vec<u8>,
     bitrate: u32,
+    delay_reporting: bool,
+}
+
+fn discover_capabilities(
+    mut request: impl FnMut(u8) -> io::Result<Vec<u8>>,
+) -> io::Result<Vec<u8>> {
+    match request(GET_ALL_CAPABILITIES) {
+        Err(error) if request_not_supported(&error, GET_ALL_CAPABILITIES) => {
+            request(GET_CAPABILITIES)
+        }
+        result => result,
+    }
+}
+
+fn with_delay_reporting(mut config: Vec<u8>, delay_reporting: bool) -> Vec<u8> {
+    if delay_reporting {
+        config.extend_from_slice(&[DELAY_REPORTING, 0]);
+    }
+    config
+}
+
+fn eld_reconfiguration(seid: u8, bitrate: u32, delay_reporting: bool) -> (Vec<u8>, Vec<u8>) {
+    let config = configuration_at(seid, bitrate);
+    // RECONFIGURE changes the codec; the negotiated reporting capability stays in GET_CONFIGURATION.
+    let mut request = vec![seid << 2];
+    request.extend_from_slice(&config[4..]);
+    (request, with_delay_reporting(config, delay_reporting))
 }
 
 fn select_configuration(
@@ -369,6 +442,7 @@ fn select_configuration(
     let mut eld_offered = false;
     let mut aac_offered = false;
     while let Some((seid, caps)) = next()? {
+        let delay_reporting = supports_delay_reporting(&caps)?;
         let selected = match requested {
             Mode::Aac => {
                 aac_offered |=
@@ -393,8 +467,9 @@ fn select_configuration(
             return Ok(Configuration {
                 mode: requested,
                 seid,
-                config,
+                config: with_delay_reporting(config, delay_reporting),
                 bitrate,
+                delay_reporting,
             });
         }
     }
@@ -412,12 +487,17 @@ fn select_configuration(
                 aac_protocol::select_codec_at(&caps, ntpods_ipc::PlaybackBitrate::default())?
                     .is_some();
             if let Some((codec, bitrate)) = aac_protocol::select_codec_at(&caps, bitrates[0])? {
+                let delay_reporting = supports_delay_reporting(&caps)?;
                 on_mode(Mode::Aac);
                 return Ok(Configuration {
                     mode: Mode::Aac,
                     seid,
-                    config: aac_protocol::configuration(seid, codec),
+                    config: with_delay_reporting(
+                        aac_protocol::configuration(seid, codec),
+                        delay_reporting,
+                    ),
                     bitrate,
+                    delay_reporting,
                 });
             }
         }
@@ -471,6 +551,11 @@ fn start_if_needed(state: StreamState, request: impl FnOnce() -> io::Result<()>)
 impl Drop for Session {
     fn drop(&mut self) {
         self.closing = true;
+        if let Some(mut buffer) = self.buffer.take() {
+            if let Err(error) = buffer.stop() {
+                crate::log(&format!("playback: buffer cleanup failed: {error}"));
+            }
+        }
         let _ = self.suspend();
         if self.seid != 0 && !self.peer_ended {
             let signal = if matches!(self.state, StreamState::Open | StreamState::Streaming) {
@@ -501,6 +586,119 @@ mod tests {
 
     fn aac_caps() -> Vec<u8> {
         aac_protocol::configuration(1, aac_protocol::AAC_CAPABILITIES)[2..].to_vec()
+    }
+
+    #[test]
+    fn capability_discovery_falls_back_only_for_explicit_unsupported_replies() {
+        for packet in [
+            vec![0x31, GET_ALL_CAPABILITIES],
+            vec![0x33, GET_ALL_CAPABILITIES, 0x19],
+        ] {
+            let mut signals = Vec::new();
+            let caps = discover_capabilities(|signal| {
+                signals.push(signal);
+                if signal == GET_ALL_CAPABILITIES {
+                    response(&packet, 3, signal).map(|_| unreachable!())
+                } else {
+                    Ok(aac_caps())
+                }
+            })
+            .unwrap();
+            assert_eq!(caps, aac_caps());
+            assert_eq!(signals, [GET_ALL_CAPABILITIES, GET_CAPABILITIES]);
+        }
+        for error in [
+            response(&[0x33, GET_ALL_CAPABILITIES, 0x31], 3, GET_ALL_CAPABILITIES).unwrap_err(),
+            response(&[0x33, GET_ALL_CAPABILITIES, 0x12], 3, GET_ALL_CAPABILITIES).unwrap_err(),
+            response(&[0x31, GET_ALL_CAPABILITIES, 0], 3, GET_ALL_CAPABILITIES).unwrap_err(),
+            response(&[0x33, GET_CAPABILITIES, 0x19], 3, GET_CAPABILITIES).unwrap_err(),
+            io::Error::from(io::ErrorKind::TimedOut),
+            io::Error::from(io::ErrorKind::NotConnected),
+            io::Error::from(io::ErrorKind::Interrupted),
+            io::Error::from(io::ErrorKind::Unsupported),
+        ] {
+            let mut error = Some(error);
+            assert!(discover_capabilities(|signal| {
+                assert_eq!(signal, GET_ALL_CAPABILITIES);
+                Err(error.take().expect("must not fall back"))
+            })
+            .is_err());
+        }
+        let mut calls = 0;
+        assert_eq!(
+            discover_capabilities(|signal| {
+                calls += 1;
+                assert_eq!(signal, GET_ALL_CAPABILITIES);
+                Ok(aac_caps())
+            })
+            .unwrap(),
+            aac_caps()
+        );
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn delay_reporting_follows_the_selected_endpoint_and_survives_reconfiguration() {
+        for (requested, offered, actual) in [
+            (Mode::Aac, Mode::Aac, Mode::Aac),
+            (Mode::Eld, Mode::Eld, Mode::Eld),
+            (Mode::Eld, Mode::Aac, Mode::Aac),
+        ] {
+            for reporting in [false, true] {
+                let caps =
+                    with_delay_reporting(offered.source_configuration()[2..].to_vec(), reporting);
+                let mut endpoints = vec![(3, caps)].into_iter();
+                let selected =
+                    select_configuration(requested, [PlaybackBitrate::default(); 2], || {
+                        Ok(endpoints.next())
+                    })
+                    .unwrap();
+                assert_eq!(selected.mode, actual);
+                assert_eq!(selected.delay_reporting, reporting);
+                assert_eq!(
+                    supports_delay_reporting(&selected.config[2..]).unwrap(),
+                    reporting
+                );
+                let (request, config) = eld_reconfiguration(3, 192_000, reporting);
+                assert_eq!(request[0], 3 << 2);
+                assert_eq!(request[1], 7);
+                assert!(!supports_delay_reporting(&request[1..]).unwrap());
+                assert_eq!(supports_delay_reporting(&config[2..]).unwrap(), reporting);
+                assert_eq!(
+                    select_apple_eld(&config[2..], PlaybackBitrate::default()).unwrap(),
+                    Some(192_000)
+                );
+            }
+        }
+        // A capability on the fallback endpoint must not enable it on a different selected endpoint.
+        let mut endpoints = vec![
+            (1, with_delay_reporting(aac_caps(), true)),
+            (2, configuration(2)[2..].to_vec()),
+        ]
+        .into_iter();
+        let selected = select_configuration(Mode::Eld, [PlaybackBitrate::default(); 2], || {
+            Ok(endpoints.next())
+        })
+        .unwrap();
+        assert_eq!(selected.seid, 2);
+        assert!(!selected.delay_reporting);
+    }
+
+    #[test]
+    fn delay_report_during_open_wait_does_not_complete_the_open_request() {
+        let report = command(3, DELAY_REPORT, &[4, 0x05, 0xdd]);
+        let (reply, action) = peer_response(&report, StreamState::Configured, &[], true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(reply, [0x32, DELAY_REPORT]);
+        assert_eq!(action, PeerAction::DelayReport(1501));
+        assert_eq!(response(&report, 3, OPEN).unwrap(), None);
+        assert!(
+            peer_response(&[0x32, OPEN], StreamState::Configured, &[], true)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(response(&[0x32, OPEN], 3, OPEN).unwrap(), Some(&[][..]));
     }
 
     #[test]
@@ -778,7 +976,7 @@ mod tests {
 
     #[test]
     fn accepted_peer_start_does_not_send_a_second_start() {
-        let (_, action) = peer_response(&command(3, START, &[4]), StreamState::Open, &[])
+        let (_, action) = peer_response(&command(3, START, &[4]), StreamState::Open, &[], false)
             .unwrap()
             .unwrap();
         assert_eq!(action, PeerAction::Start);

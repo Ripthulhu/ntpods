@@ -55,8 +55,7 @@ public sealed partial class SettingsPage : UserControl
 
         try
         {
-            var v = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
-            if (v is not null) VersionText.Text = $"v{v.Major}.{v.Minor}.{v.Build}";
+            VersionText.Text = AppVersion.Read(System.Reflection.Assembly.GetExecutingAssembly());
         }
         catch { }
 

@@ -1,5 +1,6 @@
 //! AAC and Apple AAC-ELD playback through the AirPods AudioSink driver.
 mod aac_protocol;
+mod buffer;
 mod codec;
 mod encoder;
 mod pcm;
@@ -11,6 +12,7 @@ mod session;
 mod timing;
 
 use crate::{bt, driver::Driver, Ctx};
+pub use buffer::{set as set_buffer, stop as stop_buffer, Active as BufferActive};
 use codec::{AudioEncoder, MediaPackets, Mode};
 use ntpods_ipc::{PlaybackBitrate, PlaybackMode};
 use pcm::{FrameAssembler, FrameClock, MAX_READ_BYTES};
@@ -75,7 +77,13 @@ pub fn set_bitrate(ctx: &Ctx, mode: PlaybackMode, bitrate: PlaybackBitrate) {
         );
         let active = (state.playback_state == "ready").then_some(state.playback_mode);
         let affects_playback = selected.uses_bitrate(mode, active);
-        match selected.change_bitrate(mode, bitrate, active, busy, selection::save_bitrates) {
+        match if state.playback_buffer_target_ms.is_some() {
+            Err(io::Error::other(
+                "Restore the buffer trial before changing playback.",
+            ))
+        } else {
+            selected.change_bitrate(mode, bitrate, active, busy, selection::save_bitrates)
+        } {
             Ok(changed) => {
                 state.playback_aac_bitrate = selected.bitrates[0];
                 state.playback_aac_eld_bitrate = selected.bitrates[1];
@@ -113,6 +121,10 @@ pub fn set_mode(ctx: &Ctx, mode: Option<PlaybackMode>) {
         match if !state.playback_native_driver {
             Err(io::Error::other(
                 "The NTPods playback driver is not installed for these AirPods.",
+            ))
+        } else if state.playback_buffer_target_ms.is_some() {
+            Err(io::Error::other(
+                "Restore the buffer trial before changing playback.",
             ))
         } else {
             selected.change(mode, retry, busy, selection::save)
@@ -178,6 +190,10 @@ fn publish(
             state.playback_state = name.into();
             state.playback_error = error;
             state.playback_bitrate_kbps = active.and_then(|(_, bitrate)| bitrate);
+            if name != "ready" {
+                state.playback_delay_reporting = false;
+                state.playback_delay_tenths_ms = None;
+            }
             if let Some((mode, _)) = active {
                 state.playback_mode = mode.selection();
             }
@@ -185,6 +201,37 @@ fn publish(
         }
     };
     if current {
+        ctx.push_state();
+    }
+}
+
+fn publish_delay(
+    ctx: &Ctx,
+    address: u64,
+    revision: u64,
+    intent: u64,
+    reporting: bool,
+    delay: Option<u16>,
+) {
+    let changed = {
+        let selected = ctx.playback_selection.lock().unwrap();
+        let mut state = ctx.state.lock().unwrap();
+        if !publication_current(
+            selected.revision,
+            revision,
+            ctx.mac(),
+            address,
+            bt::audio_request_is_current(intent),
+        ) {
+            return;
+        }
+        let changed =
+            state.playback_delay_reporting != reporting || state.playback_delay_tenths_ms != delay;
+        state.playback_delay_reporting = reporting;
+        state.playback_delay_tenths_ms = delay;
+        changed
+    };
+    if changed {
         ctx.push_state();
     }
 }
@@ -325,6 +372,7 @@ fn manage(ctx: &Ctx) {
                         Some((mode, kbps)),
                     );
                 },
+                |reporting, delay| publish_delay(ctx, address, revision, intent, reporting, delay),
                 || publish(ctx, address, revision, intent, "stopping", None, None),
             )
         })();
@@ -400,6 +448,7 @@ fn run(
     bitrates: [PlaybackBitrate; 2],
     intent: u64,
     report_codec: impl Fn(Mode, Option<u32>),
+    report_delay: impl Fn(bool, Option<u16>),
     stopping: impl FnOnce(),
 ) -> io::Result<()> {
     if stop.load(Ordering::Acquire) {
@@ -408,6 +457,7 @@ fn run(
     session::driver_ready(&driver, address)?;
     render.set_ready(false)?;
     let session_ctx = ctx.clone();
+    let buffer_driver = driver.clone();
     let mut session = Session::open(
         driver,
         address,
@@ -424,6 +474,7 @@ fn run(
         },
         |mode| report_codec(mode, None),
     )?;
+    session.set_buffer(buffer::Stream::new(ctx, address, intent, buffer_driver));
     let mode = session.mode;
     session.suspend()?;
     let mut encoder = AudioEncoder::new(mode, session.bitrate, session.variable)?;
@@ -443,6 +494,7 @@ fn run(
     let _registered = Registration;
     render.set_ready(true)?;
     report_codec(mode, Some(session.bitrate / 1000));
+    report_delay(session.delay_reporting, session.delay_report);
     let mut next_connection_check = Instant::now();
     let mut timing = timing::Timing::default();
     let result = stream(
@@ -454,6 +506,7 @@ fn run(
         &requests,
         mode,
         &mut timing,
+        &report_delay,
         || {
             if shutdown_complete(
                 ctx.shutting_down.load(Ordering::Acquire),
@@ -524,6 +577,7 @@ fn stream(
     requests: &Receiver<Reset>,
     mode: Mode,
     timing: &mut timing::Timing,
+    report_delay: impl Fn(bool, Option<u16>),
     mut disconnected: impl FnMut() -> bool,
 ) -> io::Result<()> {
     let _timer = TimerResolution::acquire()?;
@@ -570,6 +624,7 @@ fn stream(
         let now = Instant::now();
         if now >= next_poll {
             session.poll()?;
+            report_delay(session.delay_reporting, session.delay_report);
             next_poll = now + Duration::from_millis(20);
         }
         let status = render.status()?;

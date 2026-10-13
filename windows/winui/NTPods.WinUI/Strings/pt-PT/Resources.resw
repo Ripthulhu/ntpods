@@ -105,6 +105,11 @@
   <data name="MicEnableBtn.Content" xml:space="preserve"><value>Usar o microfone</value></data>
 
   <!-- HearingAidCard -->
+  <data name="HearingAid.TurnOff" xml:space="preserve"><value>Desativar a assistência auditiva</value></data>
+  <data name="HearingAid.EnableUnconfirmed" xml:space="preserve"><value>A assistência auditiva pode ainda estar ativa. Tenta desativá-la.</value></data>
+  <data name="HearingAid.ReadOnly" xml:space="preserve"><value>Estas definições auditivas podem ser lidas, mas o seu formato não permite editá-las.</value></data>
+  <data name="HearingAid.ReadFirst" xml:space="preserve"><value>Lê as definições auditivas guardadas antes de ativar ou editar a assistência auditiva.</value></data>
+  <data name="HearingAid.InvalidAudiogram" xml:space="preserve"><value>Introduz um valor de 0 a 90 dB HL para cada frequência em ambos os ouvidos.</value></data>
   <data name="HearingAidTitle.Text" xml:space="preserve"><value>Assistência auditiva</value></data>
   <data name="HearingAidSubtitle.Text" xml:space="preserve"><value>Amplifica o som à tua volta através dos AirPods (Pro 3).</value></data>
   <data name="HearingAidWarning.Title" xml:space="preserve"><value>Experimental</value></data>

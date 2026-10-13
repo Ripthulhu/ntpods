@@ -92,6 +92,12 @@ Microphone recovery restarts the AVDTP stream while this driver owns playback.
 It must never disable the Windows AudioSink service, which would remove the
 playback endpoint.
 
+When offered by the earbuds, NTPods negotiates AVDTP Delay Reporting and records
+their reported delay. This is separate from measured Windows-to-sound latency.
+An optional [buffer trial](../../docs/WINDOWS-AUDIO-LATENCY.md#earbud-delay-and-buffer-control)
+uses the same native playback path, with an explicit restore target and automatic
+expiry. It does not change normal playback defaults.
+
 Automated checks cover packet validation, cancellation, per-device PCM isolation,
 buffer limits, bitrate settings, and encoder pitch/stereo output. AAC round trips
 use FFmpeg; AAC-ELD round trips use FDK's own decoder.

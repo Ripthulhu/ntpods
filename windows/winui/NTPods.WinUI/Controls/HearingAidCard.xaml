@@ -20,6 +20,10 @@
                      Message="{Binding [HearingAidWarning_Message], Source={StaticResource Loc}}"
                      Severity="Warning" IsOpen="True" IsClosable="False" />
 
+            <Button x:Name="ReadButton" HorizontalAlignment="Stretch" Click="Read_Click">
+                <TextBlock Text="{Binding [Transparency_Read], Source={StaticResource Loc}}" TextWrapping="Wrap" />
+            </Button>
+
             <Grid ColumnSpacing="24">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
@@ -34,6 +38,9 @@
 
             <TextBlock x:Name="ErrorText" FontSize="13" TextWrapping="Wrap" Visibility="Collapsed"
                        Foreground="{ThemeResource SystemFillColorCriticalBrush}" AutomationProperties.LiveSetting="Polite" />
+            <Button x:Name="DisableButton" HorizontalAlignment="Stretch" Visibility="Collapsed" Click="Disable_Click">
+                <TextBlock Text="{Binding [HearingAid_TurnOff], Source={StaticResource Loc}}" TextWrapping="Wrap" />
+            </Button>
 
             <!-- Per-person audiogram (hearing loss, dB HL). Rows built in code-behind. -->
             <TextBlock Text="{Binding [HearingAidAudiogram_Header], Source={StaticResource Loc}}"

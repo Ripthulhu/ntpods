@@ -313,6 +313,13 @@ impl Driver {
         Ok(())
     }
 
+    #[cfg(feature = "experimental-playback")]
+    pub(crate) fn send_playback_control(&self, data: &[u8]) -> io::Result<()> {
+        // Leave time to restore a trial before the microphone's transport-reset deadline.
+        ioctl_with_timeout(self.handle.0, IOCTL_LP_SEND, data, &mut [], 1_000)?;
+        Ok(())
+    }
+
     pub fn recv(&self, timeout_ms: u32, buf: &mut [u8]) -> io::Result<usize> {
         let to = timeout_ms.to_le_bytes();
         Ok(ioctl(self.handle.0, IOCTL_LP_RECEIVE, &to, buf)? as usize)

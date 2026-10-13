@@ -68,6 +68,11 @@ drivers and require Test Mode. Source archives and checksums are included.
 See the [installation guide](windows/README.md) and [release notes](docs/WINDOWS-RELEASE-NOTES.md).
 Upstream nightly builds do not include this fork's changes.
 
+Setup configures an [Apple Bluetooth identity](docs/BLUETOOTH-HOST-IDENTITY.md)
+for AirPods features such as Custom Transparency. This affects the PC's identity
+to all Bluetooth devices and requires a Windows restart when first applied.
+Uninstall restores the original values.
+
 Both downloads include an experimental playback driver for AirPods 1–4,
 Pro 1–3 and the original Max (Lightning and USB-C). See the
 [playback model list](docs/WINDOWS-MODEL-SUPPORT.md#native-playback) for test status.

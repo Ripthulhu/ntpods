@@ -1,7 +1,7 @@
 //! Executed by windows/tests/test-ipc.ps1 against the real C# wire model.
 use ntpods_ipc::{
-    from_line, to_line, BatteryFreshness, BatteryObservation, Command, Equalizer, Event, MicMode,
-    PlaybackBitrate, PlaybackMode, Snapshot, TransparencySettings,
+    from_line, to_line, BatteryFreshness, BatteryObservation, Command, Equalizer, Event,
+    HearingAidSettings, MicMode, PlaybackBitrate, PlaybackMode, Snapshot, TransparencySettings,
 };
 
 fn transparency(enabled: bool) -> TransparencySettings {
@@ -15,6 +15,22 @@ fn transparency(enabled: bool) -> TransparencySettings {
         right_conversation_boost: false,
         left_ambient_noise_reduction: 0.0,
         right_ambient_noise_reduction: 1.0,
+    }
+}
+
+fn hearing_settings() -> HearingAidSettings {
+    HearingAidSettings {
+        left_eq: [5., 10., 15., 20., 25., 30., 35., 40.],
+        right_eq: [10., 15., 20., 25., 30., 35., 40., 45.],
+        left_amplification: -0.25,
+        right_amplification: 0.5,
+        left_tone: -0.5,
+        right_tone: 0.25,
+        left_conversation_boost: true,
+        right_conversation_boost: false,
+        left_ambient_noise_reduction: 0.25,
+        right_ambient_noise_reduction: 0.75,
+        own_voice: 0.5,
     }
 }
 
@@ -66,6 +82,19 @@ fn snapshots() -> Vec<Snapshot> {
             variable: phase == "capturing",
         },
         playback_bitrate_kbps: (phase == "capturing").then_some(256),
+        playback_delay_reporting: matches!(
+            phase,
+            "starting" | "capturing" | "stopping" | "recovering"
+        ),
+        playback_delay_tenths_ms: match phase {
+            "starting" => Some(0),
+            "capturing" => Some(1500),
+            "stopping" => Some(u16::MAX),
+            _ => None,
+        },
+        playback_buffer_target_ms: (phase == "capturing").then_some(60),
+        playback_buffer_error: (phase == "error")
+            .then(|| "A restoration baseline is required.".into()),
         battery_live: phase != "error",
         battery_timestamp_ms: Some(1_792_000_000_100),
         battery_freshness: Some(BatteryFreshness {
@@ -149,6 +178,11 @@ fn snapshots() -> Vec<Snapshot> {
             _ => None,
         },
         hearing_aid_revision: 12,
+        hearing_aid_settings: (phase != "unavailable").then_some(hearing_settings()),
+        hearing_aid_editable: matches!(phase, "idle" | "capturing"),
+        hearing_aid_pending: phase == "starting",
+        hearing_aid_error: (phase == "error")
+            .then(|| "Existing audiograms could not be read.".into()),
         loud_sound_reduction: match phase {
             "idle" => Some(true),
             "starting" | "error" => Some(false),
@@ -279,6 +313,10 @@ fn main() {
                 "eq_pending",
                 "hearing_aid_enabled",
                 "hearing_aid_revision",
+                "hearing_aid_settings",
+                "hearing_aid_editable",
+                "hearing_aid_pending",
+                "hearing_aid_error",
                 "loud_sound_reduction",
                 "loud_sound_reduction_pending",
                 "loud_sound_reduction_error",
@@ -301,6 +339,10 @@ fn main() {
                 "playback_aac_bitrate",
                 "playback_aac_eld_bitrate",
                 "playback_bitrate_kbps",
+                "playback_delay_reporting",
+                "playback_delay_tenths_ms",
+                "playback_buffer_target_ms",
+                "playback_buffer_error",
             ] {
                 legacy.as_object_mut().unwrap().remove(key);
             }
@@ -314,6 +356,7 @@ fn main() {
             assert!(old.adaptive_strength_requested.is_none());
             assert!(old.allow_off_requested.is_none());
             assert!(old.hearing_aid_enabled.is_none() && old.hearing_aid_revision == 0);
+            assert!(!old.hearing_aid_editable);
             assert!(
                 old.transparency.is_none()
                     && !old.transparency_pending
@@ -353,8 +396,8 @@ fn main() {
             let lines: Vec<_> = text.lines().collect();
             assert_eq!(
                 lines.len(),
-                states.len() + 39,
-                "C# states, legacy state and thirty-eight commands expected"
+                states.len() + 47,
+                "C# states, legacy state and forty-six commands expected"
             );
             for (line, expected) in lines.iter().zip(&states) {
                 let Event::State(actual) = from_line::<Event>(line).expect("C# event must parse")
@@ -372,11 +415,16 @@ fn main() {
             assert!(!legacy.mic_capture_active && !legacy.mic_uplink_active);
             assert_eq!(legacy.mic_state, "unavailable");
             assert!(legacy.mic_error.is_none());
+            assert!(!legacy.playback_delay_reporting);
+            assert!(legacy.playback_delay_tenths_ms.is_none());
+            assert!(legacy.playback_buffer_target_ms.is_none());
+            assert!(legacy.playback_buffer_error.is_none());
             assert!(legacy.auto_pause && legacy.device_controls.is_empty() && legacy.eq.is_none());
             assert!(!legacy.anc_unconfirmed);
             assert!(legacy.adaptive_strength_requested.is_none());
             assert!(legacy.allow_off_requested.is_none());
             assert!(legacy.hearing_aid_enabled.is_none() && legacy.hearing_aid_revision == 0);
+            assert!(!legacy.hearing_aid_editable);
             assert!(
                 legacy.transparency.is_none()
                     && !legacy.transparency_pending
@@ -527,11 +575,15 @@ fn main() {
                     if settings == transparency(enabled) && settings.is_valid())
                 );
             }
-            for (line, expected) in commands[36..38].iter().zip([0, 73]) {
+            assert!(matches!(
+                from_line::<Command>(commands[36]),
+                Some(Command::GetHearingAid)
+            ));
+            for (line, expected) in commands[37..39].iter().zip([0, 73]) {
                 assert!(
                     matches!(from_line::<Command>(line), Some(Command::SetHearingAid {
-                    request_id, on: true, amplification: 0.5, ..
-                }) if request_id == expected)
+                    request_id, on: true, expected: Some(baseline), settings: Some(settings),
+                }) if request_id == expected && baseline == hearing_settings() && settings == hearing_settings())
                 );
                 let mut legacy: serde_json::Value = serde_json::from_str(line).unwrap();
                 legacy.as_object_mut().unwrap().remove("request_id");
@@ -539,6 +591,27 @@ fn main() {
                     serde_json::from_value::<Command>(legacy),
                     Ok(Command::SetHearingAid { request_id: 0, .. })
                 ));
+            }
+            assert!(matches!(
+                from_line::<Command>(commands[39]),
+                Some(Command::SetHearingAid {
+                    request_id: 74,
+                    on: false,
+                    expected: None,
+                    settings: None,
+                })
+            ));
+            for (line, expected) in commands[40..46].iter().zip([
+                None,
+                Some(60),
+                Some(80),
+                Some(100),
+                Some(120),
+                Some(140),
+            ]) {
+                assert!(matches!(from_line::<Command>(line),
+                    Some(Command::SetPlaybackBuffer { target_ms, restore_ms })
+                    if target_ms == expected && restore_ms == expected.map(|_| 150)));
             }
             println!("Rust: C# state, microphone and device-setting command roundtrips passed");
         }

@@ -11,6 +11,8 @@ pub const CLOSE: u8 = 8;
 pub const SUSPEND: u8 = 9;
 pub const ABORT: u8 = 10;
 pub const GET_ALL_CAPABILITIES: u8 = 12;
+pub const DELAY_REPORT: u8 = 13;
+pub const DELAY_REPORTING: u8 = 8;
 pub const APPLE_ELD: [u8; 14] = [0x4c, 0, 0, 0, 1, 0x80, 0, 0x80, 0, 0x84, 0, 0x83, 0xe8, 0];
 pub const FRAME_SAMPLES: usize = 480;
 pub const PCM_BYTES: usize = FRAME_SAMPLES * 4;
@@ -25,6 +27,36 @@ pub fn command(label: u8, signal: u8, payload: &[u8]) -> Vec<u8> {
     let mut bytes = vec![(label & 15) << 4, signal];
     bytes.extend_from_slice(payload);
     bytes
+}
+
+#[derive(Debug)]
+struct Rejection {
+    signal: u8,
+    code: Option<u8>,
+}
+
+impl std::fmt::Display for Rejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.code {
+            Some(code) => write!(
+                f,
+                "AirPods rejected AVDTP request {:#04x} ({code:#04x})",
+                self.signal
+            ),
+            None => f.write_str("AirPods do not support the AVDTP request"),
+        }
+    }
+}
+
+impl std::error::Error for Rejection {}
+
+pub fn request_not_supported(error: &io::Error, signal: u8) -> bool {
+    error
+        .get_ref()
+        .and_then(|error| error.downcast_ref::<Rejection>())
+        .is_some_and(|rejection| {
+            rejection.signal == signal && matches!(rejection.code, None | Some(0x19))
+        })
 }
 
 pub fn response(packet: &[u8], label: u8, signal: u8) -> io::Result<Option<&[u8]>> {
@@ -47,7 +79,7 @@ pub fn response(packet: &[u8], label: u8, signal: u8) -> io::Result<Option<&[u8]
         }
         1 if packet.len() == 2 => Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "AirPods do not support the AVDTP request",
+            Rejection { signal, code: None },
         )),
         3 => {
             let expected = if matches!(signal, SET_CONFIGURATION | RECONFIGURE | START | SUSPEND) {
@@ -60,15 +92,32 @@ pub fn response(packet: &[u8], label: u8, signal: u8) -> io::Result<Option<&[u8]
             }
             Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                format!(
-                    "AirPods rejected AVDTP request {signal:#04x} ({:#04x})",
-                    packet[expected - 1]
-                ),
+                Rejection {
+                    signal,
+                    code: Some(packet[expected - 1]),
+                },
             ))
         }
         1 => Err(invalid("Invalid AVDTP general rejection")),
         _ => Ok(None),
     }
+}
+
+pub fn supports_delay_reporting(mut payload: &[u8]) -> io::Result<bool> {
+    let mut supported = false;
+    while !payload.is_empty() {
+        if payload.len() < 2 || payload.len() < 2 + payload[1] as usize {
+            return Err(invalid("Truncated AVDTP capability"));
+        }
+        if payload[0] == DELAY_REPORTING {
+            if supported || payload[1] != 0 {
+                return Err(invalid("Invalid delay reporting capability"));
+            }
+            supported = true;
+        }
+        payload = &payload[2 + payload[1] as usize..];
+    }
+    Ok(supported)
 }
 
 pub fn sinks(payload: &[u8]) -> io::Result<Vec<u8>> {
@@ -104,6 +153,7 @@ pub fn select_apple_eld(
     mut payload: &[u8],
     preference: ntpods_ipc::PlaybackBitrate,
 ) -> io::Result<Option<u32>> {
+    supports_delay_reporting(payload)?;
     let mut media_transport = false;
     let mut codec = None;
     let mut seen = 0u16;
@@ -172,12 +222,14 @@ pub enum PeerAction {
     Start,
     Suspend,
     Close,
+    DelayReport(u16),
 }
 
 pub fn peer_response(
     packet: &[u8],
     state: StreamState,
     capabilities: &[u8],
+    delay_reporting: bool,
 ) -> io::Result<Option<(Vec<u8>, PeerAction)>> {
     if packet.len() < 2 || packet[0] & 0x0c != 0 || packet[1] & 0xc0 != 0 {
         return Err(invalid("Invalid or fragmented AVDTP packet"));
@@ -187,7 +239,7 @@ pub fn peer_response(
     }
     let signal = packet[1];
     let header = packet[0] & 0xf0;
-    if !(DISCOVER..=13).contains(&signal) {
+    if !(DISCOVER..=DELAY_REPORT).contains(&signal) {
         return Ok(Some((vec![header | 1, signal], PeerAction::None)));
     }
     let reject = |error, seid| {
@@ -205,7 +257,7 @@ pub fn peer_response(
         DISCOVER => packet.len() == 2,
         SET_CONFIGURATION => packet.len() >= 4,
         START | SUSPEND | RECONFIGURE | 11 => packet.len() >= 3,
-        13 => packet.len() == 5,
+        DELAY_REPORT => packet.len() == 5,
         _ => packet.len() == 3,
     };
     if !valid_length {
@@ -231,7 +283,18 @@ pub fn peer_response(
             PeerAction::None
         }
         GET_CAPABILITIES | GET_ALL_CAPABILITIES => {
-            reply.extend_from_slice(capabilities);
+            supports_delay_reporting(capabilities)?;
+            let mut remaining = capabilities;
+            while !remaining.is_empty() {
+                let length = 2 + remaining[1] as usize;
+                if remaining[0] != DELAY_REPORTING {
+                    reply.extend_from_slice(&remaining[..length]);
+                }
+                remaining = &remaining[length..];
+            }
+            if signal == GET_ALL_CAPABILITIES {
+                reply.extend_from_slice(&[DELAY_REPORTING, 0]);
+            }
             PeerAction::None
         }
         GET_CONFIGURATION if state != StreamState::Idle => {
@@ -242,6 +305,10 @@ pub fn peer_response(
         SUSPEND if state == StreamState::Streaming => PeerAction::Suspend,
         CLOSE if matches!(state, StreamState::Open | StreamState::Streaming) => PeerAction::Close,
         ABORT => PeerAction::Close,
+        DELAY_REPORT if state == StreamState::Idle => return reject(0x31, 4),
+        DELAY_REPORT if delay_reporting => {
+            PeerAction::DelayReport(u16::from_be_bytes([packet[3], packet[4]]))
+        }
         GET_CONFIGURATION | START | SUSPEND | CLOSE => return reject(0x31, 4),
         _ => return reject(0x19, 4),
     };
@@ -311,7 +378,7 @@ mod tests {
         packet: &[u8],
         state: StreamState,
     ) -> io::Result<Option<(Vec<u8>, PeerAction)>> {
-        super::peer_response(packet, state, &configuration(1)[2..])
+        super::peer_response(packet, state, &configuration(1)[2..], false)
     }
 
     #[test]
@@ -357,11 +424,130 @@ mod tests {
         let caps = [1, 0, 7, 8, 0, 2, 0x80, 0, 0x84, 3, 0xe8, 0];
         for signal in [GET_CAPABILITIES, GET_ALL_CAPABILITIES, GET_CONFIGURATION] {
             let (reply, action) =
-                super::peer_response(&[0x20, signal, 4], StreamState::Open, &caps)
+                super::peer_response(&[0x20, signal, 4], StreamState::Open, &caps, false)
                     .unwrap()
                     .unwrap();
-            assert_eq!(&reply[2..], &caps);
+            let mut expected = caps.to_vec();
+            if signal == GET_ALL_CAPABILITIES {
+                expected.extend_from_slice(&[DELAY_REPORTING, 0]);
+            }
+            assert_eq!(&reply[2..], &expected);
             assert_eq!(action, PeerAction::None);
+        }
+    }
+
+    #[test]
+    fn delay_reports_require_a_negotiated_stream_and_preserve_tenths_of_ms() {
+        for state in [
+            StreamState::Configured,
+            StreamState::Open,
+            StreamState::Streaming,
+        ] {
+            for delay in [0u16, 1, 1500, u16::MAX] {
+                let [high, low] = delay.to_be_bytes();
+                assert_eq!(
+                    super::peer_response(&[0xa0, DELAY_REPORT, 4, high, low], state, &[], true)
+                        .unwrap(),
+                    Some((vec![0xa2, DELAY_REPORT], PeerAction::DelayReport(delay)))
+                );
+            }
+        }
+        for (packet, state, negotiated, error) in [
+            (
+                vec![0xa0, DELAY_REPORT, 4, 5, 0xdc],
+                StreamState::Idle,
+                true,
+                0x31,
+            ),
+            (
+                vec![0xa0, DELAY_REPORT, 4, 5, 0xdc],
+                StreamState::Open,
+                false,
+                0x19,
+            ),
+            (
+                vec![0xa0, DELAY_REPORT, 8, 5, 0xdc],
+                StreamState::Open,
+                true,
+                0x12,
+            ),
+            (
+                vec![0xa0, DELAY_REPORT, 5, 5, 0xdc],
+                StreamState::Open,
+                true,
+                0x12,
+            ),
+            (
+                vec![0xa0, DELAY_REPORT, 4, 5],
+                StreamState::Open,
+                true,
+                0x11,
+            ),
+            (
+                vec![0xa0, DELAY_REPORT, 4, 5, 0xdc, 0],
+                StreamState::Open,
+                true,
+                0x11,
+            ),
+        ] {
+            assert_eq!(
+                super::peer_response(&packet, state, &[], negotiated).unwrap(),
+                Some((vec![0xa3, DELAY_REPORT, error], PeerAction::None))
+            );
+        }
+        assert!(super::peer_response(
+            &[0xa4, DELAY_REPORT, 4, 5, 0xdc],
+            StreamState::Open,
+            &[],
+            true
+        )
+        .is_err());
+        assert_eq!(
+            super::peer_response(&[0xa2, DELAY_REPORT], StreamState::Open, &[], true).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn delay_capability_is_validated_for_both_codecs_and_hidden_from_legacy_discovery() {
+        for mut caps in [
+            configuration(1)[2..].to_vec(),
+            super::super::aac_protocol::configuration(
+                1,
+                super::super::aac_protocol::AAC_CAPABILITIES,
+            )[2..]
+                .to_vec(),
+        ] {
+            assert!(!supports_delay_reporting(&caps).unwrap());
+            let legacy = caps.clone();
+            caps.extend_from_slice(&[DELAY_REPORTING, 0]);
+            assert!(supports_delay_reporting(&caps).unwrap());
+            for signal in [GET_CAPABILITIES, GET_ALL_CAPABILITIES, GET_CONFIGURATION] {
+                let (reply, _) =
+                    super::peer_response(&[0x40, signal, 4], StreamState::Configured, &caps, true)
+                        .unwrap()
+                        .unwrap();
+                assert_eq!(
+                    &reply[2..],
+                    if signal == GET_CAPABILITIES {
+                        &legacy
+                    } else {
+                        &caps
+                    }
+                );
+            }
+            for suffix in [
+                &[DELAY_REPORTING][..],
+                &[DELAY_REPORTING, 1][..],
+                &[DELAY_REPORTING, 1, 0][..],
+                &[DELAY_REPORTING, 0, DELAY_REPORTING, 0][..],
+            ] {
+                let mut bad = legacy.clone();
+                bad.extend_from_slice(suffix);
+                assert!(supports_delay_reporting(&bad).is_err());
+                assert!(select_apple_eld(&bad, ntpods_ipc::PlaybackBitrate::default()).is_err());
+                assert!(super::super::aac_protocol::select_codec(&bad).is_err());
+            }
         }
     }
 

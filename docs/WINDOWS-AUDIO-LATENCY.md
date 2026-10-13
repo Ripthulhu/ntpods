@@ -76,12 +76,92 @@ Keep that arithmetic. AAC-ELD groups two 10 ms access units; a single-unit packe
 trial needs separate peer compatibility testing. Changing the Windows period
 does not change either codec's frame size.
 
-The AirPods' own buffer is a separate research target. LibrePods names control
-`0x0B` [JITTER_BUFFER](https://github.com/librepods-org/librepods/blob/34076c85f0fc2eaf32ad1d5cad1bb7315df9c89c/android/app/src/main/kotlin/me/kavishdevar/librepods/bluetooth/aacp/types/ControlCommand.kt#L35),
-and USBPods defines [90/60 ms profiles](https://github.com/wasdwasd0105/USBPods-Pico2W/blob/6286ab1618ec1143d828b1fc377d8e22c449e567/src/settings.h#L95).
-Its public Lite build [stubs out the sender](https://github.com/wasdwasd0105/USBPods-Pico2W/blob/6286ab1618ec1143d828b1fc377d8e22c449e567/src/lite_stubs.c).
-Confirm the value semantics, ordering and restoration with captures before
-testing writes. NTPods does not write this control.
+## Earbud delay and buffer control
+
+The [Tahoe capture](MACOS-AUDIO-CAPTURE-2026-10-12.md#delay-reporting-and-low-latency-mode)
+contains an earbud-reported delay of 150 ms. Its guest reports low-latency gaming
+support as local `0`, remote `1`, but dynamic latency is unavailable. The capture
+does not establish a minimum buffer or a working low-latency transition.
+
+NTPods requests `GET_ALL_CAPABILITIES`, falls back to `GET_CAPABILITIES` when
+unsupported, and negotiates Delay Reporting category `08 00` when offered.
+It acknowledges valid `0x0D` reports addressed to the local SEID, including
+reports received while waiting for Open. IPC exposes negotiation through
+`playback_delay_reporting` and the latest report through
+`playback_delay_tenths_ms`. The latter preserves the big-endian 16-bit value in
+0.1 ms units; null means no report. It describes earbud-reported delay, not the
+whole Windows-to-sound path or the current AACP buffer target. See
+[session.rs](../windows/daemon/src/playback/session.rs) and
+[peer_response](../windows/daemon/src/playback/protocol.rs).
+
+LibrePods names AACP control `0x0B`
+[JITTER_BUFFER](https://github.com/librepods-org/librepods/blob/34076c85f0fc2eaf32ad1d5cad1bb7315df9c89c/android/app/src/main/kotlin/me/kavishdevar/librepods/bluetooth/aacp/types/ControlCommand.kt#L51).
+The [saved macOS sender](MACOS-AUDIO-CAPTURE-2026-10-12.md#buffer-control-encoding-in-the-saved-daemon)
+connects millisecond targets to this control and has an AACP implementation
+that writes a four-byte little-endian value. Its host mode table includes
+discrete targets from 30 to 300, and separate configuration paths send 500.
+The inspected macOS getter reads cached host state; no remote read request was
+established. Neither 150 as a universal default nor a reported AVDTP delay as
+the original buffer target is justified.
+USBPods defines [90/60 ms gaming profiles](https://github.com/wasdwasd0105/USBPods-Pico2W/blob/6286ab1618ec1143d828b1fc377d8e22c449e567/src/settings.h#L90),
+but also changes the host queue, startup priming and ELD bitrate. Its
+[playback code](https://github.com/wasdwasd0105/USBPods-Pico2W/blob/6286ab1618ec1143d828b1fc377d8e22c449e567/src/btstack/btstack_avdtp_source.c#L1426)
+defers an active-stream jitter change until 500 ms after Start is accepted;
+the comment records crashes when changing it immediately before suspension or
+a bitrate change. The public Lite build
+[stubs out the sender](https://github.com/wasdwasd0105/USBPods-Pico2W/blob/6286ab1618ec1143d828b1fc377d8e22c449e567/src/lite_stubs.c).
+These profiles do not isolate the buffer's effect or verify a universal default.
+
+A developer's [macOS Game Mode logs](https://developer.apple.com/forums/thread/764070)
+show a reported latency change from 151 to 60 ms, a 60 ms flush timeout and
+temporary audio delivery at 1.1 times normal speed. The post supplies logs,
+not packet bytes or an Apple protocol specification. A transition during live
+playback may therefore need coordinated queue and transport changes.
+
+The diagnostic IPC command `set_playback_buffer` runs an opt-in trial without
+changing the UI or saved defaults. Its implementation is in
+[buffer.rs](../windows/daemon/src/playback/buffer.rs):
+
+- `target_ms` accepts 60, 80, 100, 120 or 140. `restore_ms` must be supplied
+  explicitly, must exceed the target, and accepts 80, 100, 120, 140, 150, 300 or
+  500. It is the operator's chosen restoration value, not a measured baseline.
+- Native playback must be active, Start must have been accepted at least
+  500 ms earlier, and the current session must have received a delay report.
+  The mic must be idle. Codec, bitrate and manual mic changes are rejected during
+  a trial. Opening a recording client ends the trial before mic startup.
+- The trial runs for 30 seconds after the initial settling interval, or ends
+  earlier on cancellation, stream stop or connection changes. Sending
+  `target_ms: null` cancels it. IPC publishes the requested target in
+  `playback_buffer_target_ms` and errors in `playback_buffer_error`.
+
+A worker sends AACP `0x0B` with a one-second I/O timeout, then attempts the
+supplied restore value even if the first send fails. Local stop and teardown
+wait for that attempt before closing the transport. There is a 500 ms quiet
+interval after each write, including before local Suspend; this precaution
+has not been validated on hardware. A successful restore send does not confirm
+that the earbuds applied it, and a lost connection can prevent restoration.
+After a restore-send failure, mic and codec changes stay blocked until the
+control connection closes. Disconnect and reconnect before another trial;
+reconnecting alone does not prove the earbuds restored their original target.
+
+With a test build running and audio playing, the
+[trial client](../windows/playback/test-buffer.ps1) displays delay reports and
+requests restoration when it exits. It plays no audio and does not adjust volume:
+
+```powershell
+pwsh -File windows/playback/test-buffer.ps1 -TargetMs 60 -RestoreMs 150
+```
+
+Here 150 is an explicit chosen restore target, not a discovered default. Use
+the baseline intended for the test. The backend also expires the trial if the
+client closes. A backend crash or lost Bluetooth link can prevent restoration.
+
+The trial keeps the same Windows output, codec, bitrate, packet grouping,
+50 ms source reserve and 200 ms media flush timeout. The flush timeout limits
+packet lifetime; it does not impose a fixed 200 ms delay. No acoustic latency
+saving or model compatibility is established for this control. Compare device
+reports with acoustic measurements, then check dropouts under load and
+microphone recovery before choosing a default.
 
 ## Measurement
 

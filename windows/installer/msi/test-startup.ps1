@@ -56,7 +56,7 @@ try {
     foreach ($name in 'SetNTPodsInstall', 'SetNTPodsInstallDrv') {
         if (-not $actions[$name].Value.Contains('-StartupMode [STARTUPMODE]')) { throw 'Install action does not receive the saved startup choice.' }
     }
-    foreach ($name in 'SetNTPodsInstall', 'SetNTPodsInstallDrv', 'SetRollbackExisting', 'SetRollbackFresh', 'SetNTPodsCommit') {
+    foreach ($name in 'SetNTPodsInstall', 'SetNTPodsInstallDrv', 'SetRollbackExisting', 'SetRollbackFresh', 'SetNTPodsCommit', 'SetNTPodsUninstall', 'SetNTPodsIdentityRemoveRollback', 'SetNTPodsIdentityRemoveCommit') {
         if (-not $actions[$name].Value.Contains('-TransactionId "[DriverTransaction]"')) { throw "Action loses its driver transaction ownership: $name" }
     }
     if ($sequence.CaptureDriverTransaction.Order -ge $sequence.InstallInitialize.Order -or
@@ -95,6 +95,8 @@ try {
         throw 'The app-only upgrade choice does not reach the elevated install session.'
     }
     $driverCases = 0
+    Set-Property 'BLUETOOTHVENDOR' '#76'
+    Set-Property 'BLUETOOTHVENDORSOURCE' '#1'
     foreach ($existing in '', 'Installed', 'WIX_UPGRADE_DETECTED') {
         foreach ($appOnly in '', '0', '1') {
             foreach ($feature in 2, 3) {
@@ -130,7 +132,7 @@ try {
                 if ($selectedRollback -ne 1 -or
                     ($session.Property('NTPodsRollback').Contains('-PreserveExisting')) -ne [bool]$existing) { throw 'Rollback would remove an existing installation.' }
                 Set-Property 'REMOVE' 'ALL'
-                if ($session.EvaluateCondition($sequence.ScheduleReboot.Condition) -ne 0) { throw 'Uninstall schedules a driver-install reboot.' }
+                if ($session.EvaluateCondition($sequence.ScheduleReboot.Condition) -ne 1) { throw 'Uninstall does not request a reboot for Bluetooth restoration.' }
                 if ($session.EvaluateCondition($sequence.NTPodsRollback.Condition) -ne 0 -or
                     $session.EvaluateCondition($sequence.NTPodsCommit.Condition) -ne 0) { throw 'Uninstall schedules install rollback or commit.' }
                 $driverCases++
@@ -138,6 +140,40 @@ try {
         }
     }
     Write-Host "MSI driver preservation passed $driverCases install, repair and upgrade cases."
+    Set-Property 'WIX_UPGRADE_DETECTED' '1'
+    Set-Property 'APPONLYUPGRADE' '1'
+    Set-Property 'REMOVE' ''
+    foreach ($vendor in '', '#2', '#76') {
+        foreach ($source in '', '#2', '#1') {
+            Set-Property 'BLUETOOTHVENDOR' $vendor
+            Set-Property 'BLUETOOTHVENDORSOURCE' $source
+            $expected = $vendor -cne '#76' -or $source -cne '#1'
+            if (($session.EvaluateCondition($sequence.ScheduleReboot.Condition) -eq 1) -ne $expected) {
+                throw 'An app-only upgrade does not report its Bluetooth identity restart requirement.'
+            }
+        }
+    }
+    Set-Property 'REMOVE' 'ALL'
+    Set-Property 'UPGRADINGPRODUCTCODE' '{11111111-1111-1111-1111-111111111111}'
+    foreach ($name in 'NTPodsUninstall', 'NTPodsIdentityRemoveRollback', 'NTPodsIdentityRemoveCommit', 'ScheduleReboot') {
+        if ($session.EvaluateCondition($sequence[$name].Condition) -ne 0) { throw "Major-upgrade removal must not restore identity or request a reboot: $name" }
+    }
+    Set-Property 'UPGRADINGPRODUCTCODE' ''
+    foreach ($name in 'NTPodsIdentityRemoveRollback', 'NTPodsIdentityRemoveCommit') {
+        if ($session.EvaluateCondition($sequence[$name].Condition) -ne 1) { throw "Uninstall is missing its identity recovery action: $name" }
+    }
+    Set-Property 'REMOVE' ''
+    foreach ($name in 'NTPodsIdentityRemoveRollback', 'NTPodsIdentityRemoveCommit') {
+        if ($session.EvaluateCondition($sequence[$name].Condition) -ne 0) { throw "Install must not restore the identity: $name" }
+    }
+    if (($actions.NTPodsIdentityRemoveRollback.Type -band 0x500) -ne 0x500 -or
+        ($actions.NTPodsIdentityRemoveCommit.Type -band 0x600) -ne 0x600 -or
+        $sequence.NTPodsIdentityRemoveRollback.Order -ge $sequence.NTPodsUninstall.Order -or
+        $sequence.NTPodsUninstall.Order -ge $sequence.RemoveFiles.Order -or
+        $sequence.NTPodsIdentityRemoveCommit.Order -ge $sequence.InstallFinalize.Order -or
+        -not $actions.SetNTPodsIdentityRemoveCommit.Value.Contains('[CommonAppDataFolder]NTPods\identity-removal\msi-setup.ps1')) {
+        throw 'Identity removal must stage its helper before file removal and restore only when uninstall commits.'
+    }
     if (-not ($sequence.NTPodsRollback.Order -gt $sequence.InstallFiles.Order -and
         $sequence.NTPodsRollback.Order -lt $sequence.NTPodsInstall.Order -and
         $sequence.NTPodsCommit.Order -gt $sequence.NTPodsInstall.Order -and

@@ -76,6 +76,46 @@ impl TransparencySettings {
     }
 }
 
+/// Complete confirmed hearing settings; absent data must never become a zero audiogram.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct HearingAidSettings {
+    pub left_eq: [f32; 8],
+    pub right_eq: [f32; 8],
+    pub left_amplification: f32,
+    pub right_amplification: f32,
+    pub left_tone: f32,
+    pub right_tone: f32,
+    pub left_conversation_boost: bool,
+    pub right_conversation_boost: bool,
+    pub left_ambient_noise_reduction: f32,
+    pub right_ambient_noise_reduction: f32,
+    pub own_voice: f32,
+}
+
+impl HearingAidSettings {
+    pub fn is_valid(&self) -> bool {
+        self.left_eq
+            .iter()
+            .chain(&self.right_eq)
+            .all(|v| v.is_finite() && (0.0..=90.0).contains(v))
+            && [
+                self.left_amplification,
+                self.right_amplification,
+                self.left_tone,
+                self.right_tone,
+            ]
+            .iter()
+            .all(|v| v.is_finite() && (-1.0..=1.0).contains(v))
+            && [
+                self.left_ambient_noise_reduction,
+                self.right_ambient_noise_reduction,
+                self.own_voice,
+            ]
+            .iter()
+            .all(|v| v.is_finite() && (0.0..=1.0).contains(v))
+    }
+}
+
 fn deserialize_stop_delay<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
     let seconds = u32::deserialize(d)?;
     if seconds <= 3600 {
@@ -217,6 +257,14 @@ pub struct Snapshot {
     pub hearing_aid_enabled: Option<bool>,
     #[serde(default)]
     pub hearing_aid_revision: u64,
+    #[serde(default)]
+    pub hearing_aid_settings: Option<HearingAidSettings>,
+    #[serde(default)]
+    pub hearing_aid_editable: bool,
+    #[serde(default)]
+    pub hearing_aid_pending: bool,
+    #[serde(default)]
+    pub hearing_aid_error: Option<String>,
     /// ATT handle 0x1B, independently confirmed; absent until a successful read.
     #[serde(default)]
     pub loud_sound_reduction: Option<bool>,
@@ -258,6 +306,16 @@ pub struct Snapshot {
     pub playback_aac_eld_bitrate: PlaybackBitrate,
     #[serde(default)]
     pub playback_bitrate_kbps: Option<u32>,
+    #[serde(default)]
+    pub playback_delay_reporting: bool,
+    /// Earbud-reported delay in 0.1 ms units, not measured end-to-end latency.
+    #[serde(default)]
+    pub playback_delay_tenths_ms: Option<u16>,
+    /// Requested trial target, retained on restore failure; not device readback.
+    #[serde(default)]
+    pub playback_buffer_target_ms: Option<u16>,
+    #[serde(default)]
+    pub playback_buffer_error: Option<String>,
     /// Latest validated BPM; absent while disabled, before a sample or after expiry.
     pub heart_rate: Option<u16>,
     #[serde(default)]
@@ -385,6 +443,10 @@ impl Default for Snapshot {
             eq_pending: None,
             hearing_aid_enabled: None,
             hearing_aid_revision: 0,
+            hearing_aid_settings: None,
+            hearing_aid_editable: false,
+            hearing_aid_pending: false,
+            hearing_aid_error: None,
             loud_sound_reduction: None,
             loud_sound_reduction_pending: false,
             loud_sound_reduction_error: None,
@@ -403,6 +465,10 @@ impl Default for Snapshot {
             playback_aac_bitrate: PlaybackBitrate::default(),
             playback_aac_eld_bitrate: PlaybackBitrate::default(),
             playback_bitrate_kbps: None,
+            playback_delay_reporting: false,
+            playback_delay_tenths_ms: None,
+            playback_buffer_target_ms: None,
+            playback_buffer_error: None,
             heart_rate: None,
             heart_rate_enabled: false,
             heart_rate_timestamp_ms: None,
@@ -481,6 +547,12 @@ pub enum Command {
         mode: PlaybackMode,
     },
     RetryPlayback,
+    /// Temporary buffer trial with an explicit restoration baseline; null ends it.
+    SetPlaybackBuffer {
+        target_ms: Option<u16>,
+        #[serde(default)]
+        restore_ms: Option<u16>,
+    },
     SetPlaybackBitrate {
         mode: PlaybackMode,
         best_effort: bool,
@@ -546,25 +618,18 @@ pub enum Command {
     SetLoudSoundReduction {
         on: bool,
     },
-    /// AirPods Pro 3 hearing assistance (accessibility amplification). On enables
-    /// hearing-assist over AAP (0x2C/0x33), switches to Transparency, and writes the
-    /// full settings to the ATT/GATT (PSM 0x001F, handle 0x2A); off disables it.
-    /// `left_eq`/`right_eq` are the per-person audiogram: 8 bands of hearing loss in
-    /// dB HL (250/500/1k/2k/3k/4k/6k/8k Hz). `amplification` 0..=1 overall gain,
-    /// `balance` -1(L)..=1(R), `tone` -1..=1, `ambient_noise_reduction`/`own_voice`
-    /// 0..=1, plus conversation boost.
+    /// Read both existing audiograms and per-ear controls without enabling or writing.
+    GetHearingAid,
+    /// Enabling or editing requires complete settings and a read in this connection.
+    /// Disabling remains available without settings, including after a read failure.
     SetHearingAid {
         #[serde(default)]
         request_id: u64,
         on: bool,
-        left_eq: Vec<f32>,
-        right_eq: Vec<f32>,
-        amplification: f32,
-        balance: f32,
-        tone: f32,
-        conversation_boost: bool,
-        ambient_noise_reduction: f32,
-        own_voice: f32,
+        #[serde(default)]
+        expected: Option<HearingAidSettings>,
+        #[serde(default)]
+        settings: Option<HearingAidSettings>,
     },
     /// Request AAP and Windows audio connections.
     Connect,
@@ -638,6 +703,57 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hearing_settings_require_complete_finite_curves_and_never_infer_defaults() {
+        let settings = HearingAidSettings {
+            left_eq: [5.; 8],
+            right_eq: [25.; 8],
+            left_amplification: -0.25,
+            right_amplification: 0.5,
+            left_tone: -0.5,
+            right_tone: 0.25,
+            left_conversation_boost: true,
+            right_conversation_boost: false,
+            left_ambient_noise_reduction: 0.25,
+            right_ambient_noise_reduction: 0.75,
+            own_voice: 0.5,
+        };
+        assert!(settings.is_valid());
+        let encoded = serde_json::to_value(settings).unwrap();
+        for key in encoded.as_object().unwrap().keys() {
+            let mut missing = encoded.clone();
+            missing.as_object_mut().unwrap().remove(key);
+            assert!(serde_json::from_value::<HearingAidSettings>(missing).is_err());
+        }
+        for size in [0, 7, 9] {
+            let mut partial = encoded.clone();
+            partial["left_eq"] = serde_json::json!(vec![5.; size]);
+            assert!(serde_json::from_value::<HearingAidSettings>(partial).is_err());
+        }
+        for value in [f32::NAN, f32::INFINITY, -1., 91.] {
+            let mut invalid = settings;
+            invalid.right_eq[0] = value;
+            assert!(!invalid.is_valid());
+        }
+        let legacy = r#"{"cmd":"set_hearing_aid","on":true,"left_eq":[0,0,0,0,0,0,0,0],"right_eq":[0,0,0,0,0,0,0,0],"amplification":0.5}"#;
+        assert!(matches!(
+            from_line::<Command>(legacy),
+            Some(Command::SetHearingAid {
+                on: true,
+                settings: None,
+                ..
+            })
+        ));
+        assert!(matches!(
+            from_line::<Command>(r#"{"cmd":"set_hearing_aid","on":false}"#),
+            Some(Command::SetHearingAid {
+                on: false,
+                settings: None,
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn playback_selection_is_bounded_and_legacy_state_uses_windows() {
         for mode in [
             PlaybackMode::Windows,
@@ -688,6 +804,66 @@ mod tests {
         assert_eq!(state.playback_state, "windows");
         assert!(!state.playback_available && state.playback_error.is_none());
         assert!(!state.playback_native_driver);
+    }
+
+    #[test]
+    fn playback_delay_and_buffer_contract_preserves_unknown_and_zero() {
+        let mut old = serde_json::to_value(Snapshot::default()).unwrap();
+        for key in [
+            "playback_delay_reporting",
+            "playback_delay_tenths_ms",
+            "playback_buffer_target_ms",
+            "playback_buffer_error",
+        ] {
+            old.as_object_mut().unwrap().remove(key);
+        }
+        let legacy: Snapshot = serde_json::from_value(old).unwrap();
+        assert!(!legacy.playback_delay_reporting);
+        assert!(legacy.playback_delay_tenths_ms.is_none());
+        assert!(legacy.playback_buffer_target_ms.is_none());
+        assert!(legacy.playback_buffer_error.is_none());
+
+        for delay in [None, Some(0), Some(1500), Some(u16::MAX)] {
+            let state = Snapshot {
+                playback_delay_reporting: true,
+                playback_delay_tenths_ms: delay,
+                playback_buffer_target_ms: Some(60),
+                playback_buffer_error: Some("Restore failed.".into()),
+                ..Default::default()
+            };
+            let actual: Snapshot = from_line(&to_line(&state)).unwrap();
+            assert_eq!(actual, state);
+        }
+        for target_ms in [None, Some(60), Some(80), Some(100), Some(120), Some(140)] {
+            let restore_ms = target_ms.map(|_| 150);
+            let command = Command::SetPlaybackBuffer {
+                target_ms,
+                restore_ms,
+            };
+            assert!(matches!(from_line::<Command>(&to_line(&command)),
+                Some(Command::SetPlaybackBuffer { target_ms: actual, restore_ms: baseline })
+                if actual == target_ms && baseline == restore_ms));
+        }
+        assert!(matches!(
+            from_line::<Command>(r#"{"cmd":"set_playback_buffer","target_ms":null}"#),
+            Some(Command::SetPlaybackBuffer {
+                target_ms: None,
+                restore_ms: None
+            })
+        ));
+        for invalid in ["-1", "65536", "1.5", "true", "\"60\""] {
+            for key in ["target_ms", "restore_ms"] {
+                assert!(from_line::<Command>(&format!(
+                    r#"{{"cmd":"set_playback_buffer","{key}":{invalid}}}"#
+                ))
+                .is_none());
+            }
+            for key in ["playback_delay_tenths_ms", "playback_buffer_target_ms"] {
+                let mut state = serde_json::to_value(Snapshot::default()).unwrap();
+                state[key] = serde_json::from_str(invalid).unwrap();
+                assert!(serde_json::from_value::<Snapshot>(state).is_err());
+            }
+        }
     }
 
     #[test]

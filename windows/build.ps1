@@ -20,6 +20,8 @@ if ($LASTEXITCODE) { throw 'Localization checks failed.' }
 & python.exe (Join-Path $PSScriptRoot 'tests/test-aap-extract.py')
 if ($LASTEXITCODE) { throw 'AAP extraction checks failed.' }
 & (Join-Path $PSScriptRoot 'tests\test-build-version.ps1')
+& (Join-Path $PSScriptRoot 'playback\test-buffer.ps1') -SelfTest
+& (Join-Path $PSScriptRoot 'tests\test-bluetooth-host-identity.ps1')
 $repo = Split-Path -Parent $PSScriptRoot
 $Out = [IO.Path]::GetFullPath($Out)
 $uiVersionArguments = @()

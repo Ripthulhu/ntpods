@@ -25,6 +25,10 @@ additional AirPods settings for stem controls, accessibility and charging.
 Controls distinguish reported values from requests awaiting confirmation.
 See [Windows controls and protocol limits](../docs/WINDOWS-FEATURES.md).
 
+Setup configures the PC's [Apple Bluetooth identity](../docs/BLUETOOTH-HOST-IDENTITY.md)
+for settings such as Custom Transparency. It applies to all Bluetooth peers,
+requires a Windows restart when first applied, and is restored on uninstall.
+
 Hardware checks used an Intel AX200, AirPods Pro 3 on firmware 9A348 and Pro 1
 on 6F21. Pro 3 kept stereo playback during short microphone captures with both
 codecs. Stopping the microphone briefly interrupts playback; native-driver

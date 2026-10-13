@@ -91,6 +91,45 @@ Start with Pro 3. Repeat the connection, supported controls and playback runs
 with Pro 1. Compare each model with its own expected capability profile; missing
 Adaptive or newer sensors on Pro 1 is not a protocol failure.
 
+### Custom Transparency and hearing settings
+
+The AX200/Tahoe reference contains successful reads of both settings. Windows
+also reads both after the [Apple host identity override](BLUETOOTH-HOST-IDENTITY.md),
+and Custom Transparency writes have been verified on Pro 3. The remaining gap
+is a real macOS hearing adjustment and its readback for the format documented in
+the [ATT reference](WINDOWS-AIRPODS-CONTROL-PROTOCOL.md#att-settings).
+
+1. Start capture before handover. Connect Pro 3 with both buds worn and other
+   hosts disconnected. Leave hearing controls untouched for the baseline.
+   Resolve both characteristic UUIDs, properties and CCCDs; retain the host's
+   SDP Device ID response, encryption completion, MTU negotiation, subscriptions
+   and first reads. L2CAP MTU and ATT MTU are separate values.
+2. Mark `transparency-open`, then open System Settings → Accessibility → Audio
+   → Headphone Accommodations → Transparency Mode. Save the complete original
+   value and current enable state. Mark one small scalar adjustment, read it
+   back, then restore the original setting and verify the restoration. Compare
+   the whole value to ensure both per-ear curves stayed unchanged.
+3. If Hearing Aid is already set up, mark `hearing-open`, then open System
+   Settings → the AirPods → Hearing Health → Adjustments. First capture the
+   unchanged value. Then capture one small scalar adjustment and restoration,
+   retaining the complete value, header, ATT opcode and readback at each step.
+   Do not replace an audiogram, enroll the buds, or enable hearing assistance
+   merely to obtain a read. If the control is absent, record that and stop this
+   part of the run.
+4. Check readback after reconnect and note any audible effect separately. Stop
+   and collect the bounded capture, then return the controller to Windows.
+
+Apple documents [Custom Transparency on Mac](https://support.apple.com/en-us/120634).
+[Hearing Aid setup requires iPhone or iPad](https://support.apple.com/en-us/120992);
+a Mac with Sequoia 15.1 or later can adjust existing settings. A missing setup or
+settings pane does not establish an Intel transport limitation.
+
+Keep `NTPODS_GATT_PROBE` disabled. It sends enable commands and subscription
+writes without restoring them, which would change the baseline. A later Windows
+identity comparison must be a separate run, preserving and restoring the
+documented Device ID overrides. Confirm which identity the buds actually query;
+their cached identity can survive reconnects.
+
 ## Decode and compare
 
 Decode with TShark/Wireshark and the

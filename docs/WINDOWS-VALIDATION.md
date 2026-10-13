@@ -1,6 +1,6 @@
 # Windows validation
 
-Hardware checks used Windows 11 x64, an Intel AX200, AirPods Pro 3 (A3063/A3064,
+Desktop checks used Windows 11 x64, an Intel AX200, AirPods Pro 3 (A3063/A3064,
 firmware 9A348) and AirPods Pro 1 (A2084, firmware 6F21). The results below identify
 the tested versions and playback driver. Other models in the
 [model catalog](WINDOWS-MODEL-SUPPORT.md) have implementation support, but no
@@ -24,6 +24,19 @@ On Pro 3, first microphone PCM arrived after 363 ms with AAC and 338 ms with
 AAC-ELD. Recovery after stopping took 1.76 and 1.84 seconds respectively, with
 zero malformed microphone packets. These short checks do not establish long-run
 speech quality, clock drift or repeated interruption recovery.
+
+Release 0.2.18 (`55601cb`) was also checked on a laptop running Windows 11
+Enterprise build 26200, Intel Bluetooth driver 23.60.0.1 and Pro 3 A3064 firmware
+9A348. Both codecs passed eight-second stereo checks at 256 kbps and 80% volume.
+The paired output's identity and all three default render roles survived codec
+changes, microphone tests and app/backend restarts. During and after a ten-second
+capture, AAC stayed clear; AAC-ELD had a brief gap, then recovered in both ears.
+
+First microphone PCM arrived at 482 ms with AAC and 536 ms with AAC-ELD;
+capture-inactive to idle took 1.66 and 1.83 seconds. Each capture had one
+discontinuity, with no nonfinite samples or timestamp errors. These are
+microphone startup and shutdown timings, not acoustic playback latency. The
+laptop check predates the experimental earbud-buffer trial.
 
 Both test pairs advertise AAC-ELD. AAC fallback on a pair that lacks it has
 software coverage only. Initial connection retries have automated cancellation
@@ -68,8 +81,9 @@ runs playback recovery. A quiet uplink alone is insufficient to verify recovery.
 | Switching Pro 1 / Pro 3 | Correct identity, capabilities and battery values followed the connected pair (0.1.24) | Last-used-pair startup with both cases closed still needs a hardware check |
 | Pro 3 head tracking | Turns and nods moved the graph; Pause and client exit stopped published samples (0.1.21). The later descriptor-based path delivered 311 updates over 9.813 seconds (0.2.21 preview) | Raw movement, not calibrated angles; prolonged microphone coexistence untested |
 | Pro 1 head tracking | No accepted movement samples on firmware 6F21 (0.1.24) | Compatibility unresolved |
-| Custom Transparency | Discovery reached the setting, but the Pro 3 read returned ATT error `0x0E` (0.2.21 preview) | No successful Windows read/write or acoustic check |
-| Hearing assistance and Loud Sound Reduction | Protocol and UI regression checks | Windows hardware behavior remains unverified |
+| Custom Transparency | Pro 3 / 9A348 with AX200 and Apple host identity: reads, enable, an audible noise-reduction adjustment and restoration passed (0.2.25 preview with the unenrolled-status fix); installed 0.2.26 read the restored values | Other models, reconnect persistence, extended use and nonzero EQ preservation remain unverified; Windows SDP response not captured |
+| Hearing assistance | Pro 3 / 9A348 with Apple host identity: settings matched before and after the Transparency test; installed 0.2.26 read them and correctly reported inactive | Captured format remains read-only; nonzero audiograms, hardware writes and acoustic effects remain unverified |
+| Loud Sound Reduction | Pro 3 A3064 / 9A348 returned enabled on Windows with 0.2.25, before the identity override | No toggle or acoustic check |
 
 The 0.2.18 battery check initially found scanning disabled in the running process
 despite an enabled saved preference. Reapplying it restored scanning and it

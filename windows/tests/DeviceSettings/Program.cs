@@ -15,6 +15,9 @@ PlaybackModeChecks.Run(Check);
 TransparencyChecks.Run(Check);
 HearingAidChecks.Run(Check);
 
+Check(AppVersion.Read(typeof(AppVersion).Assembly) == "v0.2.18",
+    "About must display the release file version, not the fixed 0.2.0 assembly version.");
+
 var recommended = new Equalizer { Mode = 1, Low = 50, Mid = 50, High = 50 };
 var custom = new Equalizer { Mode = 2, Low = 20, Mid = 60, High = 100 };
 var snapshot = new Snapshot { Connected = true, Eq = recommended };
