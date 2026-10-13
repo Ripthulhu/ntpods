@@ -138,8 +138,9 @@ timestamp errors or discontinuities after startup. Playback used a 480-frame
 Earlier 30 ms reserve trials measured AAC at 254 ms and AAC-ELD at 241–244 ms,
 compared with 268 ms and 247 ms in the initial 50 ms runs. The repeated 50 ms
 comparisons were contaminated by other audio and excluded. This incomplete A/B
-test does not justify lowering the current reserve. Volume and startup variation
-also prevent treating small differences between sessions as a code improvement.
+test does not establish a latency benefit from the smaller reserve. Volume and
+startup variation also prevent treating small differences between sessions as a
+code improvement.
 
 With the 0.2.31 app and installed 0.2.29 native drivers, the shared render
 endpoint offered a 240-frame minimum and 480-frame default at 48 kHz. Both
@@ -164,9 +165,9 @@ microphone capture and recovery after stopping. First microphone PCM arrived
 after 368 ms, capture had one startup discontinuity and none afterward, and
 stop recovery took 1.82 seconds. The installed 0.2.33 app, with unchanged drivers
 and the same trial settings, also passed music and two pause/resume cycles.
-Volume stayed unchanged. Normal defaults remain two frames per packet and a
-50 ms reserve. This checks compatibility; acoustic
-latency, sustained playback and other models remain untested for this combination.
+Volume stayed unchanged. One frame per packet and a 30 ms reserve are now the
+defaults. This checks compatibility; acoustic latency, sustained playback and
+other models remain untested for this combination.
 
 ### Earbud buffer control
 
@@ -206,7 +207,7 @@ The 0.9 ms trial difference does not demonstrate an improvement. Delay was
 already declining before restoration; rejected markers and timestamp variation
 limit comparison of the phase medians. This single run cannot exclude a small
 or delayed effect. Exact remote buffer restoration also
-remains unverified. Keep the normal defaults. See the
+remains unverified. Earbud target changes remain finite diagnostic trials. See the
 [coordinated macOS transition](MACOS-AUDIO-CAPTURE-2026-10-12.md#coordinated-audio-adjustment)
 for the additional host audio adjustment absent from this trial.
 

@@ -141,10 +141,10 @@ Pro 1 and Pro 3 IDs were also checked locally. AirPods 5, Max 2, Beats and unkno
 models retain their current playback provider until their Windows IDs are
 verified. BLE battery identifiers alone are insufficient for driver matching.
 
-AAC is the default. If a pair has no supported AAC-ELD profile, NTPods uses AAC
-with its saved bitrate setting and reports AAC as the active codec. The preferred
-codec remains saved for the next pair. A rejected stream or invalid manual
-bitrate still reports an error.
+AAC-ELD is the default when no codec choice is saved. If a pair has no supported
+AAC-ELD profile, NTPods uses AAC with its saved bitrate setting and reports AAC
+as the active codec. The preferred codec remains saved for the next pair.
+A rejected stream or invalid manual bitrate still reports an error.
 
 Pro 1 and Pro 3 passed AAC at 256 kbps and AAC-ELD at 128, 192 and 256 kbps,
 including continuous 70-second AAC-ELD runs. Other models can use the

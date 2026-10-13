@@ -9,8 +9,8 @@ mod render;
 mod scheduling;
 mod selection;
 mod session;
+mod settings;
 mod timing;
-mod trial;
 
 use crate::{bt, driver::Driver, Ctx};
 pub use buffer::{set as set_buffer, stop as stop_buffer, Active as BufferActive};
@@ -455,14 +455,12 @@ fn run(
     if stop.load(Ordering::Acquire) {
         return Ok(());
     }
-    let trial = trial::TrialSettings::load()?;
-    if trial.eld_aus != 2 || trial.reserve != Duration::from_millis(50) {
-        crate::log(&format!(
-            "playback diagnostic: ELD AUs per packet={}, source reserve={} ms",
-            trial.eld_aus,
-            trial.reserve.as_millis()
-        ));
-    }
+    let settings = settings::Settings::load()?;
+    crate::log(&format!(
+        "playback: ELD AUs per packet={}, source reserve={} ms",
+        settings.eld_aus,
+        settings.reserve.as_millis()
+    ));
     session::driver_ready(&driver, address)?;
     render.set_ready(false)?;
     let session_ctx = ctx.clone();
@@ -471,7 +469,7 @@ fn run(
         driver,
         address,
         mode,
-        trial.eld_aus,
+        settings.eld_aus,
         bitrates,
         stop.clone(),
         move || {
@@ -516,7 +514,7 @@ fn run(
         intent,
         &requests,
         mode,
-        trial.reserve,
+        settings.reserve,
         &mut timing,
         &report_delay,
         || {

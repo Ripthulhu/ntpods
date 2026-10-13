@@ -31,8 +31,10 @@ Max (Lightning and USB-C), using model-qualified Apple AudioSink IDs. AAC and
 AAC-ELD share the paired AirPods output. Initial driver replacement may require
 selecting that output again; later codec changes keep it.
 
-Choose the codec under **Playback and microphone**. AAC is the default. Each
-codec saves its own Best effort or Manual bitrate. AAC-ELD also offers
+Choose the codec under **Playback and microphone**. AAC-ELD is the default;
+an existing saved codec choice is preserved. Playback uses one AAC-ELD frame
+per packet and a 30 ms PCM reserve. Each codec saves its own Best effort or
+Manual bitrate. AAC-ELD also offers
 **Variable (experimental)** with a 256 kbps peak limit; it passed short Pro 3
 playback checks, including pause/resume and microphone recovery. Best effort
 selects the highest supported rate and does not adapt to radio conditions.

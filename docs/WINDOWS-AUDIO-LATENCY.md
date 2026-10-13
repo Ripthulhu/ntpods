@@ -1,9 +1,10 @@
 # Windows audio latency
 
 NTPods sends Windows PCM through its ACX playback driver, the user-mode encoder
-and AVDTP transport, then the AirPods' decoder and playback buffer. Measure the
-whole path before changing defaults. Buffer capacity alone does not establish
-how much audio is waiting.
+and AVDTP transport, then the AirPods' decoder and playback buffer. AAC-ELD is
+the default codec when no preference is saved, with AAC fallback for pairs that
+lack a supported AAC-ELD profile. Buffer capacity alone does not establish how
+much audio is waiting; a latency claim needs measurement of the whole path.
 
 ## Windows requirements
 
@@ -100,23 +101,25 @@ or stability under sustained load. `-SelfTest` checks the tool without hardware.
    Bluetooth latency. Queue occupancy and the source reserve must not be added
    together as if they were separate fixed delays.
 
-The source reserve defaults to 50 ms. Before lowering it, repeat 30 ms trials
-under system load, with longer microphone sessions and on other models.
-Listening checks establish stability; a numerical latency gain needs measurement.
+The source reserve defaults to 30 ms. The combined one-frame AAC-ELD and 30 ms
+reserve setting passed short Pro 3 playback, pause/resume and microphone checks;
+see the [hardware results](WINDOWS-VALIDATION.md#playback-latency-investigation).
+Long sessions, loaded-system checks and other models remain unverified for this
+combination. These listening results do not measure a latency reduction.
 The 100 ms ring capacity is a separate safety bound.
 
 The sample-count frame clock preserves AAC's fractional 21.333 ms period.
-Keep that arithmetic. AAC-ELD normally groups two 10 ms access units. Changing
+Keep that arithmetic. AAC-ELD sends one 10 ms access unit per packet. Changing
 the Windows period does not change either codec's frame size.
 
-### Packet and source-reserve trials
+### Packet and source-reserve overrides
 
-Builds from 0.2.32 accept two process environment values for testing:
+Two process environment values allow comparison with the earlier defaults:
 
-| Variable | Normal value | Trial value | Effect |
+| Variable | Default | Diagnostic override | Effect |
 | --- | --- | --- | --- |
-| `NTPODS_ELD_AUS_PER_PACKET` | `2` | `1` | Send each 10 ms AAC-ELD frame without waiting for a second frame |
-| `NTPODS_PLAYBACK_RESERVE_MS` | `50` | `30` | Reduce the PCM source reserve for either codec |
+| `NTPODS_ELD_AUS_PER_PACKET` | `1` | `2` | Group two 10 ms AAC-ELD frames instead of sending each frame immediately |
+| `NTPODS_PLAYBACK_RESERVE_MS` | `30` | `50` | Increase the PCM source reserve for either codec |
 
 Invalid values reject playback. Values are read when the backend opens a playback
 session; they are not saved in app settings. RTP clock rates, codec parameters,
@@ -126,39 +129,35 @@ The reserve applies to both wall-clock and driver-clock scheduling, including
 pause/resume and microphone recovery.
 
 Quit NTPods from its tray menu first; closing its window only hides it. From
-PowerShell 7.4 or later, launch the new build with one change at a time:
+PowerShell 7.4 or later, launch the app with one change at a time:
 
 ```powershell
 $app = 'C:\Program Files\NTPods\winui\ntpods-winui.exe'
 
-# Single-frame AAC-ELD packets; select AAC-ELD in the app.
-Start-Process -FilePath $app -Environment @{
-    NTPODS_ELD_AUS_PER_PACKET = '1'
-    NTPODS_PLAYBACK_RESERVE_MS = '50'
-}
-
-# After quitting that session, test the smaller reserve separately.
+# Compare two-frame AAC-ELD packets at the default reserve.
 Start-Process -FilePath $app -Environment @{
     NTPODS_ELD_AUS_PER_PACKET = '2'
     NTPODS_PLAYBACK_RESERVE_MS = '30'
+}
+
+# After quitting that session, compare the larger reserve separately.
+Start-Process -FilePath $app -Environment @{
+    NTPODS_ELD_AUS_PER_PACKET = '1'
+    NTPODS_PLAYBACK_RESERVE_MS = '50'
 }
 ```
 
 The child app passes these values to its backend. Check the startup diagnostic
 in `%LOCALAPPDATA%\NTPods\daemon.log` to confirm the selected values. To restore
-the baseline, quit and launch with `2` and `50`, or open NTPods normally outside
-the trial process. No user or machine environment variables are written.
+the defaults, quit and launch with `1` and `30`, or open NTPods normally outside
+the override process. No user or machine environment variables are written.
 Completing an earbud-buffer trial does not clear these process values; its
 restoration covers only the earbud target, clock adjustment and Bluetooth flush.
 
 Keep music, codec, bitrate and volume consistent between comparisons. Check
 sustained playback, pause/resume, volume and microphone stop/recovery; repeat
 under system load and on Pro 1 and Pro 3 where supported. Single-frame packets
-double the packet rate and may affect radio scheduling. The combined one-frame,
-30 ms setting passed short Pro 3 playback, pause/resume and microphone checks;
-see the [hardware results](WINDOWS-VALIDATION.md#playback-latency-investigation).
-Long sessions, loaded-system checks and other models remain unverified, so keep
-the normal defaults. These listening results do not measure a latency reduction.
+double the packet rate relative to two-frame packets and may affect radio scheduling.
 
 ## Earbud delay and buffer control
 
@@ -274,13 +273,13 @@ pwsh -File windows/playback/test-buffer.ps1 -TargetMs 60 -RestoreMs 150
 
 Here 150 is an explicit chosen restore target, not a discovered default. The
 trial keeps the same Windows output, codec, bitrate, packet grouping and selected
-source reserve (50 ms by default). A flush timeout limits packet lifetime; it is
+source reserve (30 ms by default). A flush timeout limits packet lifetime; it is
 not a fixed delay.
 Coordinated AAC and AAC-ELD trials passed short Pro 3 listening checks; see the
 [hardware results](WINDOWS-VALIDATION.md#earbud-buffer-control) for versions and
-conditions. Sustained playback and microphone recovery still need testing before
-changing defaults. The listening checks establish neither a numerical latency
-reduction nor exact earbud-buffer restoration.
+conditions. These earbud target, clock and flush changes remain finite diagnostic
+trials. The listening checks establish neither a numerical latency reduction nor
+exact earbud-buffer restoration.
 
 ### Playback clock interface
 
@@ -317,5 +316,5 @@ to investigate glitches. Keep recordings and device identifiers outside the repo
 
 Run sustained playback under load and with the high-quality mic active. Check
 mic stop/recovery, repeated playback starts, sleep/resume and both local Pro
-generations before making a smaller reserve the default. Measurements are in
-the [validation record](WINDOWS-VALIDATION.md#playback-latency-investigation).
+generations. Measurements are in the
+[validation record](WINDOWS-VALIDATION.md#playback-latency-investigation).

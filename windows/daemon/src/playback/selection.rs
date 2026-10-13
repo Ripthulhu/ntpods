@@ -162,7 +162,7 @@ pub fn load() -> PlaybackMode {
 
 fn normalize_mode(mode: PlaybackMode) -> PlaybackMode {
     match mode {
-        PlaybackMode::Windows => PlaybackMode::Aac,
+        PlaybackMode::Windows => PlaybackMode::AacEld,
         mode => mode,
     }
 }
@@ -241,9 +241,19 @@ mod tests {
     }
 
     #[test]
-    fn legacy_and_missing_selections_use_aac_without_driver_rebinding() {
-        assert_eq!(normalize_mode(PlaybackMode::default()), PlaybackMode::Aac);
-        assert_eq!(normalize_mode(PlaybackMode::AacEld), PlaybackMode::AacEld);
+    fn legacy_and_missing_selections_use_eld_without_driver_rebinding() {
+        assert_eq!(normalize_mode(PlaybackMode::default()), PlaybackMode::AacEld);
+        assert_eq!(normalize_mode(PlaybackMode::Windows), PlaybackMode::AacEld);
+    }
+
+    #[test]
+    fn saved_codec_preferences_are_preserved() {
+        for (saved, expected) in [
+            (r#""aac""#, PlaybackMode::Aac),
+            (r#""aac_eld""#, PlaybackMode::AacEld),
+        ] {
+            assert_eq!(normalize_mode(serde_json::from_str(saved).unwrap()), expected);
+        }
     }
 
     #[test]

@@ -69,8 +69,9 @@ empty Media Transport. Category 7 begins with media type `00` and codec type
 `02` for AAC or `FF` for vendor codecs. Truncated records and duplicate known
 categories are rejected before configuration.
 
-When AAC-ELD is selected, NTPods uses it only when a sink advertises the
-implemented profile. Otherwise it tries AAC after examining the sinks. An invalid
+AAC-ELD is the default codec when no preference is saved. NTPods uses it only
+when a sink advertises the implemented profile. Otherwise it tries AAC after
+examining the sinks. An invalid
 manual ELD bitrate, malformed response or transport error is an error, not a reason to
 silently change codec. Best effort selects the highest implemented rate within
 the advertised limit and packet budget; it does not adapt to radio conditions.
@@ -132,9 +133,9 @@ it does not assign meanings to all their reserved bits.
 | AudioSpecificConfig | `F8 E6 50 00`, no SBR |
 | Bitrate | CBR 128–256 kbps in 1 kbps steps; optional experimental VBR up to 256 kbps |
 | RTP header | `80 60`, big-endian sequence and timestamp, SSRC `11 22 33 44` |
-| RTP clock | 48 kHz sample count; timestamp advances 960 per two-AU packet |
-| AU geometry | 480 samples = 10 ms; two AUs = 20 ms per media packet |
-| Bounds | Exactly two AUs; each nonempty and at most 321 bytes; complete packet must fit media MTU |
+| RTP clock | 48 kHz sample count; timestamp advances 480 per AU |
+| AU geometry | 480 samples = 10 ms; one AU per packet by default, two with the diagnostic override |
+| Bounds | One or two AUs; each nonempty and at most 321 bytes; complete packet must fit media MTU |
 
 The optional variable profile uses FDK quality mode 5 with a 256 kbps peak limit.
 It retains the same ASC, packet framing and 321-byte AU limit. Mode 5 has a
@@ -143,7 +144,8 @@ depends on the signal. Negotiation requires the full 256 kbps packet budget;
 otherwise the profile reports an error. Encoder resets preserve the selection.
 Existing preferences default to CBR, and normal AAC settings are unchanged.
 The macOS encoder is a different implementation, so matching its nominal rates
-does not establish matching fidelity or latency. Hardware VBR tests are pending.
+does not establish matching fidelity or latency. Short Pro 3 VBR playback and
+microphone checks passed; see the [validation record](WINDOWS-VALIDATION.md#playback-latency-investigation).
 
 Each AU immediately follows this four-byte header:
 
@@ -158,15 +160,17 @@ The `B` and `1` high nibbles follow USBPods. NTPods retains a fixed SSRC;
 whether the earbuds require those exact values remains unverified.
 
 The maximum bitrate allowed by the MTU is
-`min(floor((MTU - 20) / 2) - 1, 320) * 800` bits/s, with subtraction clamped
-at zero. The extra byte allows CBR rounding. At an MTU of 672, two 321-byte AUs
-fit in 662 bytes. If Best effort needs a lower rate after opening media, NTPods
-sends `RECONFIGURE` before Start. Manual settings that do not fit fail.
+`min(floor((MTU - 12 - 4 * n) / n) - 1, 320) * 800` bits/s for `n` AUs,
+with subtraction clamped at zero. The extra byte allows CBR rounding. One
+321-byte AU fits in 337 bytes; two fit in 662 bytes. If Best effort needs a
+lower rate after opening media, NTPods sends `RECONFIGURE` before Start.
+Manual settings that do not fit fail.
 
-On Suspend/restart, the ELD packetizer discards partial AU pairs and resets its
+On Suspend/restart, the ELD packetizer discards pending AUs and resets its
 AU sequence and timestamp; RTP packet sequence continues within that session.
 The encoder is recreated. NTPods clears queued PCM and primes playback with a
-50 ms scheduling lead. Its frame clock counts samples from one origin, avoiding
+30 ms scheduling lead by default. A diagnostic override retains the earlier
+50 ms reserve. Its frame clock counts samples from one origin, avoiding
 rounding drift from repeated millisecond delays. These host choices still need
 comparison with macOS packet pacing and buffering.
 

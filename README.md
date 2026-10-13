@@ -77,9 +77,11 @@ Both downloads include an experimental playback driver for AirPods 1–4,
 Pro 1–3 and the original Max (Lightning and USB-C). See the
 [playback model list](docs/WINDOWS-MODEL-SUPPORT.md#native-playback) for test status.
 It replaces the paired AirPods output driver, with AAC/AAC-ELD and separate
-bitrate settings under **Playback and microphone**. NTPods must stay running
-for playback. No extra speaker or per-app routing is needed. Keep the AirPods
-connected during uninstall to restore their saved driver, or Windows playback
+bitrate settings under **Playback and microphone**. AAC-ELD is the default, with
+AAC fallback for pairs without a supported AAC-ELD profile. Upgrades preserve
+your saved codec choice. NTPods must stay running for playback. No extra speaker
+or per-app routing is needed. Keep the AirPods connected during uninstall to
+restore their saved driver, or Windows playback
 when no prior binding was saved; see the
 [playback test guide](windows/playback/TESTING.md).
 
