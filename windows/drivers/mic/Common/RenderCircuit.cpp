@@ -6,6 +6,7 @@
 #include "CircuitHelper.h"
 #include "StreamEngine.h"
 #include "RenderPackets.h"
+#include "PacketConstraints.h"
 #ifndef __INTELLISENSE__
 #include "RenderCircuit.tmh"
 #endif
@@ -244,12 +245,9 @@ NTSTATUS CodecR_SetPacketConstraints(ACXCIRCUIT circuit)
     WdfStringGetUnicodeString(name, &link);
     NTSTATUS status = IoGetDeviceInterfaceAlias(&link, &KSCATEGORY_AUDIO, &audioLink);
     if (!NT_SUCCESS(status)) return status;
-    KSAUDIO_PACKETSIZE_CONSTRAINTS2 constraints = {};
-    constraints.PacketSizeFileAlignment = FILE_LONG_ALIGNMENT;
-    constraints.MaxPacketSizeInBytes = RENDER_PACKET_MAX_BYTES;
+    auto constraints = AudioPacketConstraints(FILE_LONG_ALIGNMENT, RENDER_PACKET_MAX_BYTES);
     status = IoSetDeviceInterfacePropertyData(&audioLink, &DEVPKEY_KsAudio_PacketSize_Constraints2,
-        0, 0, DEVPROP_TYPE_BINARY,
-        FIELD_OFFSET(KSAUDIO_PACKETSIZE_CONSTRAINTS2, ProcessingModeConstraints), &constraints);
+        0, PLUGPLAY_PROPERTY_PERSISTENT, DEVPROP_TYPE_BINARY, sizeof(constraints), &constraints);
     RtlFreeUnicodeString(&audioLink);
     return status;
 }

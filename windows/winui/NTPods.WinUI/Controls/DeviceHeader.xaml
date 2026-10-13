@@ -8,9 +8,10 @@
         </Grid.ColumnDefinitions>
         <StackPanel Grid.Column="1" Spacing="8" HorizontalAlignment="Stretch">
             <Image x:Name="DeviceImage" Width="80" Height="80" Stretch="Uniform" Visibility="Collapsed" />
-            <Grid x:Name="NameView">
+            <Grid x:Name="NameView" MinHeight="32">
                 <TextBlock x:Name="DeviceName" Text="NTPods" FontSize="24" FontWeight="SemiBold"
-                           TextAlignment="Center" TextWrapping="Wrap" />
+                           TextAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
+                           ToolTipService.ToolTip="{Binding Text, ElementName=DeviceName}" />
             </Grid>
             <Grid x:Name="NameEdit" Visibility="Collapsed" ColumnSpacing="4">
                 <Grid.ColumnDefinitions>
@@ -27,14 +28,19 @@
                     <FontIcon Glyph="&#xE711;" FontSize="14" />
                 </Button>
             </Grid>
-            <StackPanel Orientation="Horizontal" Spacing="7" HorizontalAlignment="Center">
+            <Grid x:Name="StatusRow" MinHeight="32" ColumnSpacing="7" HorizontalAlignment="Center">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
                 <Ellipse x:Name="StatusDot" Width="7" Height="7" VerticalAlignment="Center"
                          Fill="{ThemeResource AppleSecondaryBrush}" />
-                <TextBlock x:Name="StatusText" Text="Connecting…" FontSize="13" TextWrapping="Wrap"
+                <TextBlock x:Name="StatusText" Grid.Column="1" Text="Connecting…" FontSize="13"
+                           TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
                            Foreground="{ThemeResource AppleSecondaryBrush}" />
-                <HyperlinkButton x:Name="ConnectButton" Padding="0" Visibility="Collapsed" Click="Connect_Click"
+                <HyperlinkButton x:Name="ConnectButton" Grid.Column="2" Padding="0" MinHeight="32" VerticalAlignment="Center"
+                                 Visibility="Collapsed" Click="Connect_Click"
                                  Content="{Binding [HeaderConnectBtn_Content], Source={StaticResource Loc}}" />
-            </StackPanel>
+            </Grid>
         </StackPanel>
         <Button x:Name="MoreButton" Grid.Column="2" Width="40" Height="40" Padding="0" VerticalAlignment="Top"
                 Style="{StaticResource QuietButton}"

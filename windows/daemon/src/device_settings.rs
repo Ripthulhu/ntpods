@@ -108,6 +108,9 @@ impl PendingSettings {
         state.loud_sound_reduction = None;
         state.loud_sound_reduction_pending = false;
         state.loud_sound_reduction_error = None;
+        state.transparency = None;
+        state.transparency_pending = false;
+        state.transparency_error = None;
         state.conversational_awareness_pending = None;
         state.conversational_awareness = false;
         state.adaptive_volume = false;
@@ -632,9 +635,24 @@ mod tests {
         assert_eq!(state.device_controls_pending.get(&0x23), Some(&3));
         assert!(pending.confirm_control(&mut state, 0x23, 3));
         assert!(!pending.expire(&mut state, now + CONFIRM_TIMEOUT));
+        state.transparency = Some(ntpods_ipc::TransparencySettings {
+            enabled: true,
+            left_amplification: 0.2,
+            right_amplification: 0.3,
+            left_tone: 0.0,
+            right_tone: 0.0,
+            left_conversation_boost: false,
+            right_conversation_boost: false,
+            left_ambient_noise_reduction: 0.5,
+            right_ambient_noise_reduction: 0.5,
+        });
+        state.transparency_pending = true;
+        state.transparency_error = Some("Previous pair's request failed.".into());
         pending.reset(&mut state);
         assert!(state.eq.is_none() && state.eq_pending.is_none());
         assert!(state.device_controls.is_empty() && state.device_controls_pending.is_empty());
+        assert!(state.transparency.is_none() && !state.transparency_pending);
+        assert!(state.transparency_error.is_none());
         assert!(
             state.auto_pause,
             "device reconnect must not change the host preference"

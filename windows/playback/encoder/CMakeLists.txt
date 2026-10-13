@@ -12,7 +12,7 @@ set(BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
 set(BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
 add_subdirectory("${FDK_SOURCE}" fdk)
 add_executable(ntpods-eld-encoder encoder.c)
-target_link_libraries(ntpods-eld-encoder PRIVATE fdk-aac)
+target_link_libraries(ntpods-eld-encoder PRIVATE fdk-aac Avrt)
 target_compile_options(ntpods-eld-encoder PRIVATE /W4 /WX)
 target_compile_definitions(ntpods-eld-encoder PRIVATE _CRT_SECURE_NO_WARNINGS)
 add_custom_command(TARGET ntpods-eld-encoder POST_BUILD

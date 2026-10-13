@@ -45,12 +45,50 @@ public static class NTPodsSetupPipe {
     [NTPodsSetupPipe]::Shutdown($processId, $timeoutMilliseconds)
 }
 
-function Test-NTPodsSetupHelper($process) {
+function Get-NTPodsSetupHelper($process) {
     $info = Get-CimInstance Win32_Process -Filter "ProcessId=$($process.Id)" -OperationTimeoutSec 3 -ErrorAction Stop
     if (-not $info.CommandLine -and -not $process.HasExited) {
         throw 'Setup could not identify the running NTPods helper. Quit NTPods and retry.'
     }
-    return $info.CommandLine -match '^(?:"[^"]+"|\S+)\s+--run-helper\s+(?:rename-mic|fix-driver)\s*$'
+    $path = Join-Path (Join-Path $env:ProgramFiles 'NTPods') 'ntpodsd.exe'
+    if ($process.Path -ne $path) { return $null }
+    $executable = [regex]::Escape($path)
+    if ($info.CommandLine -cmatch ('^(?i:"' + $executable + '"|' + $executable + ')\s+--handsfree-guard\s*$')) { return 'handsfree' }
+    if ($info.CommandLine -cmatch ('^(?i:"' + $executable + '"|' + $executable + ')\s+--run-helper\s+(?:rename-mic|fix-driver)\s*$')) { return 'task' }
+    return $null
+}
+
+function Assert-NTPodsHandsfreeRestored {
+    $installKey = 'HKLM:\SOFTWARE\NTPods'
+    $driverKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\NTPodsAAP\Parameters'
+    $installed = if (Test-Path -LiteralPath $installKey -ErrorAction Stop) { Get-ItemProperty -LiteralPath $installKey -ErrorAction Stop }
+    $userSid = $installed.InstalledUserSid
+    if (-not $userSid -and (Test-Path -LiteralPath $driverKey -ErrorAction Stop)) {
+        $userSid = (Get-ItemProperty -LiteralPath $driverKey -ErrorAction Stop).AllowedUserSid
+    }
+    $unresolved = 'Setup could not locate the NTPods user profile to check hands-free recovery. Start NTPods, then retry setup.'
+    # A fresh MSI has already copied its files before recording the installing user.
+    if (-not $userSid) { return }
+    if ($userSid -notmatch '^S-1-5-21-(\d+-){3}\d+$' -or
+        (New-Object Security.Principal.SecurityIdentifier($userSid)).Value -cne $userSid) { throw $unresolved }
+    # Setup can run as SYSTEM; its own LOCALAPPDATA does not belong to the installed user.
+    $shellKey = "Registry::HKEY_USERS\$userSid\Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders"
+    $localAppData = if (Test-Path -LiteralPath $shellKey -ErrorAction Stop) {
+        (Get-ItemProperty -LiteralPath $shellKey -ErrorAction Stop).'Local AppData'
+    }
+    if (-not $localAppData) {
+        $profileKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$userSid"
+        if (-not (Test-Path -LiteralPath $profileKey -ErrorAction Stop)) { throw $unresolved }
+        $profile = (Get-ItemProperty -LiteralPath $profileKey -ErrorAction Stop).ProfileImagePath
+        if (-not $profile) { throw $unresolved }
+        $localAppData = [Environment]::ExpandEnvironmentVariables($profile).TrimEnd('\') + '\AppData\Local'
+    }
+    if ($localAppData -notmatch '^[A-Za-z]:\\' -or $localAppData -match '[\x00-\x1f<>"|?*%]' -or $localAppData.Substring(2).Contains(':') -or
+        [IO.Path]::GetFullPath($localAppData).TrimEnd('\') -ine $localAppData.TrimEnd('\')) { throw $unresolved }
+    $journal = Join-Path $localAppData 'NTPods\handsfree-restore.json'
+    if (Test-Path -LiteralPath $journal -ErrorAction Stop) {
+        throw 'Start NTPods to restore its hands-free devices, then retry setup.'
+    }
 }
 
 function Stop-NTPods {
@@ -70,14 +108,19 @@ function Stop-NTPods {
                 throw 'NTPods could not close its interface. Setup stopped without replacing files.'
             }
         }
-        foreach ($daemon in $running | Where-Object ProcessName -eq 'ntpodsd') {
-            if (-not $daemon.HasExited -and (Test-NTPodsSetupHelper $daemon)) {
+        $daemons = @($running | Where-Object ProcessName -eq 'ntpodsd' | ForEach-Object {
+            [pscustomobject]@{ Process = $_; Helper = Get-NTPodsSetupHelper $_ }
+        })
+        # The guard restores endpoints when the main daemon releases its stdin lease.
+        foreach ($entry in $daemons | Sort-Object { $null -ne $_.Helper }) {
+            $daemon = $entry.Process
+            if ($entry.Helper -eq 'task') {
                 if (-not $daemon.WaitForExit([Math]::Max(1, $TimeoutMilliseconds - $clock.ElapsedMilliseconds))) {
                     throw 'An NTPods helper is still running. Setup stopped without replacing files.'
                 }
                 continue
             }
-            if (-not $daemon.HasExited) {
+            if (-not $entry.Helper -and -not $daemon.HasExited) {
                 $remaining = $TimeoutMilliseconds - $clock.ElapsedMilliseconds
                 if ($remaining -le 0) { throw 'NTPods shutdown timed out. Setup stopped; microphone recovery may still be running.' }
                 try { Send-NTPodsSetupShutdown $daemon.Id ([Math]::Min(5000, $remaining)) }
@@ -85,15 +128,22 @@ function Stop-NTPods {
             }
             $remaining = [Math]::Max(1, $TimeoutMilliseconds - $clock.ElapsedMilliseconds)
             if (-not $daemon.WaitForExit($remaining)) {
+                if ($entry.Helper -eq 'handsfree') {
+                    throw 'NTPods hands-free recovery timed out. Setup stopped without replacing files.'
+                }
                 throw 'NTPods shutdown timed out. Setup stopped; microphone recovery may still be running.'
             }
             if ($daemon.ExitCode -ne 0) {
+                if ($entry.Helper -eq 'handsfree') {
+                    throw 'NTPods could not restore the Windows hands-free devices. Reconnect the AirPods, then retry setup.'
+                }
                 throw 'NTPods could not finish microphone recovery. Reconnect the AirPods, then retry setup.'
             }
         }
         if (@(Get-NTPodsSetupProcesses).Count) {
             throw 'NTPods restarted during shutdown. Quit it, then retry setup.'
         }
+        Assert-NTPodsHandsfreeRestored
     } finally {
         foreach ($process in $running) { $process.Dispose() }
     }

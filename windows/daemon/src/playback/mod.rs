@@ -5,8 +5,10 @@ mod encoder;
 mod pcm;
 mod protocol;
 mod render;
+mod scheduling;
 mod selection;
 mod session;
+mod timing;
 
 use crate::{bt, driver::Driver, Ctx};
 use codec::{AudioEncoder, MediaPackets, Mode};
@@ -424,7 +426,7 @@ fn run(
     )?;
     let mode = session.mode;
     session.suspend()?;
-    let mut encoder = AudioEncoder::new(mode, session.bitrate)?;
+    let mut encoder = AudioEncoder::new(mode, session.bitrate, session.variable)?;
     let (reset, requests) = mpsc::sync_channel(1);
     {
         let mut active = CONTROL.lock().unwrap_or_else(|e| e.into_inner());
@@ -442,6 +444,7 @@ fn run(
     render.set_ready(true)?;
     report_codec(mode, Some(session.bitrate / 1000));
     let mut next_connection_check = Instant::now();
+    let mut timing = timing::Timing::default();
     let result = stream(
         &mut session,
         render,
@@ -450,6 +453,7 @@ fn run(
         intent,
         &requests,
         mode,
+        &mut timing,
         || {
             if shutdown_complete(
                 ctx.shutting_down.load(Ordering::Acquire),
@@ -468,6 +472,9 @@ fn run(
     );
     stopping();
     let muted = render.set_ready(false);
+    if let Some(summary) = timing.summary() {
+        crate::log(&format!("playback timing {}: {summary}", mode.name()));
+    }
     result.and(muted)
 }
 
@@ -516,9 +523,11 @@ fn stream(
     intent: u64,
     requests: &Receiver<Reset>,
     mode: Mode,
+    timing: &mut timing::Timing,
     mut disconnected: impl FnMut() -> bool,
 ) -> io::Result<()> {
     let _timer = TimerResolution::acquire()?;
+    let _scheduling = scheduling::AudioScheduling::acquire();
     let mut packets = MediaPackets::new(encoder)?;
     let samples = mode.frame_samples();
     let mut pcm = FrameAssembler::new(samples)?;
@@ -536,7 +545,7 @@ fn stream(
                 clock = prime_output(
                     samples,
                     || {
-                        *encoder = AudioEncoder::new(mode, session.bitrate)?;
+                        *encoder = AudioEncoder::new(mode, session.bitrate, session.variable)?;
                         if active {
                             session.start()?;
                         }
@@ -575,7 +584,7 @@ fn stream(
             clock = prime_output(
                 samples,
                 || {
-                    *encoder = AudioEncoder::new(mode, session.bitrate)?;
+                    *encoder = AudioEncoder::new(mode, session.bitrate, session.variable)?;
                     session.start()
                 },
                 || render.read(MAX_READ_BYTES),
@@ -597,13 +606,24 @@ fn stream(
                     "Playback processing missed its audio deadline",
                 ));
             }
-            let data = render.read(pcm.read_limit())?;
-            if render.status()?[3] != generation {
-                // Pause/Run can replace the producer between STATUS and READ_PCM.
+            let mut replaced = false;
+            let frame = pcm.read_available(
+                |limit| render.read(limit),
+                || {
+                    replaced = render.status()?[3] != generation;
+                    Ok(!replaced)
+                },
+            )?;
+            if replaced {
                 continue;
             }
-            if let Some(frame) = pcm.push(&data)? {
+            if let Some(frame) = frame {
                 encoder.write(frame)?;
+                timing.frame(
+                    samples,
+                    status[1],
+                    Instant::now().saturating_duration_since(clock.deadline()),
+                );
                 outstanding += 1;
                 clock.advance();
             }
@@ -614,7 +634,10 @@ fn stream(
             };
             outstanding = outstanding.saturating_sub(1);
             for packet in packets.push(unit, session.mtu)? {
-                session.media(&packet)?;
+                let started = Instant::now();
+                let sent = session.media(&packet);
+                timing.send(started.elapsed());
+                sent?;
             }
         }
         thread::sleep(Duration::from_millis(1));

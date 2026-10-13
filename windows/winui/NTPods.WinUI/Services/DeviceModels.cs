@@ -15,6 +15,7 @@ internal sealed class DeviceModel
     [JsonPropertyName("allow_off_option")] public bool AllowOffOption { get; init; }
     [JsonPropertyName("heart_rate")] public bool HeartRate { get; init; }
     [JsonPropertyName("hearing_aid")] public bool HearingAid { get; init; }
+    [JsonPropertyName("custom_transparency")] public bool CustomTransparency { get; init; }
     [JsonPropertyName("loud_sound_reduction")] public bool LoudSoundReduction { get; init; }
     [JsonPropertyName("head_tracking")] public bool HeadTracking { get; init; }
     [JsonPropertyName("high_quality_mic")] public bool HighQualityMic { get; init; }
@@ -87,6 +88,9 @@ internal static class DeviceModels
     public static bool HeadTracking(Snapshot s) => Find(s.Model).HeadTracking && FirmwareMajor(s.Firmware) > 0;
     public static bool CanChangeLoudSoundReduction(Snapshot s) => Find(s.Model).LoudSoundReduction &&
         s.Connected && !s.LinkStale && s.LoudSoundReduction.HasValue && !s.LoudSoundReductionPending;
+    public static bool ShouldReadLoudSoundReduction(Snapshot s, bool alreadyRequested, bool force) =>
+        Find(s.Model).LoudSoundReduction && s.Connected && !s.LinkStale && !s.LoudSoundReductionPending &&
+        (force || !alreadyRequested && !s.LoudSoundReduction.HasValue);
     public static string DisplayName(Snapshot s, string fallback) => !string.IsNullOrWhiteSpace(s.DevName) ? s.DevName :
         Find(s.Model) is { Name.Length: > 0 } profile ? profile.Name : fallback;
     public static bool Headphone(Snapshot s) => Find(s.Model).Headphone ||

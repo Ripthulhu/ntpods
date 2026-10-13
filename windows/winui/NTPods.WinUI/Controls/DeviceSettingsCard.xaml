@@ -42,6 +42,7 @@
                                       AutomationProperties.Name="{Binding [Playback_Quality], Source={StaticResource Loc}}">
                                 <ComboBoxItem Content="{Binding [Playback_BestEffort], Source={StaticResource Loc}}" />
                                 <ComboBoxItem Content="{Binding [Playback_Manual], Source={StaticResource Loc}}" />
+                                <ComboBoxItem x:Name="VariableBitrateItem" Content="{Binding [Playback_Variable], Source={StaticResource Loc}}" />
                             </ComboBox>
                             <StackPanel x:Name="PlaybackBitrateRow" Spacing="8">
                                 <TextBlock Text="{Binding [Playback_Bitrate], Source={StaticResource Loc}}" Style="{StaticResource DeviceLabel}" />

@@ -6,6 +6,11 @@ description: Information about AirPods, such as model, firmware version, and ser
 
 ## Device information
 
+The [Windows metadata parser](WINDOWS-AIRPODS-CONTROL-PROTOCOL.md#implemented-message-families)
+starts the string list at byte 11 and normalizes recognized packed release
+versions. The field names below remain research labels; unknown trailing bytes
+are not decoded by NTPods.
+
 The accessory sends this packet on connection. It contains the device name, model, versions and serial numbers.
 
 Each `null` indicates the start of a new string field.

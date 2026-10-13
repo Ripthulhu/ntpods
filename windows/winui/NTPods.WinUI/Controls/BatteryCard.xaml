@@ -5,7 +5,7 @@
     <Grid ColumnSpacing="16" Margin="12,12,12,0">
         <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
         <StackPanel x:Name="LeftCell" Grid.Column="0" Spacing="8">
-            <Grid x:Name="LeftArtwork">
+            <Grid x:Name="LeftArtwork" Height="140">
                 <Image x:Name="LeftImg" Height="126" Stretch="Uniform" Visibility="Collapsed" Margin="0,0,0,14" />
             </Grid>
             <Grid Width="34" Height="34" HorizontalAlignment="Center">
@@ -22,7 +22,7 @@
                        Foreground="{ThemeResource AppleSecondaryBrush}" TextAlignment="Center" TextWrapping="Wrap" />
         </StackPanel>
         <StackPanel x:Name="RightCell" Grid.Column="1" Spacing="8">
-            <Grid x:Name="RightArtwork">
+            <Grid x:Name="RightArtwork" Height="140">
                 <Image x:Name="RightImg" Height="126" Stretch="Uniform" Visibility="Collapsed" Margin="0,0,0,14" />
             </Grid>
             <Grid Width="34" Height="34" HorizontalAlignment="Center">
@@ -39,7 +39,7 @@
                        Foreground="{ThemeResource AppleSecondaryBrush}" TextAlignment="Center" />
         </StackPanel>
         <StackPanel x:Name="CaseCell" Grid.Column="2" Spacing="8">
-            <Grid x:Name="CaseArtwork">
+            <Grid x:Name="CaseArtwork" Height="140">
                 <Image x:Name="CaseImg" Height="126" Stretch="Uniform" Visibility="Collapsed" Margin="0,0,0,14" />
             </Grid>
             <Grid Width="34" Height="34" HorizontalAlignment="Center">

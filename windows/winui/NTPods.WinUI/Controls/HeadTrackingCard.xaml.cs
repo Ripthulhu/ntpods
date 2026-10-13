@@ -68,9 +68,9 @@ public sealed partial class HeadTrackingCard : UserControl
         SetRendering(Panel.IsExpanded && (_live.Enabled || _requested is not null));
     }
 
-    public void Stop()
+    public void Stop(bool notifyDevice = true)
     {
-        if (_ownsStream) _client?.Send(new SetHeadTrackingCmd { On = false });
+        if (_ownsStream && notifyDevice) _client?.Send(new SetHeadTrackingCmd { On = false });
         _ownsStream = false;
         _requested = null;
         Panel.IsExpanded = false;

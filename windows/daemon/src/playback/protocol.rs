@@ -92,6 +92,7 @@ pub fn supports_apple_eld(payload: &[u8]) -> io::Result<bool> {
     Ok(select_apple_eld(
         payload,
         ntpods_ipc::PlaybackBitrate {
+            variable: false,
             best_effort: false,
             kbps: 256,
         },
@@ -324,6 +325,7 @@ mod tests {
             select_apple_eld(
                 &caps[2..],
                 ntpods_ipc::PlaybackBitrate {
+                    variable: false,
                     best_effort: false,
                     kbps: 256
                 }
@@ -335,6 +337,7 @@ mod tests {
             select_apple_eld(
                 &caps[2..],
                 ntpods_ipc::PlaybackBitrate {
+                    variable: false,
                     best_effort: false,
                     kbps: 128
                 }

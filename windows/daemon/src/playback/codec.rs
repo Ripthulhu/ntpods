@@ -23,7 +23,14 @@ impl Mode {
             peer_limit.min(maximum)
         } / 1000
             * 1000;
-        let chosen = if preference.best_effort {
+        if preference.variable
+            && (self != Self::Eld || !preference.best_effort || preference.kbps != 256)
+        {
+            return Err(protocol::invalid("Invalid variable bitrate profile"));
+        }
+        let chosen = if preference.variable {
+            256_000
+        } else if preference.best_effort {
             ceiling
         } else {
             preference
@@ -77,10 +84,10 @@ pub enum AudioEncoder {
     Eld(Encoder),
 }
 impl AudioEncoder {
-    pub fn new(mode: Mode, bitrate: u32) -> io::Result<Self> {
+    pub fn new(mode: Mode, bitrate: u32, variable: bool) -> io::Result<Self> {
         match mode {
-            Mode::Aac => Encoder::start(mode, bitrate).map(Self::Aac),
-            Mode::Eld => Encoder::start(mode, bitrate).map(Self::Eld),
+            Mode::Aac => Encoder::start(mode, bitrate, variable).map(Self::Aac),
+            Mode::Eld => Encoder::start(mode, bitrate, variable).map(Self::Eld),
         }
     }
     pub fn write(&mut self, pcm: Vec<u8>) -> io::Result<()> {
@@ -228,6 +235,30 @@ mod bitrate_tests {
     use super::*;
     use ntpods_ipc::PlaybackBitrate;
     #[test]
+    fn variable_eld_requires_its_full_peak_budget() {
+        let variable = PlaybackBitrate {
+            variable: true,
+            ..PlaybackBitrate::default()
+        };
+        assert_eq!(Mode::Eld.bitrate(variable, 0).unwrap(), 256_000);
+        assert_eq!(Mode::Eld.bitrate(variable, 256_000).unwrap(), 256_000);
+        assert!(Mode::Eld.bitrate(variable, 255_999).is_err());
+        assert!(Mode::Aac.bitrate(variable, 512_000).is_err());
+        for invalid in [
+            PlaybackBitrate {
+                best_effort: false,
+                ..variable
+            },
+            PlaybackBitrate {
+                kbps: 192,
+                ..variable
+            },
+        ] {
+            assert!(Mode::Eld.bitrate(invalid, 0).is_err());
+        }
+    }
+
+    #[test]
     fn bitrate_respects_peer_limits_without_clamping_manual_choices() {
         let best = PlaybackBitrate::default();
         assert_eq!(Mode::Aac.bitrate(best, 0).unwrap(), 512000);
@@ -239,6 +270,7 @@ mod bitrate_tests {
             Mode::Aac
                 .bitrate(
                     PlaybackBitrate {
+                        variable: false,
                         best_effort: false,
                         kbps: 320
                     },
@@ -250,6 +282,7 @@ mod bitrate_tests {
         assert!(Mode::Aac
             .bitrate(
                 PlaybackBitrate {
+                    variable: false,
                     best_effort: false,
                     kbps: 321
                 },
@@ -259,6 +292,7 @@ mod bitrate_tests {
         assert!(Mode::Eld
             .bitrate(
                 PlaybackBitrate {
+                    variable: false,
                     best_effort: false,
                     kbps: u32::MAX
                 },

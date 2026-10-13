@@ -849,8 +849,34 @@ fn choose_airpods(
     ))
 }
 
+fn last_airpods(settings: impl std::io::Read) -> Option<u64> {
+    use std::io::Read;
+    #[derive(serde::Deserialize)]
+    struct Saved {
+        #[serde(rename = "LastDeviceId")]
+        device: String,
+    }
+    let mut data = Vec::new();
+    settings.take(16_385).read_to_end(&mut data).ok()?;
+    if data.len() > 16_384 {
+        return None;
+    }
+    let saved: Saved = serde_json::from_slice(&data).ok()?;
+    if saved.device.len() != 12 || !saved.device.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let address = u64::from_str_radix(&saved.device, 16).ok()?;
+    (address != 0).then_some(address)
+}
+
 pub fn find_airpods() -> Option<(u64, String)> {
-    find_airpods_for(0)
+    // The UI already saves the last pair for artwork; reuse it when both pairs sleep.
+    let preferred = std::env::var_os("LOCALAPPDATA")
+        .map(|root| std::path::PathBuf::from(root).join("NTPods/winui-settings.json"))
+        .and_then(|path| std::fs::File::open(path).ok())
+        .and_then(last_airpods)
+        .unwrap_or(0);
+    find_airpods_for(preferred)
 }
 
 /// Keep the current connected pair; otherwise prefer another connected pair.
@@ -894,7 +920,7 @@ pub fn find_airpods_for(current: u64) -> Option<(u64, String)> {
 
 #[cfg(test)]
 mod discovery_tests {
-    use super::{choose_airpods, AirPodsCandidate};
+    use super::{choose_airpods, last_airpods, AirPodsCandidate};
 
     fn device(address: u64, connected: bool) -> AirPodsCandidate {
         AirPodsCandidate {
@@ -905,6 +931,69 @@ mod discovery_tests {
             connected,
             has_service: true,
         }
+    }
+
+    #[test]
+    fn startup_uses_saved_pair_only_when_no_other_pair_is_connected() {
+        let saved = last_airpods(
+            br#"{"ThemeIndex":2,"LastModel":"A3064","LastDeviceId":"000000000002"}"#.as_slice(),
+        )
+        .unwrap();
+        assert_eq!(
+            choose_airpods([device(1, false), device(2, false)], saved)
+                .unwrap()
+                .0,
+            2
+        );
+        assert_eq!(
+            choose_airpods([device(1, true), device(2, false)], saved)
+                .unwrap()
+                .0,
+            1
+        );
+        assert_eq!(choose_airpods([device(1, false)], saved).unwrap().0, 1);
+        let mut unpaired = device(saved, false);
+        unpaired.remembered = false;
+        assert_eq!(
+            choose_airpods([device(1, false), unpaired], saved)
+                .unwrap()
+                .0,
+            1
+        );
+    }
+
+    #[test]
+    fn startup_preference_rejects_invalid_or_oversized_settings() {
+        for settings in [
+            "",
+            "{}",
+            r#"{"LastDeviceId":null}"#,
+            r#"{"LastDeviceId":2}"#,
+            r#"{"LastDeviceId":"000000000002""#,
+        ] {
+            assert!(last_airpods(settings.as_bytes()).is_none());
+        }
+        for id in [
+            "",
+            "000000000000",
+            "2",
+            "1000000000000",
+            "00000000000g",
+            "+00000000002",
+            " 00000000002",
+            "00:00:00:00:00:02",
+        ] {
+            let settings = serde_json::json!({ "LastDeviceId": id }).to_string();
+            assert!(last_airpods(settings.as_bytes()).is_none());
+        }
+        assert_eq!(
+            last_airpods(br#"{"LastDeviceId":"aAbBcCdDeEfF"}"#.as_slice()),
+            Some(0xaabbccddeeff)
+        );
+        let mut oversized = br#"{"LastDeviceId":"000000000002"}"#.to_vec();
+        oversized.resize(16_385, b' ');
+        assert!(last_airpods(oversized.as_slice()).is_none());
+        assert!(last_airpods(std::io::repeat(b' ')).is_none());
     }
 
     #[test]

@@ -45,15 +45,31 @@ for (var index = 0; index < lines.Length; ++index)
         s.HeadTrackingError == (raw.RootElement.TryGetProperty("head_tracking_error", out var trackingError) && trackingError.ValueKind != JsonValueKind.Null ? trackingError.GetString() : null),
         "Head tracking state must match Rust and default to idle for older snapshots.");
     Check(s.DevName == "AirPods fixture — \"test\"", "Unicode or string escaping changed");
+    Check(s.HearingAidEnabled == (raw.RootElement.TryGetProperty("hearing_aid_enabled", out var hearing) &&
+        hearing.ValueKind != JsonValueKind.Null ? hearing.GetBoolean() : (bool?)null) &&
+        s.HearingAidRevision == (raw.RootElement.TryGetProperty("hearing_aid_revision", out var hearingRevision) ? hearingRevision.GetUInt64() : 0),
+        "Reported hearing state and its revision must survive IPC; missing state stays unknown.");
     Check(s.LoudSoundReduction == (raw.RootElement.TryGetProperty("loud_sound_reduction", out var reduction) &&
         reduction.ValueKind != JsonValueKind.Null ? reduction.GetBoolean() : (bool?)null) &&
         s.LoudSoundReductionPending == (raw.RootElement.TryGetProperty("loud_sound_reduction_pending", out var reductionPending) && reductionPending.GetBoolean()) &&
         s.LoudSoundReductionError == (raw.RootElement.TryGetProperty("loud_sound_reduction_error", out var reductionError) &&
         reductionError.ValueKind != JsonValueKind.Null ? reductionError.GetString() : null),
         "Confirmed, pending and failed Loud Sound Reduction states must remain separate across IPC.");
+    Check(s.Transparency == (raw.RootElement.TryGetProperty("transparency", out var transparency) && transparency.ValueKind != JsonValueKind.Null
+            ? transparency.Deserialize<TransparencySettings>() : null) &&
+        s.TransparencyPending == (raw.RootElement.TryGetProperty("transparency_pending", out var transparencyPending) && transparencyPending.GetBoolean()) &&
+        s.TransparencyError == (raw.RootElement.TryGetProperty("transparency_error", out var transparencyError) && transparencyError.ValueKind != JsonValueKind.Null
+            ? transparencyError.GetString() : null),
+        "Transparency readback, pending and error states must remain separate across IPC.");
     if (index < phases.Length)
     {
         var phase = phases[index];
+        Check(!s.PlaybackAacBitrate.Variable && s.PlaybackAacEldBitrate.Variable == (phase == "capturing"),
+            "Variable bitrate must stay attached to the AAC-ELD preference.");
+        Check(s.Transparency == (phase == "unavailable" ? null : Transparency(phase == "capturing")) &&
+            s.TransparencyPending == (phase == "starting") &&
+            s.TransparencyError == (phase == "error" ? "Transparency settings could not be read." : null),
+            "Per-ear Transparency values changed across IPC.");
         Check(s.BatteryFreshness is { } ages && ages.Left.TimestampMs == 1_792_000_000_100 &&
             ages.Right.TimestampMs == 1_792_000_000_090 && ages.Case.TimestampMs == 1_791_999_900_000 &&
             ages.Left.Live == (phase != "error") && ages.Right.Live == (phase != "error") &&
@@ -101,6 +117,10 @@ for (var index = 0; index < lines.Length; ++index)
             "Legacy snapshots must keep Windows playback and must not claim native playback support.");
         Check(s.PlaybackAacBitrate == new PlaybackBitrate() && s.PlaybackAacEldBitrate == new PlaybackBitrate() && s.PlaybackBitrateKbps is null,
             "Missing bitrate preferences default to Best effort without inventing a current bitrate.");
+        Check(s.Transparency is null && !s.TransparencyPending && s.TransparencyError is null,
+            "Older snapshots must leave Transparency settings unknown.");
+        Check(s.HearingAidEnabled is null && s.HearingAidRevision == 0,
+            "Older snapshots must not manufacture a hearing-assistance report.");
         Check(s.MicRecording, "Legacy fixture must exercise an old recording=true state");
         Check(s.ConversationalAwarenessPending is null, "Legacy fixture cannot claim a pending setting");
         Check(s.AdaptiveStrengthRequested is null, "Legacy fixture cannot claim a sent strength");
@@ -227,6 +247,40 @@ string[] malformed = ["", " ", "{", "null", "true", "12", "\"text\"", "[]", "[{}
 foreach (var json in malformed)
     Check(Wire.ParseEvent(json) is null, $"Malformed event must be ignored without throwing: {json}");
 
+foreach (var (mode, bestEffort, kbps) in new[] { ("aac", true, 256u), ("aac_eld", false, 256u), ("aac_eld", true, 192u) })
+{
+    string json = JsonSerializer.Serialize(new Dictionary<string, object> {
+        ["event"] = "state", [$"playback_{mode}_bitrate"] = new PlaybackBitrate { BestEffort = bestEffort, Kbps = kbps, Variable = true }
+    });
+    Check(Wire.ParseEvent(json) is null, "Unsupported variable bitrate combinations must be rejected.");
+}
+foreach (string value in new[] { "null", "1", "\"true\"" })
+    Check(Wire.ParseEvent("{\"event\":\"state\",\"playback_aac_eld_bitrate\":{\"best_effort\":true,\"kbps\":256,\"variable\":" + value + "}}") is null,
+        "Variable bitrate must be a boolean.");
+Check(Wire.ParseEvent("{\"event\":\"state\",\"playback_aac_eld_bitrate\":{\"best_effort\":true,\"kbps\":256}}")
+    is DaemonEvent.State { Snapshot.PlaybackAacEldBitrate.Variable: false }, "Older bitrate preferences must remain constant bitrate.");
+
+var transparencyState = new JsonObject { ["event"] = "state", ["transparency"] = JsonSerializer.SerializeToNode(Transparency(true)) };
+foreach (string key in transparencyState["transparency"]!.AsObject().Select(pair => pair.Key).ToArray())
+{
+    var missing = transparencyState.DeepClone();
+    missing["transparency"]!.AsObject().Remove(key);
+    Check(Wire.ParseEvent(missing.ToJsonString()) is null, "Incomplete Transparency settings must be rejected.");
+}
+foreach (var (key, value) in new[] {
+    ("left_amplification", -1.01f), ("right_amplification", 1.01f), ("left_tone", -1.01f), ("right_tone", 1.01f),
+    ("left_ambient_noise_reduction", -0.01f), ("right_ambient_noise_reduction", 1.01f) })
+{
+    var invalid = transparencyState.DeepClone();
+    invalid["transparency"]![key] = value;
+    Check(Wire.ParseEvent(invalid.ToJsonString()) is null, "Out-of-range Transparency settings must be rejected.");
+}
+foreach (string invalidValue in new[] { "{}", "[]", "1", "true", "\"settings\"" })
+    Check(Wire.ParseEvent("{\"event\":\"state\",\"transparency\":" + invalidValue + "}") is null,
+        "Malformed Transparency settings must be rejected.");
+foreach (string key in new[] { "transparency_pending", "transparency_error" })
+    Check(Wire.ParseEvent("{\"event\":\"state\",\"" + key + "\":1}") is null, "Malformed Transparency state must be rejected.");
+
 string[] malformedPresence = ["0", "1", "\"true\"", "[]"];
 foreach (string present in malformedPresence)
 {
@@ -284,5 +338,16 @@ foreach (string mode in new[] { "windows", "aac", "aac_eld" })
 output.Add(Wire.ToLine(new RetryPlaybackCmd()).TrimEnd('\n'));
 foreach (var (mode, bestEffort, kbps) in new[] { ("aac", true, 512u), ("aac", false, 320u), ("aac_eld", true, 256u), ("aac_eld", false, 128u) })
     output.Add(Wire.ToLine(new SetPlaybackBitrateCmd { Mode = mode, BestEffort = bestEffort, Kbps = kbps }).TrimEnd('\n'));
+output.Add(Wire.ToLine(new SetPlaybackBitrateCmd { Mode = "aac_eld", BestEffort = true, Kbps = 256, Variable = true }).TrimEnd('\n'));
+output.Add(Wire.ToLine(new GetTransparencyCmd()).TrimEnd('\n'));
+foreach (bool enabled in new[] { false, true })
+    output.Add(Wire.ToLine(new SetTransparencyCmd { Settings = Transparency(enabled) }).TrimEnd('\n'));
+foreach (ulong id in new ulong[] { 0, 73 })
+    output.Add(Wire.ToLine(new SetHearingAidCmd { RequestId = id, On = true, Amplification = .5f }).TrimEnd('\n'));
 File.WriteAllLines(args[1], output);
-Console.WriteLine($"C#: {lines.Length} production/legacy events and {malformed.Length + malformedPresence.Length} malformed inputs passed");
+Console.WriteLine($"C#: {lines.Length} production/legacy events, VBR/Transparency roundtrips and malformed-input checks passed");
+
+static TransparencySettings Transparency(bool enabled) => new() {
+    Enabled = enabled, LeftAmplification = -1, RightAmplification = 1, LeftTone = -0.25f, RightTone = 0.5f,
+    LeftConversationBoost = true, RightConversationBoost = false, LeftAmbientNoiseReduction = 0, RightAmbientNoiseReduction = 1
+};

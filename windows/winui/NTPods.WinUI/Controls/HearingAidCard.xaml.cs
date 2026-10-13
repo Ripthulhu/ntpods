@@ -3,6 +3,7 @@ using System.Linq;
 using NTPods.WinUI.Ipc;
 using NTPods.WinUI.Services;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 
@@ -15,7 +16,19 @@ namespace NTPods.WinUI.Controls;
 /// apply is a ~1.3 s enable + ATT round-trip).
 public sealed partial class HearingAidCard : UserControl
 {
-    public DaemonClient? Client { get; set; }
+    private DaemonClient? _client;
+    public DaemonClient? Client
+    {
+        get => _client;
+        set
+        {
+            if (_client is not null) _client.CommandResultReceived -= ApplyResult;
+            _client = value;
+            if (_client is not null) _client.CommandResultReceived += ApplyResult;
+        }
+    }
+    private readonly HearingAidRequest _request = new();
+    private readonly DispatcherTimer _timeout = new() { Interval = TimeSpan.FromSeconds(20) };
 
     private static readonly string[] Freqs =
         { "250 Hz", "500 Hz", "1 kHz", "2 kHz", "3 kHz", "4 kHz", "6 kHz", "8 kHz" };
@@ -34,7 +47,14 @@ public sealed partial class HearingAidCard : UserControl
     {
         InitializeComponent();
         BuildAudiogramGrid();
-        _debounce.Tick += (_, _) => { _debounce.Stop(); Apply(); };
+        _debounce.Tick += (_, _) => { _debounce.Stop(); if (_request.TakeEdit()) Apply(); };
+        _timeout.Tick += (_, _) =>
+        {
+            _timeout.Stop(); _request.Cancel();
+            ShowError(Localize.Get("HearingAid.Unconfirmed"));
+            RenderRequest();
+        };
+        Loc.Instance.PropertyChanged += (_, _) => UpdateAudiogramNames();
     }
 
     private void BuildAudiogramGrid()
@@ -58,6 +78,16 @@ public sealed partial class HearingAidCard : UserControl
             AddCell(_leftEq[i], row, 1);
             AddCell(_rightEq[i], row, 2);
         }
+        UpdateAudiogramNames();
+    }
+
+    private void UpdateAudiogramNames()
+    {
+        for (int i = 0; i < Freqs.Length; i++)
+        {
+            AutomationProperties.SetName(_leftEq[i], Localize.Get("HearingAid.LeftThreshold", Freqs[i]));
+            AutomationProperties.SetName(_rightEq[i], Localize.Get("HearingAid.RightThreshold", Freqs[i]));
+        }
     }
 
     private static TextBlock Header(string t) => new() { Text = t, Opacity = 0.6 };
@@ -74,7 +104,7 @@ public sealed partial class HearingAidCard : UserControl
             SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Hidden,
             IsEnabled = false,
         };
-        nb.ValueChanged += (_, _) => { if (EnableSwitch.IsOn) { _debounce.Stop(); _debounce.Start(); } };
+        nb.ValueChanged += (_, _) => QueueEdit();
         return nb;
     }
 
@@ -87,15 +117,28 @@ public sealed partial class HearingAidCard : UserControl
 
     private void Enable_Toggled(object sender, RoutedEventArgs e)
     {
-        bool on = EnableSwitch.IsOn;
+        if (_applying) return;
+        _debounce.Stop();
+        Apply();
+    }
+
+    private void RenderRequest()
+    {
+        _applying = true;
+        EnableSwitch.IsOn = _request.Pending is not null ? _request.Requested : _request.Enabled == true;
+        _applying = false;
+        EnableSwitch.IsEnabled = _supported;
+        bool on = _supported && _request.Enabled == true && _request.Pending is null;
         AmpSlider.IsEnabled = on;
         BalanceSlider.IsEnabled = on;
         ToneSlider.IsEnabled = on;
         ConvBoostSwitch.IsEnabled = on;
         foreach (var b in _leftEq) b.IsEnabled = on;
         foreach (var b in _rightEq) b.IsEnabled = on;
-        _debounce.Stop();
-        if (!_applying) Apply(); // enabling/disabling applies immediately
+        string help = _request.Pending is not null ? Localize.Get("DeviceSetting.Pending") :
+            _request.Enabled is null ? Localize.Get("DeviceSetting.Unknown") : "";
+        ToolTipService.SetToolTip(EnableSwitch, string.IsNullOrEmpty(help) ? null : help);
+        AutomationProperties.SetHelpText(EnableSwitch, help);
     }
 
     public void Update(Snapshot snapshot)
@@ -105,20 +148,26 @@ public sealed partial class HearingAidCard : UserControl
         {
             _deviceId = snapshot.DeviceId;
             _debounce.Stop();
-            _applying = true;
-            EnableSwitch.IsOn = false;
-            _applying = false;
+            _timeout.Stop();
+            _request.Reset();
+            ShowError(null);
         }
+        if (_supported) _request.Update(snapshot.HearingAidEnabled, snapshot.HearingAidRevision);
+        if (!_request.EditQueued) _debounce.Stop();
+        if (_request.Pending is null) _timeout.Stop();
+        RenderRequest();
     }
 
     private void Settings_Changed(object sender, RangeBaseValueChangedEventArgs e)
-    {
-        if (EnableSwitch.IsOn) { _debounce.Stop(); _debounce.Start(); }
-    }
+        => QueueEdit();
 
     private void ConvBoost_Toggled(object sender, RoutedEventArgs e)
+        => QueueEdit();
+
+    private void QueueEdit()
     {
-        if (EnableSwitch.IsOn) { _debounce.Stop(); _debounce.Start(); }
+        if (!_applying && _supported && _request.QueueEdit())
+        { _debounce.Stop(); _debounce.Start(); }
     }
 
     private static float EqVal(NumberBox nb) => double.IsNaN(nb.Value) ? 0f : (float)nb.Value;
@@ -126,8 +175,11 @@ public sealed partial class HearingAidCard : UserControl
     private void Apply()
     {
         if (!_supported) return;
-        Client?.SetHearingAid(new SetHearingAidCmd
+        ulong id = _request.Begin(EnableSwitch.IsOn);
+        ShowError(null);
+        bool sent = Client?.Send(new SetHearingAidCmd
         {
+            RequestId = id,
             On = EnableSwitch.IsOn,
             LeftEq = _leftEq.Select(EqVal).ToArray(),
             RightEq = _rightEq.Select(EqVal).ToArray(),
@@ -137,6 +189,24 @@ public sealed partial class HearingAidCard : UserControl
             ConversationBoost = ConvBoostSwitch.IsOn,
             AmbientNoiseReduction = 0f,
             OwnVoice = 0f,
-        });
+        }) == true;
+        _timeout.Stop();
+        if (sent) _timeout.Start();
+        else { _request.Cancel(); ShowError(Localize.Get("HearingAid.Unconfirmed")); }
+        RenderRequest();
+    }
+
+    private void ApplyResult(DaemonEvent.CommandResult result) => DispatcherQueue.TryEnqueue(() =>
+    {
+        if (!_request.Complete(result)) return;
+        _timeout.Stop();
+        ShowError(result.Ok ? null : result.Message);
+        RenderRequest();
+    });
+
+    private void ShowError(string? message)
+    {
+        ErrorText.Text = message ?? "";
+        ErrorText.Visibility = string.IsNullOrEmpty(message) ? Visibility.Collapsed : Visibility.Visible;
     }
 }

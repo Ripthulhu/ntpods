@@ -120,6 +120,7 @@
 
   <!-- ===== HearingAidCard ===== -->
   <data name="HearingAidTitle.Text" xml:space="preserve"><value>Hearing assistance</value></data>
+  <data name="HearingAid.Unconfirmed" xml:space="preserve"><value>Hearing settings were not confirmed. Check the connection and try again.</value></data>
   <data name="HearingAidSubtitle.Text" xml:space="preserve"><value>Amplify the world around you through your AirPods (Pro 3).</value></data>
   <data name="HearingAidWarning.Title" xml:space="preserve"><value>Experimental</value></data>
   <data name="HearingAidWarning.Message" xml:space="preserve"><value>Amplification without a fitted audiogram may cause feedback — keep it at a comfortable level.</value></data>
@@ -424,4 +425,20 @@
   <data name="Playback.CurrentBitrate" xml:space="preserve"><value>Current bitrate: {0} kbps.</value></data>
   <data name="Playback.CurrentCodec" xml:space="preserve"><value>Current codec: {0}.</value></data>
   <data name="Playback.BitrateCodec" xml:space="preserve"><value>Bitrate settings apply to {0}.</value></data>
+  <data name="Playback.Variable" xml:space="preserve"><value>Variable (experimental)</value></data>
+  <data name="Playback.VariableHelp" xml:space="preserve"><value>AAC-ELD variable bitrate, up to 256 kbps.</value></data>
+  <data name="Playback.PeakBitrate" xml:space="preserve"><value>Maximum bitrate: {0} kbps.</value></data>
+  <data name="Transparency.Title" xml:space="preserve"><value>Custom Transparency</value></data>
+  <data name="Transparency.Help" xml:space="preserve"><value>Experimental. Adjusts outside sound in Transparency mode. Read the current settings before editing.</value></data>
+  <data name="Transparency.Enable" xml:space="preserve"><value>Use custom settings</value></data>
+  <data name="Transparency.Ear" xml:space="preserve"><value>AirPod</value></data>
+  <data name="Transparency.Left" xml:space="preserve"><value>Left AirPod</value></data>
+  <data name="Transparency.Right" xml:space="preserve"><value>Right AirPod</value></data>
+  <data name="Transparency.Amplification" xml:space="preserve"><value>Amplification</value></data>
+  <data name="Transparency.Tone" xml:space="preserve"><value>Tone</value></data>
+  <data name="Transparency.Ambient" xml:space="preserve"><value>Ambient noise reduction</value></data>
+  <data name="Transparency.Boost" xml:space="preserve"><value>Conversation Boost</value></data>
+  <data name="Transparency.Read" xml:space="preserve"><value>Read settings</value></data>
+  <data name="HearingAid.LeftThreshold" xml:space="preserve"><value>Left ear, {0}, hearing loss in dB HL</value></data>
+  <data name="HearingAid.RightThreshold" xml:space="preserve"><value>Right ear, {0}, hearing loss in dB HL</value></data>
 </root>

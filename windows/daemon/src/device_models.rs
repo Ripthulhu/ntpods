@@ -14,6 +14,7 @@ pub struct Profile {
     pub high_quality_mic: bool,
     pub custom_eq: bool,
     pub hearing_aid: bool,
+    pub custom_transparency: bool,
     pub loud_sound_reduction: bool,
     pub controls: Vec<u8>,
 }

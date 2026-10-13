@@ -7,7 +7,7 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     mc:Ignorable="d">
 
-    <Expander Style="{StaticResource GroupExpander}" IsExpanded="False">
+    <Expander x:Name="HearingExpander" Style="{StaticResource GroupExpander}" IsExpanded="False">
         <Expander.Header>
             <TextBlock Text="{Binding [HearingAidTitle_Text], Source={StaticResource Loc}}"
                        FontSize="16" />
@@ -31,6 +31,9 @@
                               AutomationProperties.Name="{Binding [HearingAidSwitch_Header], Source={StaticResource Loc}}"
                               Toggled="Enable_Toggled" />
             </Grid>
+
+            <TextBlock x:Name="ErrorText" FontSize="13" TextWrapping="Wrap" Visibility="Collapsed"
+                       Foreground="{ThemeResource SystemFillColorCriticalBrush}" AutomationProperties.LiveSetting="Polite" />
 
             <!-- Per-person audiogram (hearing loss, dB HL). Rows built in code-behind. -->
             <TextBlock Text="{Binding [HearingAidAudiogram_Header], Source={StaticResource Loc}}"

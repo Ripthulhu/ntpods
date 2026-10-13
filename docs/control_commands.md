@@ -1,5 +1,10 @@
 # Control Commands
 
+This catalog includes identifiers extracted from Apple's stack that NTPods does
+not expose or accept. The [Windows protocol reference](WINDOWS-AIRPODS-CONTROL-PROTOCOL.md)
+lists the implemented allowlist, model gates and confirmation behavior. Device
+support must be established separately from an identifier's presence here.
+
 AACP control commands use the 16-bit opcode `9`. Each command is seven bytes plus the four-byte header (`04 00 04 00`).
 
 An AACP packet is formatted as:

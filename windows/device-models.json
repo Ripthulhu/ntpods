@@ -15,6 +15,7 @@
     "high_quality_mic": false,
     "custom_eq": false,
     "hearing_aid": false,
+    "custom_transparency": false,
     "controls": [
       1,
       10,
@@ -38,6 +39,7 @@
     "high_quality_mic": false,
     "custom_eq": false,
     "hearing_aid": false,
+    "custom_transparency": false,
     "controls": [
       1,
       10,
@@ -62,6 +64,7 @@
     "high_quality_mic": false,
     "custom_eq": false,
     "hearing_aid": false,
+    "custom_transparency": false,
     "controls": [
       1,
       10,
@@ -92,6 +95,7 @@
     "high_quality_mic": true,
     "custom_eq": true,
     "hearing_aid": false,
+    "custom_transparency": false,
     "controls": [
       1,
       10,
@@ -124,6 +128,7 @@
     "high_quality_mic": true,
     "custom_eq": true,
     "hearing_aid": false,
+    "custom_transparency": false,
     "controls": [
       1,
       10,
@@ -163,6 +168,7 @@
     "high_quality_mic": true,
     "custom_eq": true,
     "hearing_aid": false,
+    "custom_transparency": false,
     "loud_sound_reduction": false,
     "controls": [
       1,
@@ -200,6 +206,7 @@
     "high_quality_mic": true,
     "custom_eq": true,
     "hearing_aid": false,
+    "custom_transparency": false,
     "loud_sound_reduction": false,
     "controls": [
       1,
@@ -240,6 +247,7 @@
     "high_quality_mic": false,
     "custom_eq": false,
     "hearing_aid": false,
+    "custom_transparency": true,
     "controls": [
       1,
       10,
@@ -273,6 +281,7 @@
     "high_quality_mic": true,
     "custom_eq": true,
     "hearing_aid": true,
+    "custom_transparency": true,
     "controls": [
       1,
       10,
@@ -316,6 +325,7 @@
     "high_quality_mic": true,
     "custom_eq": true,
     "hearing_aid": true,
+    "custom_transparency": true,
     "controls": [
       1,
       10,
@@ -359,6 +369,7 @@
     "high_quality_mic": true,
     "custom_eq": true,
     "hearing_aid": true,
+    "custom_transparency": true,
     "controls": [
       1,
       10,
@@ -400,6 +411,7 @@
     "high_quality_mic": false,
     "custom_eq": false,
     "hearing_aid": false,
+    "custom_transparency": false,
     "controls": [
       10,
       13,
@@ -427,6 +439,7 @@
     "high_quality_mic": false,
     "custom_eq": false,
     "hearing_aid": false,
+    "custom_transparency": false,
     "controls": [
       10,
       13,
@@ -454,6 +467,7 @@
     "high_quality_mic": true,
     "custom_eq": true,
     "hearing_aid": false,
+    "custom_transparency": false,
     "controls": [
       10,
       13,
@@ -485,6 +499,7 @@
     "high_quality_mic": false,
     "custom_eq": false,
     "hearing_aid": false,
+    "custom_transparency": false,
     "loud_sound_reduction": false,
     "controls": [
       10,

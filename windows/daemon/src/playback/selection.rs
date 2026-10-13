@@ -114,6 +114,13 @@ pub fn validate_bitrate(mode: PlaybackMode, bitrate: PlaybackBitrate) -> io::Res
     if !range.contains(&bitrate.kbps) {
         return Err(io::Error::other("Bitrate is outside the supported range."));
     }
+    if bitrate.variable
+        && (mode != PlaybackMode::AacEld || !bitrate.best_effort || bitrate.kbps != 256)
+    {
+        return Err(io::Error::other(
+            "Variable bitrate requires the AAC-ELD profile.",
+        ));
+    }
     Ok(())
 }
 
@@ -188,6 +195,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn variable_profile_is_opt_in_and_restarts_only_eld() {
+        let variable = PlaybackBitrate {
+            variable: true,
+            ..PlaybackBitrate::default()
+        };
+        assert!(!PlaybackBitrate::default().variable);
+        assert!(validate_bitrate(PlaybackMode::AacEld, variable).is_ok());
+        assert!(validate_bitrate(PlaybackMode::Aac, variable).is_err());
+        assert!(validate_bitrate(
+            PlaybackMode::AacEld,
+            PlaybackBitrate {
+                best_effort: false,
+                ..variable
+            }
+        )
+        .is_err());
+        assert!(validate_bitrate(
+            PlaybackMode::AacEld,
+            PlaybackBitrate {
+                kbps: 192,
+                ..variable
+            }
+        )
+        .is_err());
+
+        let mut selection = Selection::new(PlaybackMode::AacEld);
+        let cancel = Arc::new(AtomicBool::new(false));
+        selection.cancel = Some(cancel.clone());
+        assert!(selection
+            .change_bitrate(PlaybackMode::AacEld, variable, None, false, |values| {
+                assert_eq!(values, [PlaybackBitrate::default(), variable]);
+                Ok(())
+            })
+            .unwrap());
+        assert_eq!(selection.revision, 1);
+        assert!(cancel.load(Ordering::Acquire));
+    }
+
+    #[test]
     fn new_audio_intent_allows_reconnect_but_same_failure_requires_retry() {
         assert_eq!(attempted_revision(Some((4, 8)), 8), Some(4));
         assert_eq!(attempted_revision(Some((4, 8)), 9), None);
@@ -206,6 +252,7 @@ mod tests {
         let cancel = Arc::new(AtomicBool::new(false));
         selected.cancel = Some(cancel.clone());
         let manual = PlaybackBitrate {
+            variable: false,
             best_effort: false,
             kbps: 128,
         };
@@ -250,6 +297,7 @@ mod tests {
             assert!(validate_bitrate(
                 mode,
                 PlaybackBitrate {
+                    variable: false,
                     best_effort: true,
                     kbps
                 }
@@ -261,6 +309,7 @@ mod tests {
     #[test]
     fn fallback_bitrate_edits_preserve_recording_and_invalidate_pending_preferences() {
         let manual = PlaybackBitrate {
+            variable: false,
             best_effort: false,
             kbps: 192,
         };

@@ -39,10 +39,14 @@ access unit. Lengths are 1–321 bytes. EOF ends the stream; there is no zero-le
 record. Errors go to stderr and return a nonzero exit code. The caller must check
 the exit code before treating EOF as a normal stop.
 
-The encoder uses AOT 39, 480-sample frames and constant bitrate, with SBR disabled.
+The encoder uses AOT 39 and 480-sample frames, with SBR disabled.
 `--bitrate <bits-per-second>` accepts 128000–256000 in 1000-bit steps; omitted, it
 uses 256000. FDK's CBR frames can vary by one byte. Each access unit is limited to
 `ceil(bitrate / 800) + 1` bytes, at most 321 bytes at 256 kbps.
+`--vbr` selects FDK's quality mode 5 with a 256 kbps peak limit. Its internal
+nominal stereo rate is 192 kbps, but it does not target a fixed average bitrate:
+the output depends on the audio. It cannot be combined with `--bitrate`.
+The same 321-byte access-unit limit applies. CBR remains the default.
 The worker validates the requested bitrate, generated core format
 and each encoded packet before sending it.
 This is lossy audio; it does not implement Apple's wireless lossless mode.
@@ -71,3 +75,9 @@ Codec settings follow the no-SBR profile in
 with the selected bitrate capped at 256 kbps.
 Successful local encoding does not establish AirPods playback or coexistence
 with Windows audio.
+
+The VBR option uses the rate-control API in the pinned FDK source:
+`libAACenc/include/aacenc_lib.h` documents `AACENC_BITRATEMODE` and
+`AACENC_PEAK_BITRATE`; `libAACenc/src/aacenc.cpp` defines mode 5's nominal rate.
+The round-trip tests cover silence, stereo tones, noise and transients, plus the
+per-frame size limit. This profile has not been validated on AirPods hardware.

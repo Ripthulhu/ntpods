@@ -5,6 +5,8 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <windows.h>
+#include <avrt.h>
 
 enum { CHANNELS = 2, FRAME_SAMPLES = 480, PCM_SAMPLES = 960 };
 
@@ -59,15 +61,21 @@ int main(int argc, char **argv) {
     AACENC_InfoStruct info = {0};
     INT_PCM pcm[PCM_SAMPLES];
     int exit_code = 1;
+    DWORD task_index = 0;
+    HANDLE audio_task = NULL;
     unsigned bitrate = 256000;
-    if (argc != 1) {
+    const int variable = argc == 2 && !strcmp(argv[1], "--vbr");
+    if (variable) {
+        bitrate = 192000;
+    } else if (argc != 1) {
         if (argc != 3 || strcmp(argv[1], "--bitrate") || strlen(argv[2]) != 6 ||
             strspn(argv[2], "0123456789") != 6 || sscanf_s(argv[2], "%u", &bitrate) != 1 ||
             bitrate < 128000 || bitrate > 256000 || bitrate % 1000 != 0) {
-            fprintf(stderr, "Use --bitrate with 128000..256000 bits per second in 1000-bit steps.\n");
+            fprintf(stderr, "Use --bitrate with 128000..256000 bits per second in 1000-bit steps, or --vbr.\n");
             return 1;
         }
     }
+    const unsigned peak_bitrate = variable ? 256000 : bitrate;
     if (sizeof(INT_PCM) != 2 || _setmode(_fileno(stdin), _O_BINARY) == -1 ||
         _setmode(_fileno(stdout), _O_BINARY) == -1) {
         fprintf(stderr, "Cannot initialize PCM input and binary output.\n");
@@ -81,8 +89,8 @@ int main(int argc, char **argv) {
         {AACENC_AOT, AOT_ER_AAC_ELD}, {AACENC_SAMPLERATE, 48000},
         {AACENC_CHANNELMODE, MODE_2}, {AACENC_GRANULE_LENGTH, FRAME_SAMPLES},
         {AACENC_SBR_MODE, 0},
-        {AACENC_BITRATE, bitrate}, {AACENC_BITRATEMODE, 0},
-        {AACENC_PEAK_BITRATE, bitrate}, {AACENC_AFTERBURNER, 0},
+        {AACENC_BITRATE, bitrate}, {AACENC_BITRATEMODE, variable ? 5 : 0},
+        {AACENC_PEAK_BITRATE, peak_bitrate}, {AACENC_AFTERBURNER, 0},
         {AACENC_TRANSMUX, TT_MP4_RAW}
     };
     for (size_t i = 0; i < sizeof(parameters) / sizeof(parameters[0]); ++i) {
@@ -93,7 +101,9 @@ int main(int argc, char **argv) {
     }
     if (aacEncEncode(encoder, NULL, NULL, NULL, NULL) != AACENC_OK ||
         aacEncInfo(encoder, &info) != AACENC_OK || !valid_configuration(&info) ||
-        aacEncoder_GetParam(encoder, AACENC_BITRATE) != bitrate) {
+        aacEncoder_GetParam(encoder, AACENC_BITRATEMODE) != (variable ? 5u : 0u) ||
+        aacEncoder_GetParam(encoder, AACENC_PEAK_BITRATE) != peak_bitrate ||
+        (!variable && aacEncoder_GetParam(encoder, AACENC_BITRATE) != bitrate)) {
         fprintf(stderr, "Cannot initialize the 480-sample AAC-ELD configuration.\n");
         goto cleanup;
     }
@@ -103,7 +113,8 @@ int main(int argc, char **argv) {
         goto cleanup;
     }
     // FDK's CBR frames can exceed the rounded 10 ms byte budget by one byte.
-    const unsigned max_au = (bitrate + 799) / 800 + 1;
+    const unsigned max_au = (peak_bitrate + 799) / 800 + 1;
+    audio_task = AvSetMmThreadCharacteristicsW(L"Audio", &task_index);
     for (;;) {
         size_t count = fread(pcm, 1, sizeof(pcm), stdin);
         if (ferror(stdin) || (count && count != sizeof(pcm))) {
@@ -120,6 +131,7 @@ int main(int argc, char **argv) {
     }
     fprintf(stderr, "AAC-ELD flush exceeded its limit.\n");
 cleanup:
+    if (audio_task) AvRevertMmThreadCharacteristics(audio_task);
     aacEncClose(&encoder);
     return exit_code;
 }

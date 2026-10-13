@@ -72,6 +72,12 @@ connected during uninstall to restore their saved driver, or Windows playback
 when no prior binding was saved; see the
 [playback test guide](windows/playback/TESTING.md).
 
+With NTPods playback ready and **Use NTPods microphone** enabled, the matching
+Windows hands-free microphone and speaker are hidden from audio device lists.
+They return when the microphone feature is turned off or NTPods exits. Models
+without high-quality microphone support keep their hands-free devices.
+Restart Discord if its device list still shows an old entry.
+
 ## Contributing
 
 Start with [CONTRIBUTING.md](CONTRIBUTING.md) for the code layout and tests,
@@ -81,7 +87,7 @@ or [build the app and drivers](docs/BUILD-WINDOWS.md).
 
 - `windows/`: the drivers (AAP, playback and virtual mic), the daemon (Rust), the
   WinUI app (C#) and the installer
-- `docs/` and `AAP Definitions.md`: notes on the AirPods protocol
+- `docs/`: [AirPods protocol reference](docs/AIRPODS-PROTOCOL.md), capture procedure and hardware results
 - `.github/workflows/ci-windows.yml`: builds, tests and opt-in experimental packages
 
 ## Credits

@@ -61,17 +61,19 @@ try {
     Run (Join-Path $tests 'mic-bridge.exe') @()
     Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', "/Fe:$tests\render-bridge.exe", "/Fo:$tests\render-bridge.obj", 'windows/drivers/mic/tests/render_bridge_test.cpp')
     Run (Join-Path $tests 'render-bridge.exe') @()
+    Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', "/Fe:$tests\packet-constraints.exe", "/Fo:$tests\packet-constraints.obj", 'windows/drivers/mic/tests/packet_constraints_test.cpp', '/link', 'setupapi.lib')
+    Run (Join-Path $tests 'packet-constraints.exe') @('windows/drivers/audio/NTPodsAudio.inf', 'windows/drivers/mic/AudioCodec/Driver/AudioCodec.inf')
     Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', "/Fe:$tests\aap-playback.exe", "/Fo:$tests\aap-playback.obj", 'windows/drivers/aap/tests/playback_transport_test.cpp')
     Run (Join-Path $tests 'aap-playback.exe') @()
     Run $bash @('windows/daemon/fetch-ffmpeg.sh')
     $env:PATH = "$(Join-Path $repo 'windows\daemon\vendor\ffmpeg\bin');$env:PATH"
     Run 'cl.exe' @('/nologo', '/W4', '/WX', '/TC', '/external:Iwindows/daemon/vendor/ffmpeg/include', '/external:W0', "/Fe:$tests\eld-shim.exe", "/Fo:$tests\eld-shim.obj", 'windows/daemon/tests/eld_shim_test.c', '/link', '/LIBPATH:windows/daemon/vendor/ffmpeg/lib', 'avcodec.lib', 'avutil.lib', 'swresample.lib')
     Run (Join-Path $tests 'eld-shim.exe') @()
-    Run 'cl.exe' @('/nologo', '/W4', '/WX', '/std:c11', '/MD', '/O2', '/external:W0', '/external:Iwindows/daemon/vendor/ffmpeg/include', "/Fe:$tests\aac-shim.exe", "/Fo:$tests\aac-shim.obj", 'windows/daemon/tests/aac_shim_test.c', '/link', '/LIBPATH:windows/daemon/vendor/ffmpeg/lib', 'avcodec.lib', 'avutil.lib')
+    Run 'cl.exe' @('/nologo', '/W4', '/WX', '/std:c11', '/MD', '/O2', '/external:W0', '/external:Iwindows/daemon/vendor/ffmpeg/include', "/Fe:$tests\aac-shim.exe", "/Fo:$tests\aac-shim.obj", 'windows/daemon/tests/aac_shim_test.c', '/link', '/LIBPATH:windows/daemon/vendor/ffmpeg/lib', 'avcodec.lib', 'avutil.lib', 'Avrt.lib')
     Run (Join-Path $tests 'aac-shim.exe') @()
     $aacWorkerDir = Join-Path $repo 'windows\daemon\target\release'
     New-Item -ItemType Directory -Path $aacWorkerDir -Force | Out-Null
-    Run 'cl.exe' @('/nologo', '/W4', '/WX', '/std:c11', '/MT', '/O2', '/external:W0', '/external:Iwindows/daemon/vendor/ffmpeg/include', "/Fe:$aacWorkerDir\ntpods-aac-encoder.exe", "/Fo:$tests\aac-worker.obj", 'windows/daemon/src/playback/aac_worker.c', '/link', '/LIBPATH:windows/daemon/vendor/ffmpeg/lib', 'avcodec.lib', 'avutil.lib')
+    Run 'cl.exe' @('/nologo', '/W4', '/WX', '/std:c11', '/MT', '/O2', '/external:W0', '/external:Iwindows/daemon/vendor/ffmpeg/include', "/Fe:$aacWorkerDir\ntpods-aac-encoder.exe", "/Fo:$tests\aac-worker.obj", 'windows/daemon/src/playback/aac_worker.c', '/link', '/LIBPATH:windows/daemon/vendor/ffmpeg/lib', 'avcodec.lib', 'avutil.lib', 'Avrt.lib')
     & windows/playback/encoder/build.ps1
     Run 'python.exe' @('windows/playback/encoder/test.py')
     Run $cargo @('test', '--locked', '--manifest-path', 'windows/ipc/Cargo.toml')
@@ -134,6 +136,8 @@ try {
     Run "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'windows/installer/test-driver-rollback.ps1')
     & windows/installer/test-audio-driver.ps1
     Run "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'windows/installer/test-audio-driver.ps1')
+    & windows/installer/test-fix-driver.ps1
+    Run "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'windows/installer/test-fix-driver.ps1')
     & windows/installer/make-dist.ps1 -Out (Join-Path $Out 'dist') -DaemonExe windows/daemon/target/release/ntpodsd.exe -WinUIDir $ui.Directory.FullName -DriverPackages $packages
     $env:PATH = "$env:USERPROFILE\.dotnet\tools;$env:PATH"
     & windows/installer/msi/build-msi.ps1 -Dist (Join-Path $Out 'dist') -Out (Join-Path $Out 'NTPods-experimental.msi') @msiVersionArguments

@@ -36,6 +36,15 @@ def spectral_amplitude(samples, frequency):
     return 2 * math.hypot(real, imag) / len(samples)
 
 
+def decode(data):
+    with tempfile.TemporaryDirectory(dir=ROOT / "build") as temporary:
+        encoded = Path(temporary) / "audio.bin"
+        decoded = Path(temporary) / "audio.f32"
+        encoded.write_bytes(data)
+        subprocess.run([BUILD / "verify-eld.exe", encoded, decoded], check=True, timeout=30)
+        return struct.unpack("<" + "f" * (decoded.stat().st_size // 4), decoded.read_bytes())
+
+
 def run():
     pcm = bytearray()
     for i in range(48000 * 3):
@@ -47,24 +56,25 @@ def run():
     assert not process.stderr, process.stderr.decode(errors="replace")
     asc, sizes = parse_stream(process.stdout)
     assert 300 <= len(sizes) <= 332
-    with tempfile.TemporaryDirectory(dir=ROOT / "build") as temporary:
-        encoded = Path(temporary) / "tone.bin"
-        decoded = Path(temporary) / "tone.f32"
-        encoded.write_bytes(process.stdout)
-        subprocess.run([BUILD / "verify-eld.exe", encoded, decoded], check=True, timeout=30)
-        values = struct.unpack("<" + "f" * (decoded.stat().st_size // 4), decoded.read_bytes())
-    assert len(values) == len(sizes) * 480 * 2
-    left, right = values[0::2], values[1::2]
-    for channel, own_frequency, other_frequency in ((left, 440, 880), (right, 880, 440)):
-        section = channel[24000:120000]
-        assert all(math.isfinite(value) and abs(value) < 0.5 for value in section)
-        amplitude = spectral_amplitude(section, own_frequency)
-        leakage = spectral_amplitude(section, other_frequency)
-        assert 0.1 < amplitude < 0.25, (own_frequency, amplitude)
-        assert leakage < amplitude * 0.02, (own_frequency, leakage)
-        crossings = sum(a <= 0 < b for a, b in zip(section, section[1:]))
-        frequency = crossings * 48000 / len(section)
-        assert abs(frequency - own_frequency) < 2, frequency
+    variable = subprocess.run([BUILD / "ntpods-eld-encoder.exe", "--vbr"], input=pcm,
+                              capture_output=True, timeout=30, check=True)
+    assert not variable.stderr, variable.stderr.decode(errors="replace")
+    _, variable_sizes = parse_stream(variable.stdout)
+    assert len(variable_sizes) == len(sizes) and len(set(variable_sizes)) > 8
+    for encoded_data, lengths in ((process.stdout, sizes), (variable.stdout, variable_sizes)):
+        values = decode(encoded_data)
+        assert len(values) == len(lengths) * 480 * 2
+        left, right = values[0::2], values[1::2]
+        for channel, own_frequency, other_frequency in ((left, 440, 880), (right, 880, 440)):
+            section = channel[24000:120000]
+            assert all(math.isfinite(value) and abs(value) < 0.5 for value in section)
+            amplitude = spectral_amplitude(section, own_frequency)
+            leakage = spectral_amplitude(section, other_frequency)
+            assert 0.1 < amplitude < 0.25, (own_frequency, amplitude)
+            assert leakage < amplitude * 0.02, (own_frequency, leakage)
+            crossings = sum(a <= 0 < b for a, b in zip(section, section[1:]))
+            frequency = crossings * 48000 / len(section)
+            assert abs(frequency - own_frequency) < 2, frequency
     for malformed in (b"\x00", bytes(1919), bytes(1921)):
         failed = subprocess.run([BUILD / "ntpods-eld-encoder.exe"], input=malformed,
                                 capture_output=True, timeout=10)
@@ -84,6 +94,21 @@ def run():
                             capture_output=True, timeout=30, check=True)
     _, stress_sizes = parse_stream(stress.stdout)
     assert len(stress_sizes) >= 300 and max(stress_sizes) <= 321
+    variable_stress = subprocess.run([BUILD / "ntpods-eld-encoder.exe", "--vbr"],
+                                     input=bytes(48000 * 4) + stress_pcm,
+                                     capture_output=True, timeout=30, check=True)
+    _, variable_stress_sizes = parse_stream(variable_stress.stdout)
+    assert 400 <= len(variable_stress_sizes) <= 432
+    assert max(variable_stress_sizes[:98]) < 20
+    assert len(set(variable_stress_sizes[102:298])) > 8
+    assert max(variable_stress_sizes) <= 321
+    variable_noise_rate = sum(variable_stress_sizes[102:298]) * 800 / 196
+    variable_tone_rate = sum(variable_sizes[2:298]) * 800 / 296
+    assert 128000 < variable_noise_rate <= 256000
+    assert variable_tone_rate < variable_noise_rate
+    decoded_variable = decode(variable_stress.stdout)
+    assert len(decoded_variable) == len(variable_stress_sizes) * 960
+    assert all(math.isfinite(value) and abs(value) <= 2 for value in decoded_variable)
     decode_rates = {128000, 129000, 192000, 255000, 256000}
     for bitrate in range(128000, 256001, 1000):
         selected = subprocess.run([BUILD / "ntpods-eld-encoder.exe", "--bitrate", str(bitrate)],
@@ -97,23 +122,21 @@ def run():
         assert abs(measured_bitrate - bitrate) <= 800, (bitrate, measured_bitrate)
         if bitrate not in decode_rates:
             continue
-        with tempfile.TemporaryDirectory(dir=ROOT / "build") as temporary:
-            encoded = Path(temporary) / "rate.bin"
-            decoded = Path(temporary) / "rate.f32"
-            encoded.write_bytes(selected.stdout)
-            subprocess.run([BUILD / "verify-eld.exe", encoded, decoded], check=True, timeout=30)
-            values = struct.unpack("<" + "f" * (decoded.stat().st_size // 4), decoded.read_bytes())
-            assert len(values) == len(selected_sizes) * 960
-            assert all(math.isfinite(value) and abs(value) <= 2 for value in values)
+        values = decode(selected.stdout)
+        assert len(values) == len(selected_sizes) * 960
+        assert all(math.isfinite(value) and abs(value) <= 2 for value in values)
     for arguments in (["--bitrate", "127000"], ["--bitrate", "257000"],
                       ["--bitrate", "128001"], ["--bitrate", "128000x"],
-                      ["--bitrate", "-128000"], ["--bitrate"], ["--wrong", "256000"]):
+                      ["--bitrate", "-128000"], ["--bitrate"], ["--wrong", "256000"],
+                      ["--vbr", "192000"], ["--vbr", "--bitrate", "192000"]):
         rejected = subprocess.run([BUILD / "ntpods-eld-encoder.exe", *arguments],
                                   input=b"", capture_output=True, timeout=10)
         assert rejected.returncode != 0 and not rejected.stdout
     print(f"PASS: ASC {asc.hex()}, {len(sizes)} AUs, peak {max(sizes)} bytes; "
           f"noise peak {max(stress_sizes)} bytes; 48 kHz stereo pitch, "
-          "channel separation, all 129 bitrate budgets, noise/transients and truncated input.")
+          "channel separation, all 129 bitrate budgets, noise/transients and truncated input; "
+          f"VBR tones {variable_tone_rate / 1000:.1f}, noise {variable_noise_rate / 1000:.1f} kbps, "
+          f"peak {max(variable_stress_sizes)} bytes.")
 
 
 if __name__ == "__main__":

@@ -13,7 +13,7 @@ public static class AppSettings
         // 0 = System (Default), 1 = Light, 2 = Dark — the ThemeButtons indices.
         public int ThemeIndex { get; set; }
 
-        // Hearing assistance is opt-in; heart rate is controlled separately.
+        // Hearing assistance and Custom Transparency are opt-in.
         public bool EnableExperimental { get; set; }
 
         // BCP-47 UI language override (e.g. "pt-PT"); "" = follow the system.
@@ -88,7 +88,7 @@ public static class AppSettings
         Save(m);
     }
 
-    /// Whether experimental cards (hearing aid) are shown (off by default).
+    /// Whether experimental settings are shown (off by default).
     public static bool EnableExperimental => Load().EnableExperimental;
 
     /// Persist the experimental-features opt-in.

@@ -474,7 +474,8 @@ CStreamEngine::GetHWLatency(
 {
     PAGED_CODE();
 
-    *FifoSize = 128;
+    *FifoSize = 0;
+    // shortcut: Remote audio timing is unknown until the bridges carry correlated timestamps.
     *Delay = 0;
 
     return STATUS_SUCCESS;

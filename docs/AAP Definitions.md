@@ -1,5 +1,12 @@
 # AAP Definitions (As per AirPods Pro 2 (USB-C) Firmware 7A305)
 
+These historical observations describe particular firmware and include formats
+that differ from the current Windows implementation. See the
+[Windows protocol reference](WINDOWS-AIRPODS-CONTROL-PROTOCOL.md) for current EQ,
+battery, sensor and setting handling. Sensor fields should be parsed through
+their length-delimited records; the fixed whole-packet offsets below are not
+general offsets for every frame.
+
 AAP runs on top of L2CAP, with a PSM of 0x1001 or 4097.
 
 # Handshake

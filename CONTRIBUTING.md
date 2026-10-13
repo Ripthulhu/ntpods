@@ -32,6 +32,10 @@ PCM to the backend for encoding and AVDTP transport. Windows keeps control of th
 The normal build includes [AAC and AAC-ELD playback](windows/playback/README.md).
 The codec and bitrate are selected in the app; both use the same AirPods output.
 
+For Bluetooth work, start with the [protocol reference](docs/AIRPODS-PROTOCOL.md)
+and [macOS capture procedure](docs/MACOS-PROTOCOL-CAPTURE.md). Keep decoded fields,
+hardware observations and unresolved interpretations distinct.
+
 ## Build and test
 
 Install the tools listed in [BUILD-WINDOWS.md](docs/BUILD-WINDOWS.md). From the
@@ -103,3 +107,5 @@ Keep the FFmpeg DLLs, source archives and build recipes matched; see
 In a pull request, explain the behavior changed and how you checked it.
 For connection or audio changes, include the AirPods model, firmware, Bluetooth
 adapter and playback driver. Remove personal device identifiers from logs.
+For audio timing changes, follow the Microsoft references and measurement
+procedure in [Windows audio latency](docs/WINDOWS-AUDIO-LATENCY.md).

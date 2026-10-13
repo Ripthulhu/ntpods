@@ -1,6 +1,6 @@
-//! Experimental GATT discovery over the ATT client channel (PSM 0x001F).
-//! Scan the AirPods' server for characteristics beyond the hearing-aid handle
-//! 0x2A and return diagnostic lines. Discovery does not subscribe to notifications.
+//! Opt-in ATT probe (PSM 0x001F): enables hearing assistance, discovers services,
+//! and writes seven fixed notification subscriptions. Returns raw diagnostic
+//! lines; it does not restore settings or subscriptions after the probe.
 
 use crate::driver::Driver;
 use std::thread;
@@ -51,6 +51,9 @@ fn round(drv: &Driver, label: &str, pdu: &[u8], out: &mut Vec<String>, buf: &mut
 /// Probe the AirPods' GATT server as a client. Wakes it, then sends the standard
 /// discovery requests, dumping raw replies for us to interpret.
 pub fn probe(drv: &Driver) -> Vec<String> {
+    let _transaction = crate::hearing::HEARING_STATE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let mut out = Vec::new();
     let mut buf = [0u8; 512];
 

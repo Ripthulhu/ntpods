@@ -288,4 +288,6 @@
   <data name="Playback.CurrentBitrate" xml:space="preserve"><value>Tasa de bits actual: {0} kbps.</value></data>
   <data name="Playback.CurrentCodec" xml:space="preserve"><value>Códec actual: {0}.</value></data>
   <data name="Playback.BitrateCodec" xml:space="preserve"><value>Los ajustes de tasa de bits se aplican a {0}.</value></data>
+  <data name="HearingAid.LeftThreshold" xml:space="preserve"><value>Oído izquierdo, {0}, pérdida auditiva en dB HL</value></data>
+  <data name="HearingAid.RightThreshold" xml:space="preserve"><value>Oído derecho, {0}, pérdida auditiva en dB HL</value></data>
 </root>

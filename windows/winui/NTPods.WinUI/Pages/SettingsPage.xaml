@@ -5,167 +5,169 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <ScrollViewer x:Name="PageScrollViewer" Background="Transparent" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
                   VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" HorizontalScrollMode="Disabled">
-        <StackPanel MaxWidth="688" Padding="24,24,24,48" Spacing="28" HorizontalAlignment="Stretch">
-            <TextBlock Text="{Binding [SettingsTitle_Text], Source={StaticResource Loc}}"
-                       FontSize="30" FontWeight="SemiBold" Margin="16,0,16,0" />
-            <InfoBar x:Name="SettingsInfoBar" IsOpen="False" IsClosable="True" />
-            <StackPanel>
-                <TextBlock Text="{Binding [SettingsAppearance_Text], Source={StaticResource Loc}}" Style="{StaticResource SectionTitle}" />
-                <Border Style="{StaticResource Card}" Padding="0">
-                    <StackPanel>
-                        <StackPanel Margin="20,16" Spacing="12">
-                            <TextBlock Text="{Binding [SettingsTheme_Text], Source={StaticResource Loc}}" FontSize="16" />
-                            <RadioButtons x:Name="ThemeButtons" MaxColumns="3" SelectedIndex="0"
-                                          AutomationProperties.Name="{Binding [SettingsTheme_Text], Source={StaticResource Loc}}"
-                                          SelectionChanged="Theme_SelectionChanged">
-                                <RadioButton Content="{Binding [ThemeSystemRadio_Content], Source={StaticResource Loc}}" />
-                                <RadioButton Content="{Binding [ThemeLightRadio_Content], Source={StaticResource Loc}}" />
-                                <RadioButton Content="{Binding [ThemeDarkRadio_Content], Source={StaticResource Loc}}" />
-                            </RadioButtons>
-                        </StackPanel>
-                        <Border Style="{StaticResource InsetDivider}" />
-                        <StackPanel Margin="20,16" Spacing="8">
-                            <StackPanel Spacing="8">
-                                <TextBlock Text="{Binding [SettingsLanguage_Text], Source={StaticResource Loc}}"
-                                           FontSize="16" TextWrapping="Wrap" VerticalAlignment="Center" />
-                                <ComboBox x:Name="LanguageCombo" HorizontalAlignment="Stretch"
-                                          AutomationProperties.Name="{Binding [SettingsLanguage_Text], Source={StaticResource Loc}}"
-                                          SelectionChanged="Language_SelectionChanged">
-                                    <ComboBoxItem Content="{Binding [LangSystem_Content], Source={StaticResource Loc}}" Tag="" />
-                                    <ComboBoxItem Content="English" Tag="en-US" />
-                                    <ComboBoxItem Content="Português" Tag="pt-PT" />
-                                    <ComboBoxItem Content="Français" Tag="fr-FR" />
-                                    <ComboBoxItem Content="Español" Tag="es-ES" />
-                                </ComboBox>
+        <Grid HorizontalAlignment="Stretch">
+            <StackPanel MaxWidth="688" Padding="24,24,24,48" Spacing="28" HorizontalAlignment="Stretch">
+                <TextBlock Text="{Binding [SettingsTitle_Text], Source={StaticResource Loc}}"
+                           FontSize="30" FontWeight="SemiBold" Margin="16,0,16,0" />
+                <InfoBar x:Name="SettingsInfoBar" IsOpen="False" IsClosable="True" />
+                <StackPanel>
+                    <TextBlock Text="{Binding [SettingsAppearance_Text], Source={StaticResource Loc}}" Style="{StaticResource SectionTitle}" />
+                    <Border Style="{StaticResource Card}" Padding="0">
+                        <StackPanel>
+                            <StackPanel Margin="20,16" Spacing="12">
+                                <TextBlock Text="{Binding [SettingsTheme_Text], Source={StaticResource Loc}}" FontSize="16" />
+                                <RadioButtons x:Name="ThemeButtons" MaxColumns="3" SelectedIndex="0"
+                                              AutomationProperties.Name="{Binding [SettingsTheme_Text], Source={StaticResource Loc}}"
+                                              SelectionChanged="Theme_SelectionChanged">
+                                    <RadioButton Content="{Binding [ThemeSystemRadio_Content], Source={StaticResource Loc}}" />
+                                    <RadioButton Content="{Binding [ThemeLightRadio_Content], Source={StaticResource Loc}}" />
+                                    <RadioButton Content="{Binding [ThemeDarkRadio_Content], Source={StaticResource Loc}}" />
+                                </RadioButtons>
                             </StackPanel>
-                            <TextBlock Text="{Binding [SettingsLanguageHint_Text], Source={StaticResource Loc}}"
-                                       FontSize="13" Foreground="{ThemeResource AppleSecondaryBrush}" TextWrapping="Wrap" />
+                            <Border Style="{StaticResource InsetDivider}" />
+                            <StackPanel Margin="20,16" Spacing="8">
+                                <StackPanel Spacing="8">
+                                    <TextBlock Text="{Binding [SettingsLanguage_Text], Source={StaticResource Loc}}"
+                                               FontSize="16" TextWrapping="Wrap" VerticalAlignment="Center" />
+                                    <ComboBox x:Name="LanguageCombo" HorizontalAlignment="Stretch"
+                                              AutomationProperties.Name="{Binding [SettingsLanguage_Text], Source={StaticResource Loc}}"
+                                              SelectionChanged="Language_SelectionChanged">
+                                        <ComboBoxItem Content="{Binding [LangSystem_Content], Source={StaticResource Loc}}" Tag="" />
+                                        <ComboBoxItem Content="English" Tag="en-US" />
+                                        <ComboBoxItem Content="Português" Tag="pt-PT" />
+                                        <ComboBoxItem Content="Français" Tag="fr-FR" />
+                                        <ComboBoxItem Content="Español" Tag="es-ES" />
+                                    </ComboBox>
+                                </StackPanel>
+                                <TextBlock Text="{Binding [SettingsLanguageHint_Text], Source={StaticResource Loc}}"
+                                           FontSize="13" Foreground="{ThemeResource AppleSecondaryBrush}" TextWrapping="Wrap" />
+                            </StackPanel>
                         </StackPanel>
-                    </StackPanel>
-                </Border>
-            </StackPanel>
-            <StackPanel>
-                <TextBlock Text="{Binding [SettingsStartup_Text], Source={StaticResource Loc}}" Style="{StaticResource SectionTitle}" />
-                <Border Style="{StaticResource Card}">
-                    <Grid ColumnSpacing="24" MinHeight="32">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="{Binding [SettingsStartupToggle_Header], Source={StaticResource Loc}}"
-                                   FontSize="16" VerticalAlignment="Center" TextWrapping="Wrap" />
-                        <ToggleSwitch x:Name="StartupSetting" Grid.Column="1" Style="{StaticResource SettingToggle}"
-                                      AutomationProperties.Name="{Binding [SettingsStartupToggle_Header], Source={StaticResource Loc}}"
-                                      Toggled="StartupSetting_Toggled" />
-                    </Grid>
-                </Border>
-            </StackPanel>
-            <Border Style="{StaticResource Card}">
-                <Grid ColumnSpacing="24" MinHeight="32"
-                      ToolTipService.ToolTip="{Binding [SettingsNearbyBattery_Help], Source={StaticResource Loc}}">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="Auto" />
-                    </Grid.ColumnDefinitions>
-                    <TextBlock Text="{Binding [SettingsNearbyBattery_Title], Source={StaticResource Loc}}"
-                               FontSize="16" VerticalAlignment="Center" TextWrapping="Wrap" />
-                    <ToggleSwitch x:Name="NearbyBatterySetting" Grid.Column="1" Style="{StaticResource SettingToggle}" IsEnabled="False"
-                                  AutomationProperties.Name="{Binding [SettingsNearbyBattery_Title], Source={StaticResource Loc}}"
-                                  AutomationProperties.HelpText="{Binding [SettingsNearbyBattery_Help], Source={StaticResource Loc}}"
-                                  Toggled="NearbyBatterySetting_Toggled" />
-                </Grid>
-            </Border>
-            <Expander Style="{StaticResource GroupExpander}" IsExpanded="False">
-                <Expander.Header>
-                    <TextBlock Text="{Binding [SettingsExperimental_Text], Source={StaticResource Loc}}" FontSize="16" />
-                </Expander.Header>
-                <StackPanel Spacing="16">
-                    <InfoBar Severity="Warning" IsOpen="True" IsClosable="False"
-                             Title="{Binding [SettingsHrWarning_Title], Source={StaticResource Loc}}"
-                             Message="{Binding [SettingsHrWarning_Message], Source={StaticResource Loc}}" />
-                    <Grid ColumnSpacing="24">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="{Binding [SettingsHrToggle_Header], Source={StaticResource Loc}}"
-                                   FontSize="16" VerticalAlignment="Center" TextWrapping="Wrap" />
-                        <ToggleSwitch x:Name="ExperimentalSetting" Grid.Column="1" Style="{StaticResource SettingToggle}"
-                                      AutomationProperties.Name="{Binding [SettingsHrToggle_Header], Source={StaticResource Loc}}"
-                                      Toggled="ExperimentalSetting_Toggled" />
-                    </Grid>
+                    </Border>
                 </StackPanel>
-            </Expander>
-            <StackPanel>
-                <TextBlock Text="{Binding [SettingsDeviceInfo_Text], Source={StaticResource Loc}}" Style="{StaticResource SectionTitle}" />
-                <Border Style="{StaticResource Card}" Padding="0">
-                    <StackPanel>
-                        <Grid Margin="20,16" ColumnSpacing="20">
+                <StackPanel>
+                    <TextBlock Text="{Binding [SettingsStartup_Text], Source={StaticResource Loc}}" Style="{StaticResource SectionTitle}" />
+                    <Border Style="{StaticResource Card}">
+                        <Grid ColumnSpacing="24" MinHeight="32">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="{Binding [DeviceInfoModel_Text], Source={StaticResource Loc}}" FontSize="16" />
-                            <TextBlock x:Name="ModelText" Grid.Column="1" Text="—" FontSize="16" TextWrapping="Wrap"
-                                       TextAlignment="Right" Foreground="{ThemeResource AppleSecondaryBrush}" />
-                        </Grid>
-                        <Border Style="{StaticResource InsetDivider}" />
-                        <Grid Margin="20,16" ColumnSpacing="20">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="{Binding [DeviceInfoFirmware_Text], Source={StaticResource Loc}}" FontSize="16" />
-                            <TextBlock x:Name="FirmwareText" Grid.Column="1" Text="—" FontSize="16" TextWrapping="Wrap"
-                                       TextAlignment="Right" Foreground="{ThemeResource AppleSecondaryBrush}" />
-                        </Grid>
-                        <Border Style="{StaticResource InsetDivider}" />
-                        <Grid Margin="20,12" ColumnSpacing="12">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto" />
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
-                            <TextBlock Text="{Binding [DeviceInfoSerial_Text], Source={StaticResource Loc}}"
-                                       FontSize="16" VerticalAlignment="Center" />
-                            <Grid Grid.Column="1" VerticalAlignment="Center">
-                                <TextBlock x:Name="SerialText" Text="—" FontSize="16" TextWrapping="Wrap"
-                                           TextAlignment="Right" Foreground="{ThemeResource AppleSecondaryBrush}" />
-                                <Border x:Name="InfoBlur" CornerRadius="4" Margin="-2,-1">
-                                    <Border.Background>
-                                        <AcrylicBrush TintOpacity="0.55" TintLuminosityOpacity="0.9"
-                                                      FallbackColor="{ThemeResource CardBackgroundFillColorDefault}" />
-                                    </Border.Background>
-                                </Border>
-                            </Grid>
-                            <ToggleButton x:Name="RevealInfo" Grid.Column="2" Width="36" Height="36" Padding="0"
-                                          AutomationProperties.Name="{Binding [SettingsRevealSerial_Content], Source={StaticResource Loc}}"
-                                          ToolTipService.ToolTip="{Binding [SettingsRevealSerial_Content], Source={StaticResource Loc}}"
-                                          Checked="RevealInfo_Toggled" Unchecked="RevealInfo_Toggled">
-                                <FontIcon Glyph="&#xE7B3;" FontSize="16" />
-                            </ToggleButton>
+                            <TextBlock Text="{Binding [SettingsStartupToggle_Header], Source={StaticResource Loc}}"
+                                       FontSize="16" VerticalAlignment="Center" TextWrapping="Wrap" />
+                            <ToggleSwitch x:Name="StartupSetting" Grid.Column="1" Style="{StaticResource SettingToggle}"
+                                          AutomationProperties.Name="{Binding [SettingsStartupToggle_Header], Source={StaticResource Loc}}"
+                                          Toggled="StartupSetting_Toggled" />
                         </Grid>
-                    </StackPanel>
-                </Border>
-            </StackPanel>
-            <StackPanel>
-                <TextBlock Text="{Binding [SettingsAbout_Text], Source={StaticResource Loc}}" Style="{StaticResource SectionTitle}" />
+                    </Border>
+                </StackPanel>
                 <Border Style="{StaticResource Card}">
-                    <StackPanel Spacing="8">
-                        <Grid ColumnSpacing="16">
+                    <Grid ColumnSpacing="24" MinHeight="32"
+                          ToolTipService.ToolTip="{Binding [SettingsNearbyBattery_Help], Source={StaticResource Loc}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="{Binding [SettingsNearbyBattery_Title], Source={StaticResource Loc}}"
+                                   FontSize="16" VerticalAlignment="Center" TextWrapping="Wrap" />
+                        <ToggleSwitch x:Name="NearbyBatterySetting" Grid.Column="1" Style="{StaticResource SettingToggle}" IsEnabled="False"
+                                      AutomationProperties.Name="{Binding [SettingsNearbyBattery_Title], Source={StaticResource Loc}}"
+                                      AutomationProperties.HelpText="{Binding [SettingsNearbyBattery_Help], Source={StaticResource Loc}}"
+                                      Toggled="NearbyBatterySetting_Toggled" />
+                    </Grid>
+                </Border>
+                <Expander Style="{StaticResource GroupExpander}" IsExpanded="False">
+                    <Expander.Header>
+                        <TextBlock Text="{Binding [SettingsExperimental_Text], Source={StaticResource Loc}}" FontSize="16" />
+                    </Expander.Header>
+                    <StackPanel Spacing="16">
+                        <InfoBar Severity="Warning" IsOpen="True" IsClosable="False"
+                                 Title="{Binding [SettingsHrWarning_Title], Source={StaticResource Loc}}"
+                                 Message="{Binding [SettingsHrWarning_Message], Source={StaticResource Loc}}" />
+                        <Grid ColumnSpacing="24">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
-                            <TextBlock Text="NTPods" FontSize="16" FontWeight="SemiBold" />
-                            <TextBlock x:Name="VersionText" Grid.Column="1" FontSize="16"
-                                       Foreground="{ThemeResource AppleSecondaryBrush}" />
+                            <TextBlock Text="{Binding [SettingsHrToggle_Header], Source={StaticResource Loc}}"
+                                       FontSize="16" VerticalAlignment="Center" TextWrapping="Wrap" />
+                            <ToggleSwitch x:Name="ExperimentalSetting" Grid.Column="1" Style="{StaticResource SettingToggle}"
+                                          AutomationProperties.Name="{Binding [SettingsHrToggle_Header], Source={StaticResource Loc}}"
+                                          Toggled="ExperimentalSetting_Toggled" />
                         </Grid>
-                        <TextBlock Text="{Binding [SettingsAppDesc_Text], Source={StaticResource Loc}}"
-                                   Foreground="{ThemeResource AppleSecondaryBrush}" TextWrapping="Wrap" />
                     </StackPanel>
-                </Border>
+                </Expander>
+                <StackPanel>
+                    <TextBlock Text="{Binding [SettingsDeviceInfo_Text], Source={StaticResource Loc}}" Style="{StaticResource SectionTitle}" />
+                    <Border Style="{StaticResource Card}" Padding="0">
+                        <StackPanel>
+                            <Grid Margin="20,16" ColumnSpacing="20">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="{Binding [DeviceInfoModel_Text], Source={StaticResource Loc}}" FontSize="16" />
+                                <TextBlock x:Name="ModelText" Grid.Column="1" Text="—" FontSize="16" TextWrapping="Wrap"
+                                           TextAlignment="Right" Foreground="{ThemeResource AppleSecondaryBrush}" />
+                            </Grid>
+                            <Border Style="{StaticResource InsetDivider}" />
+                            <Grid Margin="20,16" ColumnSpacing="20">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="{Binding [DeviceInfoFirmware_Text], Source={StaticResource Loc}}" FontSize="16" />
+                                <TextBlock x:Name="FirmwareText" Grid.Column="1" Text="—" FontSize="16" TextWrapping="Wrap"
+                                           TextAlignment="Right" Foreground="{ThemeResource AppleSecondaryBrush}" />
+                            </Grid>
+                            <Border Style="{StaticResource InsetDivider}" />
+                            <Grid Margin="20,12" ColumnSpacing="12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="{Binding [DeviceInfoSerial_Text], Source={StaticResource Loc}}"
+                                           FontSize="16" VerticalAlignment="Center" />
+                                <Grid Grid.Column="1" VerticalAlignment="Center">
+                                    <TextBlock x:Name="SerialText" Text="—" FontSize="16" TextWrapping="Wrap"
+                                               TextAlignment="Right" Foreground="{ThemeResource AppleSecondaryBrush}" />
+                                    <Border x:Name="InfoBlur" CornerRadius="4" Margin="-2,-1">
+                                        <Border.Background>
+                                            <AcrylicBrush TintOpacity="0.55" TintLuminosityOpacity="0.9"
+                                                          FallbackColor="{ThemeResource CardBackgroundFillColorDefault}" />
+                                        </Border.Background>
+                                    </Border>
+                                </Grid>
+                                <ToggleButton x:Name="RevealInfo" Grid.Column="2" Width="36" Height="36" Padding="0"
+                                              AutomationProperties.Name="{Binding [SettingsRevealSerial_Content], Source={StaticResource Loc}}"
+                                              ToolTipService.ToolTip="{Binding [SettingsRevealSerial_Content], Source={StaticResource Loc}}"
+                                              Checked="RevealInfo_Toggled" Unchecked="RevealInfo_Toggled">
+                                    <FontIcon Glyph="&#xE7B3;" FontSize="16" />
+                                </ToggleButton>
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+                <StackPanel>
+                    <TextBlock Text="{Binding [SettingsAbout_Text], Source={StaticResource Loc}}" Style="{StaticResource SectionTitle}" />
+                    <Border Style="{StaticResource Card}">
+                        <StackPanel Spacing="8">
+                            <Grid ColumnSpacing="16">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="NTPods" FontSize="16" FontWeight="SemiBold" />
+                                <TextBlock x:Name="VersionText" Grid.Column="1" FontSize="16"
+                                           Foreground="{ThemeResource AppleSecondaryBrush}" />
+                            </Grid>
+                            <TextBlock Text="{Binding [SettingsAppDesc_Text], Source={StaticResource Loc}}"
+                                       Foreground="{ThemeResource AppleSecondaryBrush}" TextWrapping="Wrap" />
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
             </StackPanel>
-        </StackPanel>
+        </Grid>
     </ScrollViewer>
 </UserControl>

@@ -1,8 +1,10 @@
 # AirPods microphone protocol and Windows reliability research
 
-Source review of NTPods 0.1.15 on 2026-10-11. Upstream hardware results are
-author reports. Proposed changes still need testing on Intel AX200 / AirPods
-Pro 3 / 9A348.
+Historical source review of NTPods 0.1.15–0.1.16 on 2026-10-11. Upstream hardware
+results below are author reports. The current implementation, packet formats,
+native playback recovery and macOS comparison questions are in
+[AirPods audio protocol](WINDOWS-AIRPODS-AUDIO-PROTOCOL.md). Later local hardware
+results are in [Windows validation](WINDOWS-VALIDATION.md).
 
 ## Sources and revisions
 
@@ -145,7 +147,7 @@ restored both buds. Earlier AudioSink-only reset attempts returned 0/87, and
 scoped KS endpoint reconnect attempts returned 0/1460, including an eight-second
 wait. The later full service reset passed 21 ordinary stops with an audible gap.
 
-The current [Windows reset](../windows/daemon/src/bt.rs) disables and enables
+The 0.1.15 [Windows reset](../windows/daemon/src/bt.rs) disables and enables
 AudioSink and Handsfree, with waits of 1,000 and 1,500 ms.
 [BluetoothSetServiceState](https://learn.microsoft.com/en-us/windows/win32/api/bluetoothapis/nf-bluetoothapis-bluetoothsetservicestate)
 removes and installs service drivers. Recorded recovery took about 15.6 seconds,
@@ -154,7 +156,7 @@ the delay and has no verified success here. Existing logs separate each service
 call from time waiting for the audio-operation lock; check those timings on the
 test system before changing the sequence.
 
-The next experiment should reconnect only the paired AirPods' A2DP transport,
+The proposed experiment at that review was to reconnect only the paired AirPods' A2DP transport,
 leaving its service driver installed. First establish that the playback driver
 supports that operation; the previous KS attempt failed. In an opt-in test,
 silence PCM, send STOP, confirm the uplink drains, then reconnect that transport
@@ -279,5 +281,6 @@ left/right playback during and after capture; OS endpoint presence or an A2DP
 label cannot establish stereo separation. Keep the existing Alternative A2DP
 driver and the user-selected playback codec configuration throughout these tests.
 
-No reviewed source supplies a verified quieter/faster Windows stop sequence.
-The tested playback recovery remains necessary on this Windows setup.
+At that review, no source supplied a verified quieter/faster Windows stop
+sequence. NTPods later added native playback transport recovery; its short
+hardware results and remaining limits are in the current audio reference.

@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UserControl
+    x:Class="NTPods.WinUI.Controls.TransparencyCard"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Expander x:Name="TransparencyExpander" Style="{StaticResource GroupExpander}"
+              Header="{Binding [Transparency_Title], Source={StaticResource Loc}}"
+              ToolTipService.ToolTip="{Binding [Transparency_Help], Source={StaticResource Loc}}"
+              AutomationProperties.HelpText="{Binding [Transparency_Help], Source={StaticResource Loc}}">
+        <StackPanel Spacing="16">
+            <ContentControl x:Name="Options" HorizontalContentAlignment="Stretch" Visibility="Collapsed">
+            <StackPanel Spacing="16">
+                <Grid ColumnSpacing="16" MinHeight="36">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <TextBlock Text="{Binding [Transparency_Enable], Source={StaticResource Loc}}"
+                               TextWrapping="Wrap" FontSize="16" VerticalAlignment="Center" />
+                    <ToggleSwitch x:Name="EnableSwitch" Grid.Column="1" Style="{StaticResource SettingToggle}"
+                                  AutomationProperties.Name="{Binding [Transparency_Enable], Source={StaticResource Loc}}" Toggled="Toggle_Changed" />
+                </Grid>
+                <Border Style="{StaticResource InsetDivider}" Margin="0" />
+                <ComboBox x:Name="EarPicker" HorizontalAlignment="Stretch" SelectedIndex="0" SelectionChanged="Ear_Changed"
+                          AutomationProperties.Name="{Binding [Transparency_Ear], Source={StaticResource Loc}}">
+                    <ComboBoxItem Content="{Binding [Transparency_Left], Source={StaticResource Loc}}" />
+                    <ComboBoxItem Content="{Binding [Transparency_Right], Source={StaticResource Loc}}" />
+                </ComboBox>
+                <Slider x:Name="Amplification" Header="{Binding [Transparency_Amplification], Source={StaticResource Loc}}"
+                        AutomationProperties.Name="{Binding [Transparency_Amplification], Source={StaticResource Loc}}"
+                        Minimum="-100" Maximum="100" StepFrequency="1" ValueChanged="Slider_Changed" />
+                <Slider x:Name="Tone" Header="{Binding [Transparency_Tone], Source={StaticResource Loc}}"
+                        AutomationProperties.Name="{Binding [Transparency_Tone], Source={StaticResource Loc}}"
+                        Minimum="-100" Maximum="100" StepFrequency="1" ValueChanged="Slider_Changed" />
+                <Slider x:Name="Ambient" Header="{Binding [Transparency_Ambient], Source={StaticResource Loc}}"
+                        AutomationProperties.Name="{Binding [Transparency_Ambient], Source={StaticResource Loc}}"
+                        Minimum="0" Maximum="100" StepFrequency="1" ValueChanged="Slider_Changed" />
+                <Grid ColumnSpacing="16" MinHeight="36">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <TextBlock Text="{Binding [Transparency_Boost], Source={StaticResource Loc}}"
+                               TextWrapping="Wrap" FontSize="16" VerticalAlignment="Center" />
+                    <ToggleSwitch x:Name="BoostSwitch" Grid.Column="1" Style="{StaticResource SettingToggle}"
+                                  AutomationProperties.Name="{Binding [Transparency_Boost], Source={StaticResource Loc}}" Toggled="Toggle_Changed" />
+                </Grid>
+            </StackPanel>
+            </ContentControl>
+            <Grid ColumnSpacing="8">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                <Button x:Name="ReadButton" HorizontalAlignment="Stretch" Click="Read_Click">
+                    <TextBlock Text="{Binding [Transparency_Read], Source={StaticResource Loc}}" TextWrapping="Wrap" />
+                </Button>
+                <Button x:Name="ApplyButton" Grid.Column="1" HorizontalAlignment="Stretch" Click="Apply_Click">
+                    <TextBlock Text="{Binding [DeviceControls_Apply], Source={StaticResource Loc}}" TextWrapping="Wrap" />
+                </Button>
+            </Grid>
+            <TextBlock x:Name="ErrorText" FontSize="13" TextWrapping="Wrap" Visibility="Collapsed"
+                       Foreground="{ThemeResource SystemFillColorCriticalBrush}" AutomationProperties.LiveSetting="Polite" />
+        </StackPanel>
+    </Expander>
+</UserControl>

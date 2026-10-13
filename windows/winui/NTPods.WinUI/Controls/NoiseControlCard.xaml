@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <UserControl x:Class="NTPods.WinUI.Controls.NoiseControlCard"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:NTPods.WinUI.Controls">
     <UserControl.Resources>
         <SolidColorBrush x:Key="SelectionForeground" Color="{ThemeResource AppleSelectedForegroundColor}" />
         <SolidColorBrush x:Key="ToggleButtonBackgroundChecked" Color="Transparent" />
@@ -28,17 +29,17 @@
                     <ToggleButton x:Name="AncOffBtn" Grid.Column="0" Tag="1"
                                   Style="{StaticResource ListeningModeButton}" Click="Anc_Click"
                                   AutomationProperties.Name="{Binding [Anc_Off], Source={StaticResource Loc}}">
-                        <BitmapIcon x:Name="OffIcon" UriSource="ms-appx:///Assets/ic_noise_cancellation.png" ShowAsMonochrome="True" Width="28" Height="28" />
+                        <controls:ListeningModeIcon x:Name="OffIcon" UriSource="ms-appx:///Assets/ic_noise_cancellation.png" Width="28" Height="28" />
                     </ToggleButton>
                     <ToggleButton x:Name="AncTransBtn" Grid.Column="1" Tag="3"
                                   Style="{StaticResource ListeningModeButton}" Click="Anc_Click"
                                   AutomationProperties.Name="{Binding [Anc_Transparency], Source={StaticResource Loc}}">
-                        <BitmapIcon x:Name="TransparencyIcon" UriSource="ms-appx:///Assets/ic_transparency.png" ShowAsMonochrome="True" Width="28" Height="28" />
+                        <controls:ListeningModeIcon x:Name="TransparencyIcon" UriSource="ms-appx:///Assets/ic_transparency.png" Width="28" Height="28" />
                     </ToggleButton>
                     <ToggleButton x:Name="AncAdaptiveBtn" Grid.Column="2" Tag="4"
                                   Style="{StaticResource ListeningModeButton}" Click="Anc_Click"
                                   AutomationProperties.Name="{Binding [Anc_Adaptive], Source={StaticResource Loc}}">
-                        <BitmapIcon x:Name="AdaptiveIcon" UriSource="ms-appx:///Assets/ic_adaptive.png" ShowAsMonochrome="True" Width="28" Height="28" />
+                        <controls:ListeningModeIcon x:Name="AdaptiveIcon" UriSource="ms-appx:///Assets/ic_adaptive.png" Width="28" Height="28" />
                     </ToggleButton>
                     <Grid x:Name="AdaptiveRail" Grid.Column="2" Visibility="Collapsed">
                         <Border x:Name="AdaptiveSurface" CornerRadius="27" Tapped="AdaptiveRail_Tapped" />
@@ -57,7 +58,7 @@
                     <ToggleButton x:Name="AncNcBtn" Grid.Column="3" Tag="2"
                                   Style="{StaticResource ListeningModeButton}" Click="Anc_Click"
                                   AutomationProperties.Name="{Binding [Anc_NoiseCancellation], Source={StaticResource Loc}}">
-                        <BitmapIcon x:Name="AncIcon" UriSource="ms-appx:///Assets/ic_noise_cancellation.png" ShowAsMonochrome="True" Width="28" Height="28" />
+                        <controls:ListeningModeIcon x:Name="AncIcon" UriSource="ms-appx:///Assets/ic_noise_cancellation.png" Width="28" Height="28" />
                     </ToggleButton>
                 </Grid>
                 <Grid x:Name="GlassHost" IsHitTestVisible="False" />
@@ -72,14 +73,14 @@
                             </Grid.RenderTransform>
                             <Border x:Name="SelectionFallback" Background="{ThemeResource AppleSelectedBrush}"
                                     BorderBrush="{ThemeResource AppleDividerBrush}" BorderThickness="1" CornerRadius="27" />
-                            <BitmapIcon x:Name="SelectedTransparencyIcon" UriSource="ms-appx:///Assets/ic_transparency.png"
-                                        Width="28" Height="28" ShowAsMonochrome="True"
+                            <controls:ListeningModeIcon x:Name="SelectedTransparencyIcon" UriSource="ms-appx:///Assets/ic_transparency.png"
+                                        Width="28" Height="28"
                                         Foreground="{StaticResource SelectionForeground}" />
-                            <BitmapIcon x:Name="SelectedAdaptiveIcon" UriSource="ms-appx:///Assets/ic_adaptive.png"
-                                        Width="28" Height="28" ShowAsMonochrome="True"
+                            <controls:ListeningModeIcon x:Name="SelectedAdaptiveIcon" UriSource="ms-appx:///Assets/ic_adaptive.png"
+                                        Width="28" Height="28"
                                         Foreground="{StaticResource SelectionForeground}" />
-                            <BitmapIcon x:Name="SelectedAncIcon" UriSource="ms-appx:///Assets/ic_noise_cancellation.png"
-                                        Width="28" Height="28" ShowAsMonochrome="True"
+                            <controls:ListeningModeIcon x:Name="SelectedAncIcon" UriSource="ms-appx:///Assets/ic_noise_cancellation.png"
+                                        Width="28" Height="28"
                                         Foreground="{StaticResource SelectionForeground}" />
                         </Grid>
                         <Thumb x:Name="SelectionThumb" IsTabStop="False" AutomationProperties.AccessibilityView="Raw"

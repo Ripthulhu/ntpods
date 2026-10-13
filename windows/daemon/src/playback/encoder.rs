@@ -1,4 +1,4 @@
-use super::{codec::Mode, protocol::invalid};
+use super::{codec::Mode, protocol::invalid, scheduling::AudioScheduling};
 use std::io::{self, Read, Write};
 use std::os::windows::process::CommandExt;
 use std::path::Path;
@@ -50,6 +50,7 @@ fn read_header(stream: &mut impl Read, mode: Mode) -> io::Result<Vec<u8>> {
 fn maximum_au(mode: Mode, bitrate: u32) -> io::Result<usize> {
     mode.bitrate(
         ntpods_ipc::PlaybackBitrate {
+            variable: false,
             best_effort: false,
             kbps: bitrate / 1000,
         },
@@ -65,23 +66,31 @@ fn maximum_au(mode: Mode, bitrate: u32) -> io::Result<usize> {
 }
 
 impl Encoder {
-    pub fn start(mode: Mode, bitrate: u32) -> io::Result<Self> {
+    pub fn start(mode: Mode, bitrate: u32, variable: bool) -> io::Result<Self> {
         let name = match mode {
             Mode::Aac => "ntpods-aac-encoder.exe",
             Mode::Eld => "ntpods-eld-encoder.exe",
         };
         let executable = std::env::current_exe()?.with_file_name(name);
-        Self::start_at(&executable, mode, bitrate)
+        Self::start_at(&executable, mode, bitrate, variable)
     }
 
     pub fn config(&self) -> &[u8] {
         &self.config
     }
 
-    fn start_at(executable: &Path, mode: Mode, bitrate: u32) -> io::Result<Self> {
+    fn start_at(executable: &Path, mode: Mode, bitrate: u32, variable: bool) -> io::Result<Self> {
         let maximum = maximum_au(mode, bitrate)?;
-        let mut child = Command::new(executable)
-            .args(["--bitrate", &bitrate.to_string()])
+        if variable && (mode != Mode::Eld || bitrate != 256_000) {
+            return Err(invalid("Unsupported variable bitrate configuration"));
+        }
+        let mut command = Command::new(executable);
+        if variable {
+            command.arg("--vbr");
+        } else {
+            command.args(["--bitrate", &bitrate.to_string()]);
+        }
+        let mut child = command
             .creation_flags(0x0800_0000)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -93,6 +102,7 @@ impl Encoder {
         let (result, output) = mpsc::sync_channel(12);
         let (ready_tx, ready) = mpsc::sync_channel(1);
         let writer = thread::spawn(move || {
+            let _scheduling = AudioScheduling::acquire();
             while let Ok(pcm) = pending.recv() {
                 if stdin.write_all(&pcm).and_then(|_| stdin.flush()).is_err() {
                     break;
@@ -100,6 +110,7 @@ impl Encoder {
             }
         });
         let reader = thread::spawn(move || {
+            let _scheduling = AudioScheduling::acquire();
             let header = read_header(&mut stdout, mode);
             let success = header.is_ok();
             if ready_tx.send(header).is_err() || !success {
@@ -248,7 +259,13 @@ mod tests {
         let nonexistent = std::env::current_exe()
             .unwrap()
             .with_file_name("missing-ntpods-eld-encoder.exe");
-        assert!(Encoder::start_at(&nonexistent, Mode::Eld, 256_000).is_err());
+        assert!(Encoder::start_at(&nonexistent, Mode::Eld, 256_000, false).is_err());
+        for (mode, bitrate) in [(Mode::Aac, 256_000), (Mode::Eld, 192_000)] {
+            let error = Encoder::start_at(&nonexistent, mode, bitrate, true)
+                .err()
+                .unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        }
     }
 
     #[test]
@@ -258,7 +275,7 @@ mod tests {
             std::path::PathBuf::from(std::env::var_os("NTPODS_ELD_ENCODER_TEST_PATH").unwrap());
         for kbps in 128..=256 {
             drop(
-                Encoder::start_at(&executable, Mode::Eld, kbps * 1000)
+                Encoder::start_at(&executable, Mode::Eld, kbps * 1000, false)
                     .unwrap_or_else(|error| panic!("{kbps} kbps: {error}")),
             );
         }
@@ -268,9 +285,10 @@ mod tests {
     #[ignore = "requires the local FDK worker via NTPODS_ELD_ENCODER_TEST_PATH"]
     fn streams_real_worker_and_drops_it() {
         for mode in [Mode::Aac, Mode::Eld] {
-            stream_and_drop(mode);
+            stream_and_drop(mode, false);
             drop_with_blocked_pipes(mode);
         }
+        stream_and_drop(Mode::Eld, true);
     }
 
     fn drop_with_blocked_pipes(mode: Mode) {
@@ -283,7 +301,7 @@ mod tests {
             Mode::Eld => "NTPODS_ELD_ENCODER_TEST_PATH",
         };
         let executable = std::path::PathBuf::from(std::env::var_os(variable).expect(variable));
-        let encoder = Encoder::start_at(&executable, mode, 256000).unwrap();
+        let encoder = Encoder::start_at(&executable, mode, 256000, false).unwrap();
         let process = encoder.child.as_handle().try_clone_to_owned().unwrap();
         // Freeze only this test's child so its stdin stops draining and stdout stays open.
         assert_eq!(
@@ -314,14 +332,16 @@ mod tests {
         );
     }
 
-    fn stream_and_drop(mode: Mode) {
-        let variable = match mode {
+    fn stream_and_drop(mode: Mode, variable: bool) {
+        let worker_path_variable = match mode {
             Mode::Aac => "NTPODS_AAC_ENCODER_TEST_PATH",
             Mode::Eld => "NTPODS_ELD_ENCODER_TEST_PATH",
         };
-        let executable = std::path::PathBuf::from(std::env::var_os(variable).expect(variable));
+        let executable = std::path::PathBuf::from(
+            std::env::var_os(worker_path_variable).expect(worker_path_variable),
+        );
         assert!(executable.is_absolute());
-        let encoder = Encoder::start_at(&executable, mode, 256_000)
+        let encoder = Encoder::start_at(&executable, mode, 256_000, variable)
             .expect("Worker must return a supported ASC");
         let process = encoder.child.as_handle().try_clone_to_owned().unwrap();
         let mut units = 0;

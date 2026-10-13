@@ -40,11 +40,16 @@ impl Cache {
         let Some((at, battery, observations)) = self.0 else {
             return false;
         };
+        let invalidated = state.battery_freshness.is_some_and(|freshness| {
+            [freshness.left, freshness.right, freshness.case, freshness.headphone]
+                .iter()
+                .all(|part| part.present.is_none())
+        });
         if (state.connected && !state.link_stale)
             || now_ms < at
             || now_ms - at >= FRESH_MS
             || state.battery_timestamp_ms.is_some_and(|current| {
-                current > at || (current == at && state.battery_source == "ble")
+                current > at || (current == at && state.battery_source == "ble" && !invalidated)
             })
         {
             return false;
@@ -654,6 +659,36 @@ mod tests {
         state.battery_timestamp_ms = None;
         assert!(cache.restore(&mut state, 6_000));
         assert_eq!(state.battery_timestamp_ms, Some(2_000));
+    }
+
+    #[test]
+    fn short_reconnect_does_not_discard_a_fresh_ble_report() {
+        let mut cache = Cache::default();
+        cache.observe(
+            Battery {
+                left: Some(77),
+                left_charging: true,
+                case: Some(50),
+                ..Default::default()
+            },
+            2_000,
+        );
+        let mut state = Snapshot::default();
+        assert!(cache.restore(&mut state, 3_000));
+        state.connected = true;
+        invalidate(&mut state);
+        assert!(!cache.restore(&mut state, 4_000));
+        assert!(!state.battery_live);
+        state.connected = false;
+        assert!(cache.restore(&mut state, 5_000));
+        assert!(state.battery_live && state.battery.left_charging);
+        assert_eq!(state.battery.left, Some(77));
+        assert_eq!(state.battery_timestamp_ms, Some(2_000));
+        assert_eq!(state.battery_freshness.unwrap().left.timestamp_ms, Some(2_000));
+        assert!(!cache.restore(&mut state, 6_000));
+        assert!(refresh_live(&mut state, 2_000 + FRESH_MS));
+        assert!(!state.battery_live);
+        assert!(!cache.restore(&mut state, 2_000 + FRESH_MS));
     }
 
     #[test]

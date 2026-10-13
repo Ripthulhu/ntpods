@@ -1,17 +1,4 @@
-//! AirPods Pro 3 RTBuddy heart-rate decoding.
-//!
-//! A faithful Rust port of `RtBuddyHeartRateDecoder` (Android/Kotlin, PR #702).
-//! Reassembles RTBuddy SensorDataWX frames across chunks and extracts the
-//! verified HEARTRATE(19) payload. The protocol checks that stop control/startup
-//! frames from being read as BPM are kept deliberately intact: live log type,
-//! service 19, exact 18-byte payload, a known status trailer, and the validated
-//! physiological range. Length-delimited wrappers are traversed only to the same
-//! bounded depth as the observed firmware variants.
-//!
-//! Unlike the Kotlin decoder (which owns the whole recv stream and re-dispatches
-//! non-HR "passthrough" packets), this runs *alongside* the daemon's existing
-//! recv loop: `feed` is handed a copy of each chunk and returns only decoded BPM
-//! samples. Battery/ANC/ear parsing still runs on the same bytes independently.
+//! Bounded heart-rate decoding with device-announced report IDs and legacy fallback.
 
 // ---- constants (mirror the Kotlin companion object) ----
 
@@ -107,6 +94,7 @@ struct HeartRateCommand {
 /// Reassembles RTBuddy frames and extracts verified HEARTRATE samples.
 pub struct RtBuddyHeartRateDecoder {
     carry: Vec<u8>,
+    report_service: Option<u8>,
 }
 
 /// One validated reading: BPM plus the sensor's confidence byte (payload[2]).
@@ -124,7 +112,16 @@ impl Default for RtBuddyHeartRateDecoder {
 
 impl RtBuddyHeartRateDecoder {
     pub fn new() -> Self {
-        RtBuddyHeartRateDecoder { carry: Vec::new() }
+        RtBuddyHeartRateDecoder {
+            carry: Vec::new(),
+            report_service: None,
+        }
+    }
+
+    /// Report discovery must not change the separate firmware-specific activation IDs.
+    pub fn set_report_service(&mut self, service: Option<u8>) {
+        self.report_service = service;
+        self.reset();
     }
 
     /// Drop any partial-frame carry (call on connect/disconnect).
@@ -183,7 +180,7 @@ impl RtBuddyHeartRateDecoder {
             }
 
             let frame = &data[frame_offset..frame_offset + frame_length];
-            if let Some(sample) = classify_frame(frame) {
+            if let Some(sample) = classify_frame(frame, self.report_service) {
                 samples.push(sample);
             }
             cursor = frame_offset + frame_length;
@@ -195,7 +192,7 @@ impl RtBuddyHeartRateDecoder {
 
 /// Classify a reassembled frame; returns a validated sample (BPM + confidence) if (and only if) it is a
 /// live HEARTRATE record with an accepted payload.
-fn classify_frame(frame: &[u8]) -> Option<HrSample> {
+fn classify_frame(frame: &[u8], report_service: Option<u8>) -> Option<HrSample> {
     let top_level = parse_proto_message(frame, AACP_RTBUDDY_HEADER_LENGTH, frame.len())?;
 
     let log_type = top_level
@@ -214,6 +211,7 @@ fn classify_frame(frame: &[u8]) -> Option<HrSample> {
                 field.value_start,
                 field.value_end,
                 0,
+                report_service,
                 &mut commands,
             );
         }
@@ -246,6 +244,7 @@ fn collect_heart_rate_commands(
     start: usize,
     end: usize,
     depth: u32,
+    report_service: Option<u8>,
     commands: &mut Vec<HeartRateCommand>,
 ) {
     if depth > MAX_COMMAND_ENVELOPE_DEPTH || commands.len() >= MAX_COMMANDS_PER_FRAME {
@@ -257,7 +256,12 @@ fn collect_heart_rate_commands(
     };
     let service = message.first_varint(FIELD_SERVICE);
 
-    if service.is_some_and(|s| HEART_RATE_REPORT_SERVICES.contains(&s)) {
+    if service.is_some_and(|s| {
+        report_service.map_or_else(
+            || HEART_RATE_REPORT_SERVICES.contains(&s),
+            |id| s == u64::from(id),
+        )
+    }) {
         let mut payloads: Vec<Vec<u8>> = Vec::new();
         for field in &message.fields {
             if field.number == FIELD_COMMAND_PAYLOAD && field.wire_type == WIRE_LENGTH_DELIMITED {
@@ -285,6 +289,7 @@ fn collect_heart_rate_commands(
                 field.value_start,
                 field.value_end,
                 depth + 1,
+                report_service,
                 commands,
             );
         }
@@ -497,4 +502,60 @@ fn longest_suffix_matching_prefix(data: &[u8], prefix: &[u8], start_index: usize
         }
     }
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(service: u8) -> Vec<u8> {
+        let mut report = [0; 18];
+        report[0] = 1;
+        report[1] = 72;
+        report[2] = 160;
+        report[15] = 0x10;
+        let mut payload = vec![8, 1, 16, 1, 0x3a, 22, 8, service, 0x1a, 18];
+        payload.extend_from_slice(&report);
+        let mut frame = RTBUDDY_FRAME_PREFIX.to_vec();
+        frame.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+        frame.extend_from_slice(&payload);
+        frame
+    }
+
+    #[test]
+    fn discovery_changes_reports_without_guessing_activation_aliases() {
+        let expected = vec![HrSample {
+            bpm: 72,
+            confidence: 160,
+        }];
+        let mut decoder = RtBuddyHeartRateDecoder::new();
+        for id in [19, 20, 84] {
+            assert_eq!(decoder.feed(&frame(id)), expected);
+        }
+        assert!(decoder.feed(&frame(27)).is_empty());
+        decoder.set_report_service(Some(27));
+        assert_eq!(decoder.feed(&frame(27)), expected);
+        for id in [19, 20, 84] {
+            assert!(decoder.feed(&frame(id)).is_empty());
+        }
+        decoder.set_report_service(None);
+        assert_eq!(decoder.feed(&frame(20)), expected);
+    }
+
+    #[test]
+    fn descriptor_refresh_discards_partial_samples_and_keeps_payload_validation() {
+        let mut decoder = RtBuddyHeartRateDecoder::new();
+        let sample = frame(27);
+        decoder.set_report_service(Some(27));
+        assert!(decoder.feed(&sample[..24]).is_empty());
+        decoder.set_report_service(Some(27));
+        assert!(decoder.feed(&sample[24..]).is_empty());
+        assert_eq!(decoder.feed(&sample).len(), 1);
+        let mut warmup = sample.clone();
+        warmup[24] = 1;
+        assert!(decoder.feed(&warmup).is_empty());
+        let mut control = sample;
+        control[15] = 2;
+        assert!(decoder.feed(&control).is_empty());
+    }
 }

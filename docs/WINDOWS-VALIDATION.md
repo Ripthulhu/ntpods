@@ -1578,6 +1578,211 @@ toggle, sleep/resume, other models, Driver Verifier and hardware uninstall
 remain untested with the native playback driver. Earlier microphone results
 used Alternative A2DP.
 
+## Playback latency investigation
+
+On 2026-10-12, AirPods Pro 3 (A3063, 9A348) were measured on Windows 11 with an
+Intel AX200, both codecs at 256 kbps and volume at 24%. A wired microphone through
+a Roland Rubix 24 captured short chirps beside one AirPod. Packet QPC timestamps
+aligned the 48 kHz Windows loopback and 44.1 kHz microphone recordings.
+
+| Codec | Installed 50 ms source reserve | Temporary 30 ms reserve |
+| --- | --- | --- |
+| AAC | 268 ms | 254 ms |
+| AAC-ELD | 247 ms | 241 ms; repeat medians 244 and 242 ms |
+
+Values are rounded medians from Windows loopback to acoustic capture and include
+uncalibrated wired-input delay. Both installed-codec runs matched all six chirps.
+The first 30 ms runs matched six of six for ELD and four of six for AAC; the two
+ELD repeats matched three and four of four. These valid runs had no timestamp
+errors or discontinuities after the initial capture packet.
+
+A third ELD repeat failed the acoustic match threshold. All three subsequent
+50 ms repeats had additional audio in their digital references and failed the
+reference threshold; they were excluded. The observed 3–6 ms ELD reduction and
+15 ms AAC reduction remain preliminary, without a complete repeated A/B comparison.
+
+Offline encoder tests measured median turnaround near 0.18 ms per AAC frame and
+0.08–0.09 ms per ELD frame. These exclude codec algorithmic delay, frame collection,
+audio frame pacing and Bluetooth. The playback endpoint's shared engine period
+was 480 frames at 48 kHz, with the same minimum and maximum.
+
+The reserve trial changed only a temporary backend build. At its conclusion,
+installed 0.2.16 and AAC at 256 kbps were restored. Sustained playback,
+loaded-system testing, calibrated capture delay and other models remain unchecked.
+See [Windows audio latency](WINDOWS-AUDIO-LATENCY.md) for the code findings and
+Microsoft guidance.
+
+### Installed 0.2.17
+
+Later on 2026-10-12, 0.2.17 was installed and the PC restarted. An audio-route
+reconnect was needed after an initial Bluetooth connection rejection. Playback,
+loopback and wired capture then initialized successfully. Four 12-second runs
+alternated AAC and AAC-ELD at 256 kbps, retaining the 50 ms source reserve.
+The output volume was 100% for stronger microphone pickup; the chirp peak remained
+0.1. Neither the digital reference nor the wired capture clipped.
+
+| Codec | First run median | Second run median |
+| --- | --- | --- |
+| AAC | 273.3 ms | 280.4 ms |
+| AAC-ELD | 241.0 ms | 243.8 ms |
+
+All four runs matched six of six markers, with correlation at least 0.873,
+no timestamp errors or regressions, and no discontinuities after the initial
+capture packet. An earlier run missed its first acoustic marker and was excluded.
+Each accepted run used 480 frames / 10 ms throughout. Both default and RAW queries
+still offered only 480 frames despite the new 240-frame constraint on the live
+driver interface. The 5 ms period is not validated on this PC.
+
+AAC-ELD was about 29–39 ms faster than AAC across these runs. Compared with the
+earlier single-session baseline, ELD measured 3–6 ms lower and AAC 5–12 ms higher.
+The changed volume and variation between starts prevent attributing those small
+before/after differences to the code changes. These remain loopback-to-acoustic
+measurements with uncalibrated wired-input delay. AAC and 24% volume were restored.
+
+### 5 ms negotiation and interface follow-up
+
+Silent checks on 0.2.17 initialized the microphone at 240 frames / 5 ms in
+both default and RAW mode without starting a stream. Playback still offered
+only 480 frames. Its native KS filter exposes RAW stereo PCM at 48 kHz with the
+240-frame constraint; Windows combines it with the hands-free endpoint.
+Temporarily disabling only the paired AirPods' HFP service did not change the
+playback period. The original service state was restored. Endpoint unification
+is present, but this check does not establish it as the cause.
+
+Version 0.2.18 expresses the quantum as 50,000 hundred-nanosecond
+units instead of a sample count. Both packages declare the constraints through
+INF AddProperty before endpoint activation; runtime setters use the same
+persistent values. InfVerif and an exact comparison of both INF properties with
+the circuit declarations passed. No further acoustic latency measurements
+have been made.
+
+Version 0.2.18 installed successfully with matching app/backend hashes. After
+the required restart, Windows created new playback and microphone endpoint IDs.
+Silent checks still found only 480-frame playback periods in RAW mode, including
+native PCM16; the microphone initialized at 240 frames without starting. The
+declaration change and endpoint refresh did not resolve the playback limit.
+An exclusive event-driven check on the same playback endpoint initialized
+48 kHz stereo PCM16 with a 5 ms period and returned a 240-frame buffer.
+Event registration also passed. The helper released the client without starting
+audio. This isolates the remaining negotiation issue to the shared audio path;
+it does not establish playback stability or acoustic latency at that period.
+The new hands-free guard also cleared an obsolete, already-visible
+endpoint restoration record that blocked the old version's upgrade preflight.
+
+Native UI checks covered light/dark appearances at 420 and 820 DIP widths.
+Connection and microphone status changes kept the header, battery area and
+microphone section at stable positions. Rapid Pro 1 / Max / Pro 3 state changes
+selected the final device's controls without sending a head-tracking stop to it.
+Reduced-motion handling was reviewed in code; the Windows setting was not toggled.
+
+With connected BLE scanning enabled, a Pro 3 case-close check received verified
+battery reports roughly 60 seconds apart after audio disconnected. The saved
+scanning preference was enabled but the running process initially reported it
+disabled; reapplying the preference restored scanning, and it survived an app
+restart. The original mismatch remains unexplained. A separate regression test
+covers restoring a fresh BLE reading after a brief AAP reconnect invalidates it,
+without renewing its timestamp or replacing newer AAP readings.
+
+## 0.2.19 capture-derived features
+
+Build checks passed 13 IPC tests, 309 daemon tests, the real encoder-worker
+lifecycle test, Rust/C# wire fixtures, native UI state tests and driver/installer
+checks. Three daemon tests remain excluded from the default build run.
+
+Offline replay decoded all 1,181 captured native motion reports, including every
+split between transport fragments. Original descriptor frames identified motion
+service 16 and heart-rate report service 20. Tests cover malformed descriptions,
+conflicting service IDs, handoff recovery and user-stop ownership. Sensor refresh
+commands run on a worker so they cannot block microphone reception.
+
+Custom Transparency tests cover UUID discovery, the captured Read/Write Without
+Response properties, readback, invalid values and preservation of unedited bytes.
+Native UI checks covered dark/light appearances at 420 and 820 DIP widths, with
+28 rendered views. Per-ear drafts survived unrelated snapshots; opening the
+controls sent no commands. Apply and the AAC-ELD VBR selection sent the expected
+IPC values. Pending, error and unavailable states kept the layout intact.
+
+The AAC-ELD worker passed bitrate and frame-size checks at every CBR rate from
+128 to 256 kbps, plus decode checks at 128, 129, 192, 255 and 256 kbps. Pitch and
+channel-separation checks passed at 256 kbps CBR and in VBR mode. VBR also passed
+silence, noise and transients; peak access units were 320 bytes. Its measured
+rates varied with content, so the 192 kbps nominal encoder setting is not an
+average-rate guarantee. The default playback codec and CBR settings are unchanged.
+
+Review follow-up adds regression checks for reassigned motion addresses,
+legacy motion fallback and queued heart-rate recovery after stop or restart.
+Confirmed hearing-assistance off reports invalidate cached enable state without
+blocking audio reception. Hearing requests now return a result to their card,
+which restores the switch on rejection and shows the specific error.
+Eight additional native views checked hearing request rejection, stale results
+and device changes in dark/light appearances at 420 and 820 DIP widths.
+
+The initial build had not been tested on Windows with AirPods connected. The
+follow-up below records the first live sensor checks. Audible Custom Transparency
+changes and VBR playback remain unverified. Motion axes remain uncalibrated;
+SPL0 has no decoded measurement scale or new UI. Private captures stay outside
+the repository.
+
+## 0.2.20 and 0.2.21 layout and sensor follow-up
+
+Version 0.2.20 corrected the settings column's horizontal alignment. Eighteen
+native renders covered both themes, connected Pro 3, cached Pro 1 and app settings
+at 420, 820 and 1200 DIP widths. Side margins matched in every case. The installed
+app matched all 610 packaged files; the three running drivers were unchanged.
+
+Live testing exposed two missing head-tracking envelopes in the macOS-derived
+path. Pro 3 firmware 9A348 sent a 60-byte packed field with log type 1 from an
+A3063 primary and type 3 from an A3064 primary. Both use a two-byte service prefix
+and a 58-byte report. The parser now accepts those forms only for the announced
+motion service. The receiver also avoids its 150 ms idle wait while tracking.
+
+The corrected preview delivered 311 movement updates over a 9.813-second sample
+span without a timeout. The user confirmed that turning and nodding moved the
+graph. This verifies live movement, not 50 updates per second at the UI or
+calibrated angles. Tracking stopped after the scripted check. The microphone
+remained idle and AAC playback stayed ready; no acoustic latency test was run.
+
+Custom Transparency discovery needed to accept Attribute Not Found at the end
+of the requested range. After that fix, the setting read returned ATT error
+0x0E. A temporary probe found its notification descriptor with Find Information,
+but reading the descriptor returned Attribute Not Found. No subscription or sound
+setting was written. The probe was removed; Custom Transparency remains an
+experimental feature without a successful Windows hardware check.
+
+Version 0.2.21 passed 313 daemon tests, 13 IPC tests and the build's UI,
+driver and installer checks. Separate checks passed the encoder worker at all
+129 exposed CBR bitrates and MMCSS cleanup during normal exit and unwinding.
+Installation completed without a reboot; all 610 installed files matched the
+package. The three running drivers and Start with Windows setting were preserved.
+
+## 0.2.22 startup follow-up
+
+With both pairs disconnected, startup selected the lowest-address paired device
+instead of the last-used pair. The battery listener then loaded only that pair's
+keys. Startup now uses the UI's saved device identity as a preference; a connected
+pair still takes priority. Missing, invalid or unpaired saved identities retain
+the existing selection fallback. Five discovery tests passed, including malformed
+and oversized settings. Closed-case startup with the corrected build still needs
+a hardware check.
+
+## 0.2.23 offline audit fixes
+
+The full build passed 321 daemon tests, 13 IPC tests, the encoder-worker check,
+Rust/C# wire fixtures, native UI state tests, and driver/installer checks.
+Regressions cover hearing-state reports during pending and queued edits, explicit
+Loud Sound Reduction refresh, DPI-aware minimum sizing, and accessible audiogram
+labels.
+
+Isolated native checks covered hearing rejection and reported-off transitions in
+dark/light appearances at 420 DIP. All 16 audiogram controls had distinct names
+with ear, frequency and unit in all four supported languages. A resized window
+retained a 420 × 540 DIP client area at 100% scaling; other scale factors were
+checked through the sizing tests. These checks used a mock daemon and sent no
+Bluetooth commands.
+
+Version 0.2.23 has not been installed or tested with AirPods connected. New
+hardware checks remain pending, including Custom Transparency and AAC-ELD VBR.
+
 ## Production release requirements
 
 Production redistribution is held by the ACX sample licensing discrepancy described

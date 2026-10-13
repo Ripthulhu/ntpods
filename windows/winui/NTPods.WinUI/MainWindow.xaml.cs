@@ -22,6 +22,7 @@ public sealed partial class MainWindow : Window
     private readonly UISettings _uiSettings = new();
     private bool _entrancePending;
     private bool _closed;
+    private XamlRoot? _sizingRoot;
 
     public MainWindow(DaemonClient client)
     {
@@ -30,6 +31,12 @@ public sealed partial class MainWindow : Window
 
         RootGrid.Loaded += (_, _) =>
         {
+            if (_sizingRoot is null)
+            {
+                _sizingRoot = RootGrid.XamlRoot;
+                if (_sizingRoot is not null) _sizingRoot.Changed += OnRootChanged;
+            }
+            EnforceMinimumSize();
             if (_entrancePending && AppWindow.IsVisible) AnimateEntrance();
         };
         if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
@@ -37,6 +44,7 @@ public sealed partial class MainWindow : Window
         Closed += (_, _) =>
         {
             _closed = true;
+            if (_sizingRoot is not null) _sizingRoot.Changed -= OnRootChanged;
             FinishEntrance();
             if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
                 _uiSettings.AnimationsEnabledChanged -= OnAnimationsEnabledChanged;
@@ -67,16 +75,10 @@ public sealed partial class MainWindow : Window
 
         AppWindow.Resize(new SizeInt32(820, 880));
         ApplyTitleBarTheme();
-        // Enforce a minimum size — the layout breaks if the window is dragged
-        // absurdly narrow (no app is usable at ~100px). Clamp on resize.
         AppWindow.Changed += (sender, e) =>
         {
             if (e.DidVisibilityChange && !sender.IsVisible) DevicePageView.CancelShortcutCapture();
-            if (!e.DidSizeChange) return;
-            const int minW = 420, minH = 540;
-            var sz = sender.Size;
-            if (sz.Width < minW || sz.Height < minH)
-                sender.Resize(new SizeInt32(Math.Max(sz.Width, minW), Math.Max(sz.Height, minH)));
+            if (e.DidSizeChange) EnforceMinimumSize();
         };
         TrySetWindowIcon();
 
@@ -93,6 +95,20 @@ public sealed partial class MainWindow : Window
         _client.SnapshotReceived += OnSnapshot;
         _client.ConnectPromptReceived += OnConnectPrompt;
         _client.ConnectionChanged += OnConnectionChanged;
+    }
+
+    private void OnRootChanged(XamlRoot sender, XamlRootChangedEventArgs args) => EnforceMinimumSize();
+
+    private void EnforceMinimumSize()
+    {
+        if (_closed || _sizingRoot is null) return;
+        var size = AppWindow.Size;
+        var client = AppWindow.ClientSize;
+        var work = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Nearest).WorkArea;
+        var minimum = WindowSizing.Minimum(_sizingRoot.RasterizationScale,
+            size.Width - client.Width, size.Height - client.Height, work.Width, work.Height);
+        if (size.Width < minimum.Width || size.Height < minimum.Height)
+            AppWindow.Resize(new SizeInt32(Math.Max(size.Width, minimum.Width), Math.Max(size.Height, minimum.Height)));
     }
 
     private void ApplyTitleBarTheme()

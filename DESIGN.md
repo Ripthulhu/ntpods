@@ -120,7 +120,7 @@ Both pages use a full-width vertical scroll area so the side margins accept scro
 
 Grouped rows place wrapping text on the left and the control on the right. Repeated feature rows have a 64 DIP minimum height, 20 DIP horizontal padding, 16 DIP vertical padding and a 16 DIP gap before the switch. Standard inset dividers stop 16 DIP short of each side. Expanders use 20 DIP horizontal and 16 DIP vertical header padding; expanded content uses 20 DIP side and bottom padding with 8 DIP at the top.
 
-The battery area has three equal columns, or one centered column for headphones. Each part has proportional artwork, a compact circular gauge, a percentage and a label. The device header's three-dot menu includes app settings; a Back button returns to the device page. The window opens at 820 × 880 physical pixels and clamps resizing to 420 × 540 physical pixels; these are window dimensions, not layout breakpoints.
+The battery area has three equal columns, or one centered column for headphones. Each part has proportional artwork, a compact circular gauge, a percentage and a label. The device header's three-dot menu includes app settings; a Back button returns to the device page. The window opens at 820 × 880 physical pixels, then enforces a 420 × 540 DIP minimum client area at the current display scale. The minimum includes window borders and stays within the monitor's work area.
 
 ## Elevation & Depth
 

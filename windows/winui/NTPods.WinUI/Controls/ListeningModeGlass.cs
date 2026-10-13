@@ -337,7 +337,8 @@ internal sealed class ListeningModeGlass : Grid
     private void DrawIcon(CanvasDrawingSession drawing, int index, double center)
     {
         var size = _icons![index].Size;
-        drawing.DrawImage(_tintedIcons![index], new Rect(center - 14, 13, 28, 28), new Rect(0, 0, size.Width, size.Height));
+        drawing.DrawImage(_tintedIcons![index], new Rect(center - 14, 13, 28, 28), new Rect(0, 0, size.Width, size.Height),
+            1, CanvasImageInterpolation.HighQualityCubic);
     }
 
     private void EnsureShape(CanvasControl sender, float width)

@@ -35,6 +35,28 @@ impl FrameAssembler {
         (self.frame_bytes - self.used).min(MAX_READ_BYTES)
     }
 
+    pub fn read_available(
+        &mut self,
+        mut read: impl FnMut(usize) -> io::Result<Vec<u8>>,
+        mut current: impl FnMut() -> io::Result<bool>,
+    ) -> io::Result<Option<Vec<u8>>> {
+        // Drain one due frame without sleeping between already available pieces.
+        for _ in 0..self.frame_bytes.div_ceil(MAX_READ_BYTES) {
+            let data = read(self.read_limit())?;
+            if !current()? {
+                self.reset();
+                return Ok(None);
+            }
+            if data.is_empty() {
+                break;
+            }
+            if let Some(frame) = self.push(&data)? {
+                return Ok(Some(frame));
+            }
+        }
+        Ok(None)
+    }
+
     pub fn push(&mut self, bytes: &[u8]) -> io::Result<Option<Vec<u8>>> {
         if bytes.len() % SAMPLE_BYTES != 0 || bytes.len() > self.frame_bytes - self.used {
             return Err(io::Error::new(
@@ -138,6 +160,115 @@ mod tests {
         assert_eq!(&frame[1_920..3_840], &[2; 1_920]);
         assert_eq!(&frame[3_840..], &[3; 256]);
         assert_eq!(pcm.read_limit(), 1_920);
+    }
+
+    #[test]
+    fn available_frame_is_drained_in_one_bounded_pass() {
+        for samples in [480, 1_024] {
+            let mut pcm = FrameAssembler::new(samples).unwrap();
+            let mut reads = Vec::new();
+            let mut checks = 0;
+            let frame = pcm
+                .read_available(
+                    |limit| {
+                        reads.push(limit);
+                        Ok(vec![7; limit])
+                    },
+                    || {
+                        checks += 1;
+                        Ok(true)
+                    },
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(frame, vec![7; samples * SAMPLE_BYTES]);
+            assert_eq!(
+                reads,
+                if samples == 480 {
+                    vec![1920]
+                } else {
+                    vec![1920, 1920, 256]
+                }
+            );
+            assert_eq!(checks, reads.len());
+            let mut empty_reads = 0;
+            assert!(pcm
+                .read_available(
+                    |_| {
+                        empty_reads += 1;
+                        Ok(Vec::new())
+                    },
+                    || Ok(true),
+                )
+                .unwrap()
+                .is_none());
+            assert_eq!(empty_reads, 1);
+        }
+    }
+
+    #[test]
+    fn short_reads_yield_and_keep_partial_frame() {
+        let mut pcm = FrameAssembler::new(1_024).unwrap();
+        let mut reads = 0;
+        assert!(pcm
+            .read_available(
+                |_| {
+                    reads += 1;
+                    Ok(vec![5; 4])
+                },
+                || Ok(true),
+            )
+            .unwrap()
+            .is_none());
+        assert_eq!(reads, 3);
+        let frame = pcm
+            .read_available(|limit| Ok(vec![9; limit]), || Ok(true))
+            .unwrap()
+            .unwrap();
+        assert_eq!(&frame[..12], &[5; 12]);
+        assert!(frame[12..].iter().all(|byte| *byte == 9));
+    }
+
+    #[test]
+    fn producer_change_discards_partial_frame_after_each_read() {
+        for changed_at in 1..=3 {
+            let mut pcm = FrameAssembler::new(1_024).unwrap();
+            let mut checks = 0;
+            assert!(pcm
+                .read_available(
+                    |limit| Ok(vec![3; limit]),
+                    || {
+                        checks += 1;
+                        Ok(checks != changed_at)
+                    },
+                )
+                .unwrap()
+                .is_none());
+            assert_eq!(checks, changed_at);
+            let frame = pcm
+                .read_available(|limit| Ok(vec![8; limit]), || Ok(true))
+                .unwrap()
+                .unwrap();
+            assert_eq!(frame, vec![8; 4096]);
+        }
+    }
+
+    #[test]
+    fn read_and_generation_errors_stop_the_frame() {
+        let mut pcm = FrameAssembler::new(1_024).unwrap();
+        assert!(pcm
+            .read_available(
+                |_| Err(io::Error::other("read failed")),
+                || panic!("failed read must not check generation"),
+            )
+            .is_err());
+        assert!(pcm
+            .read_available(
+                |limit| Ok(vec![1; limit]),
+                || Err(io::Error::other("status failed")),
+            )
+            .is_err());
+        assert!(pcm.read_available(|_| Ok(vec![1; 3]), || Ok(true)).is_err());
     }
 
     #[test]

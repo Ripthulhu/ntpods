@@ -288,4 +288,6 @@
   <data name="Playback.CurrentBitrate" xml:space="preserve"><value>Débit actuel : {0} kbps.</value></data>
   <data name="Playback.CurrentCodec" xml:space="preserve"><value>Codec actuel : {0}.</value></data>
   <data name="Playback.BitrateCodec" xml:space="preserve"><value>Les réglages du débit s’appliquent à {0}.</value></data>
+  <data name="HearingAid.LeftThreshold" xml:space="preserve"><value>Oreille gauche, {0}, perte auditive en dB HL</value></data>
+  <data name="HearingAid.RightThreshold" xml:space="preserve"><value>Oreille droite, {0}, perte auditive en dB HL</value></data>
 </root>

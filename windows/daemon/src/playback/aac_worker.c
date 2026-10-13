@@ -1,6 +1,8 @@
 #include <fcntl.h>
 #include <io.h>
 #include <stdio.h>
+#include <windows.h>
+#include <avrt.h>
 #include "aac_shim.c"
 
 static int parse_bitrate(int argc, char **argv, uint32_t *bitrate) {
@@ -43,6 +45,8 @@ int main(int argc, char **argv) {
     AacEnc *encoder = ntpods_aac_open_at(bitrate);
     if (!encoder) return 1;
     int exit_code = 1;
+    DWORD task_index = 0;
+    HANDLE audio_task = AvSetMmThreadCharacteristicsW(L"Audio", &task_index);
     uint8_t config[AAC_MAX_CONFIG], pcm[AAC_PCM_BYTES];
     int size = ntpods_aac_config(encoder, config, sizeof(config));
     if (size < 2 || !write_bytes("NPAAC001", 8) || !write_u16(AAC_SAMPLES) ||
@@ -55,6 +59,7 @@ int main(int argc, char **argv) {
     }
     if (avcodec_send_frame(encoder->ctx, NULL) == 0 && drain(encoder)) exit_code = 0;
 done:
+    if (audio_task) AvRevertMmThreadCharacteristics(audio_task);
     ntpods_aac_close(encoder);
     return exit_code;
 }

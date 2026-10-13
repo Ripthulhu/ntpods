@@ -32,6 +32,7 @@ Environment:
 #include "cpp_utils.h"
 #include "circuithelper.h"
 #include "MicRing.h"
+#include "PacketConstraints.h"
 
 #ifndef __INTELLISENSE__
 #include "captureCircuit.tmh"
@@ -58,12 +59,10 @@ NTSTATUS CodecC_SetPacketConstraints(ACXCIRCUIT Circuit)
     if (!NT_SUCCESS(status)) return status;
 
     // Match AllocateRtPackets so clients cannot negotiate speech-dropping periods.
-    KSAUDIO_PACKETSIZE_CONSTRAINTS2 constraints = {};
-    constraints.PacketSizeFileAlignment = FILE_WORD_ALIGNMENT;
-    constraints.MaxPacketSizeInBytes = MIC_RT_MAX_PACKET_BYTES;
+    auto constraints = AudioPacketConstraints(FILE_WORD_ALIGNMENT, MIC_RT_MAX_PACKET_BYTES);
     status = IoSetDeviceInterfacePropertyData(&audioLink,
-        &DEVPKEY_KsAudio_PacketSize_Constraints2, 0, 0, DEVPROP_TYPE_BINARY,
-        FIELD_OFFSET(KSAUDIO_PACKETSIZE_CONSTRAINTS2, ProcessingModeConstraints), &constraints);
+        &DEVPKEY_KsAudio_PacketSize_Constraints2, 0, PLUGPLAY_PROPERTY_PERSISTENT, DEVPROP_TYPE_BINARY,
+        sizeof(constraints), &constraints);
     RtlFreeUnicodeString(&audioLink);
     return status;
 }

@@ -31,13 +31,48 @@ pub enum PlaybackMode {
 pub struct PlaybackBitrate {
     pub best_effort: bool,
     pub kbps: u32,
+    #[serde(default)]
+    pub variable: bool,
 }
 impl Default for PlaybackBitrate {
     fn default() -> Self {
         Self {
             best_effort: true,
             kbps: 256,
+            variable: false,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TransparencySettings {
+    pub enabled: bool,
+    pub left_amplification: f32,
+    pub right_amplification: f32,
+    pub left_tone: f32,
+    pub right_tone: f32,
+    pub left_conversation_boost: bool,
+    pub right_conversation_boost: bool,
+    pub left_ambient_noise_reduction: f32,
+    pub right_ambient_noise_reduction: f32,
+}
+
+impl TransparencySettings {
+    pub fn is_valid(&self) -> bool {
+        [
+            self.left_amplification,
+            self.right_amplification,
+            self.left_tone,
+            self.right_tone,
+        ]
+        .iter()
+        .all(|v| v.is_finite() && (-1.0..=1.0).contains(v))
+            && [
+                self.left_ambient_noise_reduction,
+                self.right_ambient_noise_reduction,
+            ]
+            .iter()
+            .all(|v| v.is_finite() && (0.0..=1.0).contains(v))
     }
 }
 
@@ -184,6 +219,11 @@ pub struct Snapshot {
     pub eq: Option<Equalizer>,
     #[serde(default)]
     pub eq_pending: Option<Equalizer>,
+    /// Confirmed AAP 0x2C state; unknown until the current connection reports it.
+    #[serde(default)]
+    pub hearing_aid_enabled: Option<bool>,
+    #[serde(default)]
+    pub hearing_aid_revision: u64,
     /// ATT handle 0x1B, independently confirmed; absent until a successful read.
     #[serde(default)]
     pub loud_sound_reduction: Option<bool>,
@@ -191,6 +231,12 @@ pub struct Snapshot {
     pub loud_sound_reduction_pending: bool,
     #[serde(default)]
     pub loud_sound_reduction_error: Option<String>,
+    #[serde(default)]
+    pub transparency: Option<TransparencySettings>,
+    #[serde(default)]
+    pub transparency_pending: bool,
+    #[serde(default)]
+    pub transparency_error: Option<String>,
     /// Pause on ear removal and resume only playback paused by this app.
     #[serde(default = "default_auto_pause")]
     pub auto_pause: bool,
@@ -346,9 +392,14 @@ impl Default for Snapshot {
             device_settings_error: None,
             eq: None,
             eq_pending: None,
+            hearing_aid_enabled: None,
+            hearing_aid_revision: 0,
             loud_sound_reduction: None,
             loud_sound_reduction_pending: false,
             loud_sound_reduction_error: None,
+            transparency: None,
+            transparency_pending: false,
+            transparency_error: None,
             auto_pause: true,
             volume: 0,
             muted: false,
@@ -445,6 +496,8 @@ pub enum Command {
         mode: PlaybackMode,
         best_effort: bool,
         kbps: u32,
+        #[serde(default)]
+        variable: bool,
     },
     /// Toggle an AAP control-command setting (see the `feature` module).
     SetFeature {
@@ -499,6 +552,10 @@ pub enum Command {
         on: bool,
     },
     GetLoudSoundReduction,
+    GetTransparency,
+    SetTransparency {
+        settings: TransparencySettings,
+    },
     SetLoudSoundReduction {
         on: bool,
     },
@@ -510,6 +567,8 @@ pub enum Command {
     /// `balance` -1(L)..=1(R), `tone` -1..=1, `ambient_noise_reduction`/`own_voice`
     /// 0..=1, plus conversation boost.
     SetHearingAid {
+        #[serde(default)]
+        request_id: u64,
         on: bool,
         left_eq: Vec<f32>,
         right_eq: Vec<f32>,

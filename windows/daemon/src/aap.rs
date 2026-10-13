@@ -679,6 +679,115 @@ pub fn parse_anc_mode(data: &[u8]) -> Option<u8> {
 mod tests {
     use super::*;
 
+    // Pro 3/9A348 capture, before primary-bud handoff; no device identifiers.
+    const CAPTURED_BATTERY: &[u8] = &[
+        4, 0, 4, 0, 4, 0, 3, 4, 1, 93, 2, 1, 2, 1, 95, 1, 1, 8, 1, 99, 1, 1,
+    ];
+
+    #[test]
+    fn captured_handoff_reorders_components_and_keeps_unavailable_case_history() {
+        use ntpods_ipc::{BatteryObservation, Snapshot};
+        for absent_level in [0, 255] {
+            let mut state = Snapshot {
+                connected: true,
+                ..Snapshot::default()
+            };
+            parse_battery(CAPTURED_BATTERY)
+                .unwrap()
+                .apply_to_state(&mut state, 1000);
+            assert!(state.battery.case_charging && state.battery.right_charging);
+            let reordered = [
+                4,
+                0,
+                4,
+                0,
+                4,
+                0,
+                3,
+                2,
+                1,
+                95,
+                2,
+                1,
+                4,
+                1,
+                93,
+                2,
+                1,
+                8,
+                1,
+                absent_level,
+                4,
+                1,
+            ];
+            parse_battery(&reordered)
+                .unwrap()
+                .apply_to_state(&mut state, 2000);
+            assert_eq!(
+                (state.battery.left, state.battery.right, state.battery.case),
+                (Some(93), Some(95), Some(99))
+            );
+            assert!(
+                !state.battery.left_charging
+                    && !state.battery.right_charging
+                    && !state.battery.case_charging
+            );
+            let freshness = state.battery_freshness.unwrap();
+            assert_eq!(
+                freshness.case,
+                BatteryObservation {
+                    timestamp_ms: Some(1000),
+                    live: false,
+                    present: Some(false),
+                }
+            );
+            for ear in [freshness.left, freshness.right] {
+                assert_eq!(
+                    ear,
+                    BatteryObservation {
+                        timestamp_ms: Some(2000),
+                        live: true,
+                        present: Some(true),
+                    }
+                );
+            }
+            assert_eq!(state.battery_timestamp_ms, Some(2000));
+        }
+    }
+
+    #[test]
+    fn reconnect_with_partial_report_does_not_refresh_omitted_components() {
+        let mut state = ntpods_ipc::Snapshot {
+            connected: true,
+            ..Default::default()
+        };
+        parse_battery(CAPTURED_BATTERY)
+            .unwrap()
+            .apply_to_state(&mut state, 1000);
+        crate::battery_ble::refresh_live(&mut state, 1000);
+        state.connected = false;
+        crate::battery_ble::refresh_live(&mut state, 1100);
+        let before = state.battery_freshness.unwrap();
+        assert!(!before.left.live && !before.right.live && !before.case.live);
+        state.connected = true;
+        crate::battery_ble::refresh_live(&mut state, 2000);
+        assert_eq!(state.battery_freshness.unwrap(), before);
+
+        parse_battery(&[4, 0, 4, 0, 4, 0, 1, 2, 1, 94, 2, 1])
+            .unwrap()
+            .apply_to_state(&mut state, 2100);
+        crate::battery_ble::refresh_live(&mut state, 2100);
+        let after = state.battery_freshness.unwrap();
+        assert_eq!(after.left, before.left);
+        assert_eq!(after.case, before.case);
+        assert!(after.right.live && state.battery_live);
+        assert_eq!(after.right.timestamp_ms, Some(2100));
+        assert_eq!(
+            (state.battery.left, state.battery.right, state.battery.case),
+            (Some(93), Some(94), Some(99))
+        );
+    }
+
     #[test]
     fn battery_reports_keep_absent_components_without_erasing_omitted_ones() {
         let mut state = ntpods_ipc::Battery {

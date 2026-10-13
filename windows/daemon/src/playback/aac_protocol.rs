@@ -13,6 +13,7 @@ pub fn select_codec(capabilities: &[u8]) -> io::Result<Option<[u8; 6]>> {
     select_codec_at(
         capabilities,
         ntpods_ipc::PlaybackBitrate {
+            variable: false,
             best_effort: false,
             kbps: 256,
         },

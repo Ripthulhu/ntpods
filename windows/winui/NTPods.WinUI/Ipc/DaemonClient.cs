@@ -81,7 +81,6 @@ public sealed class DaemonClient : IDisposable
     public void SetEq(Equalizer eq) => Send(new SetEqCmd { Mode = eq.Mode, Low = eq.Low, Mid = eq.Mid, High = eq.High });
     public void SetAutoPause(bool on) => Send(new SetAutoPauseCmd { On = on });
     public void RefreshDeviceSettings() => Send(new RefreshDeviceSettingsCmd());
-    public void SetHearingAid(SetHearingAidCmd cmd) => Send(cmd);
     public void StepVolume(int delta) => Send(new StepVolumeCmd { Delta = delta });
     public void ToggleMute() => Send(new ToggleMuteCmd());
     public void SetHeartRate(bool on) => Send(new SetHeartRateCmd { On = on });

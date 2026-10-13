@@ -11,11 +11,15 @@
     <Compile Include="../../winui/NTPods.WinUI/Services/DeviceModels.cs" Link="DeviceModels.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Controls/HeadTrackingLiveState.cs" Link="HeadTrackingLiveState.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Services/DeviceArt.cs" Link="DeviceArt.cs" />
+    <Compile Include="../../winui/NTPods.WinUI/Services/DeviceViewIdentity.cs" Link="DeviceViewIdentity.cs" />
+    <Compile Include="../../winui/NTPods.WinUI/Services/WindowSizing.cs" Link="WindowSizing.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Controls/VolumeEditState.cs" Link="VolumeEditState.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Popup/TrayMenuLayout.cs" Link="TrayMenuLayout.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Popup/IslandPresence.cs" Link="IslandPresence.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Popup/MicrophoneNotifications.cs" Link="MicrophoneNotifications.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Controls/EqualizerEditState.cs" Link="EqualizerEditState.cs" />
+    <Compile Include="../../winui/NTPods.WinUI/Controls/TransparencyEditState.cs" Link="TransparencyEditState.cs" />
+    <Compile Include="../../winui/NTPods.WinUI/Controls/HearingAidRequest.cs" Link="HearingAidRequest.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Controls/DeviceSettingStatus.cs" Link="DeviceSettingStatus.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Controls/RenameRequest.cs" Link="RenameRequest.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Controls/PlaybackModeRequest.cs" Link="PlaybackModeRequest.cs" />

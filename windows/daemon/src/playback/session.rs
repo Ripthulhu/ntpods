@@ -25,6 +25,7 @@ pub struct Session {
     interrupted: Box<dyn Fn() -> bool>,
     pub mtu: usize,
     pub bitrate: u32,
+    pub variable: bool,
 }
 
 pub fn driver_ready(driver: &Driver, address: u64) -> io::Result<()> {
@@ -68,6 +69,7 @@ impl Session {
             interrupted: Box::new(interrupted),
             mtu: 0,
             bitrate: 0,
+            variable: false,
         };
         open_signaling_with_retry(
             || session.open_channel(address, 0),
@@ -127,6 +129,7 @@ impl Session {
         session.bitrate = selected.bitrate;
         let mode = session.mode;
         let preference = bitrates[usize::from(mode == Mode::Eld)];
+        session.variable = preference.variable;
         crate::log(&format!(
             "playback signaling: {} selected endpoint {}, {} bps",
             mode.name(),
@@ -501,10 +504,56 @@ mod tests {
     }
 
     #[test]
+    fn variable_profile_negotiates_its_peak_and_keeps_aac_fallback_constant() {
+        let preferences = [
+            PlaybackBitrate::default(),
+            PlaybackBitrate {
+                variable: true,
+                ..PlaybackBitrate::default()
+            },
+        ];
+        let mut caps = vec![(1, aac_caps()), (2, configuration(2)[2..].to_vec())].into_iter();
+        let selected = select_configuration(Mode::Eld, preferences, || Ok(caps.next())).unwrap();
+        assert_eq!(selected.mode, Mode::Eld);
+        assert_eq!(selected.bitrate, 256_000);
+        assert_eq!(selected.config, configuration_at(2, 256_000));
+
+        let mut caps = vec![
+            (1, aac_caps()),
+            (2, configuration_at(2, 192_000)[2..].to_vec()),
+        ]
+        .into_iter();
+        assert_eq!(
+            select_configuration(Mode::Eld, preferences, || Ok(caps.next()))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::Unsupported
+        );
+        let mut caps = vec![(1, aac_caps())].into_iter();
+        let fallback = select_configuration(Mode::Eld, preferences, || Ok(caps.next())).unwrap();
+        assert_eq!(fallback.mode, Mode::Aac);
+        assert!(!preferences[0].variable);
+        assert_eq!(fallback.bitrate, 512_000);
+
+        for mtu in [48, 661] {
+            assert!(Mode::Eld
+                .bitrate(preferences[1], eld_bitrate_limit(mtu))
+                .is_err());
+        }
+        assert_eq!(
+            Mode::Eld
+                .bitrate(preferences[1], eld_bitrate_limit(662))
+                .unwrap(),
+            256_000
+        );
+    }
+
+    #[test]
     fn eld_takes_precedence_and_fallback_uses_the_aac_preference() {
         let requested = Mode::Eld;
         let preferences = [
             PlaybackBitrate {
+                variable: false,
                 best_effort: false,
                 kbps: 129,
             },
@@ -549,6 +598,7 @@ mod tests {
         let preferences = [
             PlaybackBitrate::default(),
             PlaybackBitrate {
+                variable: false,
                 best_effort: false,
                 kbps: 256,
             },
@@ -609,6 +659,7 @@ mod tests {
         aac[end - 3..].copy_from_slice(&[0x01, 0xf4, 0]); // 128 kbps ceiling.
         let mut preferences = [
             PlaybackBitrate {
+                variable: false,
                 best_effort: false,
                 kbps: 129,
             },

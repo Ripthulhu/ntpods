@@ -2,6 +2,7 @@
 <UserControl x:Class="NTPods.WinUI.Popup.IslandView"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:NTPods.WinUI.Controls"
     Width="400" MinHeight="160" AutomationProperties.LiveSetting="Polite">
     <UserControl.Resources>
         <ResourceDictionary>
@@ -80,7 +81,7 @@
                     </TextBlock>
                 </Grid>
             </StackPanel>
-            <BitmapIcon x:Name="ModeIcon" Grid.Column="2" Width="28" Height="28" ShowAsMonochrome="True"
+            <controls:ListeningModeIcon x:Name="ModeIcon" Grid.Column="2" Width="28" Height="28"
                         Foreground="{ThemeResource IslandForeground}" Visibility="Collapsed" AutomationProperties.AccessibilityView="Raw" />
             <Grid x:Name="MicIcon" Grid.Column="2" Width="28" Height="28" Visibility="Collapsed"
                   AutomationProperties.AccessibilityView="Raw">

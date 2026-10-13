@@ -43,12 +43,33 @@ public sealed record PlaybackBitrate
 {
     [JsonRequired, JsonPropertyName("best_effort")] public bool BestEffort { get; init; } = true;
     [JsonRequired, JsonPropertyName("kbps")] public uint Kbps { get; init; } = 256;
+    [JsonPropertyName("variable")] public bool Variable { get; init; }
     public bool IsValidFor(string mode) => mode switch
     {
-        "aac" => Kbps is >= 96 and <= 512,
-        "aac_eld" => Kbps is >= 128 and <= 256,
+        "aac" => !Variable && Kbps is >= 96 and <= 512,
+        "aac_eld" => Kbps is >= 128 and <= 256 && (!Variable || BestEffort && Kbps == 256),
         _ => false
     };
+}
+
+public sealed record TransparencySettings
+{
+    [JsonRequired, JsonPropertyName("enabled")] public bool Enabled { get; init; }
+    [JsonRequired, JsonPropertyName("left_amplification")] public float LeftAmplification { get; init; }
+    [JsonRequired, JsonPropertyName("right_amplification")] public float RightAmplification { get; init; }
+    [JsonRequired, JsonPropertyName("left_tone")] public float LeftTone { get; init; }
+    [JsonRequired, JsonPropertyName("right_tone")] public float RightTone { get; init; }
+    [JsonRequired, JsonPropertyName("left_conversation_boost")] public bool LeftConversationBoost { get; init; }
+    [JsonRequired, JsonPropertyName("right_conversation_boost")] public bool RightConversationBoost { get; init; }
+    [JsonRequired, JsonPropertyName("left_ambient_noise_reduction")] public float LeftAmbientNoiseReduction { get; init; }
+    [JsonRequired, JsonPropertyName("right_ambient_noise_reduction")] public float RightAmbientNoiseReduction { get; init; }
+    [JsonIgnore] public bool IsValid =>
+        float.IsFinite(LeftAmplification) && LeftAmplification is >= -1 and <= 1 &&
+        float.IsFinite(RightAmplification) && RightAmplification is >= -1 and <= 1 &&
+        float.IsFinite(LeftTone) && LeftTone is >= -1 and <= 1 &&
+        float.IsFinite(RightTone) && RightTone is >= -1 and <= 1 &&
+        float.IsFinite(LeftAmbientNoiseReduction) && LeftAmbientNoiseReduction is >= 0 and <= 1 &&
+        float.IsFinite(RightAmbientNoiseReduction) && RightAmbientNoiseReduction is >= 0 and <= 1;
 }
 
 /// The daemon's authoritative state, pushed on connect and on every change.
@@ -97,9 +118,14 @@ public sealed class Snapshot
     [JsonPropertyName("conversational_awareness_pending")] public bool? ConversationalAwarenessPending { get; set; }
     [JsonPropertyName("conversation_volume")] public byte ConversationVolume { get; set; } = 25;
     [JsonPropertyName("adaptive_volume")] public bool AdaptiveVolume { get; set; }
+    [JsonPropertyName("hearing_aid_enabled")] public bool? HearingAidEnabled { get; set; }
+    [JsonPropertyName("hearing_aid_revision")] public ulong HearingAidRevision { get; set; }
     [JsonPropertyName("loud_sound_reduction")] public bool? LoudSoundReduction { get; set; }
     [JsonPropertyName("loud_sound_reduction_pending")] public bool LoudSoundReductionPending { get; set; }
     [JsonPropertyName("loud_sound_reduction_error")] public string? LoudSoundReductionError { get; set; }
+    [JsonPropertyName("transparency")] public TransparencySettings? Transparency { get; set; }
+    [JsonPropertyName("transparency_pending")] public bool TransparencyPending { get; set; }
+    [JsonPropertyName("transparency_error")] public string? TransparencyError { get; set; }
     [JsonPropertyName("allow_off")] public bool AllowOff { get; set; }
     /// Last successfully sent choice on Pro 3, which may not acknowledge this setting.
     [JsonPropertyName("allow_off_requested")] public bool? AllowOffRequested { get; set; }
@@ -256,6 +282,7 @@ public sealed class SetPlaybackBitrateCmd
     [JsonPropertyName("mode")] public string Mode { get; init; } = "aac";
     [JsonPropertyName("best_effort")] public bool BestEffort { get; init; } = true;
     [JsonPropertyName("kbps")] public uint Kbps { get; init; } = 256;
+    [JsonPropertyName("variable")] public bool Variable { get; init; }
 }
 
 public sealed class SetFeatureCmd
@@ -339,6 +366,17 @@ public sealed class GetLoudSoundReductionCmd
     [JsonPropertyName("cmd")] public string Cmd => "get_loud_sound_reduction";
 }
 
+public sealed class GetTransparencyCmd
+{
+    [JsonPropertyName("cmd")] public string Cmd => "get_transparency";
+}
+
+public sealed class SetTransparencyCmd
+{
+    [JsonPropertyName("cmd")] public string Cmd => "set_transparency";
+    [JsonPropertyName("settings")] public required TransparencySettings Settings { get; init; }
+}
+
 public sealed class SetLoudSoundReductionCmd
 {
     [JsonPropertyName("cmd")] public string Cmd => "set_loud_sound_reduction";
@@ -348,6 +386,7 @@ public sealed class SetLoudSoundReductionCmd
 public sealed class SetHearingAidCmd
 {
     [JsonPropertyName("cmd")] public string Cmd => "set_hearing_aid";
+    [JsonPropertyName("request_id")] public ulong RequestId { get; init; }
     [JsonPropertyName("on")] public bool On { get; init; }
     [JsonPropertyName("left_eq")] public float[] LeftEq { get; init; } = new float[8];
     [JsonPropertyName("right_eq")] public float[] RightEq { get; init; } = new float[8];
@@ -458,6 +497,7 @@ public static class Wire
                         snap.PlaybackBitrateKbps is < 96 or > 512 ||
                         snap.HeadTrackingState is not ("idle" or "starting" or "streaming" or "error" or "waiting_for_ear") ||
                         snap.AdaptiveStrengthRequested is > 100 || snap.ConversationVolume > 100 ||
+                        snap.Transparency is { IsValid: false } ||
                         snap.Eq is { IsValid: false } || snap.EqPending is { IsValid: false }) return null;
                     return new DaemonEvent.State(snap);
 
