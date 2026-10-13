@@ -74,7 +74,8 @@ internal static class BatteryPresentation
         return !IsLive(s) || IsLive(s, part) ? text : $"{text} ({Localize.Get("Battery.LastKnown")})";
     }
 
-    public static string StatusKey(Snapshot snapshot) => snapshot.Connected ? "Status_Connected"
+    public static string StatusKey(Snapshot snapshot) => snapshot.Connected
+        ? snapshot.LinkStale ? "Status_ControlUnavailable" : "Status_Connected"
         : IsLive(snapshot) && HasData(snapshot)
             ? IsCharging(snapshot) ? "Battery.NearbyCharging" : "Battery.Nearby"
             : "Status_Disconnected";

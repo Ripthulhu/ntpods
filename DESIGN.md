@@ -106,7 +106,7 @@ Green identifies enabled switches and battery readings. Blue is the native contr
 
 The `page`, `group`, `track` and `selected` pairs define the surface layers. The `secondary` pair is for descriptions, status and metadata; `divider` separates rows. `hover` supplies expander and checked listening-button pointer states. Selected listening icons use `selected-text`.
 
-Use the matching `Apple*` or `NTPodsAccentBrush` theme resource in XAML. Normal primary text and most standard control states inherit WinUI resources. High contrast replaces custom surface colors with Windows window, text, highlight and highlight-text resources; it does not use either fixed palette. The `accent-light` token records the active `NTPodsAccentBrush` and `SystemAccentColor`; the separate `NTPodsAccentColor` declaration has a different light value and is not the brush token.
+Use the matching `Apple*` or `NTPodsAccentBrush` theme resource in XAML. Normal primary text and most standard control states inherit WinUI resources. High contrast replaces custom surface colors with Windows window, text, highlight and highlight-text resources; it does not use either fixed palette. Native controls use the same blue accent through the Windows accent shade resources.
 
 ## Typography
 

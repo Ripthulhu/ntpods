@@ -25,8 +25,14 @@ public static class HeartRateHistory
         return c;
     }
 
+    public static Task<List<Session>> SessionsAsync(CancellationToken cancellation) =>
+        Task.Run(() => Sessions(cancellation), cancellation);
+
+    public static Task<List<(DateTime At, ushort Bpm)>> SamplesAsync(long sessionId, CancellationToken cancellation) =>
+        Task.Run(() => Samples(sessionId, cancellation), cancellation);
+
     /// Most recent sessions that have readings, newest first.
-    public static List<Session> Sessions(int limit = 50)
+    private static List<Session> Sessions(CancellationToken cancellation, int limit = 50)
     {
         var list = new List<Session>();
         try
@@ -42,18 +48,19 @@ public static class HeartRateHistory
             using var r = cmd.ExecuteReader();
             while (r.Read())
             {
+                cancellation.ThrowIfCancellationRequested();
                 // A session left open (daemon stopped mid-run) ends at its last reading.
                 long? end = r.IsDBNull(2) ? r.GetInt64(7) : r.GetInt64(2);
                 list.Add(new Session(r.GetInt64(0), FromUnixMs(r.GetInt64(1)), end is long e ? FromUnixMs(e) : null,
                     r.GetInt32(3), r.GetInt32(4), (int)Math.Round(r.GetDouble(5)), r.GetInt32(6)));
             }
         }
-        catch (Exception) { /* no DB yet / locked mid-checkpoint: show no history */ }
+        catch (Exception error) when (error is not OperationCanceledException) { }
         return list;
     }
 
     /// Every reading of one session, oldest first.
-    public static List<(DateTime At, ushort Bpm)> Samples(long sessionId)
+    private static List<(DateTime At, ushort Bpm)> Samples(long sessionId, CancellationToken cancellation)
     {
         var list = new List<(DateTime, ushort)>();
         try
@@ -64,9 +71,13 @@ public static class HeartRateHistory
             cmd.CommandText = "SELECT ts, bpm FROM samples WHERE session_id = $id ORDER BY ts";
             cmd.Parameters.AddWithValue("$id", sessionId);
             using var r = cmd.ExecuteReader();
-            while (r.Read()) list.Add((FromUnixMs(r.GetInt64(0)), (ushort)r.GetInt32(1)));
+            while (r.Read())
+            {
+                cancellation.ThrowIfCancellationRequested();
+                list.Add((FromUnixMs(r.GetInt64(0)), (ushort)r.GetInt32(1)));
+            }
         }
-        catch (Exception) { }
+        catch (Exception error) when (error is not OperationCanceledException) { }
         return list;
     }
 }

@@ -199,6 +199,8 @@ battery.Connected = true;
 Check(BatteryPresentation.IsLive(battery), "Legacy connected snapshots must remain supported.");
 battery.LinkStale = true;
 Check(!BatteryPresentation.IsLive(battery), "A legacy silent link cannot keep batteries live.");
+Check(BatteryPresentation.StatusKey(battery) == "Status_ControlUnavailable",
+    "A stale control link must not claim that device controls are connected.");
 battery.BatterySource = "aap";
 battery.LinkStale = false;
 Check(!BatteryPresentation.IsLive(battery), "Explicit expired metadata overrides an active audio connection.");

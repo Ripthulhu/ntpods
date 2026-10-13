@@ -4,20 +4,20 @@
     xmlns:pages="using:NTPods.WinUI.Pages" Title="NTPods">
     <Grid x:Name="RootGrid" Background="{ThemeResource ApplePageBrush}">
         <Grid x:Name="ShellGrid">
-            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-            <Grid x:Name="SettingsNavigation" MinHeight="48" Margin="12,0" Visibility="Collapsed">
-                <Button x:Name="BackButton" Style="{StaticResource QuietButton}" HorizontalAlignment="Left"
-                        MinHeight="40" Click="Back_Click"
-                        AutomationProperties.Name="{Binding [Navigation_Back], Source={StaticResource Loc}}">
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <FontIcon Glyph="&#xE72B;" FontSize="16" />
-                        <TextBlock Text="{Binding [Navigation_Back], Source={StaticResource Loc}}" VerticalAlignment="Center" />
-                    </StackPanel>
-                </Button>
-            </Grid>
-            <Grid Grid.Row="1">
-                <pages:DevicePage x:Name="DevicePageView" />
-                <pages:SettingsPage x:Name="SettingsPageView" Visibility="Collapsed" />
+            <pages:DevicePage x:Name="DevicePageView" />
+            <Grid x:Name="SettingsView" Visibility="Collapsed">
+                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                <Grid x:Name="SettingsNavigation" MinHeight="48" Margin="12,0">
+                    <Button x:Name="BackButton" Style="{StaticResource QuietButton}" HorizontalAlignment="Left"
+                            MinHeight="40" Click="Back_Click"
+                            AutomationProperties.Name="{Binding [Navigation_Back], Source={StaticResource Loc}}">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <FontIcon Glyph="&#xE72B;" FontSize="16" />
+                            <TextBlock Text="{Binding [Navigation_Back], Source={StaticResource Loc}}" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
+                </Grid>
+                <pages:SettingsPage x:Name="SettingsPageView" Grid.Row="1" />
             </Grid>
         </Grid>
     </Grid>

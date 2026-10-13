@@ -34,6 +34,10 @@
                 </Grid.ColumnDefinitions>
                 <Ellipse x:Name="StatusDot" Width="7" Height="7" VerticalAlignment="Center"
                          Fill="{ThemeResource AppleSecondaryBrush}" />
+                <Ellipse x:Name="ConnectedDot" Width="7" Height="7" VerticalAlignment="Center"
+                         Fill="{ThemeResource AppleGreenBrush}" Visibility="Collapsed" />
+                <Ellipse x:Name="StaleDot" Width="7" Height="7" VerticalAlignment="Center"
+                         Fill="{ThemeResource SystemFillColorCautionBrush}" Visibility="Collapsed" />
                 <TextBlock x:Name="StatusText" Grid.Column="1" Text="Connecting…" FontSize="13"
                            TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
                            Foreground="{ThemeResource AppleSecondaryBrush}" />

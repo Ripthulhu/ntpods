@@ -16,12 +16,12 @@
                     <SolidColorBrush x:Key="IslandLowBattery" Color="#FF6961" />
                 </ResourceDictionary>
                 <ResourceDictionary x:Key="Light">
-                    <SolidColorBrush x:Key="IslandBackground" Color="#F2F2F7" />
-                    <SolidColorBrush x:Key="IslandForeground" Color="Black" />
-                    <SolidColorBrush x:Key="IslandSecondary" Color="#636366" />
-                    <SolidColorBrush x:Key="IslandBattery" Color="#248A3D" />
-                    <SolidColorBrush x:Key="IslandBatteryTrack" Color="#D1D1D6" />
-                    <SolidColorBrush x:Key="IslandLowBattery" Color="#C6282C" />
+                    <SolidColorBrush x:Key="IslandBackground" Color="Black" />
+                    <SolidColorBrush x:Key="IslandForeground" Color="White" />
+                    <SolidColorBrush x:Key="IslandSecondary" Color="#A1A1A6" />
+                    <SolidColorBrush x:Key="IslandBattery" Color="#30D158" />
+                    <SolidColorBrush x:Key="IslandBatteryTrack" Color="#333333" />
+                    <SolidColorBrush x:Key="IslandLowBattery" Color="#FF6961" />
                 </ResourceDictionary>
                 <ResourceDictionary x:Key="HighContrast">
                     <SolidColorBrush x:Key="IslandBackground" Color="{ThemeResource SystemColorWindowColor}" />
@@ -81,13 +81,19 @@
                     </TextBlock>
                 </Grid>
             </StackPanel>
-            <controls:ListeningModeIcon x:Name="ModeIcon" Grid.Column="2" Width="28" Height="28"
-                        Foreground="{ThemeResource IslandForeground}" Visibility="Collapsed" AutomationProperties.AccessibilityView="Raw" />
-            <Grid x:Name="MicIcon" Grid.Column="2" Width="28" Height="28" Visibility="Collapsed"
+            <Grid x:Name="MessageIcons" Grid.Column="2" Width="28" Height="28" Visibility="Collapsed"
                   AutomationProperties.AccessibilityView="Raw">
-                <FontIcon Glyph="&#xE720;" FontSize="24" Foreground="{ThemeResource IslandForeground}" />
-                <Path x:Name="MicOffSlash" Data="M 3,3 L 25,25" StrokeThickness="2"
-                      Stroke="{ThemeResource IslandForeground}" Visibility="Collapsed" />
+                <controls:ListeningModeIcon x:Name="TransparencyIcon" Width="28" Height="28" UriSource="ms-appx:///Assets/ic_transparency.png"
+                                            Foreground="{ThemeResource IslandForeground}" />
+                <controls:ListeningModeIcon x:Name="AdaptiveIcon" Width="28" Height="28" UriSource="ms-appx:///Assets/ic_adaptive.png"
+                                            Foreground="{ThemeResource IslandForeground}" />
+                <controls:ListeningModeIcon x:Name="NoiseCancellationIcon" Width="28" Height="28" UriSource="ms-appx:///Assets/ic_noise_cancellation.png"
+                                            Foreground="{ThemeResource IslandForeground}" />
+                <FontIcon x:Name="MicIcon" Glyph="&#xE720;" FontSize="24" Foreground="{ThemeResource IslandForeground}" />
+                <Grid x:Name="MicOffIcon">
+                    <FontIcon Glyph="&#xE720;" FontSize="24" Foreground="{ThemeResource IslandForeground}" />
+                    <Path Data="M 3,3 L 25,25" StrokeThickness="2" Stroke="{ThemeResource IslandForeground}" />
+                </Grid>
             </Grid>
         </Grid>
         <StackPanel x:Name="BatteryPanel" Grid.Row="1" Spacing="8">

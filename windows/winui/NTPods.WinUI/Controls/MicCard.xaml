@@ -22,6 +22,8 @@
             </Grid>
         </Expander.Header>
         <StackPanel Spacing="16">
+            <TextBlock x:Name="MicDetailText" TextWrapping="Wrap" FontSize="13" Visibility="Collapsed"
+                       Foreground="{ThemeResource AppleSecondaryBrush}" AutomationProperties.LiveSetting="Polite" />
             <Grid ColumnSpacing="16" MinHeight="36">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <TextBlock Text="{Binding [Mic_Enable], Source={StaticResource Loc}}" TextWrapping="Wrap"

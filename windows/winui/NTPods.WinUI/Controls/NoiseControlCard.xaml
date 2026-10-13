@@ -99,23 +99,23 @@
         </Grid>
         <Grid Margin="4,8,4,0" IsHitTestVisible="False">
             <TextBlock x:Name="OffLabel" Text="{Binding [Anc_Off], Source={StaticResource Loc}}"
-                       FontSize="12" TextAlignment="Center" TextWrapping="Wrap" Margin="2,0"
+                       FontSize="12" TextAlignment="Center" TextWrapping="WrapWholeWords" Margin="2,0"
                        HorizontalAlignment="Left" VerticalAlignment="Top" Opacity="0"
                        AutomationProperties.AccessibilityView="Raw">
                 <TextBlock.RenderTransform><TranslateTransform x:Name="OffLabelTransform" /></TextBlock.RenderTransform>
             </TextBlock>
             <TextBlock x:Name="TransparencyLabel" Text="{Binding [Anc_Transparency], Source={StaticResource Loc}}"
-                       FontSize="12" TextAlignment="Center" TextWrapping="Wrap" Margin="2,0"
+                       FontSize="12" TextAlignment="Center" TextWrapping="WrapWholeWords" Margin="2,0"
                        HorizontalAlignment="Left" VerticalAlignment="Top">
                 <TextBlock.RenderTransform><TranslateTransform x:Name="TransparencyLabelTransform" /></TextBlock.RenderTransform>
             </TextBlock>
             <TextBlock x:Name="AdaptiveLabel" Text="{Binding [Anc_Adaptive], Source={StaticResource Loc}}"
-                       FontSize="12" TextAlignment="Center" TextWrapping="Wrap" Margin="2,0"
+                       FontSize="12" TextAlignment="Center" TextWrapping="WrapWholeWords" Margin="2,0"
                        HorizontalAlignment="Left" VerticalAlignment="Top">
                 <TextBlock.RenderTransform><TranslateTransform x:Name="AdaptiveLabelTransform" /></TextBlock.RenderTransform>
             </TextBlock>
             <TextBlock x:Name="AncLabel" Text="{Binding [Anc_NoiseCancellation], Source={StaticResource Loc}}"
-                       FontSize="12" TextAlignment="Center" TextWrapping="Wrap" Margin="2,0"
+                       FontSize="12" TextAlignment="Center" TextWrapping="WrapWholeWords" Margin="2,0"
                        HorizontalAlignment="Left" VerticalAlignment="Top">
                 <TextBlock.RenderTransform><TranslateTransform x:Name="AncLabelTransform" /></TextBlock.RenderTransform>
             </TextBlock>

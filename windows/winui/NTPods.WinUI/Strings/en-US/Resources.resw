@@ -198,7 +198,7 @@
   <data name="Status_Connected" xml:space="preserve"><value>Connected</value></data>
   <data name="Status_Disconnected" xml:space="preserve"><value>Disconnected</value></data>
   <data name="Status_Connecting" xml:space="preserve"><value>Connecting…</value></data>
-  <data name="Status_WaitingForDaemon" xml:space="preserve"><value>Waiting for daemon…</value></data>
+  <data name="Status_WaitingForDaemon" xml:space="preserve"><value>Connecting to NTPods…</value></data>
 
   <data name="Volume_Muted" xml:space="preserve"><value>muted</value></data>
   <data name="Action_Mute" xml:space="preserve"><value>Mute</value></data>
@@ -231,7 +231,8 @@
   <!-- ===== MultipointCard ===== -->
   <data name="MultipointTitle.Text" xml:space="preserve"><value>Shared with</value></data>
   <data name="Multipoint_OnlyThisPc" xml:space="preserve"><value>Only this PC is connected</value></data>
-  <data name="Multipoint_Shared" xml:space="preserve"><value>Shared with {0} other device(s)</value></data>
+  <data name="Multipoint_Shared" xml:space="preserve"><value>{0} other devices</value></data>
+  <data name="Multipoint_SharedOne" xml:space="preserve"><value>1 other device</value></data>
   <data name="Multipoint_ThisPc" xml:space="preserve"><value>This PC</value></data>
   <data name="Multipoint_Hint" xml:space="preserve"><value>The AirPods can hold two connections at once. When another device plays audio, it can take them from this PC.</value></data>
 
@@ -267,12 +268,12 @@
   <data name="Equalizer.Unsupported" xml:space="preserve"><value>Custom EQ requires compatible AirPods firmware version 9 or later.</value></data>
   <data name="Equalizer.Unknown" xml:space="preserve"><value>Your AirPods have not reported an EQ setting. The sliders show an unsent neutral starting point.</value></data>
   <data name="Equalizer.RecommendedActive" xml:space="preserve"><value>Recommended sound</value></data>
-  <data name="Equalizer.CustomActive" xml:space="preserve"><value>Last reported by your AirPods: Custom EQ.</value></data>
+  <data name="Equalizer.CustomActive" xml:space="preserve"><value>Custom EQ</value></data>
   <data name="Equalizer.Values" xml:space="preserve"><value>Bass {0} · Midrange {1} · Treble {2}</value></data>
   <data name="DeviceControls.Title" xml:space="preserve"><value>AirPods settings</value></data>
   <data name="DeviceControls.Description" xml:space="preserve"><value>Device controls become available when your AirPods report their current values.</value></data>
   <data name="DeviceControls.Refresh" xml:space="preserve"><value>Refresh device settings</value></data>
-  <data name="DeviceControls.RefreshHint" xml:space="preserve"><value>Some settings are reported only after refreshing. Available when no app is using the microphone.</value></data>
+  <data name="DeviceControls.RefreshHint" xml:space="preserve"><value>Read the latest settings from your AirPods. Stop recording first.</value></data>
   <data name="DeviceControls.ErrorTitle" xml:space="preserve"><value>Setting not confirmed</value></data>
   <data name="DeviceControls.AutoPause" xml:space="preserve"><value>Automatic pause</value></data>
   <data name="DeviceControls.AutoPauseHint" xml:space="preserve"><value>Pauses playback when an earbud is removed. Resumes only playback NTPods paused, when both earbuds are back in your ears.</value></data>
@@ -291,7 +292,7 @@
   <data name="DeviceControls.Right" xml:space="preserve"><value>Always right</value></data>
   <data name="DeviceControls.Left" xml:space="preserve"><value>Always left</value></data>
   <data name="DeviceControls.NoiseCycle" xml:space="preserve"><value>Noise modes for press and hold</value></data>
-  <data name="DeviceControls.CycleHint" xml:space="preserve"><value>Choose at least two modes. Off also requires Allow Off in noise control.</value></data>
+  <data name="DeviceControls.CycleHint" xml:space="preserve"><value>Choose at least two listening modes. To include Off, enable Allow “Off” mode under Audio.</value></data>
   <data name="DeviceControls.Off" xml:space="preserve"><value>Off</value></data>
   <data name="DeviceControls.NoiseCancellation" xml:space="preserve"><value>Noise cancellation</value></data>
   <data name="DeviceControls.Transparency" xml:space="preserve"><value>Transparency</value></data>
@@ -322,7 +323,7 @@
   <data name="DeviceControls.Waiting" xml:space="preserve"><value>Waiting for device</value></data>
   <data name="DeviceControls.Apply" xml:space="preserve"><value>Apply</value></data>
   <data name="AdaptiveNoise.Apply" xml:space="preserve"><value>Apply adaptive noise</value></data>
-  <data name="AdaptiveNoise.SelectAdaptive" xml:space="preserve"><value>Select Adaptive in Noise Control to change the strength.</value></data>
+  <data name="AdaptiveNoise.SelectAdaptive" xml:space="preserve"><value>Select Adaptive under Listening Mode to change the strength.</value></data>
   <data name="AdaptiveNoise.RefreshMode" xml:space="preserve"><value>The noise mode is not confirmed. Use Refresh device settings before changing the strength.</value></data>
   <data name="DeviceControls.ApplyNoiseCycle" xml:space="preserve"><value>Apply noise-control cycle</value></data>
   <data name="DeviceControls.ApplyToneVolume" xml:space="preserve"><value>Apply tone volume</value></data>
@@ -441,4 +442,18 @@
   <data name="Transparency.Read" xml:space="preserve"><value>Read settings</value></data>
   <data name="HearingAid.LeftThreshold" xml:space="preserve"><value>Left ear, {0}, hearing loss in dB HL</value></data>
   <data name="HearingAid.RightThreshold" xml:space="preserve"><value>Right ear, {0}, hearing loss in dB HL</value></data>
+  <data name="Status_ControlUnavailable" xml:space="preserve"><value>Needs repair</value></data>
+  <data name="Action_Repair" xml:space="preserve"><value>Repair</value></data>
+  <data name="Mic.RecordingShort" xml:space="preserve"><value>Recording</value></data>
+  <data name="Mic.StartingShort" xml:space="preserve"><value>Starting…</value></data>
+  <data name="Mic.StoppingShort" xml:space="preserve"><value>Stopping…</value></data>
+  <data name="Mic.RestoringShort" xml:space="preserve"><value>Restoring audio…</value></data>
+  <data name="Mic.WaitingEarShort" xml:space="preserve"><value>Put on AirPods</value></data>
+  <data name="Mic.WaitingConnectionShort" xml:space="preserve"><value>Waiting for AirPods</value></data>
+  <data name="Mic.DisabledShort" xml:space="preserve"><value>Microphone off</value></data>
+  <data name="Mic.UnavailableShort" xml:space="preserve"><value>Unavailable</value></data>
+  <data name="HeartRateGraph_AccessibleName" xml:space="preserve"><value>Heart rate readings</value></data>
+  <data name="HeartRateGraph_KeyboardHelp" xml:space="preserve"><value>Use Left and Right to choose a reading; Home and End go to the first and last reading.</value></data>
+  <data name="HeadTracking.Values" xml:space="preserve"><value>Horizontal {0} · Vertical {1}</value></data>
+  <data name="HeadTracking.ValuesHelp" xml:space="preserve"><value>Relative movement values, not degrees.</value></data>
 </root>

@@ -20,6 +20,7 @@ public sealed partial class HeadTrackingCard : UserControl
     private bool _fresh;
     private bool _ownsStream;
     private bool _supported;
+    private long _lastDescription;
 
     public DaemonClient? Client
     {
@@ -117,6 +118,13 @@ public sealed partial class HeadTrackingCard : UserControl
             _live.State == "waiting_for_ear" ? "HeadTracking.Wear" : enabled ? "HeadTracking.Waiting" : "HeadTracking.Ready");
         _fresh = _live.IsFresh(Now);
         HorizontalTrace.Opacity = VerticalTrace.Opacity = _fresh ? 1 : 0.45;
+        if (!_fresh || Environment.TickCount64 - _lastDescription >= 250)
+        {
+            _lastDescription = Environment.TickCount64;
+            MovementValues.Text = _fresh ? Localize.Get("HeadTracking.Values", _live.Samples[^1].Horizontal, _live.Samples[^1].Vertical) : "—";
+            AutomationProperties.SetName(GraphHost, Localize.Get("HeadTracking_LiveMovement") + ". " +
+                (_fresh ? MovementValues.Text : EmptyText.Text));
+        }
     }
 
     private void SetRendering(bool on)

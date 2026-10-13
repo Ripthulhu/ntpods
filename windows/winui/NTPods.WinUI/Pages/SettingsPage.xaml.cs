@@ -100,6 +100,9 @@ public sealed partial class SettingsPage : UserControl
         if (index >= 0 && index <= 2) ThemeButtons.SelectedIndex = index;
     }
 
+    private void ThemeButtons_SizeChanged(object sender, SizeChangedEventArgs e) =>
+        ThemeButtons.MaxColumns = e.NewSize.Width < 400 ? 1 : 3;
+
     /// Set the experimental toggle to the persisted value on startup (without
     /// re-firing the change event).
     public void InitExperimentalSetting() => ExperimentalSetting.IsOn = AppSettings.EnableExperimental;

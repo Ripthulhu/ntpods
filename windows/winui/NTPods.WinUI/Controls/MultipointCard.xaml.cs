@@ -33,6 +33,6 @@ public sealed partial class MultipointCard : UserControl
         int others = devices.Count(d => !d.IsThisPc);
         SummaryText.Text = others == 0
             ? Localize.Get("Multipoint_OnlyThisPc")
-            : string.Format(Localize.Get("Multipoint_Shared"), others);
+            : Localize.Get(others == 1 ? "Multipoint_SharedOne" : "Multipoint_Shared", others);
     }
 }

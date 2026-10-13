@@ -1,54 +1,81 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
+using System.ComponentModel;
 using NTPods.WinUI.Ipc;
 using NTPods.WinUI.Services;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
 using Windows.Foundation;
+using Windows.System;
 
 namespace NTPods.WinUI.Controls;
 
 /// Monitoring state and timestamped readings come from the daemon.
 public sealed partial class HeartRateCard : UserControl
 {
-    // Live: the last minute at the stream's 1 Hz. Scaling follows HeartRateMiniGraph
-    // in upstream PR #702: centred on the window, with a minimum span so a 1-bpm
-    // wobble doesn't fill the whole height.
-    private const int MaxGraphSamples = 60;
     private const double MinGraphBpmSpan = 20;
-
     public DaemonClient? Client { get; set; }
-
-    private bool _applying;
+    private bool _applying, _populating;
     private readonly HeartRateLiveState _liveState = new();
-    // The picker's entries after "Live" (index 0); null = live.
+    private readonly HeartRateGraphData _graph = new();
     private readonly List<HeartRateHistory.Session> _sessions = new();
     private HeartRateHistory.Session? _session;
-    private List<(DateTime At, ushort Bpm)> _sessionSamples = new();
-    private bool _populating;
+    private CancellationTokenSource? _historyCancellation;
+    private int _pickerGeneration, _sampleGeneration;
     private Point? _hover;
-    // Expire old readings and move the time axis even when no new packet arrives.
+    private int? _keyboardIndex;
+    private DateTime _plotNow;
+    private double _lower, _span;
+    private readonly Line _cursor = new() { StrokeThickness = 1, Opacity = 0.6 };
+    private readonly Ellipse _dot = new() { Width = 8, Height = 8 };
+    private readonly TextBlock _pointText = new();
+    private readonly Border _pointLabel = new() { BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(4), Padding = new Thickness(6, 2, 6, 2) };
     private readonly DispatcherTimer _sampler = new() { Interval = TimeSpan.FromSeconds(1) };
 
     public HeartRateCard()
     {
         InitializeComponent();
+        _pointLabel.Child = _pointText;
+        GraphOverlay.Children.Add(_cursor);
+        GraphOverlay.Children.Add(_dot);
+        GraphOverlay.Children.Add(_pointLabel);
         _sampler.Tick += (_, _) => Sample();
-        Unloaded += (_, _) => _sampler.Stop();
-        Loaded += (_, _) =>
-        {
-            if (_liveState.Enabled) _sampler.Start();
-            PopulatePicker();
-            DrawGraph();
-        };
-        Loc.Instance.PropertyChanged += (_, _) => DispatcherQueue.TryEnqueue(() => { PopulatePicker(); DrawGraph(); });
+        Loaded += OnLoaded;
+        Unloaded += OnUnloaded;
+        ActualThemeChanged += (_, _) => DrawGraph();
+        Panel.Expanding += (_, _) => DispatcherQueue.TryEnqueue(DrawGraph);
     }
 
-    /// Render the BPM value from a daemon Snapshot (no reading → em dash).
+    private void OnLoaded(object sender, RoutedEventArgs args)
+    {
+        _historyCancellation = new();
+        Loc.Instance.PropertyChanged += LanguageChanged;
+        if (_liveState.Enabled) _sampler.Start();
+        _ = PopulatePickerAsync();
+        if (_session is not null) _ = LoadSessionAsync(_session);
+        DrawGraph();
+    }
+
+    private void OnUnloaded(object sender, RoutedEventArgs args)
+    {
+        _sampler.Stop();
+        Loc.Instance.PropertyChanged -= LanguageChanged;
+        _historyCancellation?.Cancel();
+        _historyCancellation?.Dispose();
+        _historyCancellation = null;
+        _pickerGeneration++;
+        _sampleGeneration++;
+    }
+
+    private void LanguageChanged(object? sender, PropertyChangedEventArgs args) => DispatcherQueue.TryEnqueue(() =>
+    {
+        if (!IsLoaded) return;
+        PopulatePicker(_sessions.ToArray());
+        DrawGraph();
+    });
+
     public void Update(Snapshot s)
     {
         _applying = true;
@@ -58,14 +85,10 @@ public sealed partial class HeartRateCard : UserControl
             HeartRateSwitch.IsEnabled = Client?.IsReady == true && (DeviceModels.Find(s.Model).HeartRate || s.HeartRateEnabled);
             _liveState.Update(s, DateTimeOffset.UtcNow);
             HeartRateBpm.Text = _liveState.Current(DateTimeOffset.UtcNow)?.ToString() ?? "—";
-            if (s.HeartRateEnabled && IsLoaded) _sampler.Start();
-            else _sampler.Stop();
-            DrawGraph();
+            if (s.HeartRateEnabled && IsLoaded) _sampler.Start(); else _sampler.Stop();
+            if (_session is null && _graph.SetSamples(_liveState.Samples)) DrawGraph();
         }
-        finally
-        {
-            _applying = false;
-        }
+        finally { _applying = false; }
     }
 
     private void HeartRate_Toggled(object sender, RoutedEventArgs e)
@@ -82,181 +105,197 @@ public sealed partial class HeartRateCard : UserControl
         var now = DateTimeOffset.UtcNow;
         _liveState.Expire(now);
         HeartRateBpm.Text = _liveState.Current(now)?.ToString() ?? "—";
-        if (_session is null) DrawGraph();
+        if (_session is not null) return;
+        _graph.SetSamples(_liveState.Samples);
+        if (_graph.Samples.Count > 0 || GraphAxisMax.Text.Length > 0) DrawGraph();
     }
 
-    // ---- history picker ----------------------------------------------------
+    private async Task PopulatePickerAsync()
+    {
+        if (_historyCancellation is not { } cancellation) return;
+        int generation = ++_pickerGeneration;
+        try
+        {
+            var sessions = await HeartRateHistory.SessionsAsync(cancellation.Token);
+            if (IsLoaded && generation == _pickerGeneration) PopulatePicker(sessions);
+        }
+        catch (OperationCanceledException) { }
+    }
 
-    private void PopulatePicker()
+    private void PopulatePicker(IEnumerable<HeartRateHistory.Session> sessions)
     {
         _populating = true;
         try
         {
             long? keep = _session?.Id;
             _sessions.Clear();
-            _sessions.AddRange(HeartRateHistory.Sessions());
+            _sessions.AddRange(sessions);
             HistoryPicker.Items.Clear();
             HistoryPicker.Items.Add(Loc.Instance.Get("HeartRateHistoryLive"));
-            foreach (var s in _sessions)
+            foreach (var session in _sessions)
             {
-                var minutes = Math.Max(1, (int)Math.Round(((s.End ?? s.Start) - s.Start).TotalMinutes));
-                HistoryPicker.Items.Add(Loc.Instance.Get("HeartRateHistorySession", s.Start, minutes, s.Avg));
+                var minutes = Math.Max(1, (int)Math.Round(((session.End ?? session.Start) - session.Start).TotalMinutes));
+                HistoryPicker.Items.Add(Loc.Instance.Get("HeartRateHistorySession", session.Start, minutes, session.Avg));
             }
-            int idx = keep is long id ? _sessions.FindIndex(s => s.Id == id) + 1 : 0;
-            HistoryPicker.SelectedIndex = idx > 0 ? idx : 0;
-            if (idx <= 0) _session = null;
+            int index = keep is long id ? _sessions.FindIndex(session => session.Id == id) + 1 : 0;
+            HistoryPicker.SelectedIndex = Math.Max(0, index);
+            if (index <= 0 && _session is not null)
+            {
+                _sampleGeneration++;
+                _session = null;
+                _graph.SetSamples(_liveState.Samples);
+                DrawGraph();
+            }
         }
-        finally
-        {
-            _populating = false;
-        }
+        finally { _populating = false; }
     }
 
-    private void HistoryPicker_DropDownOpened(object sender, object e) => PopulatePicker();
+    private void HistoryPicker_DropDownOpened(object sender, object e) => _ = PopulatePickerAsync();
 
     private void HistoryPicker_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_populating) return;
-        int i = HistoryPicker.SelectedIndex;
-        _session = i >= 1 && i - 1 < _sessions.Count ? _sessions[i - 1] : null;
-        _sessionSamples = _session is { } s ? HeartRateHistory.Samples(s.Id) : new();
+        int index = HistoryPicker.SelectedIndex;
+        _session = index >= 1 && index - 1 < _sessions.Count ? _sessions[index - 1] : null;
+        _sampleGeneration++;
         _hover = null;
+        _keyboardIndex = null;
+        _graph.SetSamples(_session is null ? _liveState.Samples : []);
         DrawGraph();
+        if (_session is { } session) _ = LoadSessionAsync(session);
     }
 
-    // ---- graph -----------------------------------------------------------------
+    private async Task LoadSessionAsync(HeartRateHistory.Session session)
+    {
+        if (_historyCancellation is not { } cancellation) return;
+        int generation = ++_sampleGeneration;
+        try
+        {
+            var samples = await HeartRateHistory.SamplesAsync(session.Id, cancellation.Token);
+            if (!IsLoaded || generation != _sampleGeneration || _session?.Id != session.Id) return;
+            _graph.SetSamples(samples);
+            DrawGraph();
+        }
+        catch (OperationCanceledException) { }
+    }
 
     private void HeartRateGraph_SizeChanged(object sender, SizeChangedEventArgs e) => DrawGraph();
-
     private void HeartRateGraph_PointerMoved(object sender, PointerRoutedEventArgs e)
     {
         _hover = e.GetCurrentPoint(HeartRateGraph).Position;
-        DrawGraph();
+        _keyboardIndex = null;
+        DrawSelection();
     }
-
-    private void HeartRateGraph_PointerExited(object sender, PointerRoutedEventArgs e)
+    private void HeartRateGraph_PointerExited(object sender, PointerRoutedEventArgs e) { _hover = null; DrawSelection(); }
+    private void Graph_GotFocus(object sender, RoutedEventArgs e)
     {
-        _hover = null;
-        DrawGraph();
+        _keyboardIndex = _graph.Samples.Count - 1;
+        DrawSelection();
     }
-
-    /// A long session has far more readings than pixels: average them into at most
-    /// `buckets` points so the graph stays light and readable.
-    private static List<(DateTime At, ushort Bpm)> Downsample(List<(DateTime At, ushort Bpm)> data, int buckets)
+    private void Graph_LostFocus(object sender, RoutedEventArgs e) { _keyboardIndex = null; DrawSelection(); }
+    private void Graph_KeyDown(object sender, KeyRoutedEventArgs e)
     {
-        if (data.Count <= buckets || buckets < 2) return data;
-        var outp = new List<(DateTime, ushort)>(buckets);
-        for (int b = 0; b < buckets; b++)
+        int count = _graph.Samples.Count;
+        if (count == 0) return;
+        int index = Math.Clamp(_keyboardIndex ?? count - 1, 0, count - 1);
+        switch (e.Key)
         {
-            int from = b * data.Count / buckets, to = (b + 1) * data.Count / buckets;
-            if (to <= from) continue;
-            var slice = data.GetRange(from, to - from);
-            outp.Add((slice[slice.Count / 2].At, (ushort)Math.Round(slice.Average(s => (int)s.Bpm))));
+            case VirtualKey.Left: index--; break;
+            case VirtualKey.Right: index++; break;
+            case VirtualKey.Home: index = 0; break;
+            case VirtualKey.End: index = count - 1; break;
+            default: return;
         }
-        return outp;
+        _keyboardIndex = Math.Clamp(index, 0, count - 1);
+        _hover = null;
+        e.Handled = true;
+        DrawSelection();
     }
+
+    private double X(int index)
+    {
+        double right = HeartRateGraph.ActualWidth - 2;
+        return _session is null ? right - Math.Clamp((_plotNow - _graph.Samples[index].At).TotalSeconds, 0, 60) / 60 * (right - 2)
+            : _graph.Samples.Count <= 1 ? right : 2 + index * (right - 2) / (_graph.Samples.Count - 1);
+    }
+    private double Y(ushort bpm) => HeartRateGraph.ActualHeight - 6 - Math.Clamp((bpm - _lower) / _span, 0, 1) * (HeartRateGraph.ActualHeight - 12);
 
     private void DrawGraph()
     {
+        if (!IsLoaded || !Panel.IsExpanded) return;
         var canvas = HeartRateGraph;
+        double width = canvas.ActualWidth, height = canvas.ActualHeight;
+        if (width <= 0 || height <= 0) return;
         canvas.Children.Clear();
-        double w = canvas.ActualWidth, h = canvas.ActualHeight;
-        if (w <= 0 || h <= 0) return;
-
-        // Reuse the brushes XAML already resolved for the current theme.
         var accent = HeartRateBpm.Foreground;
         var guide = GraphAxisMax.Foreground;
-        double left = 2, right = w - 2, top = 6, bottom = h - 6, height = bottom - top;
-
-        foreach (var gy in new[] { top, (top + bottom) / 2, bottom })
-            canvas.Children.Add(new Line
-            {
-                X1 = left, X2 = right, Y1 = gy, Y2 = gy, Stroke = guide, StrokeThickness = 1, Opacity = 0.35,
-                StrokeDashArray = new DoubleCollection { 3, 3 },
-            });
-
-        bool live = _session is null;
-        var raw = live ? _liveState.Samples : _sessionSamples;
+        foreach (var y in new[] { 6d, height / 2, height - 6 })
+            canvas.Children.Add(new Line { X1 = 2, X2 = width - 2, Y1 = y, Y2 = y, Stroke = guide, StrokeThickness = 1,
+                Opacity = 0.35, StrokeDashArray = new DoubleCollection { 3, 3 } });
+        _plotNow = DateTime.Now;
+        var raw = _graph.Samples;
         if (raw.Count == 0)
         {
             GraphAxisMax.Text = GraphAxisMid.Text = GraphAxisMin.Text = "";
             HeartRateGraphCaption.Text = Loc.Instance.Get("HeartRateGraphEmpty");
+            DrawSelection();
             return;
         }
-
-        // Scale and stats come from every reading, not the downsampled points.
-        int min = raw.Min(s => (int)s.Bpm), max = raw.Max(s => (int)s.Bpm);
-        int avg = (int)Math.Round(raw.Average(s => (int)s.Bpm));
-        double span = Math.Max(max - min, MinGraphBpmSpan);
-        double lower = (min + max) / 2.0 - span / 2;
-        GraphAxisMax.Text = Math.Round(lower + span).ToString();
-        GraphAxisMid.Text = Math.Round(lower + span / 2).ToString();
-        GraphAxisMin.Text = Math.Round(lower).ToString();
-        HeartRateGraphCaption.Text = live
-            ? Loc.Instance.Get("HeartRateGraphStats", raw.Count, min, avg, max)
-            : Loc.Instance.Get("HeartRateSessionStats", raw.Count, min, avg, max);
-
-        var pts = live ? raw : Downsample(raw, (int)Math.Max(2, (right - left) / 3));
-        // Live: fixed one-minute slots, right-aligned so the newest reading sits at
-        // the right edge. A session: stretched across the full width.
-        int slots = live ? MaxGraphSamples : pts.Count;
-        double step = slots > 1 ? (right - left) / (slots - 1) : 0;
-        double x0 = right - step * (pts.Count - 1);
-        var now = DateTime.Now;
-        double X(int i) => live ? right - Math.Clamp((now - pts[i].At).TotalSeconds, 0, 60) / 60 * (right - left) : x0 + i * step;
-        double Y(ushort bpm) => bottom - Math.Clamp((bpm - lower) / span, 0, 1) * height;
-
+        _span = Math.Max(_graph.Maximum - _graph.Minimum, MinGraphBpmSpan);
+        _lower = (_graph.Minimum + _graph.Maximum) / 2d - _span / 2;
+        GraphAxisMax.Text = Math.Round(_lower + _span).ToString();
+        GraphAxisMid.Text = Math.Round(_lower + _span / 2).ToString();
+        GraphAxisMin.Text = Math.Round(_lower).ToString();
+        HeartRateGraphCaption.Text = Loc.Instance.Get(_session is null ? "HeartRateGraphStats" : "HeartRateSessionStats",
+            raw.Count, _graph.Minimum, _graph.Average, _graph.Maximum);
+        var points = _graph.Points(_session is null ? raw.Count : (int)Math.Max(2, (width - 4) / 3));
         var line = new Polyline { Stroke = accent, StrokeThickness = 2, StrokeLineJoin = PenLineJoin.Round };
-        bool bars = step >= 3; // one faint bar per reading while they're still distinguishable
-        for (int i = 0; i < pts.Count; i++)
+        bool bars = (width - 4) / Math.Max(1, points.Count - 1) >= 3;
+        int previous = -1;
+        foreach (var point in points)
         {
-            double x = X(i), y = Y(pts[i].Bpm);
-            if (live && i > 0 && (pts[i].At - pts[i - 1].At).TotalSeconds > 3)
+            double x = X(point.Index), y = Y(point.Bpm);
+            if (_session is null && previous >= 0 && (raw[point.Index].At - raw[previous].At).TotalSeconds > 3)
             {
                 if (line.Points.Count > 1) canvas.Children.Add(line);
                 line = new Polyline { Stroke = accent, StrokeThickness = 2, StrokeLineJoin = PenLineJoin.Round };
             }
-            if (bars) canvas.Children.Add(new Line { X1 = x, X2 = x, Y1 = bottom, Y2 = y, Stroke = accent, StrokeThickness = 1, Opacity = 0.18 });
+            if (bars) canvas.Children.Add(new Line { X1 = x, X2 = x, Y1 = height - 6, Y2 = y, Stroke = accent, StrokeThickness = 1, Opacity = 0.18 });
             line.Points.Add(new Point(x, y));
+            previous = point.Index;
         }
         if (line.Points.Count > 1) canvas.Children.Add(line);
-        AddDot(canvas, X(pts.Count - 1), Y(pts[^1].Bpm), accent, 5);
-
-        if (_hover is Point p && p.X >= X(0) - step / 2)
-        {
-            // The reading nearest the pointer: a cursor line, a dot, and its value.
-            int i = live ? Enumerable.Range(0, pts.Count).MinBy(index => Math.Abs(X(index) - p.X)) :
-                step > 0 ? Math.Clamp((int)Math.Round((p.X - x0) / step), 0, pts.Count - 1) : 0;
-            var (at, bpm) = pts[i];
-            double x = X(i), y = Y(bpm);
-            canvas.Children.Add(new Line { X1 = x, X2 = x, Y1 = top, Y2 = bottom, Stroke = accent, StrokeThickness = 1, Opacity = 0.6 });
-            AddDot(canvas, x, y, accent, 8);
-
-            string text = live
-                ? Loc.Instance.Get("HeartRateGraphPoint", bpm, Math.Max(0, (int)Math.Round((DateTime.Now - at).TotalSeconds)))
-                : Loc.Instance.Get("HeartRateGraphPointAt", bpm, at);
-            var label = new Border
-            {
-                Background = (Brush)Application.Current.Resources["CardBackgroundFillColorDefaultBrush"],
-                BorderBrush = guide,
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(4),
-                Padding = new Thickness(6, 2, 6, 2),
-                Child = new TextBlock { Text = text, Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"] },
-            };
-            label.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-            double lw = label.DesiredSize.Width;
-            Canvas.SetLeft(label, Math.Clamp(x - lw / 2, 0, Math.Max(0, w - lw)));
-            Canvas.SetTop(label, y - top > 26 ? y - 26 : y + 8);
-            canvas.Children.Add(label);
-        }
+        var last = points[^1];
+        var dot = new Ellipse { Width = 5, Height = 5, Fill = accent };
+        Canvas.SetLeft(dot, X(last.Index) - 2.5); Canvas.SetTop(dot, Y(last.Bpm) - 2.5); canvas.Children.Add(dot);
+        DrawSelection();
     }
 
-    private static void AddDot(Canvas canvas, double x, double y, Brush fill, double size)
+    private void DrawSelection()
     {
-        var dot = new Ellipse { Width = size, Height = size, Fill = fill };
-        Canvas.SetLeft(dot, x - size / 2);
-        Canvas.SetTop(dot, y - size / 2);
-        canvas.Children.Add(dot);
+        int count = _graph.Samples.Count;
+        int index = _keyboardIndex is int selected ? Math.Clamp(selected, 0, Math.Max(0, count - 1)) :
+            _hover is Point hover ? _graph.Nearest((hover.X - 2) / Math.Max(1, HeartRateGraph.ActualWidth - 4), _session is null, _plotNow) : -1;
+        GraphOverlay.Visibility = count > 0 && index >= 0 ? Visibility.Visible : Visibility.Collapsed;
+        if (count == 0 || index < 0)
+        {
+            AutomationProperties.SetName(GraphFocus, Loc.Instance.Get("HeartRateGraph_AccessibleName") + ". " + HeartRateGraphCaption.Text);
+            return;
+        }
+        double x = X(index), y = Y(_graph.Samples[index].Bpm);
+        var (at, bpm) = _graph.Samples[index];
+        string text = Loc.Instance.Get("HeartRateGraphPointAt", bpm, at);
+        _cursor.Stroke = _dot.Fill = HeartRateBpm.Foreground;
+        _cursor.X1 = _cursor.X2 = x; _cursor.Y1 = 6; _cursor.Y2 = HeartRateGraph.ActualHeight - 6;
+        Canvas.SetLeft(_dot, x - 4); Canvas.SetTop(_dot, y - 4);
+        _pointText.Text = text;
+        _pointText.Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"];
+        _pointLabel.Background = (Brush)Application.Current.Resources["CardBackgroundFillColorDefaultBrush"];
+        _pointLabel.BorderBrush = GraphAxisMax.Foreground;
+        _pointLabel.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        double labelWidth = _pointLabel.DesiredSize.Width;
+        Canvas.SetLeft(_pointLabel, Math.Clamp(x - labelWidth / 2, 0, Math.Max(0, HeartRateGraph.ActualWidth - labelWidth)));
+        Canvas.SetTop(_pointLabel, y > 32 ? y - 26 : y + 8);
+        AutomationProperties.SetName(GraphFocus, Loc.Instance.Get("HeartRateGraph_AccessibleName") + ". " + text);
     }
 }

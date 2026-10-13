@@ -62,11 +62,15 @@ public sealed partial class TrayMenuView : UserControl
         AutomationProperties.SetHelpText(BatteryText, freshness);
         ToolTipService.SetToolTip(BatteryText, string.IsNullOrEmpty(freshness) ? null : freshness);
 
-        AncLabel.Text = Localize.Get("Tray_NoiseControl");
+        AncLabel.Text = Localize.Get("NoiseControlTitle_Text");
         AncOffText.Text = Localize.Get("Anc_Off");
         AncNcText.Text = Localize.Get("Anc_NoiseCancellation");
         AncTransText.Text = Localize.Get("Anc_Transparency");
         AncAdaptiveText.Text = Localize.Get("Anc_Adaptive");
+        AutomationProperties.SetName(AncOffRow, AncOffText.Text);
+        AutomationProperties.SetName(AncNcRow, AncNcText.Text);
+        AutomationProperties.SetName(AncTransRow, AncTransText.Text);
+        AutomationProperties.SetName(AncAdaptiveRow, AncAdaptiveText.Text);
 
         AncLabel.Visibility = AncNcRow.Visibility = AncTransRow.Visibility = DeviceModels.Listening(s) ? Visibility.Visible : Visibility.Collapsed;
         AncOffRow.Visibility = DeviceModels.OffAvailable(s) ? Visibility.Visible : Visibility.Collapsed;
@@ -77,6 +81,10 @@ public sealed partial class TrayMenuView : UserControl
         AncTransRow.IsEnabled = ListeningModePolicy.CanSend(s, false, 0x0D, 3);
         AncAdaptiveRow.IsEnabled = ListeningModePolicy.CanSend(s, false, 0x0D, 4);
         MuteRow.IsEnabled = s.Connected;
+        AncOffRow.IsChecked = s.Anc == 1;
+        AncNcRow.IsChecked = s.Anc == 2;
+        AncTransRow.IsChecked = s.Anc == 3;
+        AncAdaptiveRow.IsChecked = s.Anc == 4;
         AncOffCheck.Visibility = Check(s.Anc == 1);
         AncNcCheck.Visibility = Check(s.Anc == 2);
         AncTransCheck.Visibility = Check(s.Anc == 3);

@@ -128,8 +128,8 @@ public sealed class IslandWindow : Window
         _view.Measure(new Windows.Foundation.Size(_view.Width, double.PositiveInfinity));
         _width = (int)Math.Ceiling(_view.Width * _scale);
         _height = (int)Math.Ceiling(Math.Max(_view.MinHeight, _view.DesiredSize.Height) * _scale);
-        if (AppWindow.Size.Width != _width || AppWindow.Size.Height != _height)
-            AppWindow.Resize(new SizeInt32(_width, _height));
+        _motion.SetHeight(_height, _clock.Elapsed.TotalMilliseconds, _uiSettings.AnimationsEnabled);
+        ResizeSurface();
         AppWindow.Move(new PointInt32(work.X + (work.Width - _width) / 2, work.Y + (int)Math.Round(16 * _scale)));
     }
 
@@ -191,8 +191,9 @@ public sealed class IslandWindow : Window
 
     private void Render(double now)
     {
+        ResizeSurface();
         int revealedWidth = (int)Math.Round(96 * _scale + (_width - 96 * _scale) * _motion.Expansion);
-        int revealedHeight = (int)Math.Round(34 * _scale + (_height - 34 * _scale) * _motion.Expansion);
+        int revealedHeight = (int)Math.Round(34 * _scale + (_motion.Height - 34 * _scale) * _motion.Expansion);
         int diameter = (int)Math.Round((34 + 38 * _motion.Expansion) * _scale);
         int left = (_width - revealedWidth) / 2;
         var bounds = (left, revealedWidth, revealedHeight, diameter);
@@ -209,6 +210,14 @@ public sealed class IslandWindow : Window
             _lastRegion = bounds;
         }
         _view.RenderFrame(now, _motion.HeaderOpacity, _motion.BatteryOpacity);
+    }
+
+    private void ResizeSurface()
+    {
+        // Keep enough backing surface while the rounded region changes height.
+        int height = _motion.Resizing ? Math.Max(AppWindow.Size.Height, _height) : _height;
+        if (AppWindow.Size.Width != _width || AppWindow.Size.Height != height)
+            AppWindow.Resize(new SizeInt32(_width, height));
     }
 
     private void Hide()

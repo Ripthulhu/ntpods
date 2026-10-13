@@ -35,6 +35,8 @@ public sealed partial class HearingAidCard : UserControl
 
     private readonly NumberBox[] _leftEq = new NumberBox[8];
     private readonly NumberBox[] _rightEq = new NumberBox[8];
+    private readonly TextBlock _leftHeader = Header("");
+    private readonly TextBlock _rightHeader = Header("");
     private string _deviceId = "";
     private bool _supported;
     private bool _applying;
@@ -65,8 +67,8 @@ public sealed partial class HearingAidCard : UserControl
 
         AudiogramGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         AddCell(Header("Hz"), 0, 0);
-        AddCell(Header("L"), 0, 1);
-        AddCell(Header("R"), 0, 2);
+        AddCell(_leftHeader, 0, 1);
+        AddCell(_rightHeader, 0, 2);
 
         for (int i = 0; i < 8; i++)
         {
@@ -83,6 +85,8 @@ public sealed partial class HearingAidCard : UserControl
 
     private void UpdateAudiogramNames()
     {
+        _leftHeader.Text = Localize.Get("BatteryLeftLabel.Text");
+        _rightHeader.Text = Localize.Get("BatteryRightLabel.Text");
         for (int i = 0; i < Freqs.Length; i++)
         {
             AutomationProperties.SetName(_leftEq[i], Localize.Get("HearingAid.LeftThreshold", Freqs[i]));

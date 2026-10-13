@@ -17,6 +17,7 @@
                             <StackPanel Margin="20,16" Spacing="12">
                                 <TextBlock Text="{Binding [SettingsTheme_Text], Source={StaticResource Loc}}" FontSize="16" />
                                 <RadioButtons x:Name="ThemeButtons" MaxColumns="3" SelectedIndex="0"
+                                              SizeChanged="ThemeButtons_SizeChanged"
                                               AutomationProperties.Name="{Binding [SettingsTheme_Text], Source={StaticResource Loc}}"
                                               SelectionChanged="Theme_SelectionChanged">
                                     <RadioButton Content="{Binding [ThemeSystemRadio_Content], Source={StaticResource Loc}}" />

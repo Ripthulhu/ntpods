@@ -12,12 +12,10 @@ public sealed partial class IslandView : UserControl
     private string? _artFamily;
     private string _model = "";
     private readonly DeviceArtworkState _artwork = new();
-    private string? _modeIcon;
     private bool _connectionMessage = true;
-    private double _messageStarted;
-    private bool _messageAnimating;
+    private readonly IslandMessageMotion _message = new();
     private string _description = "";
-    public bool Animating => _messageAnimating || _gauges.Any(g => g.Animating);
+    public bool Animating => _message.Animating || _gauges.Any(g => g.Animating);
 
     public IslandView()
     {
@@ -29,8 +27,6 @@ public sealed partial class IslandView : UserControl
     {
         _connectionMessage = true;
         DeviceName.Text = DeviceModels.DisplayName(s, Localize.Get("Device_DefaultName"));
-        ModeIcon.Visibility = Visibility.Collapsed;
-        MicIcon.Visibility = Visibility.Collapsed;
         SetMessage(Localize.Get(BatteryPresentation.StatusKey(s)), now, animate);
         UpdateSnapshot(s, now, animate);
     }
@@ -43,27 +39,20 @@ public sealed partial class IslandView : UserControl
             body == "Adaptive" || body == Localize.Get("Anc_Adaptive") ? "Anc_Adaptive" :
             body == "Noise Cancellation" || body == Localize.Get("Anc_NoiseCancellation") ? "Anc_NoiseCancellation" :
             body == "Off" || body == Localize.Get("Anc_Off") ? "Anc_Off" : null;
-        SetMessage(modeKey is null ? body : Localize.Get(modeKey), now, animate);
-        string? icon = modeKey switch
+        var icon = modeKey switch
         {
-            "Anc_Transparency" => "ic_transparency.png",
-            "Anc_Adaptive" => "ic_adaptive.png",
-            "Anc_NoiseCancellation" or "Anc_Off" => "ic_noise_cancellation.png",
-            _ => null
+            "Anc_Transparency" => IslandMessageIcon.Transparency,
+            "Anc_Adaptive" => IslandMessageIcon.Adaptive,
+            "Anc_NoiseCancellation" or "Anc_Off" => IslandMessageIcon.NoiseCancellation,
+            _ => IslandMessageIcon.None
         };
-        ModeIcon.Visibility = icon is null ? Visibility.Collapsed : Visibility.Visible;
         bool micOff = body == Localize.Get("Mic_Off") || body == Localize.Get("Mic_Disabled");
         bool micMessage = micOff || body == Localize.Get("Mic_Ready") || body == Localize.Get("Mic_Enabled") ||
             body == Localize.Get("Mic_Starting") || body == Localize.Get("Mic_ShortcutUnavailable") ||
             body == Localize.Get("Mic_ConnectFirst") || body == Localize.Get("Mic_RecoveringShort") ||
             body == Localize.Get("Mic_NeedsAttention");
-        MicIcon.Visibility = micMessage ? Visibility.Visible : Visibility.Collapsed;
-        MicOffSlash.Visibility = micOff ? Visibility.Visible : Visibility.Collapsed;
-        if (icon is not null && icon != _modeIcon)
-        {
-            ModeIcon.UriSource = new Uri("ms-appx:///Assets/" + icon);
-            _modeIcon = icon;
-        }
+        if (micMessage) icon = micOff ? IslandMessageIcon.MicrophoneOff : IslandMessageIcon.Microphone;
+        SetMessage(modeKey is null ? body : Localize.Get(modeKey), now, animate, icon);
         UpdateSnapshot(snapshot ?? new Snapshot { Model = model ?? "" }, now, animate);
     }
 
@@ -89,7 +78,7 @@ public sealed partial class IslandView : UserControl
         string detail = string.Join(", ", new[] { $"{LeftLabel.Text} {LeftText.Text}",
             headphone ? "" : $"{RightLabel.Text} {RightText.Text}", headphone ? "" : $"{CaseLabel.Text} {CaseText.Text}", freshness }
             .Where(x => !string.IsNullOrWhiteSpace(x)));
-        string description = $"{DeviceName.Text}, {MessageBody.Text}, {detail}";
+        string description = $"{DeviceName.Text}, {_message.Latest.Text}, {detail}";
         if (_description != description)
         {
             _description = description;
@@ -117,14 +106,29 @@ public sealed partial class IslandView : UserControl
         ring.Value = _gauges[index].Value;
     }
 
-    private void SetMessage(string body, double now, bool animate)
+    private void SetMessage(string body, double now, bool animate, IslandMessageIcon icon = IslandMessageIcon.None)
     {
-        if (MessageBody.Text == body) return;
-        PreviousMessage.Text = MessageBody.Text;
-        MessageBody.Text = body;
-        _messageStarted = now;
-        _messageAnimating = animate && !string.IsNullOrEmpty(PreviousMessage.Text);
-        if (!_messageAnimating) { PreviousMessage.Opacity = 0; MessageBody.Opacity = ModeIcon.Opacity = MicIcon.Opacity = 1; MessageOffset.X = 0; }
+        _message.Set(new(body, icon), now, animate);
+        RenderMessage();
+    }
+
+    private void RenderMessage()
+    {
+        PreviousMessage.Text = _message.Previous.Text;
+        MessageBody.Text = _message.Current.Text;
+        PreviousMessage.Opacity = 1 - _message.Opacity;
+        MessageBody.Opacity = _message.Opacity;
+        MessageOffset.X = 7 * (1 - _message.Opacity);
+        double IconOpacity(IslandMessageIcon icon) =>
+            (_message.Previous.Icon == icon ? 1 - _message.Opacity : 0) +
+            (_message.Current.Icon == icon ? _message.Opacity : 0);
+        TransparencyIcon.Opacity = IconOpacity(IslandMessageIcon.Transparency);
+        AdaptiveIcon.Opacity = IconOpacity(IslandMessageIcon.Adaptive);
+        NoiseCancellationIcon.Opacity = IconOpacity(IslandMessageIcon.NoiseCancellation);
+        MicIcon.Opacity = IconOpacity(IslandMessageIcon.Microphone);
+        MicOffIcon.Opacity = IconOpacity(IslandMessageIcon.MicrophoneOff);
+        MessageIcons.Visibility = _message.Current.Icon != IslandMessageIcon.None ||
+            _message.Animating && _message.Previous.Icon != IslandMessageIcon.None ? Visibility.Visible : Visibility.Collapsed;
     }
 
     public void RenderFrame(double now, double headerOpacity, double batteryOpacity)
@@ -133,15 +137,8 @@ public sealed partial class IslandView : UserControl
         HeaderOffset.Y = 5 * (1 - headerOpacity);
         BatteryPanel.Opacity = batteryOpacity;
         BatteryOffset.Y = 7 * (1 - batteryOpacity);
-        if (_messageAnimating)
-        {
-            double t = Math.Clamp((now - _messageStarted) / 180, 0, 1);
-            double eased = 1 - Math.Pow(1 - t, 3);
-            PreviousMessage.Opacity = 1 - eased;
-            MessageBody.Opacity = ModeIcon.Opacity = MicIcon.Opacity = eased;
-            MessageOffset.X = 7 * (1 - eased);
-            _messageAnimating = t < 1;
-        }
+        _message.Advance(now);
+        RenderMessage();
         foreach (var gauge in _gauges) gauge.Advance(now);
         LeftRing.Value = _gauges[0].Value;
         RightRing.Value = _gauges[1].Value;
@@ -151,10 +148,8 @@ public sealed partial class IslandView : UserControl
     public void FinishAnimations()
     {
         foreach (var gauge in _gauges) gauge.Finish();
-        _messageAnimating = false;
-        PreviousMessage.Opacity = 0;
-        MessageBody.Opacity = ModeIcon.Opacity = MicIcon.Opacity = 1;
-        MessageOffset.X = 0;
+        _message.Finish();
+        RenderMessage();
     }
 
     private void SetImage(Snapshot snapshot)

@@ -187,7 +187,7 @@
   <data name="Status_Connected" xml:space="preserve"><value>Connecté</value></data>
   <data name="Status_Disconnected" xml:space="preserve"><value>Déconnecté</value></data>
   <data name="Status_Connecting" xml:space="preserve"><value>Connexion…</value></data>
-  <data name="Status_WaitingForDaemon" xml:space="preserve"><value>En attente du démon…</value></data>
+  <data name="Status_WaitingForDaemon" xml:space="preserve"><value>Connexion à NTPods…</value></data>
 
   <data name="Volume_Muted" xml:space="preserve"><value>muet</value></data>
   <data name="Action_Mute" xml:space="preserve"><value>Muet</value></data>
@@ -220,7 +220,7 @@
   <!-- ===== MultipointCard ===== -->
   <data name="MultipointTitle.Text" xml:space="preserve"><value>Partagés avec</value></data>
   <data name="Multipoint_OnlyThisPc" xml:space="preserve"><value>Seul ce PC est connecté</value></data>
-  <data name="Multipoint_Shared" xml:space="preserve"><value>Partagés avec {0} autre(s) appareil(s)</value></data>
+  <data name="Multipoint_Shared" xml:space="preserve"><value>{0} autres appareils</value></data>
   <data name="Multipoint_ThisPc" xml:space="preserve"><value>Ce PC</value></data>
   <data name="Multipoint_Hint" xml:space="preserve"><value>Les AirPods gèrent deux connexions à la fois. Quand un autre appareil lit du son, il peut les prendre à ce PC.</value></data>
 
@@ -290,4 +290,161 @@
   <data name="Playback.BitrateCodec" xml:space="preserve"><value>Les réglages du débit s’appliquent à {0}.</value></data>
   <data name="HearingAid.LeftThreshold" xml:space="preserve"><value>Oreille gauche, {0}, perte auditive en dB HL</value></data>
   <data name="HearingAid.RightThreshold" xml:space="preserve"><value>Oreille droite, {0}, perte auditive en dB HL</value></data>
+  <data name="FeatureCaPending.Text" xml:space="preserve"><value>Réglage envoyé. La confirmation peut arriver à la reconnexion des AirPods.</value></data>
+  <data name="HearingAid.Unconfirmed" xml:space="preserve"><value>Les réglages auditifs n’ont pas été confirmés. Vérifiez la connexion et réessayez.</value></data>
+  <data name="Multipoint_SharedOne" xml:space="preserve"><value>1 autre appareil</value></data>
+  <data name="Mic_Starting" xml:space="preserve"><value>Démarrage du microphone…</value></data>
+  <data name="Mic_Stopping" xml:space="preserve"><value>Arrêt du microphone des AirPods…</value></data>
+  <data name="Mic_Recovering" xml:space="preserve"><value>Rétablissement de la lecture. L’entrée du microphone est silencieuse.</value></data>
+  <data name="Mic_Error" xml:space="preserve"><value>Microphone indisponible. Désactivez-le puis réactivez-le pour réessayer.</value></data>
+  <data name="Mic_DisabledCapture" xml:space="preserve"><value>Une application enregistre. Le microphone est désactivé et l’entrée est silencieuse.</value></data>
+  <data name="Mic_WaitingConnection" xml:space="preserve"><value>Une application enregistre. En attente de connexion des AirPods.</value></data>
+  <data name="Mic_WaitingEar" xml:space="preserve"><value>Placez un AirPod dans votre oreille pour reprendre le microphone.</value></data>
+  <data name="SettingsStartup.ReadFailed" xml:space="preserve"><value>Impossible de lire le réglage de démarrage de Windows : {0}</value></data>
+  <data name="SettingsStartup.WriteFailed" xml:space="preserve"><value>Impossible de modifier le démarrage de Windows : {0}</value></data>
+  <data name="SettingsStartup.Incomplete" xml:space="preserve"><value>Les entrées de démarrage de NTPods sont incomplètes ou obsolètes. Activez le démarrage pour les réparer, ou supprimez-les.</value></data>
+  <data name="SettingsStartup.Remove" xml:space="preserve"><value>Supprimer les entrées de démarrage</value></data>
+  <data name="DeviceSetting.Disconnected" xml:space="preserve"><value>Connectez vos AirPods pour modifier ce réglage.</value></data>
+  <data name="DeviceSetting.Stale" xml:space="preserve"><value>Rétablissez la connexion des AirPods pour modifier ce réglage.</value></data>
+  <data name="DeviceSetting.Pending" xml:space="preserve"><value>Mise à jour…</value></data>
+  <data name="NoiseControl.Pending" xml:space="preserve"><value>Passage à {0}…</value></data>
+  <data name="DeviceSetting.Confirmed" xml:space="preserve"><value>Transmis par vos AirPods.</value></data>
+  <data name="DeviceSetting.Sent" xml:space="preserve"><value>Envoyé aux AirPods.</value></data>
+  <data name="DeviceSetting.Unsent" xml:space="preserve"><value>Les modifications sont prêtes à être appliquées.</value></data>
+  <data name="Equalizer.Title" xml:space="preserve"><value>Égaliseur</value></data>
+  <data name="Equalizer.Description" xml:space="preserve"><value>Réglez les basses, les médiums et les aigus. Chaque bande est neutre à 50.</value></data>
+  <data name="Equalizer.Bass" xml:space="preserve"><value>Basses</value></data>
+  <data name="Equalizer.Mid" xml:space="preserve"><value>Médiums</value></data>
+  <data name="Equalizer.Treble" xml:space="preserve"><value>Aigus</value></data>
+  <data name="Equalizer.Apply" xml:space="preserve"><value>Appliquer l’égalisation personnalisée</value></data>
+  <data name="Equalizer.Recommended" xml:space="preserve"><value>Utiliser le réglage recommandé</value></data>
+  <data name="Equalizer.Unsupported" xml:space="preserve"><value>L’égalisation personnalisée nécessite des AirPods compatibles avec un firmware de version 9 ou ultérieure.</value></data>
+  <data name="Equalizer.Unknown" xml:space="preserve"><value>Vos AirPods n’ont pas transmis de réglage d’égalisation. Les curseurs affichent un point de départ neutre qui n’a pas été envoyé.</value></data>
+  <data name="Equalizer.RecommendedActive" xml:space="preserve"><value>Son recommandé</value></data>
+  <data name="Equalizer.CustomActive" xml:space="preserve"><value>Égalisation personnalisée</value></data>
+  <data name="Equalizer.Values" xml:space="preserve"><value>Basses {0} · Médiums {1} · Aigus {2}</value></data>
+  <data name="DeviceControls.Title" xml:space="preserve"><value>Réglages des AirPods</value></data>
+  <data name="DeviceControls.Description" xml:space="preserve"><value>Les commandes deviennent disponibles lorsque les AirPods transmettent leurs valeurs actuelles.</value></data>
+  <data name="DeviceControls.Refresh" xml:space="preserve"><value>Actualiser les réglages de l’appareil</value></data>
+  <data name="DeviceControls.RefreshHint" xml:space="preserve"><value>Lire les derniers réglages des AirPods. Arrêtez d’abord l’enregistrement.</value></data>
+  <data name="DeviceControls.ErrorTitle" xml:space="preserve"><value>Réglage non confirmé</value></data>
+  <data name="DeviceControls.Playback" xml:space="preserve"><value>Lecture et microphone</value></data>
+  <data name="DeviceControls.Stem" xml:space="preserve"><value>Commandes des tiges</value></data>
+  <data name="DeviceControls.ButtonNoiseCycle" xml:space="preserve"><value>Modes du bouton de contrôle du bruit</value></data>
+  <data name="DeviceControls.LegacyCycleHint" xml:space="preserve"><value>Choisissez au moins deux modes.</value></data>
+  <data name="DeviceControls.Comfort" xml:space="preserve"><value>Accessibilité et recharge</value></data>
+  <data name="DeviceControls.SleepDetection" xml:space="preserve"><value>Mettre en pause pendant le sommeil</value></data>
+  <data name="DeviceControls.MicrophoneSide" xml:space="preserve"><value>Microphone préféré</value></data>
+  <data name="DeviceControls.MicrophoneHint" xml:space="preserve"><value>Choisissez le côté du microphone des AirPods. L’accès automatique à l’enregistrement se règle dans la section Microphone.</value></data>
+  <data name="DeviceControls.Automatic" xml:space="preserve"><value>Automatique</value></data>
+  <data name="DeviceControls.Right" xml:space="preserve"><value>Toujours à droite</value></data>
+  <data name="DeviceControls.Left" xml:space="preserve"><value>Toujours à gauche</value></data>
+  <data name="DeviceControls.NoiseCycle" xml:space="preserve"><value>Modes pour l’appui prolongé</value></data>
+  <data name="DeviceControls.CycleHint" xml:space="preserve"><value>Choisissez au moins deux modes d’écoute. Pour inclure Désactivé, autorisez ce mode dans Audio.</value></data>
+  <data name="DeviceControls.Off" xml:space="preserve"><value>Désactivé</value></data>
+  <data name="DeviceControls.NoiseCancellation" xml:space="preserve"><value>Réduction du bruit</value></data>
+  <data name="DeviceControls.Transparency" xml:space="preserve"><value>Transparence</value></data>
+  <data name="DeviceControls.Adaptive" xml:space="preserve"><value>Adaptatif</value></data>
+  <data name="DeviceControls.LeftHold" xml:space="preserve"><value>Appui prolongé à gauche</value></data>
+  <data name="DeviceControls.RightHold" xml:space="preserve"><value>Appui prolongé à droite</value></data>
+  <data name="DeviceControls.NoiseControl" xml:space="preserve"><value>Parcourir les modes d’écoute</value></data>
+  <data name="DeviceControls.Assistant" xml:space="preserve"><value>Assistant</value></data>
+  <data name="DeviceControls.AssistantHint" xml:space="preserve"><value>Assistant enregistre l’action des AirPods. NTPods n’ouvre pas d’assistant Windows.</value></data>
+  <data name="DeviceControls.VolumeSwipe" xml:space="preserve"><value>Balayer pour régler le volume</value></data>
+  <data name="DeviceControls.PressSpeed" xml:space="preserve"><value>Vitesse d’appui</value></data>
+  <data name="DeviceControls.HoldDuration" xml:space="preserve"><value>Durée de l’appui prolongé</value></data>
+  <data name="DeviceControls.SwipeDuration" xml:space="preserve"><value>Durée du balayage de volume</value></data>
+  <data name="DeviceControls.Slower" xml:space="preserve"><value>Plus lente</value></data>
+  <data name="DeviceControls.Slowest" xml:space="preserve"><value>La plus lente</value></data>
+  <data name="DeviceControls.Longer" xml:space="preserve"><value>Plus longue</value></data>
+  <data name="DeviceControls.Longest" xml:space="preserve"><value>La plus longue</value></data>
+  <data name="DeviceControls.OneBudAnc" xml:space="preserve"><value>Réduction du bruit avec un seul AirPod</value></data>
+  <data name="DeviceControls.ToneVolume" xml:space="preserve"><value>Volume des sons</value></data>
+  <data name="DeviceControls.CaseSounds" xml:space="preserve"><value>Sons du boîtier de charge</value></data>
+  <data name="DeviceControls.CaseVolume" xml:space="preserve"><value>Volume du boîtier de charge</value></data>
+  <data name="DeviceControls.OptimizedCharging" xml:space="preserve"><value>Recharge optimisée de la batterie</value></data>
+  <data name="DeviceControls.Waiting" xml:space="preserve"><value>En attente de l’appareil</value></data>
+  <data name="DeviceControls.Apply" xml:space="preserve"><value>Appliquer</value></data>
+  <data name="AdaptiveNoise.Apply" xml:space="preserve"><value>Appliquer le bruit adaptatif</value></data>
+  <data name="AdaptiveNoise.SelectAdaptive" xml:space="preserve"><value>Choisissez Adaptatif dans Mode d’écoute pour régler l’intensité.</value></data>
+  <data name="AdaptiveNoise.RefreshMode" xml:space="preserve"><value>Le mode d’écoute n’est pas confirmé. Actualisez les réglages de l’appareil avant de régler l’intensité.</value></data>
+  <data name="DeviceControls.ApplyNoiseCycle" xml:space="preserve"><value>Appliquer le cycle des modes d’écoute</value></data>
+  <data name="DeviceControls.ApplyToneVolume" xml:space="preserve"><value>Appliquer le volume des sons</value></data>
+  <data name="DeviceControls.ApplyCaseVolume" xml:space="preserve"><value>Appliquer le volume du boîtier de charge</value></data>
+  <data name="SettingsRevealSerial.Content" xml:space="preserve"><value>Afficher le numéro de série</value></data>
+  <data name="DeviceName.Label" xml:space="preserve"><value>Nom des AirPods</value></data>
+  <data name="DeviceActions.Label" xml:space="preserve"><value>Actions de l’appareil</value></data>
+  <data name="Action_Save" xml:space="preserve"><value>Enregistrer</value></data>
+  <data name="Action_Cancel" xml:space="preserve"><value>Annuler</value></data>
+  <data name="Action_Rename" xml:space="preserve"><value>Renommer</value></data>
+  <data name="Battery_Charging" xml:space="preserve"><value>En charge</value></data>
+  <data name="NoiseControl.GesturePreview" xml:space="preserve"><value>Relâchez pour appliquer {0}.</value></data>
+  <data name="NoiseControl.StrengthPreview" xml:space="preserve"><value>Relâchez pour appliquer une intensité adaptative de {0} %.</value></data>
+  <data name="NoiseControl.RequestTimeout" xml:space="preserve"><value>Les AirPods n’ont pas confirmé cette modification. Actualisez les réglages de l’appareil et réessayez.</value></data>
+  <data name="NoiseControl.OffUnavailable" xml:space="preserve"><value>Les AirPods indiquent le mode Désactivé, mais sa commande est indisponible. Actualisez les réglages de l’appareil.</value></data>
+  <data name="ConversationVolume_Title" xml:space="preserve"><value>Volume pendant la parole</value></data>
+  <data name="ConversationVolume_Help" xml:space="preserve"><value>Volume maximal de lecture sur ce PC lorsque vous parlez.</value></data>
+  <data name="ConversationVolume_Error" xml:space="preserve"><value>Impossible de confirmer le volume. Réessayez.</value></data>
+  <data name="Action_Close" xml:space="preserve"><value>Fermer</value></data>
+  <data name="Shutdown.Closing" xml:space="preserve"><value>NTPods — Rétablissement du son avant fermeture…</value></data>
+  <data name="Shutdown.FailedTitle" xml:space="preserve"><value>Arrêt non confirmé</value></data>
+  <data name="Shutdown.FailedBody" xml:space="preserve"><value>NTPods est toujours ouvert. Le service en arrière-plan rétablit peut-être le son ou est indisponible. Réessayez de quitter après sa reconnexion.</value></data>
+  <data name="Rename.InvalidTitle" xml:space="preserve"><value>Choisissez un nom plus court</value></data>
+  <data name="Rename.InvalidBody" xml:space="preserve"><value>Saisissez un nom plus court. Les lettres accentuées et les emoji peuvent occuper plus d’espace.</value></data>
+  <data name="Rename.UnconfirmedTitle" xml:space="preserve"><value>Nom non confirmé</value></data>
+  <data name="Rename.UnconfirmedBody" xml:space="preserve"><value>NTPods n’a pas pu confirmer l’envoi de ce nom. Vérifiez la connexion et réessayez.</value></data>
+  <data name="Rename.SentTitle" xml:space="preserve"><value>Nom envoyé aux AirPods</value></data>
+  <data name="Rename.SentBody" xml:space="preserve"><value>Windows peut afficher l’ancien nom jusqu’à la reconnexion. Le nom affiché ici change lorsque les AirPods le transmettent.</value></data>
+  <data name="Mic_Unavailable" xml:space="preserve"><value>NTPods ne peut pas accéder à son pilote de microphone. Vérifiez la connexion ou redémarrez NTPods.</value></data>
+  <data name="Mic.UnsupportedModel" xml:space="preserve"><value>Le microphone NTPods nécessite un modèle d’AirPods compatible avec un firmware de version 8 ou ultérieure.</value></data>
+  <data name="Mic.Enable" xml:space="preserve"><value>Utiliser le microphone NTPods</value></data>
+  <data name="Mic.Mode" xml:space="preserve"><value>Fonctionnement du microphone</value></data>
+  <data name="Mic.Automatic" xml:space="preserve"><value>Automatique</value></data>
+  <data name="Mic.KeepActive" xml:space="preserve"><value>Garder actif</value></data>
+  <data name="Mic.Manual" xml:space="preserve"><value>Manuel</value></data>
+  <data name="Mic.AutomaticHelp" xml:space="preserve"><value>Démarre lorsqu’une application utilise le microphone.</value></data>
+  <data name="Mic.KeepActiveHelp" xml:space="preserve"><value>Maintient le flux du microphone des AirPods lorsqu’il est activé, y compris entre les enregistrements.</value></data>
+  <data name="Mic.ManualHelp" xml:space="preserve"><value>Démarrez ou arrêtez vous-même le microphone des AirPods.</value></data>
+  <data name="Mic.StopAfter" xml:space="preserve"><value>Arrêter après (secondes)</value></data>
+  <data name="Mic.StopAfterHelp" xml:space="preserve"><value>Délai avant l’arrêt après la fermeture du microphone par la dernière application. Utilisez 0 pour arrêter immédiatement.</value></data>
+  <data name="Mic.StartManual" xml:space="preserve"><value>Démarrer le microphone</value></data>
+  <data name="Mic.StopManual" xml:space="preserve"><value>Arrêter le microphone</value></data>
+  <data name="Mic.Active" xml:space="preserve"><value>Microphone actif</value></data>
+  <data name="Battery.Nearby" xml:space="preserve"><value>À proximité</value></data>
+  <data name="Battery.NearbyCharging" xml:space="preserve"><value>En charge à proximité</value></data>
+  <data name="Battery.LiveHelp" xml:space="preserve"><value>Niveaux de batterie reçus à proximité. Connectez les AirPods pour utiliser les commandes audio.</value></data>
+  <data name="Battery.LastSeen" xml:space="preserve"><value>Dernière détection : {0}</value></data>
+  <data name="Battery.LastKnown" xml:space="preserve"><value>Derniers niveaux de batterie connus</value></data>
+  <data name="Tray.ShowBatteries" xml:space="preserve"><value>Afficher les batteries</value></data>
+  <data name="SettingsNearbyBattery.Title" xml:space="preserve"><value>Mises à jour des batteries à proximité</value></data>
+  <data name="SettingsNearbyBattery.Help" xml:space="preserve"><value>Continuez à recevoir les niveaux de batterie pendant l’écoute. Désactivez cette option si le son saccade. Suspendue pendant l’utilisation du microphone.</value></data>
+  <data name="SettingsNearbyBattery.UpdateFailed" xml:space="preserve"><value>Impossible de confirmer le réglage des batteries à proximité. Réessayez.</value></data>
+  <data name="Playback.Variable" xml:space="preserve"><value>Variable (expérimental)</value></data>
+  <data name="Playback.VariableHelp" xml:space="preserve"><value>Débit variable AAC-ELD, jusqu’à 256 kbps.</value></data>
+  <data name="Playback.PeakBitrate" xml:space="preserve"><value>Débit maximal : {0} kbps.</value></data>
+  <data name="Transparency.Title" xml:space="preserve"><value>Transparence personnalisée</value></data>
+  <data name="Transparency.Help" xml:space="preserve"><value>Expérimental. Règle les sons extérieurs en mode Transparence. Lisez les réglages actuels avant de les modifier.</value></data>
+  <data name="Transparency.Enable" xml:space="preserve"><value>Utiliser les réglages personnalisés</value></data>
+  <data name="Transparency.Ear" xml:space="preserve"><value>AirPod</value></data>
+  <data name="Transparency.Left" xml:space="preserve"><value>AirPod gauche</value></data>
+  <data name="Transparency.Right" xml:space="preserve"><value>AirPod droit</value></data>
+  <data name="Transparency.Amplification" xml:space="preserve"><value>Amplification</value></data>
+  <data name="Transparency.Tone" xml:space="preserve"><value>Tonalité</value></data>
+  <data name="Transparency.Ambient" xml:space="preserve"><value>Réduction du bruit ambiant</value></data>
+  <data name="Transparency.Boost" xml:space="preserve"><value>Amplification des conversations</value></data>
+  <data name="Transparency.Read" xml:space="preserve"><value>Lire les réglages</value></data>
+  <data name="Status_ControlUnavailable" xml:space="preserve"><value>Réparation nécessaire</value></data>
+  <data name="Action_Repair" xml:space="preserve"><value>Réparer</value></data>
+  <data name="Mic.RecordingShort" xml:space="preserve"><value>Enregistrement</value></data>
+  <data name="Mic.StartingShort" xml:space="preserve"><value>Démarrage…</value></data>
+  <data name="Mic.StoppingShort" xml:space="preserve"><value>Arrêt…</value></data>
+  <data name="Mic.RestoringShort" xml:space="preserve"><value>Rétablissement du son…</value></data>
+  <data name="Mic.WaitingEarShort" xml:space="preserve"><value>Mettez les AirPods</value></data>
+  <data name="Mic.WaitingConnectionShort" xml:space="preserve"><value>En attente des AirPods</value></data>
+  <data name="Mic.DisabledShort" xml:space="preserve"><value>Microphone désactivé</value></data>
+  <data name="Mic.UnavailableShort" xml:space="preserve"><value>Indisponible</value></data>
+  <data name="HeartRateGraph_AccessibleName" xml:space="preserve"><value>Relevés de fréquence cardiaque</value></data>
+  <data name="HeartRateGraph_KeyboardHelp" xml:space="preserve"><value>Utilisez les flèches gauche et droite pour choisir un relevé ; Début et Fin affichent le premier et le dernier.</value></data>
+  <data name="HeadTracking.Values" xml:space="preserve"><value>Horizontal {0} · Vertical {1}</value></data>
+  <data name="HeadTracking.ValuesHelp" xml:space="preserve"><value>Valeurs de mouvement relatif, pas des degrés.</value></data>
 </root>

@@ -32,6 +32,7 @@ public sealed partial class DeviceHeader : UserControl
     // detected model actually changes (snapshots arrive several times a second).
     private string? _artFamily;
     private string _deviceId = "";
+    private bool _linkStale;
 
     public DeviceHeader()
     {
@@ -65,16 +66,16 @@ public sealed partial class DeviceHeader : UserControl
         }
 
         StatusText.Text = Localize.Get(BatteryPresentation.StatusKey(s));
-        string freshness = BatteryPresentation.FreshnessText(s);
+        string freshness = s.Connected && s.LinkStale
+            ? Localize.Get("DeviceSetting.Stale") : BatteryPresentation.FreshnessText(s);
         ToolTipService.SetToolTip(StatusText, string.IsNullOrEmpty(freshness) ? null : freshness);
         AutomationProperties.SetHelpText(StatusText, freshness);
-        // Green = talking to us; Orange = attached but the channel went silent
-        // (Repair appears); Gray = not connected.
-        StatusDot.Fill = new SolidColorBrush(
-            !s.Connected ? Microsoft.UI.Colors.Gray
-            : s.LinkStale ? Microsoft.UI.Colors.Orange
-            : Microsoft.UI.Colors.LimeGreen);
-        ConnectButton.Visibility = s.Connected ? Visibility.Collapsed : Visibility.Visible;
+        _linkStale = s.Connected && s.LinkStale;
+        StatusDot.Visibility = !s.Connected ? Visibility.Visible : Visibility.Collapsed;
+        ConnectedDot.Visibility = s.Connected && !s.LinkStale ? Visibility.Visible : Visibility.Collapsed;
+        StaleDot.Visibility = _linkStale ? Visibility.Visible : Visibility.Collapsed;
+        ConnectButton.Content = Localize.Get(_linkStale ? "Action_Repair" : "HeaderConnectBtn.Content");
+        ConnectButton.Visibility = !s.Connected || _linkStale ? Visibility.Visible : Visibility.Collapsed;
         // Rename + Disconnect only make sense while connected. Repair is offered
         // while disconnected AND while the link is stale -- the AirPods attached to
         // Windows but no longer talking to the daemon. In that state Connected stays
@@ -91,7 +92,12 @@ public sealed partial class DeviceHeader : UserControl
     }
 
     /// The events pipe dropped — reflect that we're no longer hearing from the daemon.
-    public void ShowWaitingForDaemon() => StatusText.Text = Localize.Get("Status_WaitingForDaemon");
+    public void ShowWaitingForDaemon()
+    {
+        StatusText.Text = Localize.Get("Status_WaitingForDaemon");
+        StatusDot.Visibility = Visibility.Visible;
+        ConnectedDot.Visibility = StaleDot.Visibility = Visibility.Collapsed;
+    }
 
     public void SetDaemonReady(bool ready)
     {
@@ -104,7 +110,11 @@ public sealed partial class DeviceHeader : UserControl
 
     private void Settings_Click(object sender, RoutedEventArgs e) => SettingsRequested?.Invoke();
 
-    private void Connect_Click(object sender, RoutedEventArgs e) => Client?.Connect();
+    private void Connect_Click(object sender, RoutedEventArgs e)
+    {
+        if (_linkStale) Client?.RepairConnection();
+        else Client?.Connect();
+    }
     private void Disconnect_Click(object sender, RoutedEventArgs e) => Client?.Disconnect();
     private void Repair_Click(object sender, RoutedEventArgs e) => Client?.RepairConnection();
 

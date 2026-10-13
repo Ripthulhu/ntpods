@@ -1,5 +1,6 @@
 using System.IO;
 using System.Numerics;
+using Microsoft.UI.Composition;
 using NTPods.WinUI.Ipc;
 using NTPods.WinUI.Services;
 using Microsoft.UI.Windowing;
@@ -22,12 +23,17 @@ public sealed partial class MainWindow : Window
     private readonly UISettings _uiSettings = new();
     private bool _entrancePending;
     private bool _closed;
+    private bool _showingSettings;
+    private int _navigationVersion;
     private XamlRoot? _sizingRoot;
 
     public MainWindow(DaemonClient client)
     {
         _client = client;
         InitializeComponent();
+        ElementCompositionPreview.GetElementVisual(SettingsView).Opacity = 0;
+        DevicePageView.GettingFocus += (_, args) => { if (_showingSettings) args.TryCancel(); };
+        SettingsView.GettingFocus += (_, args) => { if (!_showingSettings) args.TryCancel(); };
 
         RootGrid.Loaded += (_, _) =>
         {
@@ -46,6 +52,7 @@ public sealed partial class MainWindow : Window
             _closed = true;
             if (_sizingRoot is not null) _sizingRoot.Changed -= OnRootChanged;
             FinishEntrance();
+            FinishNavigation();
             if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
                 _uiSettings.AnimationsEnabledChanged -= OnAnimationsEnabledChanged;
         };
@@ -138,16 +145,27 @@ public sealed partial class MainWindow : Window
     public void ShowFromTray()
     {
         bool opening = !AppWindow.IsVisible;
-        if (opening) _entrancePending = true;
+        if (opening) PrepareEntrance();
+        try { _connectPrompt?.Close(); } catch { }
         AppWindow.Show();
         Activate();
         if (_entrancePending && RootGrid.IsLoaded) AnimateEntrance();
     }
 
-    private void AnimateEntrance()
+    private void PrepareEntrance()
     {
         FinishEntrance();
         if (!_uiSettings.AnimationsEnabled) return;
+        _entrancePending = true;
+        var visual = ElementCompositionPreview.GetElementVisual(ShellGrid);
+        visual.Scale = new Vector3(0.985f, 0.985f, 1);
+        visual.Opacity = 0.88f;
+    }
+
+    private void AnimateEntrance()
+    {
+        _entrancePending = false;
+        if (!_uiSettings.AnimationsEnabled) { FinishEntrance(); return; }
 
         var visual = ElementCompositionPreview.GetElementVisual(ShellGrid);
         var compositor = visual.Compositor;
@@ -178,7 +196,7 @@ public sealed partial class MainWindow : Window
     private void OnAnimationsEnabledChanged(UISettings sender, UISettingsAnimationsEnabledChangedEventArgs args) =>
         DispatcherQueue.TryEnqueue(() =>
         {
-            if (!_closed && !sender.AnimationsEnabled) FinishEntrance();
+            if (!_closed && !sender.AnimationsEnabled) { FinishEntrance(); FinishNavigation(); }
         });
 
     public void SetClosingState(bool closing)
@@ -207,6 +225,7 @@ public sealed partial class MainWindow : Window
         args.Cancel = true;   // don't destroy the window…
         DevicePageView.StopHeadTracking();
         FinishEntrance();
+        FinishNavigation();
         AppWindow.Hide();     // …just hide it back to the tray.
     }
 
@@ -214,15 +233,55 @@ public sealed partial class MainWindow : Window
 
     private void ShowSettings(bool settings)
     {
+        if (_showingSettings == settings) return;
+        _showingSettings = settings;
         if (settings) DevicePageView.StopHeadTracking();
-        DevicePageView.Visibility = settings ? Visibility.Collapsed : Visibility.Visible;
-        SettingsPageView.Visibility = settings ? Visibility.Visible : Visibility.Collapsed;
-        SettingsNavigation.Visibility = settings ? Visibility.Visible : Visibility.Collapsed;
-        DispatcherQueue.TryEnqueue(() =>
+        DevicePageView.IsHitTestVisible = !settings;
+        SettingsView.IsHitTestVisible = settings;
+        DevicePageView.Visibility = SettingsView.Visibility = Visibility.Visible;
+        int version = ++_navigationVersion;
+        if (!_uiSettings.AnimationsEnabled || !RootGrid.IsLoaded) FinishNavigation();
+        else
         {
-            if (SettingsPageView.Visibility == Visibility.Visible) BackButton.Focus(FocusState.Programmatic);
+            var compositor = ElementCompositionPreview.GetElementVisual(ShellGrid).Compositor;
+            var batch = compositor.CreateScopedBatch(CompositionBatchTypes.Animation);
+            foreach (var (page, visible) in new (FrameworkElement, bool)[] { (DevicePageView, !settings), (SettingsView, settings) })
+            {
+                var visual = ElementCompositionPreview.GetElementVisual(page);
+                var fade = compositor.CreateScalarKeyFrameAnimation();
+                fade.InsertExpressionKeyFrame(0, "this.StartingValue");
+                fade.InsertKeyFrame(1, visible ? 1 : 0);
+                fade.Duration = TimeSpan.FromMilliseconds(160);
+                visual.StartAnimation(nameof(visual.Opacity), fade);
+            }
+            batch.Completed += (_, _) =>
+            {
+                if (!_closed && version == _navigationVersion) FinishNavigation();
+                batch.Dispose();
+            };
+            batch.End();
+        }
+        FocusCurrentPage();
+        DispatcherQueue.TryEnqueue(FocusCurrentPage);
+
+        void FocusCurrentPage()
+        {
+            if (_showingSettings) BackButton.Focus(FocusState.Programmatic);
             else DevicePageView.FocusActions();
-        });
+        }
+    }
+
+    private void FinishNavigation()
+    {
+        ++_navigationVersion;
+        foreach (var (page, visible) in new (FrameworkElement, bool)[] { (DevicePageView, !_showingSettings), (SettingsView, _showingSettings) })
+        {
+            var visual = ElementCompositionPreview.GetElementVisual(page);
+            visual.StopAnimation(nameof(visual.Opacity));
+            visual.Opacity = visible ? 1 : 0;
+            page.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+            page.IsHitTestVisible = visible;
+        }
     }
 
     private void Back_Click(object sender, RoutedEventArgs args) => ShowSettings(false);
@@ -241,11 +300,9 @@ public sealed partial class MainWindow : Window
     {
             _connected = s.Connected;
 
-            // A live connection dismisses any stale "Connect?" prompt (in-app InfoBar
-            // + the centred popup window).
+            // A live connection dismisses any stale nearby connection prompt.
             if (s.Connected)
             {
-                DevicePageView.DismissConnectPrompt();
                 try { _connectPrompt?.Close(); } catch { }
             }
 
@@ -260,13 +317,10 @@ public sealed partial class MainWindow : Window
     private void OnConnectPrompt(string name) =>
         DispatcherQueue.TryEnqueue(() =>
         {
-            // Already connected — a proximity "Connect?" prompt is stale (the daemon
-            // can still emit it from a BLE advertisement while the AACP session is
-            // live). Suppress both the popup and the in-app InfoBar.
-            if (_connected) return;
+            // Nearby reports can arrive while the AACP session is already live.
+            if (_connected || AppWindow.IsVisible) return;
 
-            // The iOS-style centred "Connect?" popup — shows even when the app is
-            // hidden to the tray. Also mirror it in the in-app InfoBar.
+            // The visible page already offers Connect in its header.
             try
             {
                 _connectPrompt?.Close();
@@ -275,7 +329,6 @@ public sealed partial class MainWindow : Window
                 _connectPrompt.ShowPrompt();
             }
             catch { }
-            DevicePageView.ShowConnectPrompt(name);
         });
 
     private void OnConnectionChanged(bool connected) =>

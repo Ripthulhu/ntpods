@@ -7,10 +7,13 @@ internal sealed class IslandMotion
     private double _started;
     private double _from;
     private bool _animate;
+    private double _heightFrom, _heightTarget, _heightStarted;
 
     public double Expansion { get; private set; }
+    public double Height { get; private set; }
+    public bool Resizing { get; private set; }
     public bool Visible => _phase != Phase.Hidden;
-    public bool Animating => _phase is Phase.Opening or Phase.Closing;
+    public bool Animating => _phase is Phase.Opening or Phase.Closing || Resizing;
     public double HeaderOpacity => Smooth(Math.Clamp((Expansion - 0.08) / 0.72, 0, 1));
     public double BatteryOpacity => Smooth(Math.Clamp((Expansion - 0.32) / 0.68, 0, 1));
     public double DismissDelay(double now) => Math.Max(1, 4000 - (now - _started));
@@ -27,6 +30,7 @@ internal sealed class IslandMotion
 
     public void Advance(double now)
     {
+        AdvanceHeight(now);
         double elapsed = Math.Max(0, now - _started);
         if (_phase == Phase.Holding)
         {
@@ -37,7 +41,7 @@ internal sealed class IslandMotion
             _phase = Phase.Closing;
             return;
         }
-        if (!Animating) return;
+        if (_phase is not (Phase.Opening or Phase.Closing)) return;
         bool opening = _phase == Phase.Opening;
         double duration = opening ? 420 * (1 - _from) : 220 * _from;
         double t = Math.Clamp(elapsed / Math.Max(1, duration), 0, 1);
@@ -55,6 +59,8 @@ internal sealed class IslandMotion
         Advance(now);
         _animate = animate;
         if (animate) return;
+        Height = _heightTarget;
+        Resizing = false;
         if (_phase == Phase.Closing) Hide();
         else if (_phase == Phase.Opening)
         {
@@ -68,6 +74,33 @@ internal sealed class IslandMotion
     {
         _phase = Phase.Hidden;
         Expansion = 0;
+        Height = _heightTarget;
+        Resizing = false;
+    }
+
+    public void SetHeight(double height, double now, bool animate)
+    {
+        if (!double.IsFinite(height) || height <= 0) return;
+        AdvanceHeight(now);
+        if (!animate || !Visible || Height == 0)
+        {
+            Height = _heightTarget = height;
+            Resizing = false;
+            return;
+        }
+        if (_heightTarget == height) return;
+        _heightFrom = Height;
+        _heightTarget = height;
+        _heightStarted = now;
+        Resizing = Height != height;
+    }
+
+    private void AdvanceHeight(double now)
+    {
+        if (!Resizing) return;
+        double t = Math.Clamp((now - _heightStarted) / 180, 0, 1);
+        Height = _heightFrom + (_heightTarget - _heightFrom) * (1 - Math.Pow(1 - t, 3));
+        Resizing = t < 1;
     }
 
     private static double Smooth(double value) => value * value * (3 - 2 * value);

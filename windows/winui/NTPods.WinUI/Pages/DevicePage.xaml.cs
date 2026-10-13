@@ -2,20 +2,17 @@ using NTPods.WinUI.Ipc;
 using NTPods.WinUI.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Hosting;
-using Windows.UI.ViewManagement;
 
 namespace NTPods.WinUI.Pages;
 
-/// The device view owns no daemon logic beyond fanning a Snapshot out to each control and
-/// rendering the connect prompt.
+/// Fans each snapshot out to the device controls.
 public sealed partial class DevicePage : UserControl
 {
     public event Action? SettingsRequested;
     private DaemonClient? _client;
     private readonly AutoHideScrollbars _scrollbars;
     private readonly DeviceViewIdentity _identity = new();
-    private readonly UISettings _uiSettings = new();
+    private readonly SectionTransitions _sections;
     private Snapshot _snapshot = new();
 
     /// The daemon client, propagated to the header + every command-sending card.
@@ -44,26 +41,19 @@ public sealed partial class DevicePage : UserControl
         InitializeComponent();
         Header.SettingsRequested += () => SettingsRequested?.Invoke();
         _scrollbars = new AutoHideScrollbars(PageScrollViewer);
-        Loaded += (_, _) =>
-        {
-            if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
-                _uiSettings.AnimationsEnabledChanged += AnimationsChanged;
-        };
-        Unloaded += (_, _) =>
-        {
-            if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
-                _uiSettings.AnimationsEnabledChanged -= AnimationsChanged;
-            FinishDeviceTransition();
-        };
+        _sections = new SectionTransitions(this, DeviceRoot, DeviceSections, VolumeSections, ExtraSections);
         // Hearing assistance remains an opt-in for supported models.
         ApplyExperimentalVisibility();
-
-        ConnectPromptBar.Closed += (_, _) => ConnectPromptBar.Visibility = Visibility.Collapsed;
     }
 
     /// Re-read the experimental opt-in (call after the Settings toggle changes so the
     /// cards appear/disappear without an app restart).
-    public void RefreshExperimentalVisibility() => ApplyExperimentalVisibility();
+    public void RefreshExperimentalVisibility()
+    {
+        _sections.Capture();
+        ApplyExperimentalVisibility();
+        _sections.AnimateChanges();
+    }
 
     internal void CancelShortcutCapture() => MicCard.CancelShortcutCapture();
 
@@ -79,6 +69,7 @@ public sealed partial class DevicePage : UserControl
     /// Fan a fresh Snapshot out to the header and every card that renders state.
     public void Update(Snapshot s)
     {
+        _sections.Capture();
         bool changed = _identity.Update(s);
         var profile = DeviceModels.Find(s.Model);
         if (s.DeviceId != _snapshot.DeviceId || !DeviceModels.HeadTracking(s))
@@ -97,7 +88,7 @@ public sealed partial class DevicePage : UserControl
         EqualizerCard.Update(s);
         DeviceSettingsCard.Update(s);
         NoiseControlCard.Update(s);
-        FeaturesCard.Update(s);
+        bool featuresChanged = FeaturesCard.Update(s);
         MicCard.Update(s);
         MultipointCard.Update(s);
         HeartRateCard.Update(s);
@@ -117,54 +108,7 @@ public sealed partial class DevicePage : UserControl
         MicCard.IsEnabled = true;
         HeartRateCard.IsEnabled = _client?.IsReady == true && (profile.HeartRate || s.HeartRateEnabled);
         HearingAidCard.IsEnabled = on;
-        if (changed) RevealDevice();
-    }
-
-    private void RevealDevice()
-    {
-        FinishDeviceTransition();
-        if (!IsLoaded || !_uiSettings.AnimationsEnabled) return;
-
-        // Replace every card before revealing; delayed snapshots could act on the previous device.
-        var visual = ElementCompositionPreview.GetElementVisual(DeviceRoot);
-        var fade = visual.Compositor.CreateScalarKeyFrameAnimation();
-        fade.InsertKeyFrame(0, 0);
-        fade.InsertKeyFrame(1, 1);
-        fade.Duration = TimeSpan.FromMilliseconds(180);
-        visual.StartAnimation(nameof(visual.Opacity), fade);
-    }
-
-    private void FinishDeviceTransition()
-    {
-        var visual = ElementCompositionPreview.GetElementVisual(DeviceRoot);
-        visual.StopAnimation(nameof(visual.Opacity));
-        visual.Opacity = 1;
-    }
-
-    private void AnimationsChanged(UISettings sender, UISettingsAnimationsEnabledChangedEventArgs args) =>
-        DispatcherQueue.TryEnqueue(() => { if (!sender.AnimationsEnabled) FinishDeviceTransition(); });
-
-    /// Show the "nearby — connect?" prompt with a Connect action.
-    public void ShowConnectPrompt(string name)
-    {
-        ConnectPromptBar.Title = Localize.Get("ConnectPrompt_Title", name);
-        ConnectPromptBar.Message = Localize.Get("ConnectPrompt_Message");
-        var btn = new Button { Content = Localize.Get("Action_Connect") };
-        btn.Click += (_, _) =>
-        {
-            _client?.Connect();
-            DismissConnectPrompt();
-        };
-        ConnectPromptBar.ActionButton = btn;
-        ConnectPromptBar.Visibility = Visibility.Visible;
-        ConnectPromptBar.IsOpen = true;
-    }
-
-    /// Hide the "nearby — connect?" prompt (e.g. once the device is connected).
-    public void DismissConnectPrompt()
-    {
-        ConnectPromptBar.IsOpen = false;
-        ConnectPromptBar.Visibility = Visibility.Collapsed;
+        _sections.AnimateChanges(changed || featuresChanged);
     }
 
     /// The events pipe dropped — surface it in the header.

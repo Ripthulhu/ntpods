@@ -9,5 +9,6 @@
   <ItemGroup>
     <Compile Include="../../winui/NTPods.WinUI/Popup/IslandGaugeMotion.cs" Link="IslandGaugeMotion.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Popup/IslandMotion.cs" Link="IslandMotion.cs" />
+    <Compile Include="../../winui/NTPods.WinUI/Popup/IslandMessageMotion.cs" Link="IslandMessageMotion.cs" />
   </ItemGroup>
 </Project>

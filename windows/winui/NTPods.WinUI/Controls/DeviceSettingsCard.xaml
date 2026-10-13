@@ -81,8 +81,9 @@
                 </StackPanel>
             </Expander>
             <StackPanel Spacing="8" Margin="16,0">
-                <Button x:Name="RefreshButton" Content="{Binding [DeviceControls_Refresh], Source={StaticResource Loc}}" Click="Refresh_Click" />
-                <TextBlock Text="{Binding [DeviceControls_RefreshHint], Source={StaticResource Loc}}" TextWrapping="Wrap" FontSize="13" Foreground="{ThemeResource AppleSecondaryBrush}" />
+                <Button x:Name="RefreshButton" Style="{StaticResource QuietButton}" Content="{Binding [DeviceControls_Refresh], Source={StaticResource Loc}}"
+                        ToolTipService.ToolTip="{Binding [DeviceControls_RefreshHint], Source={StaticResource Loc}}"
+                        AutomationProperties.HelpText="{Binding [DeviceControls_RefreshHint], Source={StaticResource Loc}}" Click="Refresh_Click" />
             </StackPanel>
         </StackPanel>
     </StackPanel>

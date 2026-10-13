@@ -45,6 +45,9 @@
                                    TextWrapping="Wrap" TextAlignment="Center" Margin="16"
                                    Foreground="{ThemeResource AppleSecondaryBrush}" FontSize="13" />
                     </Grid>
+                    <TextBlock x:Name="MovementValues" Text="—" MinHeight="32" FontSize="12" TextWrapping="Wrap"
+                               Foreground="{ThemeResource AppleSecondaryBrush}"
+                               AutomationProperties.HelpText="{Binding [HeadTracking.ValuesHelp], Source={StaticResource Loc}}" />
                 </StackPanel>
             </Border>
             <TextBlock x:Name="ErrorText" Visibility="Collapsed" TextWrapping="Wrap" FontSize="13"

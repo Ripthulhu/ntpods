@@ -9,18 +9,17 @@
             <StackPanel x:Name="DeviceRoot" MaxWidth="688" Padding="24,20,24,48" Spacing="24" HorizontalAlignment="Stretch">
                 <controls:DeviceHeader x:Name="Header" />
                 <ContentControl x:Name="DeviceBody" IsTabStop="False" HorizontalContentAlignment="Stretch">
-                    <StackPanel Spacing="24">
+                    <StackPanel x:Name="DeviceSections" Spacing="24">
                         <controls:BatteryCard x:Name="BatteryCard" />
-                        <InfoBar x:Name="ConnectPromptBar" IsOpen="False" Visibility="Collapsed" IsClosable="True" Severity="Informational" />
                         <controls:NoiseControlCard x:Name="NoiseControlCard" />
                         <controls:FeaturesCard x:Name="FeaturesCard" />
-                        <StackPanel Spacing="12">
+                        <StackPanel x:Name="VolumeSections" Spacing="12">
                             <controls:VolumeCard x:Name="VolumeCard" />
                             <controls:EqualizerCard x:Name="EqualizerCard" />
                         </StackPanel>
                         <controls:MicCard x:Name="MicCard" />
                         <controls:DeviceSettingsCard x:Name="DeviceSettingsCard" />
-                        <StackPanel Spacing="12">
+                        <StackPanel x:Name="ExtraSections" Spacing="12">
                             <controls:HeartRateCard x:Name="HeartRateCard" />
                             <controls:HeadTrackingCard x:Name="HeadTrackingCard" />
                             <controls:HearingAidCard x:Name="HearingAidCard" Visibility="Collapsed" />

@@ -188,7 +188,8 @@ public sealed partial class NoiseControlCard : UserControl
             AncColumn.Width = new GridLength(layout.Segment);
             AncOffBtn.Visibility = layout.OffWidth > 0 ? Visibility.Visible : Visibility.Collapsed;
             // Measure wrapped labels at a stable width; animation only moves their centers.
-            double labelSlot = layout.Width / (layout.HasAdaptive ? 5 : 3);
+            double labelSlot = layout.Width / (layout.HasAdaptive ? 4 : 3);
+            double collapsedSlot = layout.Width / (layout.HasAdaptive ? 5 : 3);
             double labelWidth = Math.Max(0, labelSlot - 4);
             if (OffLabel.Width != labelWidth)
                 OffLabel.Width = TransparencyLabel.Width = AdaptiveLabel.Width = AncLabel.Width = labelWidth;
@@ -197,7 +198,7 @@ public sealed partial class NoiseControlCard : UserControl
             AdaptiveLabelTransform.X = layout.AdaptiveStart + (layout.AdaptiveWidth - labelSlot) / 2;
             AncLabelTransform.X = layout.AncStart + (layout.Segment - labelSlot) / 2;
             OffLabel.Opacity = !layout.HasAdaptive ? (layout.OffWidth > 0 ? 1 : 0) : layout.Width > 0
-                ? Math.Clamp((layout.OffWidth - labelSlot) / (layout.Width / 4 - labelSlot), 0, 1) : 0;
+                ? Math.Clamp((layout.OffWidth - collapsedSlot) / (layout.Width / 4 - collapsedSlot), 0, 1) : 0;
             Selection.Width = layout.Segment;
         }
         SelectionTransform.X = layout.ClampLeft(_motion.Left);

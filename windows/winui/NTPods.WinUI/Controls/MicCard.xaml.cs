@@ -67,11 +67,28 @@ public sealed partial class MicCard : UserControl
                 _ when s.MicCaptureActive && !s.Connected => "Mic_WaitingConnection",
                 _ => "Mic_Idle"
             };
-            MicStatusText.Text = Localize.Get(key);
-            if (!string.IsNullOrWhiteSpace(s.MicError)) MicStatusText.Text += " " + s.MicError;
+            string detail = string.IsNullOrWhiteSpace(s.MicError) ? Localize.Get(key) : s.MicError;
+            string statusKey = key switch
+            {
+                "Mic_Recording" => "Mic.RecordingShort",
+                "Mic_Starting" => "Mic.StartingShort",
+                "Mic_Stopping" => "Mic.StoppingShort",
+                "Mic_Recovering" => "Mic.RestoringShort",
+                "Mic_WaitingEar" => "Mic.WaitingEarShort",
+                "Mic_WaitingConnection" => "Mic.WaitingConnectionShort",
+                "Mic_DisabledCapture" => "Mic.DisabledShort",
+                "Mic_Error" or "Mic_Unavailable" => "Mic.UnavailableShort",
+                _ => key
+            };
+            MicStatusText.Text = Localize.Get(string.IsNullOrWhiteSpace(s.MicError) ? statusKey : "Mic.UnavailableShort");
             MicStatusText.Visibility = key is "Mic_Idle" or "Mic.UnsupportedModel" && string.IsNullOrWhiteSpace(s.MicError)
                 ? Visibility.Collapsed : Visibility.Visible;
-            AutomationProperties.SetHelpText(MicAutoSwitch, MicStatusText.Text);
+            MicDetailText.Text = detail;
+            MicDetailText.Visibility = key is "Mic_Error" or "Mic_Unavailable" or "Mic_DisabledCapture" or
+                "Mic_WaitingConnection" or "Mic_WaitingEar" || !string.IsNullOrWhiteSpace(s.MicError)
+                ? Visibility.Visible : Visibility.Collapsed;
+            AutomationProperties.SetHelpText(MicAutoSwitch, detail);
+            ToolTipService.SetToolTip(MicStatusText, detail);
             ToolTipService.SetToolTip(MicAutoSwitch, supported ? null : Localize.Get("Mic.UnsupportedModel"));
             string mode = _policy.Mode;
             ModePicker.SelectedIndex = mode == "keep_active" ? 1 : mode == "manual" ? 2 : 0;

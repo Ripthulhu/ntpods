@@ -15,6 +15,8 @@ param(
     [string]$Version
 )
 $ErrorActionPreference = 'Stop'
+& python.exe (Join-Path $PSScriptRoot 'tests/test-localization.py')
+if ($LASTEXITCODE) { throw 'Localization checks failed.' }
 & (Join-Path $PSScriptRoot 'tests\test-build-version.ps1')
 $repo = Split-Path -Parent $PSScriptRoot
 $Out = [IO.Path]::GetFullPath($Out)
@@ -81,6 +83,7 @@ try {
     Run 'dotnet' @('run', '--project', 'windows/tests/Startup/Startup.csproj', '--configuration', 'Release')
     Run 'dotnet' @('run', '--project', 'windows/tests/ListeningMode/ListeningMode.csproj', '--configuration', 'Release')
     Run 'dotnet' @('run', '--project', 'windows/tests/DeviceSettings/DeviceSettings.csproj', '--configuration', 'Release')
+    Run 'dotnet' @('run', '--project', 'windows/tests/SensorUi/SensorUi.csproj', '--configuration', 'Release')
     Run 'dotnet' @('run', '--project', 'windows/tests/ClientSession/ClientSession.csproj', '--configuration', 'Release')
     Run 'dotnet' @('run', '--project', 'windows/tests/IslandMotion/IslandMotion.csproj', '--configuration', 'Release')
     Run 'dotnet' @('run', '--project', 'windows/tests/Hotkey/Hotkey.csproj', '--configuration', 'Release')

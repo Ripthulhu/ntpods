@@ -21,8 +21,10 @@
                     <Color x:Key="ApplePageColor">#FFF2F2F7</Color>
                     <Color x:Key="AppleHoverColor">#FFE7E7EB</Color>
                     <Color x:Key="AppleGroupColor">#FFFFFFFF</Color>
-                    <Color x:Key="NTPodsAccentColor">#FF007AFF</Color>
+                    <Color x:Key="NTPodsAccentColor">#FF0066D6</Color>
                     <Color x:Key="SystemAccentColor">#FF0066D6</Color>
+                    <Color x:Key="SystemAccentColorDark1">#FF0066D6</Color>
+                    <Color x:Key="SystemAccentColorLight2">#FF0066D6</Color>
                     <SolidColorBrush x:Key="NTPodsAccentBrush" Color="#FF0066D6" />
                     <SolidColorBrush x:Key="ApplePageBrush" Color="#FFF2F2F7" />
                     <SolidColorBrush x:Key="AppleGroupBrush" Color="White" />
@@ -46,6 +48,8 @@
                     <Color x:Key="AppleGroupColor">#FF1C1C1E</Color>
                     <Color x:Key="NTPodsAccentColor">#FF0A84FF</Color>
                     <Color x:Key="SystemAccentColor">#FF0A84FF</Color>
+                    <Color x:Key="SystemAccentColorDark1">#FF0A84FF</Color>
+                    <Color x:Key="SystemAccentColorLight2">#FF0A84FF</Color>
                     <SolidColorBrush x:Key="NTPodsAccentBrush" Color="#FF0A84FF" />
                     <SolidColorBrush x:Key="ApplePageBrush" Color="Black" />
                     <SolidColorBrush x:Key="AppleGroupBrush" Color="#FF1C1C1E" />

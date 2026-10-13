@@ -14,6 +14,7 @@ public sealed partial class FeaturesCard : UserControl
     public DaemonClient? Client { get; set; }
 
     private bool _applying;
+    private readonly SectionTransitions _sections;
     private readonly DispatcherQueueTimer _volumeDebounce;
     private readonly DispatcherQueueTimer _volumeTimeout;
     private byte? _desiredVolume;
@@ -24,6 +25,7 @@ public sealed partial class FeaturesCard : UserControl
     public FeaturesCard()
     {
         InitializeComponent();
+        _sections = new SectionTransitions(this, FeatureRoot, FeatureRows);
         _volumeDebounce = DispatcherQueue.CreateTimer();
         _volumeDebounce.Interval = System.TimeSpan.FromMilliseconds(200);
         _volumeDebounce.IsRepeating = false;
@@ -54,8 +56,9 @@ public sealed partial class FeaturesCard : UserControl
         };
     }
 
-    public void Update(Snapshot s)
+    public bool Update(Snapshot s)
     {
+        _sections.Capture();
         if (_deviceId != s.DeviceId)
         {
             _deviceId = s.DeviceId;
@@ -103,6 +106,7 @@ public sealed partial class FeaturesCard : UserControl
         {
             _applying = false;
         }
+        return _sections.AnimateChanges();
     }
 
     private void ConvAwareness_Toggled(object sender, RoutedEventArgs e)

@@ -100,6 +100,14 @@ internal sealed class ListeningModeGlass : Grid
 
     private async void CreateResources(CanvasControl sender, CanvasCreateResourcesEventArgs args)
     {
+        if (args.Reason == CanvasCreateResourcesReason.DpiChanged && _resourcesReady && !_failed)
+        {
+            // DPI changes keep the same device; redraw with the existing maps until replacements are ready.
+            _sourceSnapshot = null;
+            _shapeWidth = float.NaN;
+            sender.Invalidate();
+            return;
+        }
         int generation = ++_generation;
         SetReady(false);
         DisposeResources();
@@ -137,8 +145,8 @@ internal sealed class ListeningModeGlass : Grid
             if (_maps == null || Math.Abs(width - _mapTrackWidth) > .1 || sender.Dpi != _mapDpi)
             {
                 PrepareMaps(sender, width, sender.Dpi);
-                SetReady(false);
-                return;
+                // Keep drawing with the last maps while resized replacements are prepared.
+                if (_maps == null) { SetReady(false); return; }
             }
             EnsureSource(sender, snapshot);
             float segment = (float)snapshot.Layout.Segment;
@@ -177,6 +185,7 @@ internal sealed class ListeningModeGlass : Grid
             var widths = new[] { width / 5, width / 4, width / 3 };
             var rasters = await Task.Run(() => widths.Select(value => ListeningModeLens.Create(value, dpi)).ToArray());
             if (generation != _generation || sender != _canvas) return;
+            if (Math.Abs(_snapshot.Layout.Width - width) > .1 || sender.Dpi != dpi) return;
             DisposeMaps();
             _mapTrackWidth = width;
             _mapDpi = dpi;
@@ -199,13 +208,19 @@ internal sealed class ListeningModeGlass : Grid
             }
             BuildGraph();
             _sourceSnapshot = null;
-            sender.Invalidate();
         }
         catch (Exception error)
         {
             if (generation == _generation) RecoverOrFail(sender, error);
         }
-        finally { if (generation == _generation) _loadingMaps = false; }
+        finally
+        {
+            if (generation == _generation)
+            {
+                _loadingMaps = false;
+                sender.Invalidate();
+            }
+        }
     }
 
     private void RecoverOrFail(CanvasControl sender, Exception error)

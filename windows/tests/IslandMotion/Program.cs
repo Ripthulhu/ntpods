@@ -101,3 +101,54 @@ foreach (int refreshRate in new[] { 60, 120, 144, 240 })
     Check(!paced.Visible, "Display refresh must not change the dismissal duration.");
 }
 Console.WriteLine("Display-paced motion checks passed.");
+
+var message = new IslandMessageMotion();
+message.Set(new("Connected"), 0, true);
+message.Set(new("Adaptive", IslandMessageIcon.Adaptive), 10, true);
+message.Advance(40);
+double messageOpacity = message.Opacity;
+message.Set(new("Transparency", IslandMessageIcon.Transparency), 40, true);
+Check(message.Current.Text == "Adaptive" && message.Previous.Text == "Connected" && message.Opacity == messageOpacity,
+    "An interrupt must preserve both visible text layers and their current blend.");
+message.Set(new("Microphone ready", IslandMessageIcon.Microphone), 50, true);
+message.Advance(190);
+Check(message.Current.Text == "Microphone ready" && message.Previous.Text == "Adaptive" && message.Opacity == 0,
+    "The next fade must start from the settled message and coalesce superseded events.");
+Check(message.Current.Icon == IslandMessageIcon.Microphone && message.Previous.Icon == IslandMessageIcon.Adaptive,
+    "Message icons must follow the same transition as their text.");
+message.Advance(370);
+Check(!message.Animating && message.Opacity == 1 && message.Previous.Text == "", "The latest message must settle without a jump.");
+message.Set(new("Off", IslandMessageIcon.MicrophoneOff), 400, true);
+message.Set(new("Connected"), 430, true);
+message.Finish();
+Check(message.Current.Text == "Connected" && !message.Animating && message.Opacity == 1,
+    "Reduced motion must show the latest queued event immediately.");
+message.Set(new("Adaptive"), 500, true);
+message.Set(new("Transparency"), 510, true);
+message.Set(new("Adaptive"), 520, true);
+message.Advance(680);
+Check(message.Current.Text == "Adaptive" && !message.Animating, "Repeating the current target must cancel a superseded queued event.");
+Console.WriteLine("Interrupted message checks passed.");
+
+var resizing = new IslandMotion();
+resizing.SetHeight(160, 0, true);
+resizing.Show(0, true);
+resizing.Advance(420);
+double deadline = resizing.DismissDelay(500);
+resizing.SetHeight(190, 500, true);
+Check(resizing.Height == 160 && resizing.Resizing, "A visible content resize must start at the displayed height.");
+resizing.Advance(560);
+double height = resizing.Height;
+Check(height > 160 && height < 190, "The island content height must interpolate.");
+resizing.SetHeight(170, 560, true);
+Check(resizing.Height == height, "A second content resize must preserve the displayed height.");
+resizing.Advance(740);
+Check(resizing.Height == 170 && !resizing.Resizing && resizing.Expansion == 1, "Content resize must settle without replaying entrance.");
+Check(resizing.DismissDelay(740) == deadline - 240, "Content resize must not extend the dismissal deadline.");
+resizing.SetHeight(200, 750, true);
+resizing.SetAnimationsEnabled(780, false);
+Check(resizing.Height == 200 && !resizing.Resizing, "Disabling animations must finish a content resize.");
+resizing.Hide();
+resizing.SetHeight(160, 800, true);
+Check(resizing.Height == 160 && !resizing.Resizing, "A hidden island must prepare the next size without background frames.");
+Console.WriteLine("Content height motion checks passed.");

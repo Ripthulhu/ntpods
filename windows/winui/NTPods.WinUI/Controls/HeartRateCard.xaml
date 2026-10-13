@@ -7,7 +7,7 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     mc:Ignorable="d">
 
-    <Expander Style="{StaticResource GroupExpander}" IsExpanded="False">
+    <Expander x:Name="Panel" Style="{StaticResource GroupExpander}" IsExpanded="False">
         <Expander.Header>
             <TextBlock Text="{Binding [HeartRateTitle_Text], Source={StaticResource Loc}}" FontSize="16" />
         </Expander.Header>
@@ -74,11 +74,19 @@
                                Style="{ThemeResource CaptionTextBlockStyle}"
                                Foreground="{ThemeResource AppleSecondaryBrush}" />
                 </Grid>
-                <Canvas x:Name="HeartRateGraph" Grid.Column="1"
-                        Background="Transparent"
-                        SizeChanged="HeartRateGraph_SizeChanged"
-                        PointerMoved="HeartRateGraph_PointerMoved"
-                        PointerExited="HeartRateGraph_PointerExited" />
+                <ContentControl x:Name="GraphFocus" Grid.Column="1" IsTabStop="True" UseSystemFocusVisuals="True"
+                                HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch"
+                                AutomationProperties.Name="{Binding [HeartRateGraph_AccessibleName], Source={StaticResource Loc}}"
+                                AutomationProperties.HelpText="{Binding [HeartRateGraph_KeyboardHelp], Source={StaticResource Loc}}"
+                                GotFocus="Graph_GotFocus" LostFocus="Graph_LostFocus" KeyDown="Graph_KeyDown">
+                    <Grid>
+                        <Canvas x:Name="HeartRateGraph" Background="Transparent"
+                                SizeChanged="HeartRateGraph_SizeChanged"
+                                PointerMoved="HeartRateGraph_PointerMoved"
+                                PointerExited="HeartRateGraph_PointerExited" />
+                        <Canvas x:Name="GraphOverlay" IsHitTestVisible="False" />
+                    </Grid>
+                </ContentControl>
             </Grid>
         </StackPanel>
     </Expander>
