@@ -1,6 +1,7 @@
 #include "RenderPipe.h"
 #if NTPODS_EXPERIMENTAL_PLAYBACK
 #include "RenderProvider.h"
+#include "RenderClock.h"
 #include "MicPipe.h"
 #include <ntstrsafe.h>
 
@@ -9,9 +10,15 @@ static_assert(IOCTL_NTPODS_PLAYBACK_STATUS == 0x00226404u, "playback status ABI"
 static_assert(IOCTL_NTPODS_PLAYBACK_SET_PROVIDER == 0x0022a408u, "playback provider ABI");
 static_assert(sizeof(NTPODS_PLAYBACK_STATUS) == 48, "playback status size");
 static_assert(sizeof(NTPODS_PLAYBACK_PROVIDER) == 8, "playback provider size");
+static_assert(IOCTL_NTPODS_PLAYBACK_SET_CLOCK == 0x0022a40cu, "playback set clock ABI");
+static_assert(IOCTL_NTPODS_PLAYBACK_QUERY_CLOCK == 0x00226410u, "playback query clock ABI");
+static_assert(sizeof(NTPODS_PLAYBACK_CLOCK_SET) == 16, "playback clock set size");
+static_assert(sizeof(NTPODS_PLAYBACK_CLOCK_SNAPSHOT) == 64, "playback clock snapshot size");
 
 struct RENDER_CONTEXT {
     RenderProvider State;
+    RenderClock Clock;
+    ULONGLONG QpcFrequency;
     KSPIN_LOCK Lock;
     WDFDEVICE Control;
     WDFFILEOBJECT Reader;
@@ -24,6 +31,20 @@ WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(RENDER_CONTROL_CONTEXT, RenderControlContext)
 struct RENDER_FILE_CONTEXT { BOOLEAN PowerHeld; };
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(RENDER_FILE_CONTEXT, RenderFileContext);
 
+static ULONGLONG RenderRealTime(RENDER_CONTEXT* context)
+{
+    const auto qpc = (ULONGLONG)KeQueryPerformanceCounter(nullptr).QuadPart;
+    return qpc / context->QpcFrequency * 10000000ull
+        + qpc % context->QpcFrequency * 10000000ull / context->QpcFrequency;
+}
+
+// Call under the context lock whenever the ring generation changes. Retaining
+// the offset also keeps an existing WASAPI stream continuous across re-prime.
+static VOID RenderResetClock(RENDER_CONTEXT* context)
+{
+    RenderClockReset(&context->Clock, RenderRealTime(context));
+}
+
 NTSTATUS RenderPipeInit(WDFDEVICE Device)
 {
     WDF_OBJECT_ATTRIBUTES attributes;
@@ -32,7 +53,11 @@ NTSTATUS RenderPipeInit(WDFDEVICE Device)
     NTSTATUS status = WdfObjectAllocateContext(Device, &attributes, (PVOID*)&context);
     if (!NT_SUCCESS(status)) return status;
     KeInitializeSpinLock(&context->Lock);
+    LARGE_INTEGER frequency;
+    (void)KeQueryPerformanceCounter(&frequency);
+    context->QpcFrequency = (ULONGLONG)frequency.QuadPart;
     RenderRingFlush(&context->State.Ring);
+    RenderResetClock(context);
     return STATUS_SUCCESS;
 }
 
@@ -78,6 +103,7 @@ VOID RenderPipeSetOnline(WDFDEVICE Device, BOOLEAN Online)
     KeAcquireSpinLock(&context->Lock, &irql);
     const bool wasConnected = RenderProviderConnected(&context->State);
     RenderProviderOnline(&context->State, Online != FALSE);
+    RenderResetClock(context);
     const bool changed = wasConnected != RenderProviderConnected(&context->State);
     KeReleaseSpinLock(&context->Lock, irql);
     if (changed) RenderNotify(context);
@@ -88,7 +114,9 @@ VOID RenderPipeStarted(WDFDEVICE Device)
     auto context = RenderContext(Device);
     KIRQL irql;
     KeAcquireSpinLock(&context->Lock, &irql);
-    if (context->State.Streams++ == 0) RenderRingFlush(&context->State.Ring);
+    ++context->State.Streams;
+    RenderRingFlush(&context->State.Ring);
+    RenderResetClock(context);
     KeReleaseSpinLock(&context->Lock, irql);
 }
 
@@ -97,8 +125,11 @@ VOID RenderPipeStopped(WDFDEVICE Device)
     auto context = RenderContext(Device);
     KIRQL irql;
     KeAcquireSpinLock(&context->Lock, &irql);
-    if (context->State.Streams && --context->State.Streams == 0)
+    if (context->State.Streams) {
+        --context->State.Streams;
         RenderRingFlush(&context->State.Ring);
+        RenderResetClock(context);
+    }
     KeReleaseSpinLock(&context->Lock, irql);
 }
 
@@ -108,7 +139,29 @@ VOID RenderPipeWrite(WDFDEVICE Device, const void* Data, ULONG Length)
     KIRQL irql;
     KeAcquireSpinLock(&context->Lock, &irql);
     RenderProviderWrite(&context->State, Data, Length);
+    if (context->State.Online && context->State.Open && context->State.Ready && context->State.Streams)
+        RenderClockCommit(&context->Clock, RenderRealTime(context), Length / RENDER_FRAME_BYTES);
     KeReleaseSpinLock(&context->Lock, irql);
+}
+
+ULONGLONG RenderPipeAudioTime(WDFDEVICE Device, ULONGLONG RealTimeHns)
+{
+    auto context = RenderContext(Device);
+    KIRQL irql;
+    KeAcquireSpinLock(&context->Lock, &irql);
+    const auto time = RenderClockNow(&context->Clock, RealTimeHns);
+    KeReleaseSpinLock(&context->Lock, irql);
+    return time;
+}
+
+LONGLONG RenderPipeTimerDelay(WDFDEVICE Device, ULONGLONG VirtualDueHns, ULONGLONG* GlitchHns)
+{
+    auto context = RenderContext(Device);
+    KIRQL irql;
+    KeAcquireSpinLock(&context->Lock, &irql);
+    const auto delay = RenderClockTimerDelay(&context->Clock, RenderRealTime(context), VirtualDueHns, GlitchHns);
+    KeReleaseSpinLock(&context->Lock, irql);
+    return delay;
 }
 
 static EVT_WDF_DEVICE_FILE_CREATE RenderFileCreate;
@@ -130,6 +183,7 @@ static VOID RenderFileCreate(WDFDEVICE Device, WDFREQUEST Request, WDFFILEOBJECT
         context->Reader = File;
         RenderFileContext(File)->PowerHeld = TRUE;
         RenderProviderOpen(&context->State, true);
+        RenderResetClock(context);
         status = STATUS_SUCCESS;
     }
     KeReleaseSpinLock(&context->Lock, irql);
@@ -148,6 +202,7 @@ static VOID RenderFileCleanup(WDFFILEOBJECT File)
     if (context->Reader == File) {
         context->Reader = nullptr;
         RenderProviderOpen(&context->State, false);
+        RenderResetClock(context);
     }
     const bool changed = wasConnected != RenderProviderConnected(&context->State);
     KeReleaseSpinLock(&context->Lock, irql);
@@ -165,18 +220,23 @@ static VOID RenderIoControl(WDFQUEUE Queue, WDFREQUEST Request,
     const BOOLEAN pcm = Code == IOCTL_NTPODS_PLAYBACK_READ_PCM;
     const BOOLEAN statusRequest = Code == IOCTL_NTPODS_PLAYBACK_STATUS;
     const BOOLEAN provider = Code == IOCTL_NTPODS_PLAYBACK_SET_PROVIDER;
-    if (!pcm && !statusRequest && !provider) {
+    const BOOLEAN setClock = Code == IOCTL_NTPODS_PLAYBACK_SET_CLOCK;
+    const BOOLEAN queryClock = Code == IOCTL_NTPODS_PLAYBACK_QUERY_CLOCK;
+    if (!pcm && !statusRequest && !provider && !setClock && !queryClock) {
         WdfRequestComplete(Request, STATUS_INVALID_DEVICE_REQUEST);
         return;
     }
-    if (provider ? (InputLength != sizeof(NTPODS_PLAYBACK_PROVIDER) || OutputLength)
+    const BOOLEAN inputRequest = provider || setClock;
+    const size_t inputSize = setClock ? sizeof(NTPODS_PLAYBACK_CLOCK_SET) : sizeof(NTPODS_PLAYBACK_PROVIDER);
+    const size_t outputSize = queryClock ? sizeof(NTPODS_PLAYBACK_CLOCK_SNAPSHOT) : sizeof(NTPODS_PLAYBACK_STATUS);
+    if (inputRequest ? (InputLength != inputSize || OutputLength)
                  : (InputLength || (pcm ? !RenderReadLengthValid(OutputLength)
-                            : OutputLength != sizeof(NTPODS_PLAYBACK_STATUS)))) {
+                            : OutputLength != outputSize))) {
         WdfRequestComplete(Request, STATUS_INVALID_BUFFER_SIZE);
         return;
     }
     PVOID buffer = nullptr;
-    NTSTATUS status = provider
+    NTSTATUS status = inputRequest
         ? WdfRequestRetrieveInputBuffer(Request, InputLength, &buffer, nullptr)
         : WdfRequestRetrieveOutputBuffer(Request, OutputLength, &buffer, nullptr);
     ULONG_PTR bytes = 0;
@@ -192,7 +252,28 @@ static VOID RenderIoControl(WDFQUEUE Queue, WDFREQUEST Request,
             const bool wasConnected = RenderProviderConnected(&context->State);
             if (input->Version != 1 || input->Ready > 1) status = STATUS_INVALID_PARAMETER;
             else if (!RenderProviderReady(&context->State, input->Ready)) status = STATUS_DEVICE_NOT_READY;
+            else RenderResetClock(context);
             changed = wasConnected != RenderProviderConnected(&context->State);
+        } else if (setClock) {
+            const auto input = static_cast<NTPODS_PLAYBACK_CLOCK_SET*>(buffer);
+            if (input->Version != 1 || !RenderClockParametersValid(input->IntervalTenths, input->DeltaMs))
+                status = STATUS_INVALID_PARAMETER;
+            else if (input->Generation != context->State.Ring.Generation)
+                status = STATUS_REVISION_MISMATCH;
+            else if (input->IntervalTenths != 10 && (!context->State.Online || !context->State.Ready || context->State.Streams != 1))
+                status = STATUS_DEVICE_NOT_READY;
+            else (void)RenderClockSet(&context->Clock, RenderRealTime(context), input->IntervalTenths, input->DeltaMs);
+        } else if (queryClock) {
+            const auto real = RenderRealTime(context);
+            const auto virtualTime = RenderClockNow(&context->Clock, real);
+            const auto& clock = context->Clock;
+            const auto nominal = clock.Phase == RenderClockActive
+                ? RenderClockScale(real - clock.StartReal, 48000, 10000000) : clock.NominalFrames;
+            const NTPODS_PLAYBACK_CLOCK_SNAPSHOT value = {1, context->State.Ring.Generation,
+                clock.IntervalTenths, clock.Phase, real, virtualTime, clock.RequestedIntervalTenths,
+                clock.DeltaMs, clock.ActualFrames, nominal, clock.DeadlineReal};
+            RtlCopyMemory(buffer, &value, sizeof(value));
+            bytes = sizeof(value);
         } else if (pcm) {
             bytes = RenderRingTake(&context->State.Ring, buffer, OutputLength);
         } else {
@@ -281,6 +362,7 @@ VOID RenderPipeDeleteControlDevice(WDFDEVICE Parent)
     context->Reader = nullptr;
     RenderProviderOnline(&context->State, false);
     RenderProviderOpen(&context->State, false);
+    RenderResetClock(context);
     KeReleaseSpinLock(&context->Lock, irql);
     RenderNotify(context);
     if (control) WdfObjectDelete(control);

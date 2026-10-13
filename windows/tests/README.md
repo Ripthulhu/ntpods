@@ -35,6 +35,15 @@ directory. It does not connect to named pipes or Bluetooth or load drivers.
 Kernel PCM/SID/request validation has its separate portable harness in
 [`../drivers/mic/README.md`](../drivers/mic/README.md).
 
+## Playback restoration
+
+With the [backend toolchain](../../CONTRIBUTING.md#build-and-test) configured, run
+`cargo test --locked --manifest-path windows/daemon/Cargo.toml --features experimental-playback --test playback_buffer`.
+This runs the production buffer-trial logic against simulated drivers, including
+a microphone request during clock adjustment and failed playback restoration.
+It checks that microphone startup stays blocked until restoration succeeds.
+The complete build runs it too; it does not open audio devices or Bluetooth.
+
 ## Windows startup checks
 
 `dotnet run --project windows/tests/Startup/Startup.csproj --configuration Release`

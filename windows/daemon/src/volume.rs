@@ -89,6 +89,25 @@ fn endpoint() -> windows::core::Result<IAudioEndpointVolume> {
     unsafe { output_device()?.Activate(CLSCTX_ALL, None) }
 }
 
+fn endpoint_id(device: &IMMDevice) -> Option<String> {
+    unsafe {
+        let id = device.GetId().ok()?;
+        let result = id.to_string().ok();
+        CoTaskMemFree(Some(id.0.cast()));
+        result
+    }
+}
+
+fn change_volume(
+    change: impl FnOnce(&IAudioEndpointVolume) -> windows::core::Result<()>,
+) -> Option<String> {
+    let device = output_device().ok()?;
+    let id = endpoint_id(&device)?;
+    let volume = unsafe { device.Activate(CLSCTX_ALL, None).ok()? };
+    change(&volume).ok()?;
+    Some(id)
+}
+
 /// Current master volume of the selected output (0..=100), or None if it fails.
 pub fn get() -> Option<u8> {
     let vol = endpoint().ok()?;
@@ -96,25 +115,20 @@ pub fn get() -> Option<u8> {
     Some((level * 100.0).round().clamp(0.0, 100.0) as u8)
 }
 
-pub fn set(percent: u8) {
-    if let Ok(vol) = endpoint() {
+pub fn set(percent: u8) -> Option<String> {
+    change_volume(|vol| unsafe {
         let level = percent.min(100) as f32 / 100.0;
-        unsafe {
-            let _ = vol.SetMasterVolumeLevelScalar(level, std::ptr::null());
-        }
-    }
+        vol.SetMasterVolumeLevelScalar(level, std::ptr::null())
+    })
 }
 
-pub fn step(delta: i32) {
-    if let Ok(vol) = endpoint() {
-        if let Ok(current) = unsafe { vol.GetMasterVolumeLevelScalar() } {
-            let percent = (current * 100.0).round() as i32;
-            let level = percent.saturating_add(delta).clamp(0, 100) as f32 / 100.0;
-            unsafe {
-                let _ = vol.SetMasterVolumeLevelScalar(level, std::ptr::null());
-            }
-        }
-    }
+pub fn step(delta: i32) -> Option<String> {
+    change_volume(|vol| unsafe {
+        let current = vol.GetMasterVolumeLevelScalar()?;
+        let percent = (current * 100.0).round() as i32;
+        let level = percent.saturating_add(delta).clamp(0, 100) as f32 / 100.0;
+        vol.SetMasterVolumeLevelScalar(level, std::ptr::null())
+    })
 }
 
 pub fn is_muted() -> bool {
@@ -124,15 +138,11 @@ pub fn is_muted() -> bool {
         .unwrap_or(false)
 }
 
-pub fn toggle_mute() {
-    if let Ok(vol) = endpoint() {
-        let new = !unsafe { vol.GetMute() }
-            .map(|b| b.as_bool())
-            .unwrap_or(false);
-        unsafe {
-            let _ = vol.SetMute(new, std::ptr::null());
-        }
-    }
+pub fn toggle_mute() -> Option<String> {
+    change_volume(|vol| unsafe {
+        let new = !vol.GetMute()?.as_bool();
+        vol.SetMute(new, std::ptr::null())
+    })
 }
 
 /// Includes apps without an SMTC session, but excludes notification sounds.
@@ -174,7 +184,7 @@ fn is_application_session(result: windows::core::HRESULT) -> bool {
 /// Host volume ducking driven by the AirPods' 0x4B Conversation Awareness events.
 pub struct ConvDuck {
     // CA can be disabled from an IPC thread, so retain a marshalled reference.
-    active: Option<DuckedEndpoint<AgileReference<IAudioEndpointVolume>>>,
+    active: Option<DuckedEndpoint<DuckEndpoint>>,
     limit: u8,
 }
 
@@ -202,41 +212,131 @@ impl ConvDuck {
     /// 1/3 cap playback at the chosen volume; 2 reduces it further to 60% of
     /// that cap. Ending statuses restore only volume that we still own.
     pub fn on_status(&mut self, status: u8) {
-        update_duck(&mut self.active, status, self.limit, || {
-            AgileReference::new(&endpoint().ok()?).ok()
-        });
+        update_duck(&mut self.active, status, self.limit, DuckEndpoint::current);
     }
 
     /// Disabling Conversation Awareness may omit the end event; restore any owned duck.
     pub fn restore(&mut self) {
         restore_duck(&mut self.active);
     }
+
+    /// A successful choice takes ownership only on the output that was ducked.
+    pub fn manual_override(&mut self, changed_endpoint: Option<&str>) {
+        override_duck(&mut self.active, changed_endpoint);
+    }
 }
 
 trait DuckVolume {
+    fn id(&self) -> &str;
     fn level(&self) -> Option<f32>;
     fn set_level(&self, level: f32) -> bool;
+    fn muted(&self) -> Option<bool>;
+    fn remote_step(&self) -> Result<Option<u8>, ()> {
+        Ok(None)
+    }
 }
 
-impl DuckVolume for AgileReference<IAudioEndpointVolume> {
+struct DuckEndpoint {
+    id: String,
+    endpoint: AgileReference<IAudioEndpointVolume>,
+    remote_volume: bool,
+}
+
+impl DuckEndpoint {
+    fn current() -> Option<Self> {
+        unsafe {
+            let device = output_device().ok()?;
+            let id = endpoint_id(&device)?;
+            let volume: IAudioEndpointVolume = device.Activate(CLSCTX_ALL, None).ok()?;
+            #[cfg(feature = "experimental-playback")]
+            let address = crate::playback::active_address();
+            #[cfg(not(feature = "experimental-playback"))]
+            let address: Option<u64> = None;
+            let remote_volume = address.is_some_and(|address| {
+                let Ok(enumerator) = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) else {
+                    return false;
+                };
+                volume.QueryHardwareSupport().unwrap_or(0)
+                    & windows::Win32::Media::Audio::ENDPOINT_HARDWARE_SUPPORT_VOLUME
+                    != 0
+                    && adapter_instance(&enumerator, &device)
+                        .is_ok_and(|id| crate::driver::native_endpoint_owner(&id, address))
+            });
+            Some(Self {
+                id,
+                endpoint: AgileReference::new(&volume).ok()?,
+                remote_volume,
+            })
+        }
+    }
+}
+
+impl DuckVolume for DuckEndpoint {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
     fn level(&self) -> Option<f32> {
-        unsafe { self.resolve().ok()?.GetMasterVolumeLevelScalar().ok() }
-            .filter(|level| level.is_finite() && (0.0..=1.0).contains(level))
+        unsafe {
+            self.endpoint
+                .resolve()
+                .ok()?
+                .GetMasterVolumeLevelScalar()
+                .ok()
+        }
+        .filter(|level| level.is_finite() && (0.0..=1.0).contains(level))
     }
 
     fn set_level(&self, level: f32) -> bool {
-        self.resolve().is_ok_and(|endpoint| unsafe {
+        self.endpoint.resolve().is_ok_and(|endpoint| unsafe {
             endpoint
                 .SetMasterVolumeLevelScalar(level, std::ptr::null())
                 .is_ok()
         })
     }
+
+    fn muted(&self) -> Option<bool> {
+        unsafe {
+            self.endpoint
+                .resolve()
+                .ok()?
+                .GetMute()
+                .ok()
+                .map(|mute| mute.as_bool())
+        }
+    }
+
+    fn remote_step(&self) -> Result<Option<u8>, ()> {
+        if !self.remote_volume {
+            return Ok(None);
+        }
+        let db = unsafe {
+            self.endpoint
+                .resolve()
+                .map_err(|_| ())?
+                .GetMasterVolumeLevel()
+                .map_err(|_| ())?
+        };
+        avrcp_volume_step(db).map(Some).ok_or(())
+    }
+}
+
+fn avrcp_volume_step(db: f32) -> Option<u8> {
+    if !db.is_finite() {
+        return None;
+    }
+    // Windows' AVRCP bridge uses this taper; compare wire steps, not rounded echoes.
+    let floor = 10.0_f64.powf(-63.5 / 35.0);
+    let wiper = (10.0_f64.powf(f64::from(db.clamp(-63.5, 0.0)) / 35.0) - floor) / (1.0 - floor);
+    Some((wiper * 127.0).round().clamp(0.0, 127.0) as u8)
 }
 
 struct DuckedEndpoint<E> {
     endpoint: E,
     original: f32,
     expected: f32,
+    expected_step: Option<u8>,
+    expected_muted: bool,
     overridden: bool,
     status: u8,
 }
@@ -255,13 +355,26 @@ impl<E: DuckVolume> DuckedEndpoint<E> {
         let Some(current) = self.endpoint.level() else {
             return;
         };
-        if (current - self.expected).abs() > 0.0001 {
+        let owned = match (self.expected_step, self.endpoint.remote_step()) {
+            (Some(expected), Ok(Some(current))) => current == expected,
+            (None, Ok(None)) => (current - self.expected).abs() <= 0.0001,
+            _ => false,
+        };
+        if !owned || self.endpoint.muted() != Some(self.expected_muted) {
             // A user or another app changed this endpoint; leave that choice alone.
             self.overridden = true;
             return;
         }
         if (current - target).abs() > 0.0001 && self.endpoint.set_level(target) {
             self.expected = self.endpoint.level().unwrap_or(target);
+            match self.endpoint.remote_step() {
+                Ok(step) => self.expected_step = step,
+                Err(()) => self.overridden = true,
+            }
+            match self.endpoint.muted() {
+                Some(muted) => self.expected_muted = muted,
+                None => self.overridden = true,
+            }
         }
     }
 }
@@ -287,10 +400,21 @@ fn update_duck<E: DuckVolume>(
         let Some(original) = endpoint.level() else {
             return;
         };
+        let Ok(expected_step) = endpoint.remote_step() else {
+            return;
+        };
+        let Some(expected_muted) = endpoint.muted() else {
+            return;
+        };
+        if expected_muted {
+            return;
+        }
         *active = Some(DuckedEndpoint {
             endpoint,
             original,
             expected: original,
+            expected_step,
+            expected_muted,
             overridden: false,
             status,
         });
@@ -304,6 +428,18 @@ fn update_duck<E: DuckVolume>(
 fn restore_duck<E: DuckVolume>(active: &mut Option<DuckedEndpoint<E>>) {
     if let Some(mut duck) = active.take() {
         duck.set_if_owned(duck.original);
+    }
+}
+
+fn override_duck<E: DuckVolume>(
+    active: &mut Option<DuckedEndpoint<E>>,
+    changed_endpoint: Option<&str>,
+) {
+    if let Some(duck) = active {
+        if changed_endpoint == Some(duck.endpoint.id()) {
+            // Retain the conversation until its end event, including repeated starts.
+            duck.overridden = true;
+        }
     }
 }
 
@@ -351,24 +487,34 @@ mod tests {
 
     #[derive(Clone)]
     struct Endpoint {
+        id: &'static str,
         level: Rc<Cell<f32>>,
         readable: Rc<Cell<bool>>,
         writable: Rc<Cell<bool>>,
+        remote_step: Rc<Cell<Result<Option<u8>, ()>>>,
+        muted: Rc<Cell<bool>>,
         writes: Rc<RefCell<Vec<f32>>>,
     }
 
     impl Endpoint {
         fn new(level: f32) -> Self {
             Self {
+                id: "buds",
                 level: Rc::new(Cell::new(level)),
                 readable: Rc::new(Cell::new(true)),
                 writable: Rc::new(Cell::new(true)),
+                remote_step: Rc::new(Cell::new(Ok(None))),
+                muted: Rc::new(Cell::new(false)),
                 writes: Rc::new(RefCell::new(Vec::new())),
             }
         }
     }
 
     impl DuckVolume for Endpoint {
+        fn id(&self) -> &str {
+            self.id
+        }
+
         fn level(&self) -> Option<f32> {
             self.readable.get().then(|| self.level.get())
         }
@@ -378,9 +524,97 @@ mod tests {
                 return false;
             }
             self.level.set(level);
+            if self.remote_step.get().is_ok_and(|step| step.is_some()) {
+                self.remote_step
+                    .set(Ok(Some((level * 127.0).round() as u8)));
+                self.muted.set(level == 0.0);
+            }
             self.writes.borrow_mut().push(level);
             true
         }
+
+        fn remote_step(&self) -> Result<Option<u8>, ()> {
+            self.remote_step.get()
+        }
+
+        fn muted(&self) -> Option<bool> {
+            self.readable.get().then(|| self.muted.get())
+        }
+    }
+
+    #[test]
+    fn avrcp_ownership_round_trips_every_wire_step_after_fixed_point_truncation() {
+        let floor = 10.0_f64.powf(-63.5 / 35.0);
+        for step in 0..=127 {
+            let db = (35.0 * (floor + (1.0 - floor) * f64::from(step) / 127.0).log10()) as f32;
+            let fixed = (db * 65536.0) as i32;
+            assert_eq!(avrcp_volume_step(fixed as f32 / 65536.0), Some(step));
+        }
+        assert_eq!(avrcp_volume_step(-100.0), Some(0));
+        assert_eq!(avrcp_volume_step(10.0), Some(127));
+        for db in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(avrcp_volume_step(db), None);
+        }
+    }
+
+    #[test]
+    fn rounded_remote_echo_preserves_duck_but_adjacent_remote_step_cancels_it() {
+        for manual_change in [false, true] {
+            let endpoint = Endpoint::new(0.6);
+            endpoint.remote_step.set(Ok(Some(76)));
+            let mut active = None;
+            update_duck(&mut active, 1, 25, || Some(endpoint.clone()));
+            // The fake uses a linear scalar; production derives the wire step from dB.
+            let step = if manual_change { 33 } else { 32 };
+            endpoint.remote_step.set(Ok(Some(step)));
+            endpoint.level.set(f32::from(step) / 127.0);
+            restore_duck(&mut active);
+            assert_eq!(
+                endpoint.writes.borrow().len(),
+                if manual_change { 1 } else { 2 }
+            );
+            if !manual_change {
+                assert_eq!(endpoint.level.get(), 0.6);
+            }
+        }
+    }
+
+    #[test]
+    fn remote_read_failure_cannot_acquire_or_restore_duck_ownership() {
+        let endpoint = Endpoint::new(0.6);
+        endpoint.remote_step.set(Err(()));
+        let mut active = None;
+        update_duck(&mut active, 1, 25, || Some(endpoint.clone()));
+        assert!(active.is_none());
+        assert!(endpoint.writes.borrow().is_empty());
+        endpoint.remote_step.set(Ok(Some(76)));
+        update_duck(&mut active, 1, 25, || Some(endpoint.clone()));
+        endpoint.remote_step.set(Err(()));
+        update_duck(&mut active, 2, 25, || None);
+        endpoint.remote_step.set(Ok(Some(32)));
+        restore_duck(&mut active);
+        assert_eq!(*endpoint.writes.borrow(), [0.25]);
+    }
+
+    #[test]
+    fn user_mute_cancels_duck_restoration_but_our_zero_limit_can_restore() {
+        for user_mute in [false, true] {
+            let endpoint = Endpoint::new(0.6);
+            endpoint.remote_step.set(Ok(Some(76)));
+            let mut active = None;
+            let limit = if user_mute { 25 } else { 0 };
+            update_duck(&mut active, 1, limit, || Some(endpoint.clone()));
+            endpoint.muted.set(true);
+            restore_duck(&mut active);
+            assert_eq!(endpoint.muted.get(), user_mute);
+            assert_eq!(endpoint.level.get(), if user_mute { 0.25 } else { 0.6 });
+        }
+        let endpoint = Endpoint::new(0.6);
+        endpoint.muted.set(true);
+        let mut active = None;
+        update_duck(&mut active, 1, 25, || Some(endpoint.clone()));
+        assert!(active.is_none());
+        assert!(endpoint.writes.borrow().is_empty());
     }
 
     #[test]
@@ -455,6 +689,80 @@ mod tests {
         update_duck(&mut active, 1, 25, || Some(endpoint.clone()));
         restore_duck(&mut active);
         assert_eq!(endpoint.level.get(), 0.42);
+    }
+
+    #[test]
+    fn explicit_same_level_volume_cancels_restore_and_later_ducking() {
+        let endpoint = Endpoint::new(0.6);
+        let mut active = None;
+        update_duck(&mut active, 1, 25, || Some(endpoint.clone()));
+        override_duck(
+            &mut active,
+            endpoint.set_level(0.25).then_some(endpoint.id()),
+        );
+        for status in [2, 1, 3] {
+            update_duck(&mut active, status, 25, || Some(endpoint.clone()));
+        }
+        active.as_mut().unwrap().apply_limit(10);
+        update_duck(&mut active, 4, 25, || None);
+        assert_eq!(endpoint.level.get(), 0.25);
+        assert_eq!(*endpoint.writes.borrow(), [0.25, 0.25]);
+        assert!(active.is_none());
+    }
+
+    #[test]
+    fn next_conversation_restores_the_manually_chosen_baseline() {
+        let endpoint = Endpoint::new(0.6);
+        let mut active = None;
+        update_duck(&mut active, 1, 25, || Some(endpoint.clone()));
+        override_duck(
+            &mut active,
+            endpoint.set_level(0.25).then_some(endpoint.id()),
+        );
+        restore_duck(&mut active);
+        for status in [1, 2, 4] {
+            update_duck(&mut active, status, 25, || Some(endpoint.clone()));
+        }
+        assert_eq!(endpoint.level.get(), 0.25);
+        assert_eq!(*endpoint.writes.borrow(), [0.25, 0.25, 0.15, 0.25]);
+        assert!(active.is_none());
+    }
+
+    #[test]
+    fn manual_command_on_another_output_keeps_the_original_restore() {
+        let buds = Endpoint::new(0.6);
+        let mut speakers = Endpoint::new(0.8);
+        speakers.id = "speakers";
+        let mut active = None;
+        update_duck(&mut active, 1, 25, || Some(buds.clone()));
+        override_duck(
+            &mut active,
+            speakers.set_level(0.7).then_some(speakers.id()),
+        );
+        for status in [2, 4] {
+            update_duck(&mut active, status, 25, || Some(speakers.clone()));
+        }
+        assert_eq!(*buds.writes.borrow(), [0.25, 0.15, 0.6]);
+        assert_eq!(*speakers.writes.borrow(), [0.7]);
+        assert!(active.is_none());
+    }
+
+    #[test]
+    fn failed_manual_write_keeps_ducking_and_restoration() {
+        let endpoint = Endpoint::new(0.6);
+        let mut active = None;
+        update_duck(&mut active, 1, 25, || Some(endpoint.clone()));
+        endpoint.writable.set(false);
+        override_duck(
+            &mut active,
+            endpoint.set_level(0.7).then_some(endpoint.id()),
+        );
+        endpoint.writable.set(true);
+        for status in [2, 4] {
+            update_duck(&mut active, status, 25, || Some(endpoint.clone()));
+        }
+        assert_eq!(*endpoint.writes.borrow(), [0.25, 0.15, 0.6]);
+        assert!(active.is_none());
     }
 
     #[test]

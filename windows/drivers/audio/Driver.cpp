@@ -91,6 +91,7 @@ static NTSTATUS AudioRelease(WDFDEVICE device, WDFCMRESLIST translated)
     UNREFERENCED_PARAMETER(translated);
     auto context = AudioContext(device);
     RenderPipeSetOnline(device, FALSE);
+    CodecR_ResetVolumeBridge(context->Circuit);
     RenderPipeDeleteControlDevice(device);
     if (!context->Added) return STATUS_SUCCESS;
     NTSTATUS status = AcxDeviceRemoveCircuit(device, context->Circuit);

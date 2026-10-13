@@ -206,6 +206,11 @@ protected:
 
     virtual
     __drv_maxIRQL(DISPATCH_LEVEL)
+    ULONGLONG
+    GetAudioTime(_In_ LARGE_INTEGER Qpc);
+
+    virtual
+    __drv_maxIRQL(DISPATCH_LEVEL)
     ULONG
     GetBytesPerSecond();
 

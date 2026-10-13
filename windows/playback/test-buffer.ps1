@@ -13,7 +13,7 @@ function Trial-Command([int]$target, [int]$restore) {
     if ($target -ge $restore) { throw 'The restore value must exceed the trial target.' }
     @{ cmd = 'set_playback_buffer'; target_ms = $target; restore_ms = $restore } | ConvertTo-Json -Compress
 }
-function Read-State($reader, [int]$timeout = 40000) {
+function Read-State($reader, [int]$timeout = 75000) {
     $deadline = [DateTime]::UtcNow.AddMilliseconds($timeout)
     do {
         $remaining = [int]($deadline - [DateTime]::UtcNow).TotalMilliseconds
@@ -60,11 +60,11 @@ try {
         throw 'Start audio through the updated NTPods driver and wait for an earbud delay report.'
     }
     Write-Output ('Earbud-reported delay: {0:0.0} ms' -f ($state.playback_delay_tenths_ms / 10.0))
-    Write-Output "Requesting $TargetMs ms for 30 seconds, then sending $RestoreMs ms to restore. This does not verify the original setting."
+    Write-Output "Trying $TargetMs ms, then restoring $RestoreMs ms. Playback briefly restarts when the Bluetooth timeout changes."
     $writer.WriteLine($command)
     $sent = $true
     $started = $false
-    $deadline = [DateTime]::UtcNow.AddSeconds(40)
+    $deadline = [DateTime]::UtcNow.AddSeconds(75)
     $lastDelay = $state.playback_delay_tenths_ms
     do {
         $state = Read-State $reader ([int]($deadline - [DateTime]::UtcNow).TotalMilliseconds)

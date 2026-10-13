@@ -109,6 +109,7 @@ impl Encoder {
                 }
             }
         });
+        let consumer = thread::current();
         let reader = thread::spawn(move || {
             let _scheduling = AudioScheduling::acquire();
             let header = read_header(&mut stdout, mode);
@@ -129,7 +130,10 @@ impl Encoder {
                     Ok(frame)
                 })();
                 let success = frame.is_ok();
-                if result.try_send(frame).is_err() || !success {
+                let published = result.try_send(frame).is_ok();
+                // Retain a wake token if output arrives before playback parks.
+                consumer.unpark();
+                if !published || !success {
                     break;
                 }
             }
@@ -287,8 +291,44 @@ mod tests {
         for mode in [Mode::Aac, Mode::Eld] {
             stream_and_drop(mode, false);
             drop_with_blocked_pipes(mode);
+            output_wakes_consumer(mode);
         }
         stream_and_drop(Mode::Eld, true);
+    }
+
+    fn output_wakes_consumer(mode: Mode) {
+        let variable = match mode {
+            Mode::Aac => "NTPODS_AAC_ENCODER_TEST_PATH",
+            Mode::Eld => "NTPODS_ELD_ENCODER_TEST_PATH",
+        };
+        let executable = std::path::PathBuf::from(std::env::var_os(variable).expect(variable));
+        for failed in [false, true] {
+            let mut encoder = Encoder::start_at(&executable, mode, 256000, false).unwrap();
+            thread::park_timeout(Duration::ZERO);
+            let started = Instant::now();
+            if failed {
+                encoder.child.kill().unwrap();
+            } else {
+                // AAC needs its lookahead frame before publishing the first unit.
+                for _ in 0..if mode == Mode::Aac { 2 } else { 1 } {
+                    encoder.write(vec![0; mode.frame_samples() * 4]).unwrap();
+                }
+            }
+            loop {
+                thread::park_timeout(Duration::from_secs(3));
+                assert!(
+                    started.elapsed() < Duration::from_secs(2),
+                    "Encoder output did not wake its consumer"
+                );
+                match encoder.read() {
+                    Ok(None) => continue,
+                    result => {
+                        assert_eq!(result.is_err(), failed);
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     fn drop_with_blocked_pipes(mode: Mode) {

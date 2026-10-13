@@ -33,9 +33,9 @@ selecting that output again; later codec changes keep it.
 
 Choose the codec under **Playback and microphone**. AAC is the default. Each
 codec saves its own Best effort or Manual bitrate. AAC-ELD also offers
-**Variable (experimental)** with a 256 kbps peak limit; it has encoder coverage
-but no recorded hardware pass. Best effort selects the highest supported rate
-and does not adapt to radio conditions.
+**Variable (experimental)** with a 256 kbps peak limit; it passed short Pro 3
+playback checks, including pause/resume and microphone recovery. Best effort
+selects the highest supported rate and does not adapt to radio conditions.
 
 If the pair lacks a supported AAC-ELD profile, NTPods uses AAC with its saved
 bitrate. The menu keeps the preferred codec, and its tooltip shows the one in
@@ -61,7 +61,7 @@ unverified with the native playback driver.
 Available controls depend on model and firmware. Head tracking displays raw
 movement. Custom Transparency passed a Pro 3 adjustment and restoration check
 with the Apple host identity. The captured hearing profile remains read-only;
-hearing edits and AAC-ELD Variable mode still need hardware validation. See the
+hearing edits still need hardware validation. See the
 [model list](https://github.com/Ripthulhu/ntpods/blob/main/docs/WINDOWS-MODEL-SUPPORT.md),
 [playback test guide](https://github.com/Ripthulhu/ntpods/blob/main/windows/playback/TESTING.md)
 and [validation results](https://github.com/Ripthulhu/ntpods/blob/main/docs/WINDOWS-VALIDATION.md).

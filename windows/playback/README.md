@@ -20,8 +20,9 @@ use a dedicated test PC. See [TESTING.md](TESTING.md) for the test procedure.
 Keep NTPods running while playing audio. Enable Start with Windows to start it
 after login. Select the AirPods in Windows Sound as usual, then choose AAC or
 AAC-ELD under **Playback and microphone**. AAC is the initial choice. Stop
-recording before changing codecs or bitrate. Use shared-mode playback; exclusive
-mode bypasses Windows software volume and mute.
+recording before changing codecs or bitrate. Use shared-mode playback for testing.
+Volume and mute use Windows' AVRCP service to control the earbuds' gain; the
+[volume bridge](../../docs/WINDOWS-AVRCP-VOLUME.md) has partial Pro 3 hardware coverage.
 
 If the pair does not advertise a supported AAC-ELD profile, NTPods uses AAC with
 its saved bitrate setting. The codec menu keeps your preference; its tooltip
@@ -81,7 +82,7 @@ of PCM; it clears queued audio when that reader closes.
 
 AAC uses 1024-sample blocks with LATM framing and the 90 kHz RTP clock specified
 by [RFC 6416](https://www.rfc-editor.org/rfc/rfc6416.html). AAC-ELD uses 480-sample
-blocks without SBR, two access units per packet, a 48 kHz sample-count RTP clock,
+blocks without SBR, normally two access units per packet, a 48 kHz sample-count RTP clock,
 and Apple vendor codec `004C/8001`. Its encoder and transport follow the
 [USBPods fork tested on Pro 3](https://github.com/han-um/USBPods-Pico2W-2-way-audio-implement/blob/d18d083bc52de3143d8d922c4abaae865cc0dc28/src/btstack/btstack_avdtp_source.c),
 with bitrate capped at 256 kbps. The fixed RTP source identifier `0x11223344`
@@ -97,6 +98,8 @@ their reported delay. This is separate from measured Windows-to-sound latency.
 An optional [buffer trial](../../docs/WINDOWS-AUDIO-LATENCY.md#earbud-delay-and-buffer-control)
 uses the same native playback path, with an explicit restore target and automatic
 expiry. It does not change normal playback defaults.
+Separate [packet and source-reserve trials](../../docs/WINDOWS-AUDIO-LATENCY.md#packet-and-source-reserve-trials)
+allow one AAC-ELD frame per packet or a 30 ms source reserve for a test session.
 
 Automated checks cover packet validation, cancellation, per-device PCM isolation,
 buffer limits, bitrate settings, and encoder pitch/stereo output. AAC round trips

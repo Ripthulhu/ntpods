@@ -10,6 +10,7 @@ mod scheduling;
 mod selection;
 mod session;
 mod timing;
+mod trial;
 
 use crate::{bt, driver::Driver, Ctx};
 pub use buffer::{set as set_buffer, stop as stop_buffer, Active as BufferActive};
@@ -454,6 +455,14 @@ fn run(
     if stop.load(Ordering::Acquire) {
         return Ok(());
     }
+    let trial = trial::TrialSettings::load()?;
+    if trial.eld_aus != 2 || trial.reserve != Duration::from_millis(50) {
+        crate::log(&format!(
+            "playback diagnostic: ELD AUs per packet={}, source reserve={} ms",
+            trial.eld_aus,
+            trial.reserve.as_millis()
+        ));
+    }
     session::driver_ready(&driver, address)?;
     render.set_ready(false)?;
     let session_ctx = ctx.clone();
@@ -462,6 +471,7 @@ fn run(
         driver,
         address,
         mode,
+        trial.eld_aus,
         bitrates,
         stop.clone(),
         move || {
@@ -474,7 +484,7 @@ fn run(
         },
         |mode| report_codec(mode, None),
     )?;
-    session.set_buffer(buffer::Stream::new(ctx, address, intent, buffer_driver));
+    let mut buffer = buffer::Stream::new(ctx, address, intent, buffer_driver);
     let mode = session.mode;
     session.suspend()?;
     let mut encoder = AudioEncoder::new(mode, session.bitrate, session.variable)?;
@@ -499,12 +509,14 @@ fn run(
     let mut timing = timing::Timing::default();
     let result = stream(
         &mut session,
+        &mut buffer,
         render,
         &mut encoder,
         &stop,
         intent,
         &requests,
         mode,
+        trial.reserve,
         &mut timing,
         &report_delay,
         || {
@@ -524,11 +536,12 @@ fn run(
         },
     );
     stopping();
+    let restored = buffer.cleanup(render);
     let muted = render.set_ready(false);
     if let Some(summary) = timing.summary() {
         crate::log(&format!("playback timing {}: {summary}", mode.name()));
     }
-    result.and(muted)
+    result.and(restored).and(muted)
 }
 
 #[link(name = "winmm")]
@@ -555,6 +568,7 @@ impl Drop for TimerResolution {
 
 fn prime_output(
     samples: usize,
+    reserve: Duration,
     begin: impl FnOnce() -> io::Result<()>,
     mut read: impl FnMut() -> io::Result<Vec<u8>>,
 ) -> io::Result<FrameClock> {
@@ -562,27 +576,49 @@ fn prime_output(
     // Negotiation can outlast the ring's 100 ms. Discard that audio before priming.
     for _ in 0..16 {
         if read()?.is_empty() {
-            return FrameClock::new(samples, Instant::now() + Duration::from_millis(50));
+            return FrameClock::new(samples, Instant::now() + reserve);
         }
     }
     Err(io::Error::other("Could not clear queued playback"))
 }
 
+fn primed_status(
+    render: &Render,
+    clock: &mut FrameClock,
+    driver_clock: bool,
+    reserve: Duration,
+) -> io::Result<[u32; 4]> {
+    let status = render.status()?;
+    if driver_clock {
+        let snapshot = render.clock()?;
+        if snapshot.generation != status[3] {
+            return Err(io::Error::new(
+                io::ErrorKind::ConnectionReset,
+                "Playback producer changed while priming",
+            ));
+        }
+        clock.use_driver_clock(snapshot.virtual_hns, reserve);
+    }
+    Ok(status)
+}
+
 fn stream(
     session: &mut Session,
+    buffer: &mut buffer::Stream,
     render: &Render,
     encoder: &mut AudioEncoder,
     stop: &AtomicBool,
     intent: u64,
     requests: &Receiver<Reset>,
     mode: Mode,
+    reserve: Duration,
     timing: &mut timing::Timing,
     report_delay: impl Fn(bool, Option<u16>),
     mut disconnected: impl FnMut() -> bool,
 ) -> io::Result<()> {
     let _timer = TimerResolution::acquire()?;
     let _scheduling = scheduling::AudioScheduling::acquire();
-    let mut packets = MediaPackets::new(encoder)?;
+    let mut packets = MediaPackets::new(encoder, session.eld_aus)?;
     let samples = mode.frame_samples();
     let mut pcm = FrameAssembler::new(samples)?;
     let mut active = false;
@@ -592,12 +628,19 @@ fn stream(
     let mut dropped = initial[2];
     let mut generation = initial[3];
     let mut outstanding = 0usize;
+    let driver_clock = match render.clock() {
+        Ok(_) => true,
+        Err(error) if matches!(error.raw_os_error(), Some(1 | 50)) => false,
+        Err(error) => return Err(error),
+    };
     while !stop.load(Ordering::Acquire) && bt::audio_request_is_current(intent) && !disconnected() {
         if let Ok(Reset(reply)) = requests.try_recv() {
-            let result = (|| {
+            let result = buffer.cleanup_before(render, || {
+                session.restore_media_timeout()?;
                 session.suspend()?;
                 clock = prime_output(
                     samples,
+                    reserve,
                     || {
                         *encoder = AudioEncoder::new(mode, session.bitrate, session.variable)?;
                         if active {
@@ -610,12 +653,15 @@ fn stream(
                 packets.clear();
                 pcm.reset();
                 outstanding = 0;
-                let status = render.status()?;
+                let status = primed_status(render, &mut clock, driver_clock, reserve)?;
                 dropped = status[2];
                 generation = status[3];
                 Ok(())
-            })();
+            });
             let failed = result.is_err();
+            if !failed && active {
+                buffer.started();
+            }
             let _ = reply.send(result);
             if failed {
                 return Err(io::Error::other("Playback stream restart failed"));
@@ -629,7 +675,10 @@ fn stream(
         }
         let status = render.status()?;
         if active && (status[0] == 0 || status[3] != generation) {
-            session.suspend()?;
+            buffer.cleanup_before(render, || {
+                session.restore_media_timeout()?;
+                session.suspend()
+            })?;
             active = false;
             packets.clear();
             pcm.reset();
@@ -638,25 +687,63 @@ fn stream(
         if status[0] != 0 && !active {
             clock = prime_output(
                 samples,
+                reserve,
                 || {
                     *encoder = AudioEncoder::new(mode, session.bitrate, session.variable)?;
                     session.start()
                 },
                 || render.read(MAX_READ_BYTES),
             )?;
-            let primed = render.status()?;
+            let primed = primed_status(render, &mut clock, driver_clock, reserve)?;
             dropped = primed[2];
             generation = primed[3];
+            buffer.started();
             active = true;
         } else if active && status[2] != dropped {
             return Err(io::Error::other(
                 "Playback reader fell behind the Windows audio clock",
             ));
         }
-        if active && now >= clock.deadline() {
-            if now.duration_since(clock.deadline()) > Duration::from_millis(100)
-                || outstanding * samples >= 4800
-            {
+        if buffer.poll(session, render)? {
+            if !active {
+                return Err(io::Error::new(
+                    io::ErrorKind::ConnectionReset,
+                    "Playback stopped during the buffer trial",
+                ));
+            }
+            clock = prime_output(
+                samples,
+                reserve,
+                || {
+                    *encoder = AudioEncoder::new(mode, session.bitrate, session.variable)?;
+                    session.start()
+                },
+                || render.read(MAX_READ_BYTES),
+            )?;
+            packets.clear();
+            pcm.reset();
+            outstanding = 0;
+            let primed = primed_status(render, &mut clock, driver_clock, reserve)?;
+            dropped = primed[2];
+            generation = primed[3];
+            buffer.started();
+            continue;
+        }
+        let host_time = if active && driver_clock {
+            let snapshot = render.clock()?;
+            if snapshot.generation != generation {
+                continue;
+            }
+            Some(snapshot.virtual_hns)
+        } else {
+            None
+        };
+        if let Some(lateness) = if active {
+            clock.lateness(Instant::now(), host_time)?
+        } else {
+            None
+        } {
+            if lateness > Duration::from_millis(100) || outstanding * samples >= 4800 {
                 return Err(io::Error::other(
                     "Playback processing missed its audio deadline",
                 ));
@@ -674,11 +761,7 @@ fn stream(
             }
             if let Some(frame) = frame {
                 encoder.write(frame)?;
-                timing.frame(
-                    samples,
-                    status[1],
-                    Instant::now().saturating_duration_since(clock.deadline()),
-                );
+                timing.frame(samples, status[1], lateness);
                 outstanding += 1;
                 clock.advance();
             }
@@ -695,7 +778,7 @@ fn stream(
                 sent?;
             }
         }
-        thread::sleep(Duration::from_millis(1));
+        thread::park_timeout(Duration::from_millis(1));
     }
     Ok(())
 }
@@ -720,26 +803,37 @@ mod tests {
     }
 
     #[test]
-    fn slow_start_discards_backlog_before_priming() {
+    fn start_and_restart_discard_backlog_before_priming() {
         use std::cell::RefCell;
         use std::collections::VecDeque;
-        let queue = RefCell::new(VecDeque::new());
-        let before = Instant::now();
-        let clock = prime_output(
-            1024,
-            || {
-                // A 150 ms START response leaves the newest 100 ms in the driver ring.
-                queue.borrow_mut().extend(vec![vec![7; MAX_READ_BYTES]; 10]);
-                Ok(())
-            },
-            || Ok(queue.borrow_mut().pop_front().unwrap_or_default()),
-        )
-        .unwrap();
-        assert!(queue.borrow().is_empty());
-        assert!(clock.deadline() >= before + Duration::from_millis(50));
-        assert!(prime_output(480, || Ok(()), || Ok(vec![1; MAX_READ_BYTES])).is_err());
+        for samples in [480, 1024] {
+            for reserve in [Duration::from_millis(30), Duration::from_millis(50)] {
+                let queue = RefCell::new(VecDeque::new());
+                for _ in 0..2 {
+                    let before = Instant::now();
+                    let clock = prime_output(
+                        samples,
+                        reserve,
+                        || {
+                            // A 150 ms START response leaves the newest 100 ms in the driver ring.
+                            queue.borrow_mut().extend(vec![vec![7; MAX_READ_BYTES]; 10]);
+                            Ok(())
+                        },
+                        || Ok(queue.borrow_mut().pop_front().unwrap_or_default()),
+                    )
+                    .unwrap();
+                    let after = Instant::now();
+                    assert!(queue.borrow().is_empty());
+                    assert!(clock.deadline() >= before + reserve);
+                    assert!(clock.deadline() <= after + reserve);
+                }
+            }
+        }
+        let reserve = Duration::from_millis(50);
+        assert!(prime_output(480, reserve, || Ok(()), || Ok(vec![1; MAX_READ_BYTES])).is_err());
         let error = prime_output(
             480,
+            reserve,
             || Err(io::Error::other("START rejected")),
             || {
                 panic!("failed START must not consume PCM");

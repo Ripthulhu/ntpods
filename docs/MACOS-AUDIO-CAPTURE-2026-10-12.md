@@ -133,10 +133,64 @@ NTPods' [temporary buffer trial](WINDOWS-AUDIO-LATENCY.md#earbud-delay-and-buffe
 therefore requires an explicit restoration value. A completed send confirms
 neither application by the earbuds nor return to their original setting.
 
-Static analysis also finds delivery-speed factors 1.0, 1.1 and 0.9; it does not
-establish a complete transition sequence for NTPods.
-Controller flush timing is separate: function `0x10044F910` normally selects
-a 200 ms flush timeout for target 150, and 60 ms for target 30.
+### Coordinated audio adjustment
+
+The dynamic-change path at `0x100453A74` stores the target, sends `0x0B` and
+starts a 2,000 ms DelayReport timeout. A report received during the transition
+cancels that timer, updates flush settings and compares the reported delay,
+converted to whole milliseconds, with the target (`0x10044FD24`).
+
+The audio-layer message at `0x100674F8C` carries
+`kBTAudioMsgPropertySamplingSpeedParams` with two fields:
+
+| Field | Value |
+| --- | --- |
+| `kBTAudioMsgPropertySamplingIntervalMultiplier` | 1.1 when the report exceeds the target; 0.9 when it is below |
+| `kBTAudioMsgPropertyLatencyChangeMsec` | Absolute difference, minus 10 ms when the difference exceeds 10 ms and the target is not 150 |
+
+Static inspection of this guest's `BTAudioHALPlugin` establishes the consumer.
+The universal file is 1,741,872 bytes, SHA-256
+`769658bd9eae5e84d44435b005beb6ecc00eddeaea1621eb3c3c7122252d6571`;
+HAL addresses below are unslid addresses in its x86-64 slice. Its
+`A2DPAudioDevice` setter at `0x3151E` stores the multiplier and adjustment,
+resets progress timing and activates a nonzero adjustment. A separate
+`kBTAudioMsgPropertySamplingSpeed` capability boolean gates the setter.
+
+`GetZeroTimeStamp` (`0x51739` -> virtual slot `+0xB0` -> `0x39A2`) multiplies
+the host-time interval for a fixed sample-frame quantum by the requested value.
+Thus 1.1 slows the reported device clock to 1/1.1 of nominal; 0.9 speeds it to
+1/0.9. It preserves the existing timestamp anchor and sample-time continuity.
+The setter does not directly schedule packet writes or change a PCM resampler.
+[Apple describes the sample-time/host-time pair as controlling HAL I/O timing](https://developer.apple.com/videos/play/wwdc2021/10190/).
+This supports a change to the producer's callback cadence through HAL; the
+specific resampling behavior inside Core Audio was not reconstructed.
+
+The write path at `0x35BC`–`0x35D9` passes its input frame count and
+`mach_absolute_time()` to progress function `0x3292C`. The first write starts
+the epoch. Later writes accumulate frames and compare them with nominal
+sample rate times elapsed host time. Slowdown finishes when nominal frames
+minus submitted frames reaches `adjustment_ms * sample_rate / 1000`; speedup
+uses the reverse subtraction. A 10,000 ms limit also forces completion, checked
+during writes. Ideal durations are about 11 times the adjustment for 1.1 and
+9 times for 0.9; the measured frame difference is the actual stop criterion.
+
+Completion clears the active state and sends XPC message 14 with status true
+(`0x32D83` -> `0x317EC` -> `0xEA16`). This also occurs on the time limit, so it
+does not prove that the desired drift was achieved. The daemon's completion
+handler at `0x100453466` then restores multiplier 1.0 with zero adjustment and
+clears its transition flag. The two-second timer only bounds the earlier report
+wait. No live transition was captured in the capability-limited VM.
+
+Controller flush timing is separate. Function `0x10044F910` selects 60 ms for
+target 30, the matching timeout for targets 60/80/100/120/140, normally 200 ms
+for target 150, and 300 ms for target 300. Platform checks can skip the controller
+write. No supported Windows runtime equivalent was established.
+
+Sending `0x0B` alone therefore does not reproduce this host transition. Slowing
+NTPods' packet loop without coordinating its Windows PCM producer could move
+buffered audio into the source queue or overflow it, rather than reduce total
+latency. The command-triggered report may describe the delay before adjustment;
+it is not confirmation that the requested target has been reached.
 
 ## Intel controller and microphone eligibility
 

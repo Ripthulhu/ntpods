@@ -16,14 +16,40 @@ AirPods output. They do not depend on Alternative A2DP.
 | AAC, 256 kbps | Clean left/right playback | Clean left/right playback |
 | AAC-ELD, 128, 192 and 256 kbps | Clean left/right playback | Clean left/right playback |
 | Continuous AAC-ELD, 256 kbps | 70 seconds without audible dropouts | 70 seconds without audible dropouts |
-| Volume, mute and codec changes | Worked; output identity and Windows default roles retained | Codec and bitrate playback checks passed |
+| Windows volume, mute and codec changes | Software controls worked; output identity and Windows default roles retained | Codec and bitrate playback checks passed |
 | Stereo during a 20-second microphone capture and after stopping | Both codecs passed listener checks | High-quality microphone disabled for this model |
-| AAC-ELD Variable mode | Encoder checks only; no hardware result | Untested |
+| AAC-ELD Variable mode | Clean stereo and pause/resume (0.2.32 preview and installed 0.2.33, 256 kbps peak) | Untested |
+
+The 0.2.28 Pro 3 check exposed missing volume synchronization: stem gestures
+changed the earbuds' gain and opened the Windows volume indicator, but its
+value stayed unchanged. Earlier Windows volume checks did not cover this
+direction. With 0.2.29 after reboot, stem gestures updated both the Windows
+indicator and backend volume reports. Windows volume changes audibly adjusted
+AAC music, and mute/unmute silenced it and restored the prior level. Switching
+to AAC-ELD at 256 kbps preserved the endpoint, all three default render roles,
+the volume setting and perceived loudness in both ears. Idle, reconnect and
+other models still need volume checks.
+
+With the 0.2.30 app and unchanged 0.2.29 native playback drivers, Pro 3 AAC
+playback at 256 kbps passed two Conversation Awareness listening checks: speech
+lowered the music and silence restored it; a volume chosen with NTPods' slider
+during speech remained after speaking stopped. Commands targeting another output
+and failed volume writes have regression-test coverage only. Other models remain
+untested for this behavior.
 
 On Pro 3, first microphone PCM arrived after 363 ms with AAC and 338 ms with
 AAC-ELD. Recovery after stopping took 1.76 and 1.84 seconds respectively, with
 zero malformed microphone packets. These short checks do not establish long-run
 speech quality, clock drift or repeated interruption recovery.
+
+With the 0.2.31 app and unchanged 0.2.29 native drivers, Pro 3 music at 256 kbps
+stayed clean with AAC and AAC-ELD, including pause/resume and the codec change.
+AAC-ELD also passed a 20-second high-quality microphone check: first PCM arrived
+after 320 ms, capture had one initial discontinuity and none afterward, and
+stop recovery finished in 1.79 seconds. The listener confirmed clean stereo
+during capture and after recovery, with the selected volume preserved. This
+checks encoder-wake compatibility, not a latency reduction. AAC with the mic,
+long sessions and other models were not retested on this build.
 
 Release 0.2.18 (`55601cb`) was also checked on a laptop running Windows 11
 Enterprise build 26200, Intel Bluetooth driver 23.60.0.1 and Pro 3 A3064 firmware
@@ -115,13 +141,91 @@ comparisons were contaminated by other audio and excluded. This incomplete A/B
 test does not justify lowering the current reserve. Volume and startup variation
 also prevent treating small differences between sessions as a code improvement.
 
-Silent checks after installing 0.2.18 found a 240-frame (5 ms) microphone period
-and a 240-frame exclusive playback buffer. Shared playback still offered only
-480 frames, including in RAW mode and after endpoint recreation. Disabling the
-pair's HFP service did not change that result. The 5 ms checks initialized and
-released clients without starting audio; stability and acoustic latency at that
-period remain untested. See [audio latency](WINDOWS-AUDIO-LATENCY.md) for the
-implementation and measurement procedure.
+With the 0.2.31 app and installed 0.2.29 native drivers, the shared render
+endpoint offered a 240-frame minimum and 480-frame default at 48 kHz. Both
+default and RAW mode accepted 240-frame (5 ms) initialization with the mix format
+and PCM16. The active engine period became 240 frames while each client existed
+and returned to 480 after release. Those checks did not start audio. Earlier
+0.2.18 checks had exposed only 480 frames for shared render; the intervening
+cause was not isolated. The earlier capture and exclusive render checks also
+accepted 240 frames. A subsequent 30-second silent shared client held the
+engine at 240 frames while AAC-ELD played at 256 kbps; the listener confirmed
+clean stereo. Start/end and an independent query during the hold reported
+240 frames. Immediately after release it remained at 240, then a later query
+reported 480. Volume and output selection stayed unchanged. Loaded-system,
+long-session and acoustic latency checks remain open. See
+[audio latency](WINDOWS-AUDIO-LATENCY.md) for the reproducible shared-mode probe.
+
+The 0.2.32 preview with unchanged 0.2.29 native drivers passed a short listening
+check on Pro 3 A3064 / 9A348 and AX200 using AAC-ELD Variable mode at 256 kbps
+peak, one frame per packet and a 30 ms source reserve together. Music stayed
+clean in both ears through two pause/resume cycles, a 20-second high-quality
+microphone capture and recovery after stopping. First microphone PCM arrived
+after 368 ms, capture had one startup discontinuity and none afterward, and
+stop recovery took 1.82 seconds. The installed 0.2.33 app, with unchanged drivers
+and the same trial settings, also passed music and two pause/resume cycles.
+Volume stayed unchanged. Normal defaults remain two frames per packet and a
+50 ms reserve. This checks compatibility; acoustic
+latency, sustained playback and other models remain untested for this combination.
+
+### Earbud buffer control
+
+With NTPods 0.2.26, Pro 3 A3064 / 9A348 and AX200, 30-second native-playback
+trials at 256 kbps kept music clean in both ears during the request and restore:
+
+| Codec | Requested target | Supplied restore target | Report after request | Report during restore |
+| --- | --- | --- | --- | --- |
+| AAC | 100 ms | 150 ms | 149 ms | 144 ms |
+| AAC-ELD | 60 ms | 150 ms | 150 ms | 142 ms |
+
+Each report arrived within the command's settling interval. These values do
+not establish that the earbuds reached either target. The restore send completed
+without a backend error, but no remote buffer-setting readback exists. AAC-ELD
+also reported zero before its media stream started; that is not measured latency.
+The trials kept the 50 ms source reserve and 200 ms media flush timeout unchanged.
+
+A continuous 60-second AAC-ELD recording compared the same stream before,
+during and after a 60 ms request, with 150 ms supplied for restoration:
+
+| Phase | Median acoustic delay | Accepted markers |
+| --- | --- | --- |
+| Before request | 253.4 ms | 3 |
+| 60 ms requested | 252.5 ms | 8 |
+| After 150 ms restore send | 245.9 ms | 5 |
+
+The Roland Rubix 24 captured one bud beside the wired microphone at 100% output.
+A centered 700–6500 Hz FIR filter attenuated low-frequency noise without adding
+delay. Matching required the full five-chirp identity; nine weak markers were
+rejected out of 30, including four consecutive late-trial markers. Phase
+boundaries were trimmed by two seconds. Neither stream
+reported timestamp errors or discontinuities after startup. Packet timestamps
+still disagreed with sample-count extrapolation by up to about 4 ms; this is not
+a calibrated measurement-error bound. Wired-input delay remains uncalibrated.
+
+The 0.9 ms trial difference does not demonstrate an improvement. Delay was
+already declining before restoration; rejected markers and timestamp variation
+limit comparison of the phase medians. This single run cannot exclude a small
+or delayed effect. Exact remote buffer restoration also
+remains unverified. Keep the normal defaults. See the
+[coordinated macOS transition](MACOS-AUDIO-CAPTURE-2026-10-12.md#coordinated-audio-adjustment)
+for the additional host audio adjustment absent from this trial.
+
+With 0.2.28 on the same Pro 3/AX200 setup, an AAC 256 kbps trial requested
+120 ms with a 150 ms restore target. Music remained clean in both ears. A fresh
+streaming delay report fell from 162 to 129 ms after a finite 32 ms host-clock
+adjustment. The normal clock and 200 ms media flush timeout were restored,
+and playback restarted successfully. No fresh streaming report verified the
+final receiver buffer; this was a listening check, not an acoustic latency
+measurement.
+
+With 0.2.29, the matching 30-second AAC-ELD trial at 256 kbps kept music clean
+in both ears with steady loudness, apart from the expected brief pauses at
+stream restart. The stream reported 149 ms after the 120 ms request; a finite
+19 ms host-clock adjustment followed. A 129 ms report arrived immediately after
+the 150 ms restore request, before its 21 ms reverse clock adjustment. The normal
+clock and 200 ms media flush timeout were restored, and playback resumed without
+reported errors. Neither report verifies a requested buffer target or measures
+acoustic latency; exact remote-buffer restoration remains unverified.
 
 ## Software and interface checks
 
@@ -130,7 +234,7 @@ in [BUILD-WINDOWS.md](BUILD-WINDOWS.md) and [windows/tests](../windows/tests/REA
 They cover protocol validation, IPC, microphone lifecycle, PCM bounds, encoder
 output, driver builds and installer rollback logic. Encoder round trips check
 pitch and channel separation. AAC-ELD Variable mode has offline tone, silence,
-noise and transient coverage; it has not passed a listening test on AirPods.
+noise and transient coverage, plus the short Pro 3 listening check above.
 
 Native UI checks have covered light/dark themes, narrow and wide windows, device
 changes, cached/missing batteries, submenu motion, keyboard focus and localized
@@ -160,8 +264,8 @@ identifiers out of the repository.
   PC. Verify restoration for both connected and temporarily absent pairs.
 - Check access from another ordinary Windows account, then run Driver Verifier
   against the three NTPods drivers during I/O, removal and suspend/resume.
-- Test unverified models, AAC-only fallback, AAC-ELD Variable mode, Custom
-  Transparency, hearing controls and sensor coexistence separately.
+- Test unverified models, AAC-only fallback, sustained AAC-ELD Variable playback,
+  Custom Transparency, hearing controls and sensor coexistence separately.
 
 ## Production release requirements
 

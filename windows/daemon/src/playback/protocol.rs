@@ -17,7 +17,13 @@ pub const APPLE_ELD: [u8; 14] = [0x4c, 0, 0, 0, 1, 0x80, 0, 0x80, 0, 0x84, 0, 0x
 pub const FRAME_SAMPLES: usize = 480;
 pub const PCM_BYTES: usize = FRAME_SAMPLES * 4;
 pub const MAX_AU: usize = 321;
-pub const AUS_PER_PACKET: usize = 2;
+
+pub fn validate_eld_aus(count: usize) -> io::Result<()> {
+    if !matches!(count, 1 | 2) {
+        return Err(invalid("AAC-ELD packets must contain one or two frames"));
+    }
+    Ok(())
+}
 
 pub fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
@@ -340,10 +346,9 @@ impl Packetizer {
         timestamp48k: u32,
         mtu: usize,
     ) -> io::Result<Vec<u8>> {
-        if units.len() != AUS_PER_PACKET
-            || units.iter().any(|au| au.is_empty() || au.len() > MAX_AU)
-        {
-            return Err(invalid("Expected two bounded AAC-ELD frames"));
+        validate_eld_aus(units.len())?;
+        if units.iter().any(|au| au.is_empty() || au.len() > MAX_AU) {
+            return Err(invalid("Expected bounded AAC-ELD frames"));
         }
         let size = 12 + units.iter().map(|au| 4 + au.len()).sum::<usize>();
         if size > mtu {
@@ -662,22 +667,36 @@ mod tests {
 
     #[test]
     fn packet_framing_wrap_and_mtu_are_checked_before_state_changes() {
-        let units = vec![vec![0xaa; MAX_AU]; AUS_PER_PACKET];
-        let mut writer = Packetizer {
-            sequence: u16::MAX,
-            au_sequence: 4095,
-        };
-        assert!(writer.packet(&units[..1], 1234, 1023).is_err());
-        assert!(writer.packet(&vec![vec![0; 1]; 3], 1234, 1023).is_err());
-        assert!(writer.packet(&units, 1234, 661).is_err());
-        let packet = writer.packet(&units, 1234, 662).unwrap();
-        assert_eq!(
-            &packet[..12],
-            &[0x80, 0x60, 0xff, 0xff, 0, 0, 4, 0xd2, 0x11, 0x22, 0x33, 0x44]
-        );
-        assert_eq!(&packet[12..16], &[0xbf, 0xff, 0x11, 0x41]);
-        assert_eq!(&packet[337..341], &[0xb0, 0, 0x11, 0x41]);
-        assert_eq!(writer.sequence, 0);
-        assert_eq!(writer.au_sequence, 1);
+        for count in [1, 2] {
+            let units = vec![vec![0xaa; MAX_AU]; count];
+            let mut writer = Packetizer {
+                sequence: u16::MAX,
+                au_sequence: 4095,
+            };
+            assert!(writer.packet(&[], 1234, 1023).is_err());
+            assert!(writer.packet(&vec![vec![0; 1]; 3], 1234, 1023).is_err());
+            assert!(writer.packet(&[vec![]], 1234, 1023).is_err());
+            assert!(writer.packet(&[vec![0; MAX_AU + 1]], 1234, 1023).is_err());
+            let mtu = if count == 1 { 337 } else { 662 };
+            assert!(writer.packet(&units, 1234, mtu - 1).is_err());
+            let packet = writer.packet(&units, 1234, mtu).unwrap();
+            let mut expected = vec![
+                0x80, 0x60, 0xff, 0xff, 0, 0, 4, 0xd2, 0x11, 0x22, 0x33, 0x44, 0xbf, 0xff, 0x11,
+                0x41,
+            ];
+            expected.extend_from_slice(&[0xaa; MAX_AU]);
+            if count == 2 {
+                expected.extend_from_slice(&[0xb0, 0, 0x11, 0x41]);
+                expected.extend_from_slice(&[0xaa; MAX_AU]);
+            }
+            assert_eq!(packet, expected);
+            assert_eq!(writer.sequence, 0);
+            assert_eq!(writer.au_sequence, count as u16 - 1);
+            writer.reset_audio();
+            let reset = writer.packet(&units, 0, mtu).unwrap();
+            assert_eq!(&reset[2..8], &[0; 6]);
+            assert_eq!(&reset[12..14], &[0xb0, 1]);
+        }
+        assert!(validate_eld_aus(usize::MAX).is_err());
     }
 }

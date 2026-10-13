@@ -2,8 +2,6 @@
 
 #if NTPODS_EXPERIMENTAL_PLAYBACK
 
-#define LP_PLAYBACK_MEDIA_FLUSH_MS 200
-
 static EVT_WDF_WORKITEM LpPlaybackDisconnected;
 static VOID LpPlaybackIndication(PVOID context, INDICATION_CODE indication,
                                  PINDICATION_PARAMETERS parameters);
@@ -29,6 +27,7 @@ static NTSTATUS LpPlaybackCloseChannel(PDEVICE_CONTEXT ctx, ULONG index)
     channel->Handle = NULL;
     channel->Address = 0;
     channel->TransmitMtu = channel->ReceiveMtu = 0;
+    channel->FlushTimeoutMs = 0;
     WdfSpinLockRelease(ctx->Lock);
     if (handle && ctx->HasBthInterface) {
         RtlZeroMemory(&brb, sizeof(brb));
@@ -95,12 +94,14 @@ static VOID LpPlaybackIndication(PVOID context, INDICATION_CODE indication,
 }
 
 static NTSTATUS LpPlaybackOpen(PDEVICE_CONTEXT ctx, const LP_PLAYBACK_OPEN_INPUT* input,
-                                LP_PLAYBACK_OPEN_OUTPUT* output, WDFREQUEST request)
+                                USHORT flushTimeoutMs, LP_PLAYBACK_OPEN_OUTPUT* output,
+                                WDFREQUEST request, BOOLEAN* created)
 {
     LP_PLAYBACK_CHANNEL* channel = &ctx->Playback.Channels[input->Channel];
     struct _BRB_L2CA_OPEN_CHANNEL* brb;
     BOOLEAN connected, signaling, closed;
     NTSTATUS status;
+    *created = FALSE;
     if (!LpPlaybackValidPeer(input->Address, ctx->DeviceAddress, ctx->Playback.Paired))
         return STATUS_INVALID_PARAMETER;
     if (InterlockedCompareExchange(&ctx->Playback.WorkQueued, 0, 0))
@@ -108,7 +109,10 @@ static NTSTATUS LpPlaybackOpen(PDEVICE_CONTEXT ctx, const LP_PLAYBACK_OPEN_INPUT
     WdfSpinLockAcquire(ctx->Lock);
     connected = channel->Connected;
     signaling = ctx->Playback.Channels[LP_PLAYBACK_SIGNALING].Connected;
+    status = connected && channel->FlushTimeoutMs != flushTimeoutMs
+        ? STATUS_DEVICE_BUSY : STATUS_SUCCESS;
     WdfSpinLockRelease(ctx->Lock);
+    if (!NT_SUCCESS(status)) return status;
     if (input->Channel == LP_PLAYBACK_MEDIA && !signaling) return STATUS_DEVICE_NOT_CONNECTED;
     if (!connected) {
         status = input->Channel == LP_PLAYBACK_SIGNALING
@@ -124,8 +128,7 @@ static NTSTATUS LpPlaybackOpen(PDEVICE_CONTEXT ctx, const LP_PLAYBACK_OPEN_INPUT
         // Flush is negotiated per channel; BRB writes have no per-packet flush flag.
         brb->ConfigOut.Flags = CFG_FLUSHTO;
         brb->ConfigOut.FlushTO.Min = brb->ConfigOut.FlushTO.Preferred =
-            brb->ConfigOut.FlushTO.Max = input->Channel == LP_PLAYBACK_MEDIA
-                ? LP_PLAYBACK_MEDIA_FLUSH_MS : L2CAP_INFINITE_FLUSHTO;
+            brb->ConfigOut.FlushTO.Max = flushTimeoutMs;
         brb->ConfigIn.Flags = CFG_MTU;
         brb->ConfigIn.Mtu.Min = 48;
         brb->ConfigIn.Mtu.Preferred = LP_PLAYBACK_MAX_PACKET;
@@ -156,15 +159,17 @@ static NTSTATUS LpPlaybackOpen(PDEVICE_CONTEXT ctx, const LP_PLAYBACK_OPEN_INPUT
         channel->Connected = NT_SUCCESS(status);
         channel->TransmitMtu = (USHORT)min(brb->OutResults.Params.Mtu, LP_PLAYBACK_MAX_PACKET);
         channel->ReceiveMtu = brb->InResults.Params.Mtu;
+        channel->FlushTimeoutMs = brb->OutResults.Params.FlushTO;
         WdfSpinLockRelease(ctx->Lock);
         ctx->BthInterface.BthFreeBrb((PBRB)brb);
         if (!NT_SUCCESS(status)) {
             LpPlaybackCloseChannel(ctx, input->Channel);
             return status;
         }
+        *created = TRUE;
     }
     WdfSpinLockAcquire(ctx->Lock);
-    output->Version = LP_PLAYBACK_VERSION;
+    output->Version = input->Version;
     output->Channel = input->Channel;
     output->TransmitMtu = channel->TransmitMtu;
     output->ReceiveMtu = channel->ReceiveMtu;
@@ -236,6 +241,8 @@ VOID LpEvtPlaybackIoctl(WDFQUEUE queue, WDFREQUEST request, size_t outputLength,
     PVOID input = NULL, output = NULL;
     size_t size;
     ULONG count = 0;
+    BOOLEAN mediaOnlyOpen = FALSE;
+    BOOLEAN channelCreated = FALSE;
     BOOLEAN control = code == IOCTL_LP_PLAYBACK_OPEN || code == IOCTL_LP_PLAYBACK_CLOSE;
     if (control) WdfWaitLockAcquire(ctx->OperationLock, NULL);
     if (InterlockedCompareExchange(&ctx->Stopping, 0, 0) ||
@@ -255,18 +262,40 @@ VOID LpEvtPlaybackIoctl(WDFQUEUE queue, WDFREQUEST request, size_t outputLength,
     status = STATUS_INVALID_PARAMETER;
     switch (code) {
     case IOCTL_LP_PLAYBACK_OPEN: {
-        LP_PLAYBACK_OPEN_INPUT copy;
-        if (inputLength != sizeof(copy) || outputLength != sizeof(LP_PLAYBACK_OPEN_OUTPUT)) break;
-        RtlCopyMemory(&copy, input, sizeof(copy));
-        if (!LpPlaybackValidHeader(copy.Version, copy.Channel)) break;
-        status = LpPlaybackOpen(ctx, &copy, (LP_PLAYBACK_OPEN_OUTPUT*)output, request);
+        LP_PLAYBACK_OPEN_INPUT_V2 copy;
+        if ((inputLength != sizeof(copy.Base) && inputLength != sizeof(copy)) ||
+            outputLength != sizeof(LP_PLAYBACK_OPEN_OUTPUT)) break;
+        RtlCopyMemory(&copy.Base, input, sizeof(copy.Base));
+        if (copy.Base.Version == LP_PLAYBACK_VERSION) {
+            if (inputLength != sizeof(copy.Base) ||
+                !LpPlaybackValidHeader(copy.Base.Version, copy.Base.Channel)) break;
+            copy.FlushTimeoutMs = copy.Base.Channel == LP_PLAYBACK_MEDIA
+                ? LP_PLAYBACK_MEDIA_FLUSH_MS : L2CAP_INFINITE_FLUSHTO;
+        } else {
+            if (inputLength != sizeof(copy) || copy.Base.Version != LP_PLAYBACK_OPEN_VERSION ||
+                copy.Base.Channel != LP_PLAYBACK_MEDIA) break;
+            RtlCopyMemory(&copy, input, sizeof(copy));
+            if (!LpPlaybackValidFlush(copy.FlushTimeoutMs)) break;
+            mediaOnlyOpen = TRUE;
+        }
+        status = LpPlaybackOpen(ctx, &copy.Base, (USHORT)copy.FlushTimeoutMs,
+            (LP_PLAYBACK_OPEN_OUTPUT*)output, request, &channelCreated);
         if (NT_SUCCESS(status)) count = sizeof(LP_PLAYBACK_OPEN_OUTPUT);
         break;
     }
-    case IOCTL_LP_PLAYBACK_CLOSE:
-        if (inputLength || outputLength) break;
-        status = LpPlaybackClose(ctx);
+    case IOCTL_LP_PLAYBACK_CLOSE: {
+        LP_PLAYBACK_CLOSE_INPUT copy;
+        if (outputLength) break;
+        if (!inputLength) {
+            status = LpPlaybackClose(ctx);
+            break;
+        }
+        if (inputLength != sizeof(copy)) break;
+        RtlCopyMemory(&copy, input, sizeof(copy));
+        if (copy.Version != LP_PLAYBACK_OPEN_VERSION || copy.Channel != LP_PLAYBACK_MEDIA) break;
+        status = LpPlaybackCloseChannel(ctx, LP_PLAYBACK_MEDIA);
         break;
+    }
     case IOCTL_LP_PLAYBACK_SEND: {
         LP_PLAYBACK_SEND_INPUT* header = (LP_PLAYBACK_SEND_INPUT*)input;
         if (inputLength <= sizeof(*header) || inputLength > sizeof(*header) + LP_PLAYBACK_MAX_PACKET || outputLength) break;
@@ -287,9 +316,15 @@ VOID LpEvtPlaybackIoctl(WDFQUEUE queue, WDFREQUEST request, size_t outputLength,
     }
     case IOCTL_LP_PLAYBACK_STATUS: {
         LP_PLAYBACK_STATUS_OUTPUT* snapshot = (LP_PLAYBACK_STATUS_OUTPUT*)output;
-        if (inputLength || outputLength != sizeof(*snapshot)) break;
+        ULONG version = LP_PLAYBACK_VERSION;
+        if (outputLength != sizeof(*snapshot)) break;
+        if (inputLength) {
+            if (inputLength != sizeof(version)) break;
+            RtlCopyMemory(&version, input, sizeof(version));
+            if (version != LP_PLAYBACK_OPEN_VERSION) break;
+        }
         WdfSpinLockAcquire(ctx->Lock);
-        snapshot->Version = LP_PLAYBACK_VERSION;
+        snapshot->Version = version;
         snapshot->SignalingOpen = ctx->Playback.Channels[0].Connected;
         snapshot->MediaOpen = ctx->Playback.Channels[1].Connected;
         snapshot->SignalingTransmitMtu = ctx->Playback.Channels[0].TransmitMtu;
@@ -305,7 +340,11 @@ VOID LpEvtPlaybackIoctl(WDFQUEUE queue, WDFREQUEST request, size_t outputLength,
         break;
     }
     if (WdfRequestIsCanceled(request)) {
-        if (code == IOCTL_LP_PLAYBACK_OPEN) LpPlaybackClose(ctx);
+        if (code == IOCTL_LP_PLAYBACK_OPEN) {
+            if (mediaOnlyOpen) {
+                if (channelCreated) LpPlaybackCloseChannel(ctx, LP_PLAYBACK_MEDIA);
+            } else LpPlaybackClose(ctx);
+        }
         status = STATUS_CANCELLED;
     }
 complete:

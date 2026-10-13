@@ -39,7 +39,8 @@ constexpr NTSTATUS STATUS_SUCCESS = 0, STATUS_INVALID_PARAMETER = -1,
     STATUS_DEVICE_NOT_READY = -2, STATUS_DEVICE_NOT_CONNECTED = -3,
     STATUS_INSUFFICIENT_RESOURCES = -4, STATUS_DEVICE_PROTOCOL_ERROR = -5,
     STATUS_INVALID_BUFFER_SIZE = -6, STATUS_TIMEOUT = -7, STATUS_IO_TIMEOUT = -8,
-    STATUS_DATA_ERROR = -9, STATUS_CANCELLED = -10, STATUS_INVALID_DEVICE_REQUEST = -11;
+    STATUS_DATA_ERROR = -9, STATUS_CANCELLED = -10, STATUS_INVALID_DEVICE_REQUEST = -11,
+    STATUS_DEVICE_BUSY = -12;
 constexpr ULONG BRB_L2CA_CLOSE_CHANNEL = 1, BRB_L2CA_OPEN_CHANNEL = 2,
     BRB_L2CA_ACL_TRANSFER = 3, CF_ROLE_EITHER = 1, CF_LINK_AUTHENTICATED = 2,
     CF_LINK_ENCRYPTED = 4, CFG_MTU = 1, CFG_FLUSHTO = 2, L2CAP_INFINITE_FLUSHTO = 0xffff,
@@ -73,6 +74,7 @@ struct BRB {
 using PBRB = BRB*;
 struct Request {
     std::atomic<bool> cancelled{false};
+    unsigned cancelOnCheck = 0, cancelChecks = 0;
     NTSTATUS status = STATUS_SUCCESS;
     ULONG count = 0;
     bool completed = false;
@@ -122,7 +124,10 @@ static LONG InterlockedCompareExchange(volatile LONG* p, LONG v, LONG expected) 
     LONG old = *p; if (old == expected) *p = v; return old;
 }
 static LONG InterlockedExchange(volatile LONG* p, LONG v) { LONG old = *p; *p = v; return old; }
-static bool WdfRequestIsCanceled(WDFREQUEST r) { return r->cancelled; }
+static bool WdfRequestIsCanceled(WDFREQUEST r) {
+    if (++r->cancelChecks == r->cancelOnCheck) r->cancelled = true;
+    return r->cancelled;
+}
 static void WdfRequestCompleteWithInformation(WDFREQUEST r, NTSTATUS s, ULONG n) {
     assert(!r->completed); r->completed = true; r->status = s; r->count = n;
 }
@@ -156,6 +161,7 @@ static ULONG min(ULONG a, ULONG b) { return a < b ? a : b; }
 static std::atomic<unsigned> openCalls, closeCalls, transferCalls;
 static uintptr_t nextHandle = 1;
 static bool failClose, timeoutRead, failOpenAfterHandle, disconnectDuringOpen, cancelOpen, wrongFlush;
+static USHORT expectedMediaFlush = 200;
 static std::vector<L2CAP_CHANNEL_HANDLE> closedHandles;
 static std::mutex readMutex;
 static std::condition_variable readChanged;
@@ -167,7 +173,7 @@ static NTSTATUS LpSubmitBrbSync(PDEVICE_CONTEXT, PBRB brb, WDFREQUEST r)
         ++openCalls;
         assert(b->Psm == 0x19 && b->ChannelFlags == (CF_ROLE_EITHER | CF_LINK_AUTHENTICATED | CF_LINK_ENCRYPTED));
         auto channel = static_cast<LP_PLAYBACK_CHANNEL*>(b->CallbackContext);
-        const USHORT flush = channel->Index == LP_PLAYBACK_MEDIA ? 200 : L2CAP_INFINITE_FLUSHTO;
+        const USHORT flush = channel->Index == LP_PLAYBACK_MEDIA ? expectedMediaFlush : L2CAP_INFINITE_FLUSHTO;
         assert(b->ConfigOut.Flags == CFG_FLUSHTO && b->ConfigOut.FlushTO.Min == flush &&
             b->ConfigOut.FlushTO.Preferred == flush && b->ConfigOut.FlushTO.Max == flush);
         b->ChannelHandle = reinterpret_cast<PVOID>(nextHandle++);
@@ -214,10 +220,153 @@ static void open(PDEVICE_CONTEXT c, ULONG channel) {
     assert(r.status == 0 && r.count == 16);
     LP_PLAYBACK_OPEN_OUTPUT output; std::memcpy(&output, r.output.data(), sizeof(output));
     assert(output.TransmitMtu == 672 && output.ReceiveMtu == 8192);
+    assert(output.Version == LP_PLAYBACK_VERSION && output.Channel == channel);
+}
+static void closeMedia(PDEVICE_CONTEXT c) {
+    Request r; payload(r, LP_PLAYBACK_CLOSE_INPUT{2, 1});
+    submit(c, r, IOCTL_LP_PLAYBACK_CLOSE);
+    assert(r.status == STATUS_SUCCESS && r.count == 0 && !c->Playback.Channels[1].Handle);
+}
+static void flushOptions(PDEVICE_CONTEXT c) {
+    open(c, 0);
+    auto signaling = c->Playback.Channels[0].Handle;
+    auto opens = openCalls.load(), closes = closeCalls.load();
+    for (bool withMedia : {false, true}) {
+        if (withMedia) open(c, 1);
+        opens = openCalls; closes = closeCalls;
+        Request status; payload(status, ULONG{2}); status.output.resize(28);
+        submit(c, status, IOCTL_LP_PLAYBACK_STATUS);
+        LP_PLAYBACK_STATUS_OUTPUT snapshot; std::memcpy(&snapshot, status.output.data(), sizeof(snapshot));
+        assert(status.status == STATUS_SUCCESS && status.count == 28 && snapshot.Version == 2);
+        assert(snapshot.SignalingOpen == 1 && snapshot.MediaOpen == (withMedia ? 1u : 0u));
+        assert(snapshot.Address == c->DeviceAddress && snapshot.SignalingTransmitMtu == 672);
+        assert(snapshot.MediaTransmitMtu == (withMedia ? 672u : 0u));
+        for (ULONG version : {0u, 1u, 3u}) {
+            Request bad; payload(bad, version); bad.output.resize(28); submit(c, bad, IOCTL_LP_PLAYBACK_STATUS);
+            assert(bad.status == STATUS_INVALID_PARAMETER && bad.count == 0);
+        }
+        for (size_t bytes : {1u, 3u, 5u, 8u}) {
+            Request bad; payload(bad, ULONG{2}); bad.input.resize(bytes); bad.output.resize(28);
+            submit(c, bad, IOCTL_LP_PLAYBACK_STATUS);
+            assert(bad.status == STATUS_INVALID_PARAMETER && bad.count == 0);
+        }
+        Request cancelled; cancelled.cancelOnCheck = 2; payload(cancelled, ULONG{2}); cancelled.output.resize(28);
+        submit(c, cancelled, IOCTL_LP_PLAYBACK_STATUS);
+        assert(cancelled.status == STATUS_CANCELLED && cancelled.count == 0);
+        assert(openCalls == opens && closeCalls == closes && c->Playback.Channels[0].Handle == signaling);
+        assert(c->Playback.Channels[1].Connected == withMedia);
+        if (withMedia) closeMedia(c);
+    }
+    opens = openCalls; closes = closeCalls;
+    for (auto input : {LP_PLAYBACK_OPEN_INPUT_V2{{1, 1, c->DeviceAddress}, 60},
+         {{3, 1, c->DeviceAddress}, 60}, {{2, 0, c->DeviceAddress}, 60},
+         {{2, 2, c->DeviceAddress}, 60}, {{2, 1, c->DeviceAddress + 1}, 60}}) {
+        Request r; payload(r, input); r.output.resize(16); submit(c, r, IOCTL_LP_PLAYBACK_OPEN);
+        assert(r.status == STATUS_INVALID_PARAMETER && r.count == 0);
+    }
+    for (ULONG timeout : {0u, 59u, 61u, 199u, 201u, 301u, 65535u, 0xffffffffu}) {
+        Request r; payload(r, LP_PLAYBACK_OPEN_INPUT_V2{{2, 1, c->DeviceAddress}, timeout});
+        r.output.resize(16); submit(c, r, IOCTL_LP_PLAYBACK_OPEN);
+        assert(r.status == STATUS_INVALID_PARAMETER && r.count == 0);
+    }
+    for (size_t bytes : {0u, 1u, 15u, 16u, 17u, 19u, 21u, 24u}) {
+        Request r; payload(r, LP_PLAYBACK_OPEN_INPUT_V2{{2, 1, c->DeviceAddress}, 60});
+        r.input.resize(bytes); r.output.resize(16); submit(c, r, IOCTL_LP_PLAYBACK_OPEN);
+        assert(r.status == STATUS_INVALID_PARAMETER && r.count == 0);
+    }
+    for (size_t bytes : {0u, 15u, 17u, 20u}) {
+        Request r; payload(r, LP_PLAYBACK_OPEN_INPUT_V2{{2, 1, c->DeviceAddress}, 60});
+        r.output.resize(bytes); submit(c, r, IOCTL_LP_PLAYBACK_OPEN);
+        assert(r.status == STATUS_INVALID_PARAMETER && r.count == 0);
+    }
+    assert(openCalls == opens && closeCalls == closes && c->Playback.Channels[0].Handle == signaling);
+    for (ULONG timeout : {60u, 80u, 100u, 120u, 140u, 150u, 200u, 300u}) {
+        expectedMediaFlush = static_cast<USHORT>(timeout);
+        Request r; payload(r, LP_PLAYBACK_OPEN_INPUT_V2{{2, 1, c->DeviceAddress}, timeout});
+        r.output.resize(16); submit(c, r, IOCTL_LP_PLAYBACK_OPEN);
+        LP_PLAYBACK_OPEN_OUTPUT output; std::memcpy(&output, r.output.data(), sizeof(output));
+        assert(r.status == STATUS_SUCCESS && r.count == 16 && output.Version == 2 && output.Channel == 1);
+        assert(c->Playback.Channels[1].FlushTimeoutMs == timeout);
+        auto handle = c->Playback.Channels[1].Handle;
+        opens = openCalls; closes = closeCalls;
+        Request again; payload(again, LP_PLAYBACK_OPEN_INPUT_V2{{2, 1, c->DeviceAddress}, timeout});
+        again.output.resize(16); submit(c, again, IOCTL_LP_PLAYBACK_OPEN);
+        assert(again.status == STATUS_SUCCESS && c->Playback.Channels[1].Handle == handle);
+        Request cancelledAgain; cancelledAgain.cancelOnCheck = 2;
+        payload(cancelledAgain, LP_PLAYBACK_OPEN_INPUT_V2{{2, 1, c->DeviceAddress}, timeout});
+        cancelledAgain.output.resize(16); submit(c, cancelledAgain, IOCTL_LP_PLAYBACK_OPEN);
+        assert(cancelledAgain.status == STATUS_CANCELLED && c->Playback.Channels[1].Handle == handle);
+        Request changed; payload(changed, LP_PLAYBACK_OPEN_INPUT_V2{{2, 1, c->DeviceAddress}, timeout == 60 ? 80u : 60u});
+        changed.output.resize(16); submit(c, changed, IOCTL_LP_PLAYBACK_OPEN);
+        assert(changed.status == STATUS_DEVICE_BUSY && changed.count == 0);
+        Request cancelledBusy; cancelledBusy.cancelOnCheck = 2;
+        payload(cancelledBusy, LP_PLAYBACK_OPEN_INPUT_V2{{2, 1, c->DeviceAddress}, timeout == 60 ? 80u : 60u});
+        cancelledBusy.output.resize(16); submit(c, cancelledBusy, IOCTL_LP_PLAYBACK_OPEN);
+        assert(cancelledBusy.status == STATUS_CANCELLED && c->Playback.Channels[1].Handle == handle);
+        if (timeout != 200) {
+            Request legacy; payload(legacy, LP_PLAYBACK_OPEN_INPUT{1, 1, c->DeviceAddress});
+            legacy.output.resize(16); submit(c, legacy, IOCTL_LP_PLAYBACK_OPEN);
+            assert(legacy.status == STATUS_DEVICE_BUSY && legacy.count == 0);
+        }
+        assert(openCalls == opens && closeCalls == closes && c->Playback.Channels[1].Handle == handle);
+        closeMedia(c);
+        assert(c->Playback.Channels[0].Handle == signaling && c->Playback.Channels[0].Connected);
+    }
+    expectedMediaFlush = 60;
+    for (unsigned failure = 0; failure < 4; ++failure) {
+        failOpenAfterHandle = failure == 0; disconnectDuringOpen = failure == 1;
+        cancelOpen = failure == 2; wrongFlush = failure == 3;
+        Request r; payload(r, LP_PLAYBACK_OPEN_INPUT_V2{{2, 1, c->DeviceAddress}, 60});
+        r.output.resize(16); submit(c, r, IOCTL_LP_PLAYBACK_OPEN);
+        assert(r.status != STATUS_SUCCESS && r.count == 0 && !c->Playback.Channels[1].Handle);
+        assert(c->Playback.Channels[0].Handle == signaling && c->Playback.Channels[0].Connected);
+        if (wrongFlush) assert(r.status == STATUS_DEVICE_PROTOCOL_ERROR);
+    }
+    failOpenAfterHandle = disconnectDuringOpen = cancelOpen = wrongFlush = false;
+    expectedMediaFlush = 200;
+    open(c, 1);
+    for (auto input : {LP_PLAYBACK_CLOSE_INPUT{1, 1}, {2, 0}, {2, 2}, {3, 1}}) {
+        Request r; payload(r, input); submit(c, r, IOCTL_LP_PLAYBACK_CLOSE);
+        assert(r.status == STATUS_INVALID_PARAMETER && c->Playback.Channels[1].Connected);
+    }
+    for (size_t bytes : {1u, 7u, 9u, 16u}) {
+        Request r; payload(r, LP_PLAYBACK_CLOSE_INPUT{2, 1}); r.input.resize(bytes);
+        submit(c, r, IOCTL_LP_PLAYBACK_CLOSE);
+        assert(r.status == STATUS_INVALID_PARAMETER && c->Playback.Channels[1].Connected);
+    }
+    Request withOutput; payload(withOutput, LP_PLAYBACK_CLOSE_INPUT{2, 1}); withOutput.output.resize(1);
+    submit(c, withOutput, IOCTL_LP_PLAYBACK_CLOSE);
+    assert(withOutput.status == STATUS_INVALID_PARAMETER && c->Playback.Channels[1].Connected);
+    failClose = true;
+    Request failed; payload(failed, LP_PLAYBACK_CLOSE_INPUT{2, 1}); submit(c, failed, IOCTL_LP_PLAYBACK_CLOSE);
+    assert(failed.status != STATUS_SUCCESS && c->Playback.Channels[1].Handle && !c->Playback.Channels[1].Connected);
+    assert(c->Playback.Channels[0].Handle == signaling && c->Playback.Channels[0].Connected);
+    failClose = false; closeMedia(c); open(c, 1);
+    INDICATION_PARAMETERS p{c->Playback.Channels[1].Handle, {{false}}};
+    LpPlaybackIndication(&c->Playback.Channels[1], IndicationRemoteDisconnect, &p);
+    assert(p.Parameters.Disconnect.CloseNow && !c->Playback.Channels[1].Handle);
+    closes = closeCalls;
+    closeMedia(c);
+    assert(closeCalls == closes && c->Playback.Channels[0].Handle == signaling && c->Playback.Channels[0].Connected);
+    open(c, 1);
+    Request read; payload(read, LP_PLAYBACK_RECEIVE_INPUT{1, 1, 100}); read.output.resize(8192);
+    readEntered = releaseRead = false; blockRead = true;
+    auto pending = std::async(std::launch::async, [&] { submit(c, read, IOCTL_LP_PLAYBACK_RECEIVE); });
+    { std::unique_lock<std::mutex> lock(readMutex); assert(readChanged.wait_for(lock, std::chrono::seconds(2), [] {return readEntered;})); }
+    auto closing = std::async(std::launch::async, [&] { closeMedia(c); });
+    assert(closing.wait_for(std::chrono::milliseconds(20)) == std::future_status::timeout);
+    Request send; payload(send, LP_PLAYBACK_SEND_INPUT{1, 0}); send.input.resize(12);
+    submit(c, send, IOCTL_LP_PLAYBACK_SEND); assert(send.status == STATUS_SUCCESS);
+    { std::lock_guard<std::mutex> lock(readMutex); releaseRead = true; readChanged.notify_all(); }
+    pending.get(); closing.get(); blockRead = false;
+    assert(read.status == STATUS_SUCCESS && c->Playback.Channels[0].Handle == signaling);
+    Request close; submit(c, close, IOCTL_LP_PLAYBACK_CLOSE);
+    assert(close.status == STATUS_SUCCESS && !c->Playback.Channels[0].Handle);
 }
 int main()
 {
     static_assert(sizeof(LP_PLAYBACK_OPEN_INPUT) == 16 && sizeof(LP_PLAYBACK_OPEN_OUTPUT) == 16);
+    static_assert(sizeof(LP_PLAYBACK_OPEN_INPUT_V2) == 20 && sizeof(LP_PLAYBACK_CLOSE_INPUT) == 8);
     static_assert(sizeof(LP_PLAYBACK_RECEIVE_INPUT) == 12 && sizeof(LP_PLAYBACK_STATUS_OUTPUT) == 28);
     static_assert(IOCTL_LP_PLAYBACK_OPEN == 0x8000e040 && IOCTL_LP_PLAYBACK_STATUS == 0x8000e050);
     assert(LpIsAllowedUserSid(L"S-1-5-21-1-2-3-1001", 19));
@@ -284,6 +433,7 @@ int main()
     assert(p.Parameters.Disconnect.CloseNow && c.Playback.DisconnectWork->queued && !c.Playback.Channels[1].Connected);
     LpPlaybackDisconnected(c.Playback.DisconnectWork);
     assert(!c.Playback.Channels[1].Handle && c.Playback.WorkQueued == 0);
+    flushOptions(&c);
     c.Stopping = 1; Request stopped; stopped.output.resize(28); submit(&c,stopped,IOCTL_LP_PLAYBACK_STATUS);
     assert(stopped.status == STATUS_DEVICE_NOT_READY);
     for (auto& channel : c.Playback.Channels) { delete channel.SendLock; delete channel.ReceiveLock; }

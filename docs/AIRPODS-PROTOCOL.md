@@ -13,6 +13,7 @@ check its model and hardware test coverage.
 | [Model support](WINDOWS-MODEL-SUPPORT.md) | Capability profiles and which models have passed hardware checks |
 | [Hardware validation](WINDOWS-VALIDATION.md) | Test conditions, results and unresolved failures |
 | [Audio timing](WINDOWS-AUDIO-LATENCY.md) | Windows buffering, clocks and latency measurements |
+| [Windows volume bridge](WINDOWS-AVRCP-VOLUME.md) | Native endpoint/AVRCP synchronization, gain mapping and subscription lifetime |
 | [Microphone research](WINDOWS-MIC-PROTOCOL-RESEARCH.md) | Pinned upstream sources, clock assumptions and recovery constraints |
 
 ## Transport map

@@ -20,6 +20,7 @@ typedef struct _LP_PLAYBACK_CHANNEL {
     BTH_ADDR Address;
     USHORT TransmitMtu;
     USHORT ReceiveMtu;
+    USHORT FlushTimeoutMs;
     ULONG Generation;
     BOOLEAN Connected;
     BOOLEAN Opening;

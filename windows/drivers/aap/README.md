@@ -215,7 +215,41 @@ retransmission. An unexpected negotiated timeout rejects the channel. Windows
 owns the HCI packet flags: the BRB transfer API has no per-packet auto-flush flag.
 Hardware captures must verify expiry and signaling reliability under congestion.
 
-CLOSE closes media before signaling, leaving AAP and ATT alone. File cleanup,
+OPEN also accepts a packed, 20-byte version-2 input:
+`u32 version=2, u32 channel=1, u64 address, u32 flush_timeout_ms`. It applies only
+to media and accepts 60, 80, 100, 120, 140, 150, 200 or 300 ms. The 16-byte output
+has the same layout as version 1 and echoes version 2. Reopening an already open
+channel with its current timeout succeeds without replacing it; a different
+timeout returns `STATUS_DEVICE_BUSY`. Version 1 always requests 200 ms for media.
+SEND and RECEIVE retain version 1. STATUS accepts a 4-byte `u32 version=2` input
+as a read-only capability check. It returns the existing 28-byte status layout
+with version 2; an empty request still returns version 1. Use this check before
+interrupting playback. Older drivers reject version-2 requests, so callers must
+not silently fall back to a different timeout.
+
+A packed, 8-byte CLOSE input, `u32 version=2, u32 channel=1`, closes media while
+leaving signaling open. Other versions, channels and payload lengths are rejected.
+The backend must stop its stream, coordinate AVDTP teardown and negotiate the new
+stream before opening media again. Restoring the default requires another media
+open at 200 ms; CLOSE alone cannot resume playback or restore a running stream.
+
+The documented [channel-update BRB](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/bthddi/ns-bthddi-_brb_l2ca_update_channel)
+changes channel flags, not the flush timeout. The current WDK exposes `FlushTO`
+when opening a channel, so changing it through these APIs requires a new media
+channel and a playback interruption. `ACL_TRANSFER_TIMEOUT` only limits reads;
+it cannot expire outgoing audio. Do not treat it as a media flush control.
+
+Bluetooth's [flushing rules](https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-54/out/en/host/logical-link-control-and-adaptation-protocol-specification.html)
+apply the controller timeout to the shared ACL transport. Reliable channels must
+remain protected from automatic flushing. Static inspection of BthPort
+10.0.26100.8655 with matching public symbols shows that a finite `FlushTO` marks
+media packets automatically flushable. With nonflushable packet support enabled,
+reliable packets remain nonflushable. BthPort selects the largest active finite
+timeout for the shared transport, so another channel can limit a reduction.
+This establishes the software path, not expiry on a particular adapter; that
+still needs a Windows HCI trace.
+
+CLOSE with no input closes media before signaling, leaving AAP and ATT alone. File cleanup,
 suspend and removal close all channels. An unexpected signaling disconnect
 disables media immediately and queues its closure at passive level. Separate
 send/receive locks prevent local close from releasing an in-flight transfer's
@@ -224,7 +258,8 @@ radio has already removed it.
 
 `tests/playback_transport_test.cpp` compiles the production transport with WDF
 and completing Bluetooth substitutes. It checks access boundaries, MTUs,
-concurrent I/O, cancellation, failed opens/closes and remote disconnect cleanup.
+flush options and negotiation, concurrent I/O, cancellation, failed opens/closes
+and remote disconnect cleanup.
 Build it with `cl /W4 /WX /EHsc /std:c++17` like the existing concurrency test.
 Codec playback has limited model coverage; congestion, driver stress and
 Driver Verifier still require hardware testing. See the validation reference above.

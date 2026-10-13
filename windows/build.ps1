@@ -55,6 +55,8 @@ try {
     New-Item -ItemType Directory -Path $tests -Force | Out-Null
     Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', '/MT', "/Fe:$tests\audio-binding.exe", "/Fo:$tests\audio-binding.obj", 'windows/installer/audio-binding.cpp', '/link', 'setupapi.lib', 'newdev.lib')
     Run (Join-Path $tests 'audio-binding.exe') @('--self-test')
+    Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', '/MT', "/Fe:$tests\audio-periods.exe", "/Fo:$tests\audio-periods.obj", 'windows/playback/audio-periods.cpp', '/link', 'ole32.lib', 'uuid.lib', 'cfgmgr32.lib')
+    Run (Join-Path $tests 'audio-periods.exe') @('--self-test')
     Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', "/Fe:$tests\audio-inf-target.exe", "/Fo:$tests\audio-inf-target.obj", 'windows/drivers/audio/tests/inf_target_test.cpp', '/link', 'setupapi.lib')
     Run (Join-Path $tests 'audio-inf-target.exe') @('windows/drivers/audio/NTPodsAudio.inf')
     Run 'cl.exe' @('/nologo', '/W4', '/WX', '/TC', "/Fe:$tests\aap-policy.exe", "/Fo:$tests\aap-policy.obj", 'windows/drivers/aap/tests/policy_test.c')
@@ -67,6 +69,8 @@ try {
     Run (Join-Path $tests 'mic-bridge.exe') @()
     Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', "/Fe:$tests\render-bridge.exe", "/Fo:$tests\render-bridge.obj", 'windows/drivers/mic/tests/render_bridge_test.cpp')
     Run (Join-Path $tests 'render-bridge.exe') @()
+    Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', "/Fe:$tests\render-volume.exe", "/Fo:$tests\render-volume.obj", 'windows/drivers/mic/tests/render_volume_test.cpp')
+    Run (Join-Path $tests 'render-volume.exe') @()
     Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', "/Fe:$tests\packet-constraints.exe", "/Fo:$tests\packet-constraints.obj", 'windows/drivers/mic/tests/packet_constraints_test.cpp', '/link', 'setupapi.lib')
     Run (Join-Path $tests 'packet-constraints.exe') @('windows/drivers/audio/NTPodsAudio.inf', 'windows/drivers/mic/AudioCodec/Driver/AudioCodec.inf')
     Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', "/Fe:$tests\aap-playback.exe", "/Fo:$tests\aap-playback.obj", 'windows/drivers/aap/tests/playback_transport_test.cpp')

@@ -44,6 +44,7 @@ use std::time::{Duration, Instant};
 use std::{io, ptr};
 
 use connection_request::ConnectionRequest;
+use mic_lifecycle::playback_allows_microphone;
 use ntpods_ipc as ipc;
 use ntpods_ipc::{to_line, Command, Event, Snapshot};
 
@@ -709,27 +710,6 @@ fn persist_microphone_policy(preferences: String) {
         {
             log("mic: could not persist microphone policy");
         }
-    }
-}
-
-fn playback_allows_microphone(state: &Snapshot) -> bool {
-    if state.playback_buffer_target_ms.is_some() {
-        return false;
-    }
-    // Hearing Off remains available during capture; pending edits only block a new uplink.
-    if state.hearing_aid_pending
-        && !state.mic_uplink_active
-        && !matches!(
-            state.mic_state.as_str(),
-            "starting" | "capturing" | "stopping" | "recovering"
-        )
-    {
-        return false;
-    }
-    if state.playback_native_driver {
-        state.playback_state == "ready"
-    } else {
-        !matches!(state.playback_state.as_str(), "starting" | "stopping")
     }
 }
 
@@ -2321,15 +2301,24 @@ fn apply_command(ctx: &Ctx, cmd: Command) {
             ctx.push_state();
         }
         Command::StepVolume { delta } => {
-            volume::step(delta);
+            {
+                let mut duck = ctx.conv_duck.lock().unwrap();
+                duck.manual_override(volume::step(delta).as_deref());
+            }
             ctx.sync_volume();
         }
         Command::SetVolume { percent } => {
-            volume::set(percent.min(100));
+            {
+                let mut duck = ctx.conv_duck.lock().unwrap();
+                duck.manual_override(volume::set(percent.min(100)).as_deref());
+            }
             ctx.sync_volume();
         }
         Command::ToggleMute => {
-            volume::toggle_mute();
+            {
+                let mut duck = ctx.conv_duck.lock().unwrap();
+                duck.manual_override(volume::toggle_mute().as_deref());
+            }
             ctx.sync_volume();
         }
         Command::SetHeartRate { on } => set_heart_rate(ctx, on),

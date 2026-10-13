@@ -1,6 +1,27 @@
 //! Pure microphone policy. All Bluetooth actions run on the receive thread.
 const PCM_TIMEOUT_MS: u64 = 5_000;
-use ntpods_ipc::MicMode;
+use ntpods_ipc::{MicMode, Snapshot};
+
+pub fn playback_allows_microphone(state: &Snapshot) -> bool {
+    if state.playback_buffer_target_ms.is_some() {
+        return false;
+    }
+    // Hearing Off remains available during capture; pending edits only block a new uplink.
+    if state.hearing_aid_pending
+        && !state.mic_uplink_active
+        && !matches!(
+            state.mic_state.as_str(),
+            "starting" | "capturing" | "stopping" | "recovering"
+        )
+    {
+        return false;
+    }
+    if state.playback_native_driver {
+        state.playback_state == "ready"
+    } else {
+        !matches!(state.playback_state.as_str(), "starting" | "stopping")
+    }
+}
 
 /// User intent is separate from Windows clients and Bluetooth recovery.
 #[derive(Default)]

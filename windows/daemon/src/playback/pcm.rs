@@ -83,6 +83,7 @@ impl FrameAssembler {
 
 pub struct FrameClock {
     origin: Instant,
+    driver_origin: Option<u64>,
     samples_per_frame: u64,
     samples_sent: u64,
 }
@@ -92,6 +93,7 @@ impl FrameClock {
         frame_bytes(samples_per_frame)?;
         Ok(Self {
             origin,
+            driver_origin: None,
             samples_per_frame: samples_per_frame as u64,
             samples_sent: 0,
         })
@@ -109,11 +111,70 @@ impl FrameClock {
     pub fn advance(&mut self) {
         self.samples_sent += self.samples_per_frame;
     }
+
+    pub fn use_driver_clock(&mut self, virtual_hns: u64, reserve: Duration) {
+        self.driver_origin = Some(virtual_hns + (reserve.as_nanos() / 100) as u64);
+    }
+
+    pub fn lateness(&self, now: Instant, virtual_hns: Option<u64>) -> io::Result<Option<Duration>> {
+        match (self.driver_origin, virtual_hns) {
+            (Some(origin), Some(now)) => {
+                let elapsed = self.samples_sent / SAMPLE_RATE * 10_000_000
+                    + self.samples_sent % SAMPLE_RATE * 10_000_000 / SAMPLE_RATE;
+                Ok(now
+                    .checked_sub(origin + elapsed)
+                    .map(|hns| Duration::new(hns / 10_000_000, ((hns % 10_000_000) * 100) as u32)))
+            }
+            (None, None) => Ok(now.checked_duration_since(self.deadline())),
+            _ => Err(io::Error::other(
+                "Playback clock source changed during a stream",
+            )),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn driver_deadlines_follow_virtual_time_without_resetting_on_rate_changes() {
+        for samples in [480, 1024] {
+            for reserve_ms in [30, 50] {
+                let reserve = Duration::from_millis(reserve_ms);
+                let now = Instant::now();
+                let mut clock = FrameClock::new(samples, now + reserve).unwrap();
+                let origin = 1_000_000 + reserve_ms * 10_000;
+                assert!(clock
+                    .lateness(now + reserve - Duration::from_micros(1), None)
+                    .unwrap()
+                    .is_none());
+                assert_eq!(
+                    clock.lateness(now + reserve, None).unwrap(),
+                    Some(Duration::ZERO)
+                );
+                clock.use_driver_clock(1_000_000, reserve);
+                assert!(clock.lateness(now, Some(origin - 1)).unwrap().is_none());
+                assert_eq!(
+                    clock.lateness(now, Some(origin)).unwrap(),
+                    Some(Duration::ZERO)
+                );
+                for n in 1..=10_000 {
+                    clock.advance();
+                    let deadline = origin + n * samples as u64 * 10_000_000 / 48_000;
+                    // Driver time remains continuous when an adjustment ends or is cancelled.
+                    assert!(clock.lateness(now, Some(deadline - 1)).unwrap().is_none());
+                    assert_eq!(
+                        clock.lateness(now, Some(deadline)).unwrap(),
+                        Some(Duration::ZERO)
+                    );
+                }
+                assert!(clock.lateness(now, None).is_err());
+            }
+        }
+        let clock = FrameClock::new(480, Instant::now()).unwrap();
+        assert!(clock.lateness(Instant::now(), Some(0)).is_err());
+    }
 
     #[test]
     fn partial_reads_keep_sample_order_without_padding() {

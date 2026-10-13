@@ -420,7 +420,7 @@ CStreamEngine::Run()
     //
     KeAcquireSpinLock(&m_PacketLock, &irql);
     startQpc = KeQueryPerformanceCounter(NULL);
-    m_StartTime = KSCONVERT_PERFORMANCE_TIME(m_PerformanceCounterFrequency.QuadPart, startQpc);
+    m_StartTime = GetAudioTime(startQpc);
     m_StartPosition = m_Position;
     m_CurrentPacketStart = startQpc;
     m_GlitchAdjust = 0;
@@ -563,7 +563,7 @@ CStreamEngine::ScheduleNextPass()
     // Next packet time is Time @ resume from Pause, offset for lost time due to glitch, with next packet time added
     nextPacketTime = m_StartTime + m_GlitchAdjust + nextPacketTimeFromLastPauseHns;
 
-    currentTime = KSCONVERT_PERFORMANCE_TIME(m_PerformanceCounterFrequency.QuadPart, KeQueryPerformanceCounter(NULL));
+    currentTime = GetAudioTime(KeQueryPerformanceCounter(NULL));
 
     delay = MicPacketTimerDelay(nextPacketTime, currentTime, &m_GlitchAdjust);
     KeReleaseSpinLock(&m_PacketLock, irql);
@@ -585,7 +585,7 @@ CStreamEngine::UpdatePositionLocked(LARGE_INTEGER Qpc, ULONG BytesPerSecond)
     {
         return;
     }
-    currentTime = KSCONVERT_PERFORMANCE_TIME(m_PerformanceCounterFrequency.QuadPart, Qpc);
+    currentTime = GetAudioTime(Qpc);
 
     // Update position
     const ULONGLONG elapsed = currentTime >= m_StartTime ? currentTime - m_StartTime : 0;
@@ -593,6 +593,13 @@ CStreamEngine::UpdatePositionLocked(LARGE_INTEGER Qpc, ULONG BytesPerSecond)
         m_GlitchAdjust, BytesPerSecond);
     // A delayed timer can adjust its clock after an earlier position query.
     if (position > m_Position) m_Position = position;
+}
+
+_Use_decl_annotations_
+ULONGLONG
+CStreamEngine::GetAudioTime(LARGE_INTEGER Qpc)
+{
+    return KSCONVERT_PERFORMANCE_TIME(m_PerformanceCounterFrequency.QuadPart, Qpc);
 }
 
 _Use_decl_annotations_

@@ -10,7 +10,10 @@ use windows_sys::Win32::Foundation::ERROR_REQ_NOT_ACCEP;
 
 pub struct Session {
     driver: Driver,
+    address: u64,
+    flush_ms: u16,
     pub mode: Mode,
+    pub eld_aus: usize,
     opened: Instant,
     media_packets: u64,
     last_request: u8,
@@ -23,13 +26,13 @@ pub struct Session {
     cancel: Arc<AtomicBool>,
     closing: bool,
     interrupted: Box<dyn Fn() -> bool>,
-    buffer: Option<super::buffer::Stream>,
     pub mtu: usize,
     pub bitrate: u32,
     pub variable: bool,
     pub delay_reporting: bool,
     // AVDTP reports use 100-microsecond units, not measured end-to-end latency.
     pub delay_report: Option<u16>,
+    pub delay_serial: u64,
 }
 
 pub fn driver_ready(driver: &Driver, address: u64) -> io::Result<()> {
@@ -51,14 +54,19 @@ impl Session {
         driver: Driver,
         address: u64,
         mode: Mode,
+        eld_aus: usize,
         bitrates: [ntpods_ipc::PlaybackBitrate; 2],
         cancel: Arc<AtomicBool>,
         interrupted: impl Fn() -> bool + 'static,
         on_mode: impl FnOnce(Mode),
     ) -> io::Result<Self> {
+        validate_eld_aus(eld_aus)?;
         let mut session = Self {
             driver,
+            address,
+            flush_ms: 200,
             mode,
+            eld_aus,
             opened: Instant::now(),
             media_packets: 0,
             last_request: 0,
@@ -71,12 +79,12 @@ impl Session {
             cancel,
             closing: false,
             interrupted: Box::new(interrupted),
-            buffer: None,
             mtu: 0,
             bitrate: 0,
             variable: false,
             delay_reporting: false,
             delay_report: None,
+            delay_serial: 0,
         };
         open_signaling_with_retry(
             || session.open_channel(address, 0),
@@ -144,15 +152,7 @@ impl Session {
             session.seid,
             session.bitrate
         ));
-        let config = session.selected_config.clone();
-        if let Err(error) = session.request(SET_CONFIGURATION, &config) {
-            // An explicit rejection gives us no ownership of the peer's endpoint.
-            if error.kind() == io::ErrorKind::Unsupported {
-                session.seid = 0;
-            }
-            return Err(error);
-        }
-        session.state = StreamState::Configured;
+        session.configure()?;
         session.delay_reporting = selected.delay_reporting;
         session.request(OPEN, &[session.seid << 2])?;
         session.state = StreamState::Open;
@@ -166,7 +166,7 @@ impl Session {
             return Err(invalid("Media MTU is too small for the selected codec"));
         }
         if mode == Mode::Eld {
-            let maximum = eld_bitrate_limit(session.mtu);
+            let maximum = eld_bitrate_limit(session.mtu, session.eld_aus)?;
             if session.bitrate > maximum {
                 if !preference.best_effort {
                     return Err(invalid("Media MTU is too small for this bitrate"));
@@ -179,17 +179,6 @@ impl Session {
             }
         }
         Ok(session)
-    }
-
-    pub fn set_buffer(&mut self, stream: super::buffer::Stream) {
-        self.buffer = Some(stream);
-    }
-
-    fn stop_buffer(&mut self) -> io::Result<()> {
-        if let Some(buffer) = &mut self.buffer {
-            buffer.stop()?;
-        }
-        Ok(())
     }
 
     fn open_channel(&self, address: u64, channel: u32) -> io::Result<usize> {
@@ -208,6 +197,90 @@ impl Session {
             return Err(invalid("Invalid playback channel response"));
         }
         Ok(u32::from_le_bytes(output[8..12].try_into().unwrap()) as usize)
+    }
+
+    fn open_media(&self, flush_ms: u16) -> io::Result<usize> {
+        self.check_cancelled()?;
+        let input = media_open_request(self.address, flush_ms)?;
+        let mut output = [0; 16];
+        if self.driver.playback_ioctl(0x810, &input, &mut output)? != output.len()
+            || output[..4] != 2u32.to_le_bytes()
+            || output[4..8] != 1u32.to_le_bytes()
+        {
+            return Err(invalid(
+                "The Bluetooth driver does not support buffer trials",
+            ));
+        }
+        Ok(u32::from_le_bytes(output[8..12].try_into().unwrap()) as usize)
+    }
+
+    pub fn check_flush_support(&self) -> io::Result<()> {
+        let mut data = [0; 28];
+        if self
+            .driver
+            .playback_ioctl(0x814, &2u32.to_le_bytes(), &mut data)?
+            != data.len()
+            || data[..4] != 2u32.to_le_bytes()
+            || data[4..8] != 1u32.to_le_bytes()
+            || data[8..12] != 1u32.to_le_bytes()
+            || u64::from_le_bytes(data[20..].try_into().unwrap()) != self.address
+        {
+            return Err(invalid(
+                "The Bluetooth driver does not support buffer trials on this stream",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn reopen_media(&mut self, flush_ms: u16) -> io::Result<()> {
+        media_open_request(self.address, flush_ms)?;
+        self.suspend()?;
+        self.request(CLOSE, &[self.seid << 2])?;
+        self.state = StreamState::Idle;
+        let seid = self.seid;
+        self.seid = 0;
+        let close = [2u32.to_le_bytes(), 1u32.to_le_bytes()].concat();
+        if self.driver.playback_ioctl(0x811, &close, &mut [])? != 0 {
+            return Err(invalid("Invalid media close response"));
+        }
+        self.delay_report = None;
+        self.seid = seid;
+        self.configure()?;
+        self.request(OPEN, &[self.seid << 2])?;
+        self.state = StreamState::Open;
+        self.mtu = self.open_media(flush_ms)?;
+        self.flush_ms = flush_ms;
+        if self.mtu < 48
+            || (self.mode == Mode::Eld && self.bitrate > eld_bitrate_limit(self.mtu, self.eld_aus)?)
+        {
+            return Err(invalid(
+                "Reopened media MTU is too small for the selected bitrate",
+            ));
+        }
+        crate::log(&format!(
+            "playback media: reopened with {flush_ms} ms flush timeout"
+        ));
+        Ok(())
+    }
+
+    fn configure(&mut self) -> io::Result<()> {
+        let config = self.selected_config.clone();
+        if let Err(error) = self.request(SET_CONFIGURATION, &config) {
+            // An explicit rejection gives us no ownership of the peer's endpoint.
+            if error.kind() == io::ErrorKind::Unsupported {
+                self.seid = 0;
+            }
+            return Err(error);
+        }
+        self.state = StreamState::Configured;
+        Ok(())
+    }
+
+    pub fn restore_media_timeout(&mut self) -> io::Result<()> {
+        if self.flush_ms != 200 {
+            self.reopen_media(200)?;
+        }
+        Ok(())
     }
 
     fn send(&self, channel: u32, packet: &[u8]) -> io::Result<()> {
@@ -322,14 +395,10 @@ impl Session {
                     ));
                 }
                 self.delay_report = Some(delay);
+                self.delay_serial = self.delay_serial.wrapping_add(1);
             }
         }
         if matches!(action, PeerAction::Suspend | PeerAction::Close) {
-            if let Err(error) = self.stop_buffer() {
-                crate::log(&format!(
-                    "playback: buffer cleanup after peer stop failed: {error}"
-                ));
-            }
             return Err(io::Error::new(
                 io::ErrorKind::ConnectionAborted,
                 "AirPods ended playback",
@@ -360,7 +429,6 @@ impl Session {
         Ok(())
     }
     pub fn suspend(&mut self) -> io::Result<()> {
-        self.stop_buffer()?;
         if self.state == StreamState::Streaming {
             self.request(SUSPEND, &[self.seid << 2])?;
             self.state = StreamState::Open;
@@ -372,11 +440,24 @@ impl Session {
             self.request(START, &[self.seid << 2]).map(|_| ())
         })?;
         self.state = StreamState::Streaming;
-        if let Some(buffer) = &mut self.buffer {
-            buffer.started();
-        }
         Ok(())
     }
+}
+
+fn media_open_request(address: u64, flush_ms: u16) -> io::Result<Vec<u8>> {
+    if address == 0
+        || address > 0xffff_ffff_ffff
+        || ![60, 80, 100, 120, 140, 150, 200, 300].contains(&flush_ms)
+    {
+        return Err(invalid("Invalid media flush timeout or device address"));
+    }
+    Ok([
+        2u32.to_le_bytes().as_slice(),
+        1u32.to_le_bytes().as_slice(),
+        address.to_le_bytes().as_slice(),
+        u32::from(flush_ms).to_le_bytes().as_slice(),
+    ]
+    .concat())
 }
 
 fn signal_name(signal: u8) -> &'static str {
@@ -515,10 +596,11 @@ fn select_configuration(
     )))
 }
 
-fn eld_bitrate_limit(mtu: usize) -> u32 {
+fn eld_bitrate_limit(mtu: usize, aus: usize) -> io::Result<u32> {
+    validate_eld_aus(aus)?;
     // CBR may use one padding byte per access unit.
-    let au_budget = mtu.saturating_sub(12 + 4 * AUS_PER_PACKET) / AUS_PER_PACKET;
-    au_budget.saturating_sub(1).min(320) as u32 * 800
+    let au_budget = mtu.saturating_sub(12 + 4 * aus) / aus;
+    Ok(au_budget.saturating_sub(1).min(320) as u32 * 800)
 }
 
 fn open_signaling_with_retry(
@@ -551,11 +633,6 @@ fn start_if_needed(state: StreamState, request: impl FnOnce() -> io::Result<()>)
 impl Drop for Session {
     fn drop(&mut self) {
         self.closing = true;
-        if let Some(mut buffer) = self.buffer.take() {
-            if let Err(error) = buffer.stop() {
-                crate::log(&format!("playback: buffer cleanup failed: {error}"));
-            }
-        }
         let _ = self.suspend();
         if self.seid != 0 && !self.peer_ended {
             let signal = if matches!(self.state, StreamState::Open | StreamState::Streaming) {
@@ -575,6 +652,22 @@ impl Drop for Session {
 mod tests {
     use super::*;
     use ntpods_ipc::PlaybackBitrate;
+
+    #[test]
+    fn media_options_preserve_the_versioned_packed_driver_layout() {
+        let address = 0x1234_5678_9abc;
+        let request = media_open_request(address, 60).unwrap();
+        assert_eq!(request.len(), 20);
+        assert_eq!(&request[..8], &[2, 0, 0, 0, 1, 0, 0, 0]);
+        assert_eq!(&request[8..16], &address.to_le_bytes());
+        assert_eq!(&request[16..], &[60, 0, 0, 0]);
+        for timeout in [0, 30, 59, 61, 500, u16::MAX] {
+            assert!(media_open_request(address, timeout).is_err());
+        }
+        for address in [0, 0x1_0000_0000_0000, u64::MAX] {
+            assert!(media_open_request(address, 200).is_err());
+        }
+    }
 
     fn select_configuration(
         requested: Mode,
@@ -733,17 +826,22 @@ mod tests {
         assert!(!preferences[0].variable);
         assert_eq!(fallback.bitrate, 512_000);
 
-        for mtu in [48, 661] {
-            assert!(Mode::Eld
-                .bitrate(preferences[1], eld_bitrate_limit(mtu))
-                .is_err());
+        for (aus, sufficient_mtu) in [(1, 337), (2, 662)] {
+            for mtu in [48, sufficient_mtu - 1] {
+                assert!(Mode::Eld
+                    .bitrate(preferences[1], eld_bitrate_limit(mtu, aus).unwrap())
+                    .is_err());
+            }
+            assert_eq!(
+                Mode::Eld
+                    .bitrate(
+                        preferences[1],
+                        eld_bitrate_limit(sufficient_mtu, aus).unwrap()
+                    )
+                    .unwrap(),
+                256_000
+            );
         }
-        assert_eq!(
-            Mode::Eld
-                .bitrate(preferences[1], eld_bitrate_limit(662))
-                .unwrap(),
-            256_000
-        );
     }
 
     #[test]
@@ -965,13 +1063,18 @@ mod tests {
 
     #[test]
     fn eld_mtu_budget_includes_cbr_padding() {
-        assert_eq!(eld_bitrate_limit(1023), 256000);
-        assert_eq!(eld_bitrate_limit(662), 256000);
-        assert_eq!(eld_bitrate_limit(661), 255200);
-        assert_eq!(eld_bitrate_limit(342), 128000);
-        assert_eq!(eld_bitrate_limit(341), 127200);
-        assert_eq!(eld_bitrate_limit(0), 0);
-        assert_eq!(eld_bitrate_limit(usize::MAX), 256000);
+        for (aus, maximum_mtu, minimum_mtu) in [(1, 337, 177), (2, 662, 342)] {
+            assert_eq!(eld_bitrate_limit(1023, aus).unwrap(), 256000);
+            assert_eq!(eld_bitrate_limit(maximum_mtu, aus).unwrap(), 256000);
+            assert_eq!(eld_bitrate_limit(maximum_mtu - 1, aus).unwrap(), 255200);
+            assert_eq!(eld_bitrate_limit(minimum_mtu, aus).unwrap(), 128000);
+            assert_eq!(eld_bitrate_limit(minimum_mtu - 1, aus).unwrap(), 127200);
+            assert_eq!(eld_bitrate_limit(0, aus).unwrap(), 0);
+            assert_eq!(eld_bitrate_limit(usize::MAX, aus).unwrap(), 256000);
+        }
+        for aus in [0, 3, usize::MAX] {
+            assert!(eld_bitrate_limit(1023, aus).is_err());
+        }
     }
 
     #[test]
