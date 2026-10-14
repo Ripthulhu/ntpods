@@ -364,6 +364,17 @@ Pro 3 reads, writes, an audible adjustment and restoration passed with the Apple
 host identity. Persistence across reconnects remains unverified; see
 [hardware coverage](WINDOWS-VALIDATION.md#controls-batteries-and-sensors).
 
+Two [public listening-mode captures](https://github.com/BorgoGustavo/airpods-ctl/tree/b42f4e8a944d39fdd9fa25533ae262bf647ddb3b/docs/captures)
+(`control-center-mode-changes.pklg` and `mode-transitions-2026-05-28.pklg`,
+author-reported Pro 2 / 8B39) contain six ATT reads of handle `0x0018` after
+mode changes. All six return identical 104-byte values with nonzero eight-band
+curves matching this layout. The files omit UUID discovery, so they do not
+establish the characteristic identity or a fitted hearing profile by themselves.
+The request/response traffic is not motion telemetry and gives no evidence
+that mode changes alter these settings. The preservation regression uses
+distinct synthetic left/right curves, including signed zero, to check that
+editing exposed controls leaves all curve and own-voice bytes unchanged.
+
 The saved Pro 3 / 9A348 captures from Tahoe 26.7.1 (25G241) on the AX200 contain
 successful 104-byte reads of both Custom Transparency and hearing settings. The
 four hearing values are identical, with zero per-ear curves; this does not

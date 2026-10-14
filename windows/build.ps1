@@ -19,6 +19,8 @@ $ErrorActionPreference = 'Stop'
 if ($LASTEXITCODE) { throw 'Localization checks failed.' }
 & python.exe (Join-Path $PSScriptRoot 'tests/test-aap-extract.py')
 if ($LASTEXITCODE) { throw 'AAP extraction checks failed.' }
+& python.exe (Join-Path $PSScriptRoot 'tests/test-pfc-decode.py')
+if ($LASTEXITCODE) { throw 'PFC decoding checks failed.' }
 & (Join-Path $PSScriptRoot 'tests\test-build-version.ps1')
 & (Join-Path $PSScriptRoot 'playback\test-buffer.ps1') -SelfTest
 & (Join-Path $PSScriptRoot 'tests\test-bluetooth-host-identity.ps1')
@@ -69,6 +71,8 @@ try {
     Run (Join-Path $tests 'mic-bridge.exe') @()
     Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', "/Fe:$tests\render-bridge.exe", "/Fo:$tests\render-bridge.obj", 'windows/drivers/mic/tests/render_bridge_test.cpp')
     Run (Join-Path $tests 'render-bridge.exe') @()
+    Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', "/Fe:$tests\render-changes.exe", "/Fo:$tests\render-changes.obj", 'windows/drivers/mic/tests/render_changes_test.cpp')
+    Run (Join-Path $tests 'render-changes.exe') @()
     Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', "/Fe:$tests\render-volume.exe", "/Fo:$tests\render-volume.obj", 'windows/drivers/mic/tests/render_volume_test.cpp')
     Run (Join-Path $tests 'render-volume.exe') @()
     Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', "/Fe:$tests\packet-constraints.exe", "/Fo:$tests\packet-constraints.obj", 'windows/drivers/mic/tests/packet_constraints_test.cpp', '/link', 'setupapi.lib')

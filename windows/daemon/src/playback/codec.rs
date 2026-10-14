@@ -114,10 +114,11 @@ pub enum MediaPackets {
         pending: Vec<Vec<u8>>,
         timestamp: u32,
         aus: usize,
+        ticks_per_au: u32,
     },
 }
 impl MediaPackets {
-    pub fn new(encoder: &AudioEncoder, eld_aus: usize) -> io::Result<Self> {
+    pub fn new(encoder: &AudioEncoder, eld_aus: usize, eld_rtp_clock: u32) -> io::Result<Self> {
         protocol::validate_eld_aus(eld_aus)?;
         match encoder {
             AudioEncoder::Aac(encoder) => Ok(Self::Aac {
@@ -129,6 +130,10 @@ impl MediaPackets {
                 pending: Vec::with_capacity(eld_aus),
                 timestamp: 0,
                 aus: eld_aus,
+                ticks_per_au: match eld_rtp_clock {
+                    48_000 | 1_000 => protocol::FRAME_SAMPLES as u32 * eld_rtp_clock / 48_000,
+                    _ => return Err(protocol::invalid("Unsupported AAC-ELD RTP clock")),
+                },
             }),
         }
     }
@@ -157,14 +162,14 @@ impl MediaPackets {
                 pending,
                 timestamp,
                 aus,
+                ticks_per_au,
             } => {
                 pending.push(unit);
                 if pending.len() < *aus {
                     return Ok(Vec::new());
                 }
                 let packet = writer.packet(pending, *timestamp, mtu)?;
-                *timestamp =
-                    timestamp.wrapping_add((pending.len() * protocol::FRAME_SAMPLES) as u32);
+                *timestamp = timestamp.wrapping_add(pending.len() as u32 * *ticks_per_au);
                 pending.clear();
                 Ok(vec![packet])
             }
@@ -205,39 +210,73 @@ mod tests {
     #[test]
     fn eld_frame_counts_follow_sample_time_and_reset_with_the_encoder() {
         for aus in [1, 2] {
-            let mut packets = MediaPackets::Eld {
+            for ticks_per_au in [480, 10] {
+                let mut packets = MediaPackets::Eld {
+                    writer: protocol::Packetizer::default(),
+                    pending: Vec::new(),
+                    timestamp: 0,
+                    aus,
+                    ticks_per_au,
+                };
+                let batch = |packets: &mut MediaPackets| {
+                    if aus == 2 {
+                        assert!(packets.push(vec![1; 10], 1023).unwrap().is_empty());
+                    }
+                    packets.push(vec![2; 20], 1023).unwrap().remove(0)
+                };
+                let first = batch(&mut packets);
+                assert_eq!(&first[4..8], &0u32.to_be_bytes());
+                assert_eq!(&first[12..14], &[0xb0, 1]);
+                let second = batch(&mut packets);
+                assert_eq!(&second[4..8], &(ticks_per_au * aus as u32).to_be_bytes());
+                assert_eq!(&second[2..4], &1u16.to_be_bytes());
+                assert_eq!(&second[12..14], &[0xb0, 1 + aus as u8]);
+                if aus == 2 {
+                    assert!(packets.push(vec![4; 40], 1023).unwrap().is_empty());
+                }
+                packets.clear();
+                let restarted = batch(&mut packets);
+                assert_eq!(&restarted[2..4], &2u16.to_be_bytes());
+                assert_eq!(&restarted[4..], &first[4..]);
+                if let MediaPackets::Eld { timestamp, .. } = &mut packets {
+                    *timestamp = u32::MAX - (ticks_per_au - 1);
+                }
+                let before_wrap = batch(&mut packets);
+                assert_eq!(
+                    &before_wrap[4..8],
+                    &(u32::MAX - (ticks_per_au - 1)).to_be_bytes()
+                );
+                let wrapped = batch(&mut packets);
+                assert_eq!(
+                    &wrapped[4..8],
+                    &(ticks_per_au * (aus as u32 - 1)).to_be_bytes()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn eld_clock_comparison_changes_only_timestamp_bytes() {
+        for aus in [1, 2] {
+            let mut streams = [480, 10].map(|ticks_per_au| MediaPackets::Eld {
                 writer: protocol::Packetizer::default(),
                 pending: Vec::new(),
                 timestamp: 0,
                 aus,
-            };
-            let batch = |packets: &mut MediaPackets| {
-                if aus == 2 {
-                    assert!(packets.push(vec![1; 10], 1023).unwrap().is_empty());
+                ticks_per_au,
+            });
+            for frame in 0..6 {
+                let sample_clock = streams[0].push(vec![frame; 31], 1023).unwrap();
+                let millisecond_clock = streams[1].push(vec![frame; 31], 1023).unwrap();
+                assert_eq!(sample_clock.len(), millisecond_clock.len());
+                for (sample, millis) in sample_clock.iter().zip(&millisecond_clock) {
+                    assert_eq!(&sample[..4], &millis[..4]);
+                    assert_eq!(&sample[8..], &millis[8..]);
+                    let first_frame = (frame as u32 + 1) - aus as u32;
+                    assert_eq!(&sample[4..8], &(first_frame * 480).to_be_bytes());
+                    assert_eq!(&millis[4..8], &(first_frame * 10).to_be_bytes());
                 }
-                packets.push(vec![2; 20], 1023).unwrap().remove(0)
-            };
-            let first = batch(&mut packets);
-            assert_eq!(&first[4..8], &0u32.to_be_bytes());
-            assert_eq!(&first[12..14], &[0xb0, 1]);
-            let second = batch(&mut packets);
-            assert_eq!(&second[4..8], &(480u32 * aus as u32).to_be_bytes());
-            assert_eq!(&second[2..4], &1u16.to_be_bytes());
-            assert_eq!(&second[12..14], &[0xb0, 1 + aus as u8]);
-            if aus == 2 {
-                assert!(packets.push(vec![4; 40], 1023).unwrap().is_empty());
             }
-            packets.clear();
-            let restarted = batch(&mut packets);
-            assert_eq!(&restarted[2..4], &2u16.to_be_bytes());
-            assert_eq!(&restarted[4..], &first[4..]);
-            if let MediaPackets::Eld { timestamp, .. } = &mut packets {
-                *timestamp = u32::MAX - 479;
-            }
-            let before_wrap = batch(&mut packets);
-            assert_eq!(&before_wrap[4..8], &(u32::MAX - 479).to_be_bytes());
-            let wrapped = batch(&mut packets);
-            assert_eq!(&wrapped[4..8], &(480u32 * (aus as u32 - 1)).to_be_bytes());
         }
     }
 }

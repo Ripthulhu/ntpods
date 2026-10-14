@@ -208,6 +208,16 @@ try {
     Assert-True (-not (Test-Path -LiteralPath (Get-NativeAudioBackupPath))) 'Successful uninstall kept the original-driver backup.'
     Write-Host 'PASS original backup, exact targeting, repeated backup and uninstall restore'
 
+    Reset-Fixture 'transactional-removal'
+    Save-NativeAudioOriginals
+    Install-NativeAudioDriver $root $audioInf
+    Uninstall-NativeAudioDriver $root -PreserveBackup
+    Assert-True ($script:devices[0].Service -eq 'AltA2DP' -and $script:devices[1].Service -eq 'BthA2dp') 'Transactional removal did not restore the previous providers.'
+    Assert-True (@(Read-NativeAudioBackup).Count -eq 3) 'Transactional removal discarded original-provider backups before commit.'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path (Get-NativeAudioBackupPath) 'restore-pending.json'))) 'Restored playback was incorrectly left pending.'
+    Remove-NativeAudioBackup
+    Write-Host 'PASS transactional removal retains original packages until commit'
+
     Reset-Fixture 'failed-export'
     $script:failOperation = '/export-driver'
     Assert-Fails { Save-NativeAudioOriginals } 'Failed export must not produce a completed backup.'

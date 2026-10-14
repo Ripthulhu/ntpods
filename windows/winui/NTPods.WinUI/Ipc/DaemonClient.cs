@@ -34,19 +34,23 @@ public sealed class DaemonClient : IDisposable
     private readonly CancellationTokenSource _cts = new();
     private readonly string _eventsPipe;
     private readonly string _commandsPipe;
-    private readonly Action _spawnDaemon;
+    private readonly Func<Process?> _spawnDaemon;
+    private readonly Func<bool> _daemonIsRunning;
+    private Process? _spawnedDaemon;
+    private Process? _connectedDaemon;
     private Session? _session;
     private TaskCompletionSource<Session> _nextReady = NewReady();
     private Task? _run;
     private bool _stopping;
 
-    public DaemonClient() : this("NTPods-events", "NTPods-cmds", TrySpawnDaemon) { }
+    public DaemonClient() : this("NTPods-events", "NTPods-cmds", TrySpawnDaemon, DaemonIsRunning) { }
 
-    internal DaemonClient(string eventsPipe, string commandsPipe, Action spawnDaemon)
+    internal DaemonClient(string eventsPipe, string commandsPipe, Func<Process?> spawnDaemon, Func<bool>? daemonIsRunning = null)
     {
         _eventsPipe = eventsPipe;
         _commandsPipe = commandsPipe;
         _spawnDaemon = spawnDaemon;
+        _daemonIsRunning = daemonIsRunning ?? (() => false);
     }
 
     private static TaskCompletionSource<Session> NewReady() => new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -113,6 +117,15 @@ public sealed class DaemonClient : IDisposable
         }
         catch
         {
+            // Pipe loss can mean the backend already exited, with nothing left to restore.
+            bool exited = false;
+            try
+            {
+                lock (_gate) exited = _spawnedDaemon is not { HasExited: false } &&
+                    _connectedDaemon is not { HasExited: false } && !_daemonIsRunning();
+            }
+            catch { } // An unreadable lifetime guard is not proof that shutdown finished.
+            if (exited) return;
             lock (_gate) _stopping = false;
             ConnectionChanged?.Invoke(IsReady);
             RequestState();
@@ -137,15 +150,30 @@ public sealed class DaemonClient : IDisposable
                 if (!GetNamedPipeServerProcessId(commands.SafePipeHandle, out uint processId) ||
                     !GetNamedPipeServerProcessId(events.SafePipeHandle, out uint eventsProcessId) || processId != eventsProcessId)
                     throw new IOException("Could not identify the background service.");
+                var process = Process.GetProcessById(checked((int)processId));
+                try { _ = process.SafeHandle; } // Retain this process identity even after its pipes close.
+                catch { process.Dispose(); throw; }
                 session = new Session(events, commands, connection, checked((int)processId));
-                lock (_gate) _session = session;
+                lock (_gate)
+                {
+                    _connectedDaemon?.Dispose();
+                    _connectedDaemon = process;
+                    _session = session;
+                }
                 reader = ReadSessionAsync(session);
                 writer = WriteSessionAsync(session);
                 await await Task.WhenAny(reader, writer).ConfigureAwait(false);
             }
             catch (TimeoutException)
             {
-                lock (_gate) { if (!_stopping && !ct.IsCancellationRequested) _spawnDaemon(); }
+                lock (_gate)
+                {
+                    if (!_stopping && !ct.IsCancellationRequested && _spawnedDaemon is not { HasExited: false })
+                    {
+                        _spawnedDaemon?.Dispose();
+                        _spawnedDaemon = _spawnDaemon();
+                    }
+                }
             }
             catch (OperationCanceledException) { }
             catch (Exception) { }
@@ -248,15 +276,27 @@ public sealed class DaemonClient : IDisposable
         }
     }
 
-    private static void TrySpawnDaemon()
+    private static Process? TrySpawnDaemon()
     {
         try
         {
             var path = FindDaemon();
-            if (path is null) return;
-            Process.Start(new ProcessStartInfo { FileName = path, UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = Path.GetDirectoryName(path)! });
+            if (path is null) return null;
+            return Process.Start(new ProcessStartInfo { FileName = path, UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = Path.GetDirectoryName(path)! });
         }
         catch { }
+        return null;
+    }
+
+    private static bool DaemonIsRunning()
+    {
+        try
+        {
+            bool exists = Mutex.TryOpenExisting(@"Local\NTPodsDaemonSingleton", out var mutex);
+            mutex?.Dispose();
+            return exists;
+        }
+        catch (UnauthorizedAccessException) { return true; }
     }
 
     private static string? FindDaemon()
@@ -280,6 +320,8 @@ public sealed class DaemonClient : IDisposable
     {
         Dispose();
         if (_run is not null) await _run.ConfigureAwait(false);
+        _spawnedDaemon?.Dispose();
+        _connectedDaemon?.Dispose();
         _cts.Dispose();
     }
 

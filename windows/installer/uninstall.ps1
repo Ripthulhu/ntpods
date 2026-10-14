@@ -9,9 +9,17 @@ if ($installed.InstallKind -ne 'zip') { throw 'Use Windows Settings > Apps to re
 Assert-UserSid $installed.InstalledUserSid
 Assert-ProtectedInstallPath $PSScriptRoot
 Stop-NTPods
-& (Join-Path $PSScriptRoot 'bluetooth-host-identity.ps1') -Action Restore
+Initialize-SetupDirectory | Out-Null
+$transactionId = [guid]::NewGuid().ToString()
+Uninstall-NTPodsDrivers $PSScriptRoot $transactionId
+try { & (Join-Path $PSScriptRoot 'bluetooth-host-identity.ps1') -Action Restore }
+catch {
+    $failure = $_
+    Restore-NTPodsDriverCheckpoint $PSScriptRoot $transactionId
+    throw $failure
+}
+Complete-NTPodsDriverRemoval $transactionId
 Unregister-NTPodsTasks
-Uninstall-NTPodsDrivers $PSScriptRoot
 Remove-RunValues $installed.InstalledUserSid @('NTPods', 'NTPods Daemon')
 foreach ($name in 'InstalledUserSid', 'InstallKind') {
     Remove-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\NTPods' -Name $name -ErrorAction SilentlyContinue

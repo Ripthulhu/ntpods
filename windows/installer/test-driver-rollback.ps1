@@ -355,6 +355,63 @@ try {
     Assert-True (@(Read-NativeAudioBackup).Count -eq 2) 'Commit discarded the new model backup.'
     Assert-Fails { Read-LegacyAudioBackup } 'Commit restored the previous manifest instead of keeping the expanded one.'
     Write-Host 'PASS successful model expansion keeps its original-provider records'
+
+    & {
+        Set-Content -LiteralPath $devconPath -Value 'No executable: calls are mocked.'
+        function Uninstall-NativeAudioDriver([string]$root, [switch]$PreserveBackup) {
+            Assert-True $PreserveBackup 'Removal discarded original playback packages before commit.'
+            $script:playbackRemoved = $true
+            $pending = Join-Path (Get-NativeAudioBackupPath) 'restore-pending.json'
+            New-Item -ItemType Directory -Path (Split-Path $pending) -Force | Out-Null
+            Set-Content -LiteralPath $pending -Value '["new pending restoration"]'
+        }
+        function Restore-NativeAudioBindings { param($root, $bindings, $packages, $checkpoint) $script:playbackRemoved = $false }
+        function Remove-TestCert { param($subject) $script:certificates = @() }
+        foreach ($failure in 'remove-mic', 'delete-old-aap', '') {
+            Reset-Fixture @($failure)
+            $transaction = 'remove-' + $failure
+            $script:playbackRemoved = $false
+            if ($failure) {
+                Assert-Fails { Uninstall-NTPodsDrivers $root $transaction } 'Removal failure did not reach rollback.'
+            } else {
+                $pending = Join-Path (Get-NativeAudioBackupPath) 'restore-pending.json'
+                Set-Content -LiteralPath $pending -Value '["previous pending restoration"]'
+                Uninstall-NTPodsDrivers $root $transaction
+                Assert-True $script:playbackRemoved 'Removal did not run before simulated MSI cancellation.'
+                Assert-True ($script:certificates.Count -eq 1) 'Removal discarded its signing certificate before commit.'
+                Restore-NTPodsDriverCheckpoint $root $transaction
+                Assert-True ((Get-Content -LiteralPath $pending -Raw).Trim() -ceq '["previous pending restoration"]') 'Cancellation lost the previous pending playback restoration.'
+                Remove-Item -LiteralPath $pending
+            }
+            Assert-Restored
+            Assert-True (-not $script:playbackRemoved) 'Removal rollback did not restore playback.'
+            if ($failure) {
+                Assert-True (-not (Test-Path -LiteralPath (Join-Path (Get-NativeAudioBackupPath) 'restore-pending.json'))) 'Failed removal left a new playback recovery list.'
+            }
+            Restore-NTPodsDriverCheckpoint $root $transaction
+        }
+        Reset-Fixture @()
+        Uninstall-NTPodsDrivers $root 'remove-commit'
+        $pending = Join-Path (Get-NativeAudioBackupPath) 'restore-pending.json'
+        Remove-Item -LiteralPath $pending
+        Complete-NTPodsDriverRemoval 'remove-commit'
+        Assert-True ($script:certificates.Count -eq 0) 'Committed removal kept the signing certificate.'
+        Assert-True (-not (Test-Path -LiteralPath (Get-DriverCheckpointPath))) 'Committed removal kept its checkpoint.'
+        Assert-True (-not (Test-Path -LiteralPath (Get-NativeAudioBackupPath))) 'Committed removal kept an unnecessary playback backup.'
+        Reset-AudioUpgradeFixture $true @()
+        $provider = Join-Path (Get-NativeAudioBackupPath) 'previous-provider.inf'
+        Set-Content -LiteralPath $provider -Value 'saved provider package'
+        $originals = @(Read-NativeAudioBackup)
+        $originals[0].Published = 'oem90.inf'; $originals[0].Inf = 'previous-provider.inf'
+        Save-NativeAudioJson (Join-Path (Get-NativeAudioBackupPath) 'bindings.json') $originals
+        Uninstall-NTPodsDrivers $root 'remove-commit-absent'
+        Complete-NTPodsDriverRemoval 'remove-commit-absent'
+        Assert-True ($script:certificates.Count -eq 0) 'An absent pair prevented signing-certificate cleanup.'
+        Assert-True (-not (Test-Path -LiteralPath (Get-DriverCheckpointPath))) 'An absent pair prevented checkpoint cleanup.'
+        Assert-True (Test-Path -LiteralPath (Join-Path (Get-NativeAudioBackupPath) 'restore-pending.json')) 'Commit discarded an absent pair recovery list.'
+        Assert-True (@(Read-NativeAudioBackup).Count -eq 1 -and (Get-Content -LiteralPath $provider -Raw).Trim() -ceq 'saved provider package') 'Commit discarded an absent pair original-provider backup.'
+        Write-Host 'PASS failed removal, later cancellation, repeated rollback and commit cleanup'
+    }
 } finally {
     Remove-Item -LiteralPath ('Function:\' + $devconPath) -ErrorAction SilentlyContinue
     $env:ProgramData = $oldProgramData

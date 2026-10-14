@@ -116,15 +116,33 @@ impl FrameClock {
         self.driver_origin = Some(virtual_hns + (reserve.as_nanos() / 100) as u64);
     }
 
-    pub fn lateness(&self, now: Instant, virtual_hns: Option<u64>) -> io::Result<Option<Duration>> {
+    fn driver_deadline(&self, origin: u64) -> u64 {
+        origin
+            + self.samples_sent / SAMPLE_RATE * 10_000_000
+            + self.samples_sent % SAMPLE_RATE * 10_000_000 / SAMPLE_RATE
+    }
+
+    pub fn until_due(&self, now: Instant, virtual_hns: Option<u64>) -> io::Result<Duration> {
         match (self.driver_origin, virtual_hns) {
             (Some(origin), Some(now)) => {
-                let elapsed = self.samples_sent / SAMPLE_RATE * 10_000_000
-                    + self.samples_sent % SAMPLE_RATE * 10_000_000 / SAMPLE_RATE;
-                Ok(now
-                    .checked_sub(origin + elapsed)
-                    .map(|hns| Duration::new(hns / 10_000_000, ((hns % 10_000_000) * 100) as u32)))
+                let remaining = self.driver_deadline(origin).saturating_sub(now);
+                Ok(Duration::new(
+                    remaining / 10_000_000,
+                    ((remaining % 10_000_000) * 100) as u32,
+                ))
             }
+            (None, None) => Ok(self.deadline().saturating_duration_since(now)),
+            _ => Err(io::Error::other(
+                "Playback clock source changed during a stream",
+            )),
+        }
+    }
+
+    pub fn lateness(&self, now: Instant, virtual_hns: Option<u64>) -> io::Result<Option<Duration>> {
+        match (self.driver_origin, virtual_hns) {
+            (Some(origin), Some(now)) => Ok(now
+                .checked_sub(self.driver_deadline(origin))
+                .map(|hns| Duration::new(hns / 10_000_000, ((hns % 10_000_000) * 100) as u32))),
             (None, None) => Ok(now.checked_duration_since(self.deadline())),
             _ => Err(io::Error::other(
                 "Playback clock source changed during a stream",
@@ -138,9 +156,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn waits_follow_the_next_frame_without_losing_fractional_aac_time() {
+        let now = Instant::now();
+        for (samples, reserve) in [(480, 20), (1024, 30)] {
+            let reserve = Duration::from_millis(reserve);
+            let mut clock = FrameClock::new(samples, now + reserve).unwrap();
+            assert_eq!(clock.until_due(now, None).unwrap(), reserve);
+            assert_eq!(
+                clock.until_due(now + reserve, None).unwrap(),
+                Duration::ZERO
+            );
+            clock.use_driver_clock(1_000_000, reserve);
+            assert_eq!(clock.until_due(now, Some(1_000_000)).unwrap(), reserve);
+            assert!(clock.until_due(now, None).is_err());
+            for n in 1..=10_000 {
+                clock.advance();
+                let deadline = 1_000_000
+                    + reserve.as_nanos() as u64 / 100
+                    + n * samples as u64 * 10_000_000 / 48_000;
+                assert_eq!(
+                    clock.until_due(now, Some(deadline - 1)).unwrap(),
+                    Duration::from_nanos(100)
+                );
+                assert_eq!(
+                    clock.until_due(now, Some(deadline + 1)).unwrap(),
+                    Duration::ZERO
+                );
+            }
+        }
+    }
+
+    #[test]
     fn driver_deadlines_follow_virtual_time_without_resetting_on_rate_changes() {
-        for samples in [480, 1024] {
-            for reserve_ms in [30, 50] {
+        for (samples, reserves) in [(480, &[20, 30, 50][..]), (1024, &[30, 50][..])] {
+            for &reserve_ms in reserves {
                 let reserve = Duration::from_millis(reserve_ms);
                 let now = Instant::now();
                 let mut clock = FrameClock::new(samples, now + reserve).unwrap();

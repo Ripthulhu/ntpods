@@ -39,14 +39,20 @@ Sources: [L2CAP transport](../windows/drivers/aap/L2cap.c),
 ## Playback negotiation
 
 NTPods opens signaling, sends `DISCOVER`, then queries unused audio sink SEIDs
-with `GET_CAPABILITIES`. The selected sink SEID comes from the reply; the local
-source SEID is 1. NTPods does not assume the earbuds use a fixed sink SEID.
+with `GET_ALL_CAPABILITIES`, falling back to `GET_CAPABILITIES` when unsupported.
+The selected sink SEID comes from the reply; the local source SEID is 1.
+NTPods does not assume the earbuds use a fixed sink SEID.
 
 The sequence is `SET_CONFIGURATION` → `OPEN` → open media channel → `START`
 when Windows playback starts. `SUSPEND` pauses the stream when playback stops.
 Cleanup sends `CLOSE` for an open stream or `ABORT` for partial configuration,
 then closes both channels. Codec or bitrate changes open a new stream on the
 same Windows output.
+
+When the driver reports a closed playback channel (Windows error 1167), the
+backend treats it as a transport disconnect and retries with a fresh session
+while the pair remains connected. The automatic buffer policy passes that
+failure to session cleanup instead of attempting another media reopen.
 
 Single-packet signaling has the following header:
 
@@ -63,6 +69,10 @@ up to two seconds for a matching label and signal. Fragmented signaling is
 rejected. Peer commands are handled while awaiting replies and while streaming;
 a peer Suspend or Close ends the current playback run. A peer Start already
 accepted in the open state must not cause a duplicate Start request.
+
+Signaling logs include total request time, `send_us` for the driver's send
+completion, and `response_wait_us` for the reply loop. The latter includes
+incoming peer-command handling; neither value measures acoustic latency.
 
 Capabilities use `[category:u8, length:u8, value:length]` records. Category 1 is
 empty Media Transport. Category 7 begins with media type `00` and codec type
@@ -133,7 +143,7 @@ it does not assign meanings to all their reserved bits.
 | AudioSpecificConfig | `F8 E6 50 00`, no SBR |
 | Bitrate | CBR 128–256 kbps in 1 kbps steps; optional experimental VBR up to 256 kbps |
 | RTP header | `80 60`, big-endian sequence and timestamp, SSRC `11 22 33 44` |
-| RTP clock | 48 kHz sample count; timestamp advances 480 per AU |
+| RTP clock | 48 kHz sample count by default; diagnostic 1 kHz mode advances 10 per AU |
 | AU geometry | 480 samples = 10 ms; one AU per packet by default, two with the diagnostic override |
 | Bounds | One or two AUs; each nonempty and at most 321 bytes; complete packet must fit media MTU |
 
@@ -159,6 +169,11 @@ wraps at 16 bits. There is no LATM wrapper or AAC fragmentation on this path.
 The `B` and `1` high nibbles follow USBPods. NTPods retains a fixed SSRC;
 whether the earbuds require those exact values remains unverified.
 
+The [timestamp override](WINDOWS-AUDIO-LATENCY.md#packet-and-source-reserve-overrides)
+changes only AAC-ELD timestamp units. Both clocks count encoded samples, so the
+override preserves packet cadence, codec settings and the Windows render clock.
+The 1 kHz option has not been validated on hardware.
+
 The maximum bitrate allowed by the MTU is
 `min(floor((MTU - 12 - 4 * n) / n) - 1, 320) * 800` bits/s for `n` AUs,
 with subtraction clamped at zero. The extra byte allows CBR rounding. One
@@ -169,10 +184,10 @@ Manual settings that do not fit fail.
 On Suspend/restart, the ELD packetizer discards pending AUs and resets its
 AU sequence and timestamp; RTP packet sequence continues within that session.
 The encoder is recreated. NTPods clears queued PCM and primes playback with a
-30 ms scheduling lead by default. A diagnostic override retains the earlier
-50 ms reserve. Its frame clock counts samples from one origin, avoiding
-rounding drift from repeated millisecond delays. These host choices still need
-comparison with macOS packet pacing and buffering.
+20 ms scheduling lead for AAC-ELD and 30 ms for AAC. Diagnostic overrides allow
+comparison with the earlier 30/50 ms reserves. Its frame clock counts samples
+from one origin, avoiding rounding drift from repeated millisecond delays.
+These host choices still need comparison with macOS packet pacing and buffering.
 
 Sources and fixtures: [protocol.rs](../windows/daemon/src/playback/protocol.rs),
 [packetizer clocks](../windows/daemon/src/playback/codec.rs),

@@ -2,12 +2,47 @@ use super::protocol::{invalid, PCM_BYTES};
 use std::cell::Cell;
 use std::io;
 use std::ptr;
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
-use windows_sys::Win32::Storage::FileSystem::{CreateFileW, OPEN_EXISTING};
-use windows_sys::Win32::System::IO::DeviceIoControl;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread::{self, JoinHandle, Thread};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, ERROR_IO_PENDING, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+};
+use windows_sys::Win32::Storage::FileSystem::{CreateFileW, FILE_FLAG_OVERLAPPED, OPEN_EXISTING};
+use windows_sys::Win32::System::Threading::{
+    CreateEventW, ResetEvent, SetEvent, WaitForMultipleObjects, WaitForSingleObject, INFINITE,
+};
+use windows_sys::Win32::System::IO::{
+    CancelIoEx, DeviceIoControl, GetOverlappedResult, OVERLAPPED,
+};
+
+const WAIT_CHANGE: u32 = 0x0022_6414;
+
+struct Handle(HANDLE);
+// Overlapped requests each own their buffers and event; Windows handles are thread-safe.
+unsafe impl Send for Handle {}
+unsafe impl Sync for Handle {}
+
+impl Handle {
+    fn event() -> io::Result<Self> {
+        let handle = unsafe { CreateEventW(ptr::null(), 1, 0, ptr::null()) };
+        if handle.is_null() {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(Self(handle))
+        }
+    }
+}
+
+impl Drop for Handle {
+    fn drop(&mut self) {
+        unsafe { CloseHandle(self.0) };
+    }
+}
 
 pub struct Render {
-    handle: HANDLE,
+    handle: Arc<Handle>,
+    event: Handle,
     address: u64,
     ready: Cell<bool>,
 }
@@ -31,7 +66,7 @@ impl Render {
                 0,
                 ptr::null(),
                 OPEN_EXISTING,
-                0,
+                FILE_FLAG_OVERLAPPED,
                 ptr::null_mut(),
             )
         };
@@ -39,7 +74,8 @@ impl Render {
             return Err(io::Error::last_os_error());
         }
         let result = Self {
-            handle,
+            handle: Arc::new(Handle(handle)),
+            event: Handle::event()?,
             address,
             ready: Cell::new(false),
         };
@@ -47,22 +83,21 @@ impl Render {
         Ok(result)
     }
 
-    fn ioctl(&self, code: u32, output: &mut [u8]) -> io::Result<usize> {
+    fn ioctl(&self, code: u32, input: &[u8], output: &mut [u8]) -> io::Result<usize> {
         let mut returned = 0;
-        if unsafe {
-            DeviceIoControl(
-                self.handle,
-                code,
-                ptr::null(),
-                0,
-                output.as_mut_ptr().cast(),
-                output.len() as u32,
-                &mut returned,
-                ptr::null_mut(),
-            )
-        } == 0
-        {
-            return Err(io::Error::last_os_error());
+        let mut operation: OVERLAPPED = unsafe { std::mem::zeroed() };
+        operation.hEvent = self.event.0;
+        if !start_ioctl(
+            self.handle.0,
+            code,
+            input,
+            output,
+            &mut operation,
+            &mut returned,
+        )? {
+            if unsafe { GetOverlappedResult(self.handle.0, &operation, &mut returned, 1) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
         }
         if returned as usize > output.len() {
             return Err(invalid("Invalid render response size"));
@@ -72,7 +107,7 @@ impl Render {
 
     pub fn status(&self) -> io::Result<[u32; 4]> {
         let mut data = [0; 48];
-        if self.ioctl(0x0022_6404, &mut data)? != data.len() {
+        if self.ioctl(0x0022_6404, &[], &mut data)? != data.len() {
             return Err(invalid("Truncated playback driver status"));
         }
         parse_status(&data, self.address, self.ready.get())
@@ -80,7 +115,7 @@ impl Render {
 
     pub fn clock(&self) -> io::Result<ClockStatus> {
         let mut data = [0; 64];
-        if self.ioctl(0x0022_6410, &mut data)? != data.len() {
+        if self.ioctl(0x0022_6410, &[], &mut data)? != data.len() {
             return Err(invalid("Truncated playback clock response"));
         }
         parse_clock(&data)
@@ -88,23 +123,7 @@ impl Render {
 
     pub fn set_clock(&self, interval: u32, delta_ms: u32) -> io::Result<()> {
         let input = clock_request(self.clock()?.generation, interval, delta_ms)?;
-        let mut returned = 0;
-        if unsafe {
-            DeviceIoControl(
-                self.handle,
-                0x0022_a40c,
-                input.as_ptr().cast(),
-                input.len() as u32,
-                ptr::null_mut(),
-                0,
-                &mut returned,
-                ptr::null_mut(),
-            )
-        } == 0
-        {
-            return Err(io::Error::last_os_error());
-        }
-        if returned != 0 {
+        if self.ioctl(0x0022_a40c, &input, &mut [])? != 0 {
             return Err(invalid("Invalid playback clock response"));
         }
         Ok(())
@@ -116,23 +135,7 @@ impl Render {
 
     pub fn set_ready(&self, ready: bool) -> io::Result<()> {
         let input = [1u32.to_le_bytes(), u32::from(ready).to_le_bytes()].concat();
-        let mut returned = 0;
-        if unsafe {
-            DeviceIoControl(
-                self.handle,
-                0x0022_a408,
-                input.as_ptr().cast(),
-                input.len() as u32,
-                ptr::null_mut(),
-                0,
-                &mut returned,
-                ptr::null_mut(),
-            )
-        } == 0
-        {
-            return Err(io::Error::last_os_error());
-        }
-        if returned != 0 {
+        if self.ioctl(0x0022_a408, &input, &mut [])? != 0 {
             return Err(invalid("Invalid provider response"));
         }
         self.ready.set(ready);
@@ -144,12 +147,183 @@ impl Render {
             return Err(invalid("Invalid PCM read size"));
         }
         let mut pcm = vec![0; maximum];
-        let bytes = self.ioctl(0x0022_6400, &mut pcm)?;
+        let bytes = self.ioctl(0x0022_6400, &[], &mut pcm)?;
         if bytes % 4 != 0 {
             return Err(invalid("Partial stereo PCM frame"));
         }
         pcm.truncate(bytes);
         Ok(pcm)
+    }
+
+    pub fn notifications(&self, target: Thread) -> io::Result<Option<Notifications>> {
+        let mut output = [0; 4];
+        let bytes = match self.ioctl(WAIT_CHANGE, &change_request(0), &mut output) {
+            Ok(bytes) => bytes,
+            Err(error) if matches!(error.raw_os_error(), Some(1 | 50)) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let sequence = change_reply(bytes, &output)?;
+        let stop = Arc::new(Handle::event()?);
+        let alive = Arc::new(AtomicBool::new(true));
+        let handle = self.handle.clone();
+        let worker_stop = stop.clone();
+        let worker_alive = alive.clone();
+        let worker = thread::Builder::new()
+            .name("playback-pcm-ready".into())
+            .spawn(move || {
+                if let Err(error) = wait_changes(&handle, &worker_stop, &target, sequence) {
+                    crate::log(&format!("playback: PCM notifications stopped: {error}"));
+                }
+                worker_alive.store(false, Ordering::Release);
+                target.unpark();
+            })?;
+        Ok(Some(Notifications {
+            stop,
+            alive,
+            worker: Some(worker),
+        }))
+    }
+}
+
+pub struct Notifications {
+    stop: Arc<Handle>,
+    alive: Arc<AtomicBool>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl Notifications {
+    pub fn available(&self) -> bool {
+        self.alive.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for Notifications {
+    fn drop(&mut self) {
+        unsafe { SetEvent(self.stop.0) };
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn start_ioctl(
+    handle: HANDLE,
+    code: u32,
+    input: &[u8],
+    output: &mut [u8],
+    operation: &mut OVERLAPPED,
+    returned: &mut u32,
+) -> io::Result<bool> {
+    unsafe {
+        if ResetEvent(operation.hEvent) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if DeviceIoControl(
+            handle,
+            code,
+            if input.is_empty() {
+                ptr::null()
+            } else {
+                input.as_ptr().cast()
+            },
+            input.len() as u32,
+            if output.is_empty() {
+                ptr::null_mut()
+            } else {
+                output.as_mut_ptr().cast()
+            },
+            output.len() as u32,
+            returned,
+            operation,
+        ) != 0
+        {
+            return Ok(true);
+        }
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(ERROR_IO_PENDING as i32) {
+            Ok(false)
+        } else {
+            Err(error)
+        }
+    }
+}
+
+fn change_request(sequence: u32) -> [u8; 8] {
+    let mut input = [0; 8];
+    input[..4].copy_from_slice(&1u32.to_le_bytes());
+    input[4..].copy_from_slice(&sequence.to_le_bytes());
+    input
+}
+
+fn change_reply(bytes: usize, output: &[u8; 4]) -> io::Result<u32> {
+    let sequence = u32::from_le_bytes(*output);
+    if bytes != output.len() || sequence == 0 {
+        Err(invalid("Invalid playback notification response"))
+    } else {
+        Ok(sequence)
+    }
+}
+
+fn wait_changes(
+    handle: &Handle,
+    stop: &Handle,
+    target: &Thread,
+    mut sequence: u32,
+) -> io::Result<()> {
+    let event = Handle::event()?;
+    let _scheduling = super::scheduling::AudioScheduling::acquire();
+    loop {
+        let input = change_request(sequence);
+        let mut output = [0; 4];
+        let mut operation: OVERLAPPED = unsafe { std::mem::zeroed() };
+        operation.hEvent = event.0;
+        let mut bytes = 0;
+        let immediate = start_ioctl(
+            handle.0,
+            WAIT_CHANGE,
+            &input,
+            &mut output,
+            &mut operation,
+            &mut bytes,
+        )?;
+        if !unsafe { wait_notification(handle.0, stop.0, &operation, &mut bytes, immediate)? } {
+            return Ok(());
+        }
+        sequence = change_reply(bytes as usize, &output)?;
+        target.unpark();
+    }
+}
+
+// The operation and its buffers remain live until completion or cancellation drains.
+unsafe fn wait_notification(
+    handle: HANDLE,
+    stop: HANDLE,
+    operation: &OVERLAPPED,
+    returned: &mut u32,
+    immediate: bool,
+) -> io::Result<bool> {
+    if immediate {
+        return match WaitForSingleObject(stop, 0) {
+            WAIT_OBJECT_0 => Ok(false),
+            WAIT_TIMEOUT => Ok(true),
+            _ => Err(io::Error::last_os_error()),
+        };
+    }
+    let wait = WaitForMultipleObjects(2, [stop, operation.hEvent].as_ptr(), 0, INFINITE);
+    if wait == WAIT_OBJECT_0 + 1 {
+        return if GetOverlappedResult(handle, operation, returned, 1) != 0 {
+            Ok(true)
+        } else {
+            Err(io::Error::last_os_error())
+        };
+    }
+    let error = io::Error::last_os_error();
+    CancelIoEx(handle, operation);
+    GetOverlappedResult(handle, operation, returned, 1);
+    if wait == WAIT_OBJECT_0 {
+        Ok(false)
+    } else {
+        Err(error)
     }
 }
 
@@ -187,14 +361,6 @@ fn parse_clock(data: &[u8; 64]) -> io::Result<ClockStatus> {
     })
 }
 
-impl Drop for Render {
-    fn drop(&mut self) {
-        unsafe {
-            CloseHandle(self.handle);
-        }
-    }
-}
-
 fn parse_status(data: &[u8; 48], address: u64, expected_ready: bool) -> io::Result<[u32; 4]> {
     let values: Vec<_> = data
         .chunks_exact(4)
@@ -225,6 +391,99 @@ fn parse_status(data: &[u8; 48], address: u64, expected_ready: bool) -> io::Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notification_abi_rejects_invalid_replies_and_preserves_wrap() {
+        for sequence in [0u32, 1, u32::MAX] {
+            let request = change_request(sequence);
+            assert_eq!(&request[..4], &1u32.to_le_bytes());
+            assert_eq!(&request[4..], &sequence.to_le_bytes());
+        }
+        for sequence in [1u32, u32::MAX] {
+            assert_eq!(change_reply(4, &sequence.to_le_bytes()).unwrap(), sequence);
+        }
+        assert!(change_reply(4, &[0; 4]).is_err());
+        assert!(change_reply(3, &1u32.to_le_bytes()).is_err());
+        assert!(change_reply(5, &1u32.to_le_bytes()).is_err());
+    }
+
+    #[test]
+    fn notification_stop_drains_pending_io_and_tolerates_completed_io() {
+        use windows_sys::Win32::Foundation::{GetLastError, ERROR_OPERATION_ABORTED};
+        use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile, PIPE_ACCESS_DUPLEX};
+        use windows_sys::Win32::System::Pipes::{CreateNamedPipeW, PIPE_REJECT_REMOTE_CLIENTS};
+        unsafe {
+            for (complete, stop_first) in [(false, true), (true, false), (true, true)] {
+                let name = crate::wide(&format!(
+                    r"\\.\pipe\NTPods-pcm-notification-test-{}-{complete}-{stop_first}",
+                    std::process::id()
+                ));
+                let server = Handle(CreateNamedPipeW(
+                    name.as_ptr(),
+                    PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
+                    PIPE_REJECT_REMOTE_CLIENTS,
+                    1,
+                    64,
+                    64,
+                    0,
+                    ptr::null(),
+                ));
+                assert_ne!(server.0, INVALID_HANDLE_VALUE);
+                let client = Handle(CreateFileW(
+                    name.as_ptr(),
+                    0xc000_0000,
+                    0,
+                    ptr::null(),
+                    OPEN_EXISTING,
+                    0,
+                    ptr::null_mut(),
+                ));
+                assert_ne!(client.0, INVALID_HANDLE_VALUE);
+                let event = Handle::event().unwrap();
+                let stop = Handle::event().unwrap();
+                let mut operation: OVERLAPPED = std::mem::zeroed();
+                operation.hEvent = event.0;
+                let mut output = [0u8; 4];
+                let mut bytes = 0;
+                assert_eq!(
+                    ReadFile(
+                        server.0,
+                        output.as_mut_ptr(),
+                        4,
+                        ptr::null_mut(),
+                        &mut operation
+                    ),
+                    0
+                );
+                assert_eq!(GetLastError(), ERROR_IO_PENDING);
+                if complete {
+                    assert_ne!(
+                        WriteFile(client.0, b"abcd".as_ptr(), 4, &mut bytes, ptr::null_mut()),
+                        0
+                    );
+                }
+                if stop_first {
+                    assert_ne!(SetEvent(stop.0), 0);
+                }
+                assert_eq!(
+                    wait_notification(server.0, stop.0, &operation, &mut bytes, false).unwrap(),
+                    !stop_first
+                );
+                if !complete {
+                    assert_eq!(GetOverlappedResult(server.0, &operation, &mut bytes, 0), 0);
+                    assert_eq!(GetLastError(), ERROR_OPERATION_ABORTED);
+                    assert_eq!(output, [0; 4]);
+                } else if !stop_first {
+                    assert_eq!(bytes, 4);
+                    assert_eq!(&output, b"abcd");
+                }
+                assert_ne!(SetEvent(stop.0), 0);
+                assert!(
+                    !wait_notification(server.0, stop.0, &operation, &mut bytes, true).unwrap()
+                );
+            }
+        }
+    }
 
     #[test]
     fn clock_requests_reject_unbounded_or_ambiguous_adjustments() {

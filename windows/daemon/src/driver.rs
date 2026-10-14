@@ -255,6 +255,18 @@ fn require_reply(actual: u32, minimum: u32) -> io::Result<()> {
     }
 }
 
+#[cfg(feature = "experimental-playback")]
+fn playback_error(error: io::Error) -> io::Error {
+    use windows_sys::Win32::Foundation::ERROR_DEVICE_NOT_CONNECTED;
+
+    // Rust does not classify the profile driver's disconnected-channel status.
+    if error.raw_os_error() == Some(ERROR_DEVICE_NOT_CONNECTED as i32) {
+        io::Error::new(io::ErrorKind::NotConnected, error)
+    } else {
+        error
+    }
+}
+
 impl Driver {
     #[cfg(feature = "experimental-playback")]
     pub(crate) fn playback_ioctl(
@@ -283,7 +295,8 @@ impl Driver {
             input,
             output,
             timeout,
-        )? as usize)
+        )
+        .map_err(playback_error)? as usize)
     }
 
     pub fn open(mac: u64) -> io::Result<Driver> {
@@ -544,6 +557,51 @@ mod tests {
     use windows_sys::Win32::System::Pipes::{
         ConnectNamedPipe, CreateNamedPipeW, PIPE_REJECT_REMOTE_CLIENTS,
     };
+
+    #[cfg(feature = "experimental-playback")]
+    #[test]
+    fn playback_disconnect_is_classified_without_losing_the_windows_error() {
+        use windows_sys::Win32::Foundation::ERROR_DEVICE_NOT_CONNECTED;
+
+        let original = io::Error::from_raw_os_error(ERROR_DEVICE_NOT_CONNECTED as i32);
+        let message = original.to_string();
+        let error = playback_error(original);
+        assert_eq!(error.kind(), io::ErrorKind::NotConnected);
+        assert_eq!(error.to_string(), message);
+        assert_eq!(
+            error
+                .get_ref()
+                .unwrap()
+                .downcast_ref::<io::Error>()
+                .unwrap()
+                .raw_os_error(),
+            Some(ERROR_DEVICE_NOT_CONNECTED as i32)
+        );
+    }
+
+    #[cfg(feature = "experimental-playback")]
+    #[test]
+    fn playback_preserves_rejection_cancellation_and_timeout_errors() {
+        use windows_sys::Win32::Foundation::{
+            ERROR_REQ_NOT_ACCEP, ERROR_SEM_TIMEOUT, ERROR_TIMEOUT,
+        };
+
+        for code in [
+            ERROR_REQ_NOT_ACCEP,
+            ERROR_OPERATION_ABORTED,
+            WAIT_TIMEOUT,
+            ERROR_SEM_TIMEOUT,
+            ERROR_TIMEOUT,
+        ] {
+            let original = io::Error::from_raw_os_error(code as i32);
+            let kind = original.kind();
+            let message = original.to_string();
+            let error = playback_error(original);
+            assert_eq!(error.raw_os_error(), Some(code as i32));
+            assert_eq!(error.kind(), kind);
+            assert_eq!(error.to_string(), message);
+        }
+    }
 
     #[test]
     fn shared_handle_survives_control_session_replacement() {

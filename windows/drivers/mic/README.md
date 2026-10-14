@@ -104,6 +104,7 @@ Normal applications use the Windows output endpoint.
 | `READ_PCM` (`0x00226400`) | None | Buffer: 4–1920 bytes, divisible by 4; returns 0 to capacity bytes of available 48 kHz stereo PCM16 |
 | `STATUS` (`0x00226404`) | None | Exactly 48 bytes |
 | `SET_PROVIDER` (`0x0022A408`) | Two DWORDs: version `1`, ready `0` or `1` | None |
+| `WAIT_CHANGE` (`0x00226414`) | Exactly two DWORDs: version `1`, last observed sequence | Exactly one DWORD: nonzero sequence |
 
 The version-3 status layout is eight DWORDs (version, sample rate, channels, bits
 per sample, running streams, queued frames, dropped frames, generation), followed
@@ -116,12 +117,26 @@ frames on overflow. Reads complete immediately. Provider closure, the last rende
 pause, power-down and removal clear queued audio. A provider marked unready stops
 accepting PCM without removing an already available endpoint during codec changes.
 
+`WAIT_CHANGE` returns immediately for sequence zero or a changed sequence;
+otherwise it waits for PCM, producer start/stop, provider readiness or online
+state changes. It does not consume PCM. The sequence skips zero on wrap. A
+manual WDF queue owns at most one pending wait per exclusive provider handle
+and handles cancellation. Completion occurs outside the render spin lock.
+Provider closure and device removal drain pending requests.
+
+The backend cancels and drains its overlapped wait before releasing its buffers
+or handle. Older drivers can reject this optional request without changing the
+version-3 status ABI; the backend then retains 1 ms polling. Runtime notification
+failure uses the same fallback.
+
 The authoritative layouts are in [`RenderPipe.h`](Common/RenderPipe.h), with
 provider and buffering rules in `RenderProvider.h` and `RenderRing.h`.
 
 ## Checks
 
-The full Windows build runs the bridge, render and packet-constraint tests.
+The full Windows build runs the bridge, render, notification ownership and
+packet-constraint tests. Backend tests also check cancellation of pending
+overlapped I/O using a local Windows pipe, without loading a driver.
 A portable microphone check can also run from this driver directory:
 
 ```sh

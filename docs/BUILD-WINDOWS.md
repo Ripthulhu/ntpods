@@ -49,7 +49,8 @@ whether local source modifications were included. Package dependencies are
 pinned; hosted toolchain patches and generated timestamps can change output hashes.
 
 The MSI includes both playback codecs, the FDK notice and its complete pinned
-source archive. AAC is the initial playback codec; AAC-ELD and per-codec bitrate
+source archive. AAC-ELD is the default when no codec preference is saved, with
+AAC fallback for pairs that lack a supported AAC-ELD profile. Per-codec bitrate
 settings are available in the app. See [playback testing](../windows/playback/TESTING.md).
 
 Startup checks use a private temporary registry key and a restricted MSI session
@@ -130,9 +131,12 @@ Before replacing drivers, setup exports the installed NTPods packages and saves
 their access policy under `%ProgramData%\NTPods\driver-rollback`. All new packages
 must stage successfully before setup unbinds the old drivers. An installation
 failure restores those packages, microphone devices and access policy. MSI keeps
-the backup until the transaction commits, including upgrades and repairs. A failed
-restoration leaves the backup in place and reports its location. Recovery that
-requires a Windows restart cannot finish until that restart occurs.
+the backup until the transaction commits, including upgrades, repairs and driver
+removal. Failed or cancelled MSI removal restores the drivers; tasks, startup
+entries, signing certificates and installation metadata are removed only at commit.
+ZIP removal also restores drivers if driver removal fails, before deleting app
+files. A failed restoration leaves the backup in place and reports its location.
+Recovery that requires a Windows restart cannot finish until that restart occurs.
 
 Normal deployment must use Microsoft-signed driver packages verified on a clean
 Secure Boot/Memory Integrity system. This installer uses test signing and is

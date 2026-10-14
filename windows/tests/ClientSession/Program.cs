@@ -43,9 +43,28 @@ if (args is ["--fixture", var childName, var holdText])
     return;
 }
 
+if (args is ["--starting"])
+{
+    await Task.Delay(TimeSpan.FromSeconds(30));
+    return;
+}
+
+if (args is ["--recovering", var recoveringChildName])
+{
+    using (var fixture = new Fixture(recoveringChildName))
+    {
+        await fixture.Connect();
+        await fixture.ReadHandshake();
+        await fixture.State();
+        await fixture.Read();
+    }
+    await Task.Delay(TimeSpan.FromSeconds(30));
+    return;
+}
+
 Check(OperatingSystem.IsWindows(), "Named-pipe process identity tests require Windows.");
 var name = "ntpods-test-" + Guid.NewGuid().ToString("N");
-await using (var client = new DaemonClient(name + "-events", name + "-cmds", () => { }))
+await using (var client = new DaemonClient(name + "-events", name + "-cmds", () => null))
 {
     int disconnected = 0;
     Snapshot? last = null;
@@ -109,7 +128,7 @@ for (int attempt = 0; attempt < 5; attempt++)
     // the correct PID rejection already closed the pipe before accept began.
     Check(await process.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(10)) == "commands-ready",
         "The command fixture must be accepting connections before the mismatch test starts.");
-    await using var client = new DaemonClient(mismatch + "-events", mismatch + "-cmds", () => { });
+    await using var client = new DaemonClient(mismatch + "-events", mismatch + "-cmds", () => null);
     int ready = 0;
     client.ConnectionChanged += connected => { if (connected) Interlocked.Increment(ref ready); };
     client.Start();
@@ -128,7 +147,8 @@ foreach (bool timeout in new[] { false, true })
     start.ArgumentList.Add("800");
     using var process = Process.Start(start)!;
     int respawns = 0;
-    await using var client = new DaemonClient(fixtureName + "-events", fixtureName + "-cmds", () => Interlocked.Increment(ref respawns));
+    await using var client = new DaemonClient(fixtureName + "-events", fixtureName + "-cmds",
+        () => { Interlocked.Increment(ref respawns); return null; });
     client.Start();
     await Until(() => client.IsReady);
     var elapsed = Stopwatch.StartNew();
@@ -148,7 +168,86 @@ foreach (bool timeout in new[] { false, true })
     await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
     Check(process.ExitCode == 0, "The fake backend must exit cleanly.");
 }
-Console.WriteLine("IPC session checks passed: readiness, both pipe failures, no stale replay, shutdown delivery, process exit and bounded failure.");
+
+await using (var absent = new DaemonClient("ntpods-absent-" + Guid.NewGuid(), "ntpods-absent-" + Guid.NewGuid(),
+    () => throw new Exception("Quit must not start a missing backend.")))
+{
+    absent.Start();
+    await absent.ShutdownAsync();
+    Check(!absent.IsReady, "A missing backend must allow Quit without becoming ready.");
+}
+
+string crashedName = "ntpods-crashed-" + Guid.NewGuid().ToString("N");
+var crashedStart = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false, CreateNoWindow = true };
+crashedStart.ArgumentList.Add("--fixture");
+crashedStart.ArgumentList.Add(crashedName);
+crashedStart.ArgumentList.Add("100");
+using (var process = Process.Start(crashedStart)!)
+await using (var client = new DaemonClient(crashedName + "-events", crashedName + "-cmds", () => null, () => !process.HasExited))
+{
+    client.Start();
+    await Until(() => client.IsReady);
+    process.Kill();
+    await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+    await Until(() => !client.IsReady);
+    await client.ShutdownAsync();
+    Check(process.HasExited, "An exited former backend must not prevent Quit.");
+}
+
+string recoveringName = "ntpods-recovering-" + Guid.NewGuid().ToString("N");
+var recoveringStart = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false, CreateNoWindow = true };
+recoveringStart.ArgumentList.Add("--recovering");
+recoveringStart.ArgumentList.Add(recoveringName);
+using (var process = Process.Start(recoveringStart)!)
+await using (var client = new DaemonClient(recoveringName + "-events", recoveringName + "-cmds", () => null))
+{
+    try
+    {
+        client.Start();
+        await Until(() => client.IsReady);
+        Check(client.Send(new PingCmd()), "The live fixture must receive its disconnect trigger.");
+        await Until(() => !client.IsReady);
+        bool failed = false;
+        try { await client.ShutdownAsync(); }
+        catch (TimeoutException) { failed = true; }
+        Check(failed && !process.HasExited,
+            "An authenticated backend must stay protected after pipe loss, even without a lifetime mutex.");
+    }
+    finally
+    {
+        if (!process.HasExited) process.Kill();
+        await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+    }
+}
+
+foreach (bool spawnedHere in new[] { false, true })
+{
+    string startingName = "ntpods-starting-" + Guid.NewGuid().ToString("N");
+    var start = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false, CreateNoWindow = true };
+    start.ArgumentList.Add("--starting");
+    Process? process = spawnedHere ? null : Process.Start(start)!;
+    await using var client = new DaemonClient(startingName + "-events", startingName + "-cmds",
+        () => spawnedHere ? process = Process.Start(start)! : null,
+        () => !spawnedHere && process is { HasExited: false });
+    try
+    {
+        client.Start();
+        await Until(() => process is not null);
+        bool failed = false;
+        try { await client.ShutdownAsync(); }
+        catch (TimeoutException) { failed = true; }
+        Check(failed && process is { HasExited: false },
+            spawnedHere ? "Quit must wait for a spawned backend that has not created its singleton or pipes yet."
+                : "A live backend with unavailable pipes must not be mistaken for an absent backend.");
+    }
+    finally
+    {
+        if (process is { HasExited: false }) process.Kill();
+        if (process is not null) await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        if (!spawnedHere) process?.Dispose();
+    }
+}
+Console.WriteLine("IPC session checks passed: readiness, both pipe failures, no stale replay, shutdown delivery, absent/exited backends, startup guards and bounded recovery failure.");
 
 sealed class Fixture : IDisposable
 {

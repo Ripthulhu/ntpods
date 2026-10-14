@@ -8,6 +8,7 @@ check its model and hardware test coverage.
 | --- | --- |
 | [Controls, battery and sensors](WINDOWS-AIRPODS-CONTROL-PROTOCOL.md) | AAP connection setup, settings, notifications, nearby BLE battery data, ATT and sensor reports |
 | [Playback and microphone](WINDOWS-AIRPODS-AUDIO-PROTOCOL.md) | AAC/AAC-ELD negotiation, media packets, mic uplink, start/stop and recovery |
+| [Apple Profile Fast Connect](APPLE-FAST-CONNECT.md) | Discovery, channel assignment, profile descriptors and the Windows driver boundary |
 | [macOS capture procedure](MACOS-PROTOCOL-CAPTURE.md) | Repeatable comparisons with Apple's implementation and a record for unknown traffic |
 | [macOS case and sensor captures](MACOS-CASE-CAPTURE-2026-10-12.md) | Battery/charger checks, sensor descriptors, Transparency settings, UARP assets and a primary-bud handoff on Pro 3 |
 | [Model support](WINDOWS-MODEL-SUPPORT.md) | Capability profiles and which models have passed hardware checks |

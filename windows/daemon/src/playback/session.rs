@@ -308,22 +308,34 @@ impl Session {
     fn request(&mut self, signal: u8, payload: &[u8]) -> io::Result<Vec<u8>> {
         self.last_request = signal;
         let started = Instant::now();
-        let result = self.request_inner(signal, payload);
+        let mut send_elapsed = Duration::ZERO;
+        let mut response_elapsed = Duration::ZERO;
+        let result = (|| {
+            self.check_cancelled()?;
+            self.label = (self.label + 1) & 15;
+            let sending = Instant::now();
+            let sent = self.send(0, &command(self.label, signal, payload));
+            send_elapsed = sending.elapsed();
+            sent?;
+            let waiting = Instant::now();
+            let response = self.wait_response(signal);
+            response_elapsed = waiting.elapsed();
+            response
+        })();
         crate::log(&format!(
-            "playback signaling: {} {} {}, state {:?}, {} ms",
+            "playback signaling: {} {} {}, state {:?}, {} ms, send_us={}, response_wait_us={}",
             self.mode.name(),
             signal_name(signal),
             if result.is_ok() { "accepted" } else { "failed" },
             self.state,
-            started.elapsed().as_millis()
+            started.elapsed().as_millis(),
+            send_elapsed.as_micros(),
+            response_elapsed.as_micros()
         ));
         result
     }
 
-    fn request_inner(&mut self, signal: u8, payload: &[u8]) -> io::Result<Vec<u8>> {
-        self.check_cancelled()?;
-        self.label = (self.label + 1) & 15;
-        self.send(0, &command(self.label, signal, payload))?;
+    fn wait_response(&mut self, signal: u8) -> io::Result<Vec<u8>> {
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline {
             self.check_cancelled()?;
@@ -407,12 +419,16 @@ impl Session {
         Ok(true)
     }
 
-    pub fn poll(&mut self) -> io::Result<()> {
-        let data = self.receive(1)?;
-        if !data.is_empty() {
+    pub fn poll(&mut self) -> io::Result<bool> {
+        drain_signaling(|| {
+            self.check_cancelled()?;
+            let data = self.receive(1)?;
+            if data.is_empty() {
+                return Ok(false);
+            }
             self.peer_command(&data)?;
-        }
-        Ok(())
+            Ok(true)
+        })
     }
 
     pub fn media(&mut self, packet: &[u8]) -> io::Result<()> {
@@ -442,6 +458,16 @@ impl Session {
         self.state = StreamState::Streaming;
         Ok(())
     }
+}
+
+// Bound signaling work so a busy peer cannot starve media; true means an empty read was observed.
+fn drain_signaling(mut receive_one: impl FnMut() -> io::Result<bool>) -> io::Result<bool> {
+    for _ in 0..8 {
+        if !receive_one()? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn media_open_request(address: u64, flush_ms: u16) -> io::Result<Vec<u8>> {
@@ -652,6 +678,34 @@ impl Drop for Session {
 mod tests {
     use super::*;
     use ntpods_ipc::PlaybackBitrate;
+
+    #[test]
+    fn signaling_drain_requires_an_empty_read_and_bounds_busy_peers() {
+        for packets in 0..=9 {
+            let mut reads = 0;
+            let drained = drain_signaling(|| {
+                reads += 1;
+                Ok(reads <= packets)
+            })
+            .unwrap();
+            assert_eq!(drained, packets < 8);
+            assert_eq!(reads, (packets + 1).min(8));
+        }
+        for kind in [io::ErrorKind::Interrupted, io::ErrorKind::ConnectionAborted] {
+            let mut reads = 0;
+            let error = drain_signaling(|| {
+                reads += 1;
+                if reads == 2 {
+                    Err(io::Error::from(kind))
+                } else {
+                    Ok(true)
+                }
+            })
+            .unwrap_err();
+            assert_eq!(error.kind(), kind);
+            assert_eq!(reads, 2);
+        }
+    }
 
     #[test]
     fn media_options_preserve_the_versioned_packed_driver_layout() {

@@ -6,7 +6,7 @@
     Output goes to the MSI log and %ProgramData%\NTPods\setup-<GUID>.log.
 #>
 param(
-    [Parameter(Mandatory)][ValidateSet('install', 'remove-drivers', 'uninstall', 'stop', 'rollback', 'commit', 'finish-remove', 'undo-remove')][string]$Action,
+    [Parameter(Mandatory)][ValidateSet('install', 'remove-drivers', 'undo-remove-drivers', 'finish-remove-drivers', 'uninstall', 'stop', 'rollback', 'commit', 'finish-remove', 'undo-remove')][string]$Action,
     [string]$UserSid,
     [string]$LocalAppData,
     [string]$AppData,
@@ -68,22 +68,25 @@ try {
         }
         'remove-drivers' {
             Stop-NTPods
-            Uninstall-NTPodsDrivers $PSScriptRoot
+            Uninstall-NTPodsDrivers $PSScriptRoot $TransactionId
         }
+        'undo-remove-drivers' { Restore-NTPodsDriverCheckpoint $PSScriptRoot $TransactionId }
+        'finish-remove-drivers' { Complete-NTPodsDriverRemoval $TransactionId }
         'uninstall' {
             Stop-NTPods
             # Commit runs after MSI has deleted the installed scripts.
             Prepare-IdentityRemoval $PSScriptRoot $TransactionId
+        }
+        'finish-remove' {
+            if (-not (Assert-IdentityRemovalTransaction $TransactionId)) { throw 'Identity removal files were not found.' }
+            & (Join-Path $PSScriptRoot 'bluetooth-host-identity.ps1') -Action Restore
+            Complete-NTPodsDriverRemoval $TransactionId
             Unregister-NTPodsTasks
             # The app's own "Start with Windows" setting writes these too.
             $installedSid = (Get-ItemProperty 'HKLM:\SOFTWARE\NTPods' -ErrorAction SilentlyContinue).InstalledUserSid
             if ($installedSid) { Assert-UserSid $installedSid; Remove-RunValues $installedSid 'NTPods', 'NTPods Daemon' }
             Remove-ItemProperty 'HKLM:\SOFTWARE\NTPods' -Name InstalledUserSid -ErrorAction SilentlyContinue
             Remove-ItemProperty 'HKLM:\SOFTWARE\NTPods' -Name InstallKind -ErrorAction SilentlyContinue
-        }
-        'finish-remove' {
-            if (-not (Assert-IdentityRemovalTransaction $TransactionId)) { throw 'Identity removal files were not found.' }
-            & (Join-Path $PSScriptRoot 'bluetooth-host-identity.ps1') -Action Restore
             Remove-IdentityRemoval $TransactionId
         }
         'undo-remove' { Remove-IdentityRemoval $TransactionId }

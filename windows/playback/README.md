@@ -84,7 +84,8 @@ of PCM; it clears queued audio when that reader closes.
 AAC uses 1024-sample blocks with LATM framing and the 90 kHz RTP clock specified
 by [RFC 6416](https://www.rfc-editor.org/rfc/rfc6416.html). AAC-ELD uses 480-sample
 blocks without SBR, one access unit per packet, a 48 kHz sample-count RTP clock,
-and Apple vendor codec `004C/8001`. Both codecs use a 30 ms PCM source reserve.
+and Apple vendor codec `004C/8001`. AAC-ELD uses a 20 ms PCM source reserve;
+AAC uses 30 ms, including when selected as a fallback.
 The AAC-ELD encoder and transport follow the
 [USBPods fork tested on Pro 3](https://github.com/han-um/USBPods-Pico2W-2-way-audio-implement/blob/d18d083bc52de3143d8d922c4abaae865cc0dc28/src/btstack/btstack_avdtp_source.c),
 with bitrate capped at 256 kbps. The fixed RTP source identifier `0x11223344`
@@ -97,11 +98,16 @@ playback endpoint.
 
 When offered by the earbuds, NTPods negotiates AVDTP Delay Reporting and records
 their reported delay. This is separate from measured Windows-to-sound latency.
-An optional [buffer trial](../../docs/WINDOWS-AUDIO-LATENCY.md#earbud-delay-and-buffer-control)
-uses the same native playback path, with an explicit restore target and automatic
-expiry. It does not change normal playback defaults.
+Pro 3 uses an [automatic receiver-buffer policy](../../docs/WINDOWS-AUDIO-LATENCY.md#automatic-receiver-buffer-policy)
+that requests 120 ms during playback, with a coordinated host-clock adjustment
+and media flush timeout. It restores a chosen 150 ms target for microphone use,
+pause and playback changes. Other models retain their receiver settings.
+Short Pro 3 checks cover pause/resume with the lower reserve and restoration
+before microphone capture. Sustained operation still needs hardware checks.
 The [packet and source-reserve overrides](../../docs/WINDOWS-AUDIO-LATENCY.md#packet-and-source-reserve-overrides)
 allow comparison with two-frame packets and a 50 ms reserve for a test session.
+They also provide a 1 kHz AAC-ELD timestamp comparison; the tested 48 kHz clock
+remains the default.
 
 Automated checks cover packet validation, cancellation, per-device PCM isolation,
 buffer limits, bitrate settings, and encoder pitch/stereo output. AAC round trips

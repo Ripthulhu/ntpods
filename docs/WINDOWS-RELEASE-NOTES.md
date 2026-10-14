@@ -33,8 +33,8 @@ selecting that output again; later codec changes keep it.
 
 Choose the codec under **Playback and microphone**. AAC-ELD is the default;
 an existing saved codec choice is preserved. Playback uses one AAC-ELD frame
-per packet and a 30 ms PCM reserve. Each codec saves its own Best effort or
-Manual bitrate. AAC-ELD also offers
+per packet, with a 20 ms PCM reserve for AAC-ELD and 30 ms for AAC. Each codec
+saves its own Best effort or Manual bitrate. AAC-ELD also offers
 **Variable (experimental)** with a 256 kbps peak limit; it passed short Pro 3
 playback checks, including pause/resume and microphone recovery. Best effort
 selects the highest supported rate and does not adapt to radio conditions.
@@ -43,6 +43,16 @@ If the pair lacks a supported AAC-ELD profile, NTPods uses AAC with its saved
 bitrate. The menu keeps the preferred codec, and its tooltip shows the one in
 use. Unsupported manual rates and stream failures report errors. Stop recording
 and wait for microphone recovery before changing playback settings.
+
+NTPods requests a supported 5 ms Windows processing period during playback and
+uses driver notifications when PCM is ready. Older drivers retain polling.
+Pro 3 also requests a 120 ms receiver buffer while the mic is idle, restoring
+an explicit 150 ms target for pause, microphone use and playback changes.
+Short Pro 3 checks passed with automatic pause/resume transitions, restoration
+before microphone capture and the 20 ms AAC-ELD reserve. Sustained use and
+loaded-system behavior remain untested; no measured latency improvement is
+claimed. See the
+[latency reference](https://github.com/Ripthulhu/ntpods/blob/main/docs/WINDOWS-AUDIO-LATENCY.md).
 
 Keep NTPods running, or enable Start with Windows. Playback stops if its backend
 stops. During uninstall, keep supported pairs connected so setup can restore

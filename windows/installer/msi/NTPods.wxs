@@ -153,7 +153,9 @@
     <SetProperty Action="SetRollbackExisting" Id="NTPodsRollback" Sequence="execute" Before="NTPodsRollback" Condition="Installed OR WIX_UPGRADE_DETECTED OR EXISTINGINSTALL" Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]msi-setup.ps1&quot; -Action rollback -TransactionId &quot;[DriverTransaction]&quot; -UserSid [UserSID] -PreserveExisting" />
     <SetProperty Action="SetRollbackFresh" Id="NTPodsRollback" Sequence="execute" Before="NTPodsRollback" Condition="NOT (Installed OR WIX_UPGRADE_DETECTED OR EXISTINGINSTALL)" Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]msi-setup.ps1&quot; -Action rollback -TransactionId &quot;[DriverTransaction]&quot; -UserSid [UserSID]" />
     <SetProperty Id="NTPodsCommit" Sequence="execute" Before="NTPodsCommit" Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]msi-setup.ps1&quot; -Action commit -TransactionId &quot;[DriverTransaction]&quot;" />
-    <SetProperty Id="NTPodsRemoveDrivers" Sequence="execute" Before="NTPodsRemoveDrivers" Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]msi-setup.ps1&quot; -Action remove-drivers" />
+    <SetProperty Id="NTPodsRemoveDrivers" Sequence="execute" Before="NTPodsRemoveDrivers" Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]msi-setup.ps1&quot; -Action remove-drivers -TransactionId &quot;[DriverTransaction]&quot;" />
+    <SetProperty Id="NTPodsRemoveDriversRollback" Sequence="execute" Before="NTPodsRemoveDriversRollback" Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]msi-setup.ps1&quot; -Action undo-remove-drivers -TransactionId &quot;[DriverTransaction]&quot;" />
+    <SetProperty Id="NTPodsRemoveDriversCommit" Sequence="execute" Before="NTPodsRemoveDriversCommit" Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]msi-setup.ps1&quot; -Action finish-remove-drivers -TransactionId &quot;[DriverTransaction]&quot;" />
     <SetProperty Id="NTPodsUninstall" Sequence="execute" Before="NTPodsUninstall" Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]msi-setup.ps1&quot; -Action uninstall -TransactionId &quot;[DriverTransaction]&quot; -UserSid [UserSID] -LocalAppData &quot;[LocalAppDataFolder].&quot; -AppData &quot;[AppDataFolder].&quot;" />
     <SetProperty Id="NTPodsIdentityRemoveRollback" Sequence="execute" Before="NTPodsIdentityRemoveRollback" Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]msi-setup.ps1&quot; -Action undo-remove -TransactionId &quot;[DriverTransaction]&quot;" />
     <SetProperty Id="NTPodsIdentityRemoveCommit" Sequence="execute" Before="NTPodsIdentityRemoveCommit" Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[CommonAppDataFolder]NTPods\identity-removal\msi-setup.ps1&quot; -Action finish-remove -TransactionId &quot;[DriverTransaction]&quot;" />
@@ -170,6 +172,10 @@
                   Execute="commit" Impersonate="no" Return="ignore" />
     <CustomAction Id="NTPodsRemoveDrivers" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec"
                   Execute="deferred" Impersonate="no" Return="check" />
+    <CustomAction Id="NTPodsRemoveDriversRollback" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec"
+                  Execute="rollback" Impersonate="no" Return="ignore" />
+    <CustomAction Id="NTPodsRemoveDriversCommit" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec"
+                  Execute="commit" Impersonate="no" Return="ignore" />
     <CustomAction Id="NTPodsUninstall" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec"
                   Execute="deferred" Impersonate="no" Return="check" />
     <CustomAction Id="NTPodsIdentityRemoveRollback" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec"
@@ -182,9 +188,13 @@
       <!-- Embedded: validate the old install and finish microphone shutdown before its uninstaller runs. -->
       <Custom Action="NTPodsPreflight" Before="InstallValidate" />
       <Custom Action="NTPodsStop" Before="RemoveFiles" Condition="Installed" />
-      <Custom Action="NTPodsRemoveDrivers" After="NTPodsStop"
+      <Custom Action="NTPodsRemoveDriversRollback" After="NTPodsStop"
               Condition="(&amp;Drivers=2) AND (!Drivers=3) AND NOT UPGRADINGPRODUCTCODE" />
-      <Custom Action="NTPodsIdentityRemoveRollback" After="NTPodsRemoveDrivers"
+      <Custom Action="NTPodsRemoveDrivers" After="NTPodsRemoveDriversRollback"
+              Condition="(&amp;Drivers=2) AND (!Drivers=3) AND NOT UPGRADINGPRODUCTCODE" />
+      <Custom Action="NTPodsRemoveDriversCommit" After="NTPodsRemoveDrivers"
+              Condition="(&amp;Drivers=2) AND (!Drivers=3) AND NOT (REMOVE~=&quot;ALL&quot;) AND NOT UPGRADINGPRODUCTCODE" />
+      <Custom Action="NTPodsIdentityRemoveRollback" After="NTPodsRemoveDriversCommit"
               Condition="(REMOVE~=&quot;ALL&quot;) AND NOT UPGRADINGPRODUCTCODE" />
       <Custom Action="NTPodsUninstall" After="NTPodsIdentityRemoveRollback"
               Condition="(REMOVE~=&quot;ALL&quot;) AND NOT UPGRADINGPRODUCTCODE" />

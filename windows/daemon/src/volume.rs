@@ -20,13 +20,28 @@ pub fn init() {
 }
 
 fn output_device() -> windows::core::Result<IMMDevice> {
+    #[cfg(feature = "experimental-playback")]
+    let address = crate::playback::active_address();
+    #[cfg(not(feature = "experimental-playback"))]
+    let address = None;
+    output_device_for(address)
+}
+
+#[cfg(feature = "experimental-playback")]
+pub(crate) fn native_output_device(address: u64) -> windows::core::Result<IMMDevice> {
+    if address == 0 || address > 0xffff_ffff_ffff {
+        return Err(Error::new(
+            windows::Win32::Foundation::E_INVALIDARG,
+            "Invalid Bluetooth address",
+        ));
+    }
+    output_device_for(Some(address))
+}
+
+fn output_device_for(address: Option<u64>) -> windows::core::Result<IMMDevice> {
     unsafe {
         let enumerator: IMMDeviceEnumerator =
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
-        #[cfg(feature = "experimental-playback")]
-        let address = crate::playback::active_address();
-        #[cfg(not(feature = "experimental-playback"))]
-        let address = None;
         resolve_output(
             address.is_some(),
             || enumerator.GetDefaultAudioEndpoint(eRender, eConsole),
@@ -448,6 +463,17 @@ mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
+
+    #[test]
+    #[cfg(feature = "experimental-playback")]
+    fn native_output_rejects_invalid_addresses_before_using_com() {
+        for address in [0, 0x1_0000_0000_0000, u64::MAX] {
+            assert_eq!(
+                native_output_device(address).unwrap_err().code(),
+                windows::Win32::Foundation::E_INVALIDARG
+            );
+        }
+    }
 
     #[test]
     fn output_resolution_never_falls_back_while_experimental_playback_is_owned() {

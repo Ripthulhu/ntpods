@@ -128,6 +128,8 @@ struct Ctx {
     playback_selection: Arc<Mutex<playback::Selection>>,
     #[cfg(feature = "experimental-playback")]
     playback_buffer: Arc<Mutex<Option<Arc<playback::BufferActive>>>>,
+    #[cfg(feature = "experimental-playback")]
+    audio_change_busy: Arc<AtomicBool>,
     mic_demand: Arc<Mutex<mic_lifecycle::Demand>>,
     mic_clock: Instant,
     hr_commands: Arc<Mutex<()>>,
@@ -625,24 +627,73 @@ fn fail_mic_audio(
 fn update_microphone_preference(
     gate: &Mutex<()>,
     enabled: bool,
+    current: impl FnOnce() -> bool,
     apply: impl FnOnce(bool),
     persist: impl FnOnce(bool),
 ) {
     let _guard = gate.lock().unwrap();
+    if !current() {
+        return;
+    }
     apply(enabled);
     persist(enabled);
 }
 
-fn set_microphone_enabled(ctx: &Ctx, enabled: bool, persist: bool) {
-    if enabled && !device_models::microphone(&ctx.state.lock().unwrap()) {
-        ctx.state.lock().unwrap().mic_error = Some(
-            "High-quality microphone audio is not supported by this model and firmware.".into(),
-        );
-        return;
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct MicrophoneRequest {
+    revision: u64,
+    address: u64,
+    enabled: bool,
+    mode: ipc::MicMode,
+    stop_delay_secs: u32,
+    manual_active: bool,
+}
+
+impl MicrophoneRequest {
+    // Caller holds mic_preference so policy and permission form one snapshot.
+    fn read(ctx: &Ctx) -> Self {
+        let demand = ctx.mic_demand.lock().unwrap();
+        Self {
+            revision: ctx.pipe.permission_revision(),
+            address: ctx.mac(),
+            enabled: ctx.auto_mode.load(Ordering::Acquire),
+            mode: demand.mode,
+            stop_delay_secs: demand.stop_delay_secs,
+            manual_active: demand.manual_active,
+        }
     }
+
+    fn current(self, ctx: &Ctx) -> bool {
+        self.matches(Self::read(ctx), ctx.shutting_down.load(Ordering::Acquire))
+    }
+
+    fn matches(self, current: Self, shutting_down: bool) -> bool {
+        !shutting_down && self == current
+    }
+}
+
+fn set_microphone_enabled(
+    ctx: &Ctx,
+    enabled: bool,
+    persist: bool,
+    expected: Option<MicrophoneRequest>,
+) {
     update_microphone_preference(
         &ctx.mic_preference,
         enabled,
+        || {
+            if expected.is_some_and(|request| !request.current(ctx)) {
+                return false;
+            }
+            if enabled && !device_models::microphone(&ctx.state.lock().unwrap()) {
+                ctx.state.lock().unwrap().mic_error = Some(
+                    "High-quality microphone audio is not supported by this model and firmware."
+                        .into(),
+                );
+                return false;
+            }
+            true
+        },
         |enabled| apply_microphone_enabled(ctx, enabled),
         |enabled| {
             if persist {
@@ -659,7 +710,8 @@ fn apply_microphone_enabled(ctx: &Ctx, enabled: bool) {
     ctx.auto_mode.store(enabled, Ordering::Release);
     if !enabled {
         ctx.mic_demand.lock().unwrap().clear();
-        silence_mic(ctx);
+        ctx.mic_on.store(false, Ordering::Release);
+        ctx.pipe.revoke_stream();
     }
 }
 
@@ -683,8 +735,16 @@ fn cancel_microphone_request(ctx: &Ctx) {
     ctx.pipe.revoke_stream();
 }
 
-fn set_microphone_policy(ctx: &Ctx, mode: ntpods_ipc::MicMode, stop_delay_secs: u32) {
+fn set_microphone_policy(
+    ctx: &Ctx,
+    mode: ntpods_ipc::MicMode,
+    stop_delay_secs: u32,
+    expected: Option<MicrophoneRequest>,
+) {
     let _preference = ctx.mic_preference.lock().unwrap();
+    if expected.is_some_and(|request| !request.current(ctx)) {
+        return;
+    }
     let preferences = {
         let mut demand = ctx.mic_demand.lock().unwrap();
         if !demand.configure(mode, stop_delay_secs) {
@@ -765,8 +825,15 @@ fn manual_microphone_start_allowed(
     }
 }
 
-fn toggle_microphone_manual(ctx: &Ctx) -> Result<bool, &'static str> {
+fn toggle_microphone_manual(
+    ctx: &Ctx,
+    may_start: bool,
+    expected: Option<MicrophoneRequest>,
+) -> Result<bool, &'static str> {
     let _preference = ctx.mic_preference.lock().unwrap();
+    if expected.is_some_and(|request| !request.current(ctx)) {
+        return Err("Microphone request changed; try again");
+    }
     let available = ctx.pipe.is_open();
     let (allowed, stream_active) = {
         let state = ctx.state.lock().unwrap();
@@ -788,7 +855,11 @@ fn toggle_microphone_manual(ctx: &Ctx) -> Result<bool, &'static str> {
             ctx.auto_mode.load(Ordering::Acquire),
             ctx.capture_active.load(Ordering::Acquire),
             stream_active,
-            allowed,
+            if may_start {
+                allowed
+            } else {
+                Err("Microphone state changed; try again")
+            },
         )?;
         if active {
             ctx.pipe.set_feature_enabled(true);
@@ -806,12 +877,15 @@ fn toggle_microphone_manual(ctx: &Ctx) -> Result<bool, &'static str> {
     Ok(active)
 }
 
-fn set_microphone_manual(ctx: &Ctx, active: bool) {
+fn set_microphone_manual(ctx: &Ctx, active: bool, expected: Option<MicrophoneRequest>) {
     let connected = {
         let state = ctx.state.lock().unwrap();
         state.connected && device_models::microphone(&state) && playback_allows_microphone(&state)
     };
     let _preference = ctx.mic_preference.lock().unwrap();
+    if expected.is_some_and(|request| !request.current(ctx)) {
+        return;
+    }
     let permitted = ctx.auto_mode.load(Ordering::Acquire)
         && ctx.connect_requested.load(Ordering::Acquire)
         && !ctx.user_disconnected.load(Ordering::Acquire)
@@ -1056,7 +1130,7 @@ fn service_mic(
                 ctx.wants_reconnect.store(false, Ordering::Release);
                 state.mic_error = Some("Microphone stop required audio recovery. Reconnect in NTPods, then enable the microphone to try again.".into());
             }
-            set_microphone_enabled(ctx, false, true);
+            set_microphone_enabled(ctx, false, true, None);
             publish_mic(ctx, mic, ear_allowed);
             let (elapsed, packets, age) = mic.stop_progress(now);
             log(&format!("mic stop: reset did not confirm shutdown; elapsed={elapsed}ms packets_after_stop={packets} last_audio_age={age:?}ms; one targeted reconnect, explicit retry required"));
@@ -1082,7 +1156,7 @@ fn service_mic(
                     if mic.phase == Phase::Error {
                         // A fresh Lifecycle must not erase a failed-start latch
                         // while an application still has the capture open.
-                        set_microphone_enabled(ctx, false, true);
+                        set_microphone_enabled(ctx, false, true, None);
                         ctx.state.lock().unwrap().mic_error = Some(
                             "Microphone stream failed. Enable the microphone to try again.".into(),
                         );
@@ -2112,8 +2186,224 @@ fn native_reconnect_allowed(state: &Snapshot, mic_on: bool) -> bool {
                 )))
 }
 
+#[cfg(feature = "experimental-playback")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BufferPauseFor {
+    Playback,
+    Microphone,
+}
+
+#[cfg(feature = "experimental-playback")]
+fn microphone_toggle_starts(
+    demand: &mut mic_lifecycle::Demand,
+    now: u64,
+    enabled: bool,
+    capture: bool,
+    stream_active: bool,
+) -> bool {
+    !demand.wanted(now, enabled, capture, true) && !stream_active
+}
+
+#[cfg(feature = "experimental-playback")]
+fn buffer_pause_for(cmd: &Command, capture: bool, toggle_starts: bool) -> Option<BufferPauseFor> {
+    match cmd {
+        Command::Connect
+        | Command::RebuildAudio
+        | Command::RepairConnection
+        | Command::SetPlaybackMode { .. }
+        | Command::RetryPlayback
+        | Command::SetPlaybackBitrate { .. }
+        | Command::SetPlaybackBuffer {
+            target_ms: Some(_), ..
+        } => Some(BufferPauseFor::Playback),
+        Command::SetMicMode { auto: true, .. }
+        | Command::SetMicManualActive { active: true }
+        | Command::SetMicPolicy {
+            mode: ipc::MicMode::KeepActive,
+            ..
+        } => Some(BufferPauseFor::Microphone),
+        Command::SetMicPolicy {
+            mode: ipc::MicMode::Automatic,
+            ..
+        } if capture => Some(BufferPauseFor::Microphone),
+        Command::ToggleMicManual if toggle_starts => Some(BufferPauseFor::Microphone),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "experimental-playback")]
+struct AudioChangeWorker(Arc<AtomicBool>);
+
+#[cfg(feature = "experimental-playback")]
+impl Drop for AudioChangeWorker {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+#[cfg(feature = "experimental-playback")]
+fn defer_audio_change(
+    busy: Arc<AtomicBool>,
+    apply: impl FnOnce() + Send + 'static,
+) -> io::Result<thread::JoinHandle<()>> {
+    if busy
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "Audio is changing. Try again shortly.",
+        ));
+    }
+    let worker = AudioChangeWorker(busy);
+    thread::Builder::new()
+        .name("playback-restore-command".into())
+        .spawn(move || {
+            let _worker = worker;
+            apply();
+        })
+}
+
+#[cfg(feature = "experimental-playback")]
+fn audio_change_error(ctx: &Ctx, reason: BufferPauseFor, message: String) {
+    let mut state = ctx.state.lock().unwrap();
+    match reason {
+        BufferPauseFor::Playback => state.playback_error = Some(message),
+        BufferPauseFor::Microphone => state.mic_error = Some(message),
+    }
+    drop(state);
+    ctx.push_state();
+}
+
 fn apply_command(ctx: &Ctx, cmd: Command) {
     // Commands may contain personal settings; do not log payloads.
+    if ctx.shutting_down.load(Ordering::Acquire) {
+        return;
+    }
+    #[cfg(feature = "experimental-playback")]
+    let (pause_reason, toggle_starts, microphone_request, playback_request) =
+        if buffer_pause_for(&cmd, true, true).is_some() {
+            let _preference = ctx.mic_preference.lock().unwrap();
+            let capture = ctx.capture_active.load(Ordering::Acquire);
+            let toggle_starts = if matches!(&cmd, Command::ToggleMicManual) {
+                let state = ctx.state.lock().unwrap();
+                let stream_active = ctx.mic_on.load(Ordering::Acquire)
+                    || state.mic_uplink_active
+                    || matches!(state.mic_state.as_str(), "starting" | "capturing");
+                microphone_toggle_starts(
+                    &mut ctx.mic_demand.lock().unwrap(),
+                    ctx.mic_clock.elapsed().as_millis() as u64,
+                    ctx.auto_mode.load(Ordering::Acquire),
+                    capture,
+                    stream_active,
+                )
+            } else {
+                false
+            };
+            let reason = buffer_pause_for(&cmd, capture, toggle_starts);
+            let (microphone, playback) = if reason.is_some() {
+                let selected = ctx.playback_selection.lock().unwrap();
+                (
+                    Some(MicrophoneRequest::read(ctx)),
+                    Some((bt::playback_intent(), selected.revision, selected.bitrates)),
+                )
+            } else {
+                (None, None)
+            };
+            (reason, toggle_starts, microphone, playback)
+        } else {
+            (None, false, None, None)
+        };
+    #[cfg(not(feature = "experimental-playback"))]
+    let toggle_starts = true;
+    #[cfg(not(feature = "experimental-playback"))]
+    let microphone_request = None;
+    #[cfg(feature = "experimental-playback")]
+    let buffer_pause = if let Some(reason) = pause_reason {
+        if ctx.audio_change_busy.load(Ordering::Acquire) {
+            audio_change_error(ctx, reason, "Audio is changing. Try again shortly.".into());
+            return;
+        }
+        match playback::begin_automatic_pause(ctx) {
+            Ok(guard) => guard,
+            Err(error) => {
+                audio_change_error(
+                    ctx,
+                    reason,
+                    format!("Could not restore the playback buffer: {error}"),
+                );
+                return;
+            }
+        }
+    } else {
+        None
+    };
+    #[cfg(feature = "experimental-playback")]
+    if buffer_pause
+        .as_ref()
+        .is_some_and(|pause| pause.is_pending())
+    {
+        let worker_ctx = ctx.clone();
+        let reason = pause_reason.unwrap();
+        let result = defer_audio_change(ctx.audio_change_busy.clone(), move || {
+            if let Err(error) = buffer_pause.as_ref().unwrap().wait() {
+                audio_change_error(
+                    &worker_ctx,
+                    reason,
+                    format!("Could not restore the playback buffer: {error}"),
+                );
+                return;
+            }
+            apply_prepared_command(
+                &worker_ctx,
+                cmd,
+                toggle_starts,
+                microphone_request,
+                playback_request,
+                buffer_pause,
+            );
+        });
+        if let Err(error) = result {
+            audio_change_error(ctx, reason, error.to_string());
+        }
+        return;
+    }
+    #[cfg(feature = "experimental-playback")]
+    if let Some(pause) = &buffer_pause {
+        if let Err(error) = pause.wait() {
+            audio_change_error(
+                ctx,
+                pause_reason.unwrap(),
+                format!("Could not restore the playback buffer: {error}"),
+            );
+            return;
+        }
+    }
+    #[cfg(feature = "experimental-playback")]
+    apply_prepared_command(
+        ctx,
+        cmd,
+        toggle_starts,
+        microphone_request,
+        playback_request,
+        buffer_pause,
+    );
+    #[cfg(not(feature = "experimental-playback"))]
+    apply_prepared_command(ctx, cmd, toggle_starts, microphone_request);
+}
+
+fn apply_prepared_command(
+    ctx: &Ctx,
+    cmd: Command,
+    toggle_starts: bool,
+    microphone_request: Option<MicrophoneRequest>,
+    #[cfg(feature = "experimental-playback")] playback_request: Option<(
+        u64,
+        u64,
+        [ipc::PlaybackBitrate; 2],
+    )>,
+    #[cfg(feature = "experimental-playback")] _buffer_pause: Option<playback::AutomaticPause>,
+) {
     if ctx.shutting_down.load(Ordering::Acquire) {
         return;
     }
@@ -2124,6 +2414,12 @@ fn apply_command(ctx: &Ctx, cmd: Command) {
     ) {
         let guard = ctx.mic_preference.lock().unwrap();
         let mut state = ctx.state.lock().unwrap();
+        #[cfg(feature = "experimental-playback")]
+        if microphone_request.is_some_and(|request| !request.current(ctx))
+            || playback_request.is_some_and(|request| bt::playback_intent() != request.0)
+        {
+            return;
+        }
         if !native_reconnect_allowed(&state, ctx.mic_on.load(Ordering::Acquire)) {
             state.playback_error = Some(if state.playback_buffer_target_ms.is_some() {
                 "End the buffer trial before reconnecting audio. If restoration failed, disconnect first."
@@ -2149,22 +2445,22 @@ fn apply_command(ctx: &Ctx, cmd: Command) {
         Command::SetAnc { mode } => set_device_control(ctx, 0x0D, mode.into()),
         Command::SetMicMode { auto, manual: _ } => {
             // The legacy flag remains the global enable switch.
-            set_microphone_enabled(ctx, auto, true);
+            set_microphone_enabled(ctx, auto, true, microphone_request);
             ctx.push_state();
         }
         Command::SetMicPolicy {
             mode,
             stop_delay_secs,
         } => {
-            set_microphone_policy(ctx, mode, stop_delay_secs);
+            set_microphone_policy(ctx, mode, stop_delay_secs, microphone_request);
             ctx.push_state();
         }
         Command::SetMicManualActive { active } => {
-            set_microphone_manual(ctx, active);
+            set_microphone_manual(ctx, active, microphone_request);
             ctx.push_state();
         }
         Command::ToggleMicManual => {
-            let result = toggle_microphone_manual(ctx);
+            let result = toggle_microphone_manual(ctx, toggle_starts, microphone_request);
             ctx.push_state();
             if let Err(message) = result {
                 ctx.overlay(message);
@@ -2172,7 +2468,7 @@ fn apply_command(ctx: &Ctx, cmd: Command) {
         }
         Command::SetPlaybackMode { mode } => {
             #[cfg(feature = "experimental-playback")]
-            playback::set_mode(ctx, Some(mode));
+            playback::set_mode(ctx, Some(mode), playback_request.unwrap());
             #[cfg(not(feature = "experimental-playback"))]
             {
                 let _ = mode;
@@ -2186,7 +2482,22 @@ fn apply_command(ctx: &Ctx, cmd: Command) {
             restore_ms,
         } => {
             #[cfg(feature = "experimental-playback")]
-            playback::set_buffer(ctx, target_ms, restore_ms);
+            playback::set_buffer(ctx, target_ms, restore_ms, || {
+                if target_ms.is_none() {
+                    return true;
+                }
+                if microphone_request.is_some_and(|request| !request.current(ctx))
+                    || _buffer_pause
+                        .as_ref()
+                        .is_some_and(|pause| !pause.is_current())
+                {
+                    return false;
+                }
+                let selected = ctx.playback_selection.lock().unwrap();
+                playback_request.is_some_and(|request| {
+                    request == (bt::playback_intent(), selected.revision, selected.bitrates)
+                })
+            });
             #[cfg(not(feature = "experimental-playback"))]
             {
                 let _ = (target_ms, restore_ms);
@@ -2197,7 +2508,7 @@ fn apply_command(ctx: &Ctx, cmd: Command) {
         }
         Command::RetryPlayback => {
             #[cfg(feature = "experimental-playback")]
-            playback::set_mode(ctx, None);
+            playback::set_mode(ctx, None, playback_request.unwrap());
             #[cfg(not(feature = "experimental-playback"))]
             {
                 ctx.state.lock().unwrap().playback_error =
@@ -2220,6 +2531,7 @@ fn apply_command(ctx: &Ctx, cmd: Command) {
                     kbps,
                     variable,
                 },
+                playback_request.unwrap(),
             );
             #[cfg(not(feature = "experimental-playback"))]
             {
@@ -2345,6 +2657,10 @@ fn apply_command(ctx: &Ctx, cmd: Command) {
         Command::Connect => {
             {
                 let mut state = ctx.state.lock().unwrap();
+                #[cfg(feature = "experimental-playback")]
+                if playback_request.is_some_and(|request| bt::playback_intent() != request.0) {
+                    return;
+                }
                 ctx.user_disconnected.store(false, Ordering::Release);
                 ctx.connect_requested.store(true, Ordering::Release);
                 state.mic_error = None;
@@ -2368,6 +2684,10 @@ fn apply_command(ctx: &Ctx, cmd: Command) {
             ctx.overlay("Rebuilding the audio route…");
             let (mac, intent) = {
                 let mut state = ctx.state.lock().unwrap();
+                #[cfg(feature = "experimental-playback")]
+                if playback_request.is_some_and(|request| bt::playback_intent() != request.0) {
+                    return;
+                }
                 let Some(intent) = bt::begin_audio_request(true) else {
                     return;
                 };
@@ -2397,6 +2717,10 @@ fn apply_command(ctx: &Ctx, cmd: Command) {
             log("cmd: repair connection — forcing a clean reconnect");
             {
                 let mut state = ctx.state.lock().unwrap();
+                #[cfg(feature = "experimental-playback")]
+                if playback_request.is_some_and(|request| bt::playback_intent() != request.0) {
+                    return;
+                }
                 ctx.user_disconnected.store(false, Ordering::Release);
                 ctx.connect_requested.store(true, Ordering::Release);
                 ctx.wants_reconnect.store(true, Ordering::Release);
@@ -2489,7 +2813,7 @@ fn apply_command(ctx: &Ctx, cmd: Command) {
             hearing::invalidate_session();
             ctx.shutting_down.store(true, Ordering::Release);
             bt::begin_audio_shutdown();
-            set_microphone_enabled(ctx, false, false);
+            set_microphone_enabled(ctx, false, false, None);
             silence_mic(ctx);
             set_head_tracking(ctx, false);
             // Allows the stop drain and two audio-service operations, each of
@@ -3644,7 +3968,7 @@ fn run_receiver(ctx: Ctx) {
         let explicit_disconnect = ctx.pending_audio_disconnect.lock().unwrap().is_pending();
         let unfinished_mic = mic.cleanup_pending() && !explicit_disconnect;
         if unfinished_mic {
-            set_microphone_enabled(&ctx, false, true);
+            set_microphone_enabled(&ctx, false, true, None);
             {
                 let mut state = ctx.state.lock().unwrap();
                 ctx.user_disconnected.store(true, Ordering::Release);
@@ -3675,7 +3999,7 @@ fn run_receiver(ctx: Ctx) {
                 mic.phase = mic_lifecycle::Phase::Idle;
             } else {
                 mic.phase = mic_lifecycle::Phase::Error;
-                set_microphone_enabled(&ctx, false, true);
+                set_microphone_enabled(&ctx, false, true, None);
             }
         }
         if stop_result.is_err() || close_result.is_err() {
@@ -3875,6 +4199,8 @@ fn main() {
         settings_write: Arc::new(Mutex::new(())),
         #[cfg(feature = "experimental-playback")]
         playback_buffer: Arc::new(Mutex::new(None)),
+        #[cfg(feature = "experimental-playback")]
+        audio_change_busy: Arc::new(AtomicBool::new(false)),
         mic_preference: Arc::new(Mutex::new(())),
         #[cfg(feature = "experimental-playback")]
         playback_selection: Arc::new(Mutex::new(playback::Selection::new(playback_mode))),
@@ -4077,6 +4403,232 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "experimental-playback")]
+    #[test]
+    fn deferred_restore_keeps_reader_available_and_cancels_stale_start() {
+        use super::{defer_audio_change, update_microphone_preference};
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+        use std::sync::{mpsc, Arc, Mutex};
+
+        let busy = Arc::new(AtomicBool::new(false));
+        let revision = Arc::new(AtomicU64::new(1));
+        let enabled = Arc::new(AtomicBool::new(false));
+        let gate = Arc::new(Mutex::new(()));
+        let (waiting_tx, waiting_rx) = mpsc::channel();
+        let (restore_tx, restore_rx) = mpsc::channel();
+        let worker = {
+            let (revision, enabled, gate) = (revision.clone(), enabled.clone(), gate.clone());
+            let expected = revision.load(Ordering::Acquire);
+            defer_audio_change(busy.clone(), move || {
+                waiting_tx.send(()).unwrap();
+                restore_rx.recv().unwrap();
+                update_microphone_preference(
+                    &gate,
+                    true,
+                    || revision.load(Ordering::Acquire) == expected,
+                    |on| enabled.store(on, Ordering::Release),
+                    |_| panic!("superseded start persisted"),
+                );
+            })
+            .unwrap()
+        };
+        waiting_rx.recv().unwrap();
+        assert_eq!(
+            defer_audio_change(busy.clone(), || panic!("second transition ran"))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::WouldBlock,
+        );
+        // Stop runs next on the same command reader while restoration is still waiting.
+        update_microphone_preference(
+            &gate,
+            false,
+            || true,
+            |on| {
+                revision.fetch_add(1, Ordering::AcqRel);
+                enabled.store(on, Ordering::Release);
+            },
+            |_| {},
+        );
+        assert!(busy.load(Ordering::Acquire));
+        assert!(!enabled.load(Ordering::Acquire));
+        restore_tx.send(()).unwrap();
+        worker.join().unwrap();
+        assert!(!enabled.load(Ordering::Acquire));
+        assert!(!busy.load(Ordering::Acquire));
+        defer_audio_change(busy.clone(), || {})
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(!busy.load(Ordering::Acquire));
+    }
+
+    #[cfg(feature = "experimental-playback")]
+    #[test]
+    fn buffer_restoration_precedes_start_and_route_changes_but_never_stop_controls() {
+        use super::{buffer_pause_for, BufferPauseFor, Command};
+        use ntpods_ipc::{MicMode, PlaybackMode};
+
+        for command in [
+            Command::Connect,
+            Command::RebuildAudio,
+            Command::RepairConnection,
+            Command::SetPlaybackMode {
+                mode: PlaybackMode::Aac,
+            },
+            Command::RetryPlayback,
+            Command::SetPlaybackBitrate {
+                mode: PlaybackMode::AacEld,
+                best_effort: true,
+                kbps: 256,
+                variable: true,
+            },
+            Command::SetPlaybackBuffer {
+                target_ms: Some(120),
+                restore_ms: Some(150),
+            },
+        ] {
+            assert_eq!(
+                buffer_pause_for(&command, false, false),
+                Some(BufferPauseFor::Playback)
+            );
+        }
+        for command in [
+            Command::SetMicMode {
+                auto: true,
+                manual: false,
+            },
+            Command::SetMicManualActive { active: true },
+            Command::SetMicPolicy {
+                mode: MicMode::KeepActive,
+                stop_delay_secs: 0,
+            },
+        ] {
+            assert_eq!(
+                buffer_pause_for(&command, false, false),
+                Some(BufferPauseFor::Microphone)
+            );
+        }
+        for capture in [false, true] {
+            assert_eq!(
+                buffer_pause_for(
+                    &Command::SetMicPolicy {
+                        mode: MicMode::Automatic,
+                        stop_delay_secs: 0
+                    },
+                    capture,
+                    false
+                ),
+                capture.then_some(BufferPauseFor::Microphone),
+            );
+            for toggle_starts in [false, true] {
+                assert_eq!(
+                    buffer_pause_for(&Command::ToggleMicManual, capture, toggle_starts),
+                    toggle_starts.then_some(BufferPauseFor::Microphone),
+                );
+                for command in [
+                    Command::Disconnect,
+                    Command::Shutdown,
+                    Command::SetMicMode {
+                        auto: false,
+                        manual: true,
+                    },
+                    Command::SetMicManualActive { active: false },
+                    Command::SetMicPolicy {
+                        mode: MicMode::Manual,
+                        stop_delay_secs: 0,
+                    },
+                    Command::SetPlaybackBuffer {
+                        target_ms: None,
+                        restore_ms: None,
+                    },
+                    Command::SetVolume { percent: 10 },
+                    Command::ToggleMute,
+                ] {
+                    assert_eq!(buffer_pause_for(&command, capture, toggle_starts), None);
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "experimental-playback")]
+    #[test]
+    fn microphone_toggle_restoration_respects_pending_intent_and_stop_delay() {
+        use super::{mic_lifecycle::Demand, microphone_toggle_starts};
+        use ntpods_ipc::MicMode;
+
+        let mut demand = Demand::default();
+        assert!(microphone_toggle_starts(&mut demand, 0, true, false, false));
+        assert!(!microphone_toggle_starts(&mut demand, 0, true, true, false));
+        demand.configure(MicMode::Automatic, 2);
+        assert!(!microphone_toggle_starts(
+            &mut demand,
+            100,
+            true,
+            false,
+            false
+        ));
+        assert!(!microphone_toggle_starts(
+            &mut demand,
+            2099,
+            true,
+            false,
+            false
+        ));
+        assert!(microphone_toggle_starts(
+            &mut demand,
+            2100,
+            true,
+            false,
+            false
+        ));
+        for mode in [MicMode::Manual, MicMode::KeepActive] {
+            demand.configure(mode, 0);
+            demand.set_manual(true);
+            assert!(!microphone_toggle_starts(
+                &mut demand,
+                3000,
+                true,
+                false,
+                false
+            ));
+            assert!(microphone_toggle_starts(
+                &mut demand,
+                3000,
+                false,
+                false,
+                false
+            ));
+        }
+        assert!(!microphone_toggle_starts(
+            &mut demand,
+            3000,
+            false,
+            false,
+            true
+        ));
+
+        demand.configure(MicMode::Manual, 0);
+        demand.set_manual(true);
+        assert!(!microphone_toggle_starts(
+            &mut demand,
+            3000,
+            true,
+            false,
+            false
+        ));
+        // A stop classified before another client stopped must not become an unguarded start.
+        demand.set_manual(false);
+        assert!(demand
+            .toggle_manual(3000, true, false, false, Err("retry"))
+            .is_err());
+        demand.set_manual(true);
+        assert_eq!(
+            demand.toggle_manual(3000, true, false, false, Err("retry")),
+            Ok(false)
+        );
+    }
+
     #[test]
     fn pending_hearing_settings_block_new_microphones_without_stopping_capture() {
         for (native, playback) in [(false, "windows"), (true, "ready")] {
@@ -4641,6 +5193,61 @@ mod tests {
     }
 
     #[test]
+    fn delayed_microphone_enable_cannot_overwrite_a_stop_or_new_policy() {
+        use super::{update_microphone_preference, MicrophoneRequest};
+        use std::sync::Mutex;
+
+        let before = MicrophoneRequest {
+            revision: 7,
+            address: 1,
+            enabled: true,
+            mode: ntpods_ipc::MicMode::Automatic,
+            stop_delay_secs: 0,
+            manual_active: false,
+        };
+        let gate = Mutex::new(());
+        for after in [
+            MicrophoneRequest {
+                revision: 8,
+                ..before
+            },
+            MicrophoneRequest {
+                address: 2,
+                ..before
+            },
+            MicrophoneRequest {
+                enabled: false,
+                ..before
+            },
+            MicrophoneRequest {
+                mode: ntpods_ipc::MicMode::KeepActive,
+                ..before
+            },
+            MicrophoneRequest {
+                stop_delay_secs: 10,
+                ..before
+            },
+            MicrophoneRequest {
+                manual_active: true,
+                ..before
+            },
+        ] {
+            update_microphone_preference(
+                &gate,
+                true,
+                || {
+                    assert!(gate.try_lock().is_err());
+                    before.matches(after, false)
+                },
+                |_| panic!("stale enable applied"),
+                |_| panic!("stale enable persisted"),
+            );
+        }
+        assert!(!before.matches(before, true));
+        assert!(before.matches(before, false));
+    }
+
+    #[test]
     fn microphone_preference_and_persistence_cannot_cross_during_disable() {
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::{mpsc, Arc, Mutex};
@@ -4661,6 +5268,7 @@ mod tests {
                 super::update_microphone_preference(
                     &gate,
                     true,
+                    || true,
                     |on| {
                         permission.store(on, Ordering::Release);
                         started_tx.send(()).unwrap();
@@ -4684,6 +5292,7 @@ mod tests {
                 super::update_microphone_preference(
                     &gate,
                     false,
+                    || true,
                     |on| {
                         permission.store(on, Ordering::Release);
                         preference.store(on, Ordering::Release);

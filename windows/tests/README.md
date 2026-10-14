@@ -8,6 +8,11 @@ Run commands from the repository root. The complete build and test entry point i
 [capture helper](../docs/aap_extract.py), including truncated packets, unknown
 values and command-line output. It also runs in the complete build.
 
+`python windows/tests/test-pfc-decode.py` checks the offline
+[Fast Connect decoder](../docs/pfc_decode.py): message framing, channel and
+endpoint descriptors, delay units, extended TLV lengths and truncated input.
+It uses synthetic packets and also runs in the complete build.
+
 `pwsh -File windows/tests/test-bluetooth-host-identity.ps1` checks the
 [host identity helper](../../docs/BLUETOOTH-HOST-IDENTITY.md), including backup,
 rollback and restoration. It uses isolated fixtures and leaves the Bluetooth
@@ -39,9 +44,10 @@ Kernel PCM/SID/request validation has its separate portable harness in
 
 With the [backend toolchain](../../CONTRIBUTING.md#build-and-test) configured, run
 `cargo test --locked --manifest-path windows/daemon/Cargo.toml --features experimental-playback --test playback_buffer`.
-This runs the production buffer-trial logic against simulated drivers, including
-a microphone request during clock adjustment and failed playback restoration.
-It checks that microphone startup stays blocked until restoration succeeds.
+This runs the production automatic-buffer and diagnostic-trial logic against
+simulated drivers, including microphone demand, restore/reapply, old-driver
+fallback and partial media-reopen failures. It checks that microphone startup
+stays blocked until restoration and playback re-priming succeed.
 The complete build runs it too; it does not open audio devices or Bluetooth.
 
 ## Windows startup checks

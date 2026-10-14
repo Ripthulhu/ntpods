@@ -340,12 +340,7 @@ impl Packetizer {
         self.au_sequence = 1;
     }
 
-    pub fn packet(
-        &mut self,
-        units: &[Vec<u8>],
-        timestamp48k: u32,
-        mtu: usize,
-    ) -> io::Result<Vec<u8>> {
+    pub fn packet(&mut self, units: &[Vec<u8>], timestamp: u32, mtu: usize) -> io::Result<Vec<u8>> {
         validate_eld_aus(units.len())?;
         if units.iter().any(|au| au.is_empty() || au.len() > MAX_AU) {
             return Err(invalid("Expected bounded AAC-ELD frames"));
@@ -357,7 +352,7 @@ impl Packetizer {
         let mut packet = Vec::with_capacity(size);
         packet.extend_from_slice(&[0x80, 0x60]);
         packet.extend_from_slice(&self.sequence.to_be_bytes());
-        packet.extend_from_slice(&timestamp48k.to_be_bytes());
+        packet.extend_from_slice(&timestamp.to_be_bytes());
         // Match the Pro 3-tested USBPods fork's fixed source identifier.
         packet.extend_from_slice(&0x11223344u32.to_be_bytes());
         for au in units {

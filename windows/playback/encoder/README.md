@@ -80,4 +80,6 @@ The VBR option uses the rate-control API in the pinned FDK source:
 `libAACenc/include/aacenc_lib.h` documents `AACENC_BITRATEMODE` and
 `AACENC_PEAK_BITRATE`; `libAACenc/src/aacenc.cpp` defines mode 5's nominal rate.
 The round-trip tests cover silence, stereo tones, noise and transients, plus the
-per-frame size limit. VBR has not been validated on AirPods hardware.
+per-frame size limit. Short Pro 3 VBR playback and pause/resume checks passed;
+see the [hardware results](../../../docs/WINDOWS-VALIDATION.md#native-playback-driver-and-bitrate-controls)
+for versions and remaining coverage.

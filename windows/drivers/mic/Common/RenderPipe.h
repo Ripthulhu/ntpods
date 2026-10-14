@@ -12,6 +12,7 @@
 #define IOCTL_NTPODS_PLAYBACK_SET_PROVIDER CTL_CODE(FILE_DEVICE_UNKNOWN, 0x902, METHOD_BUFFERED, FILE_WRITE_DATA)
 #define IOCTL_NTPODS_PLAYBACK_SET_CLOCK CTL_CODE(FILE_DEVICE_UNKNOWN, 0x903, METHOD_BUFFERED, FILE_WRITE_DATA)
 #define IOCTL_NTPODS_PLAYBACK_QUERY_CLOCK CTL_CODE(FILE_DEVICE_UNKNOWN, 0x904, METHOD_BUFFERED, FILE_READ_DATA)
+#define IOCTL_NTPODS_PLAYBACK_WAIT_CHANGE CTL_CODE(FILE_DEVICE_UNKNOWN, 0x905, METHOD_BUFFERED, FILE_READ_DATA)
 #define NTPODS_PLAYBACK_STATUS_VERSION 3u
 
 // READ_PCM completes immediately with 0..1920 bytes of 48 kHz PCM16 stereo.
@@ -23,6 +24,9 @@ struct NTPODS_PLAYBACK_STATUS {
     ULONG ProviderReady, Online;
 };
 struct NTPODS_PLAYBACK_PROVIDER { ULONG Version, Ready; };
+// Sequence 0 queries immediately; otherwise wait for PCM or producer-state changes.
+// One wait per provider handle. Returns a nonzero ULONG sequence; cancellation is safe.
+struct NTPODS_PLAYBACK_WAIT_CHANGE { ULONG Version, Sequence; };
 // Clock ABI version 1. IntervalTenths 9/11 needs DeltaMs 1..500; 10/0
 // cancels without removing accrued virtual-time offset. Generation must match.
 // Phase: 0 idle, 1 armed, 2 active, 3 completed, 4 expired, 5 cancelled.

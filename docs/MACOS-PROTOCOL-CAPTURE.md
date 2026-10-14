@@ -164,6 +164,8 @@ CIDs, addresses, sequence numbers and session keys can differ between runs.
 Keep their relationships while comparing semantic fields and timing. The pinned
 FastConnect Lua plugin registers discovered CIDs globally, so capture one pair
 per session and verify channel bindings before trusting its labels.
+Its message names and length handling also need checking against the
+[verified PFC framing and offline decoder](APPLE-FAST-CONNECT.md#decode-a-capture).
 
 Separate standard Bluetooth traffic from Apple-specific messages. SDP discovers
 services; L2CAP signaling opens and configures channels; AVDTP negotiates

@@ -56,7 +56,7 @@ try {
     foreach ($name in 'SetNTPodsInstall', 'SetNTPodsInstallDrv') {
         if (-not $actions[$name].Value.Contains('-StartupMode [STARTUPMODE]')) { throw 'Install action does not receive the saved startup choice.' }
     }
-    foreach ($name in 'SetNTPodsInstall', 'SetNTPodsInstallDrv', 'SetRollbackExisting', 'SetRollbackFresh', 'SetNTPodsCommit', 'SetNTPodsUninstall', 'SetNTPodsIdentityRemoveRollback', 'SetNTPodsIdentityRemoveCommit') {
+    foreach ($name in 'SetNTPodsInstall', 'SetNTPodsInstallDrv', 'SetRollbackExisting', 'SetRollbackFresh', 'SetNTPodsCommit', 'SetNTPodsUninstall', 'SetNTPodsIdentityRemoveRollback', 'SetNTPodsIdentityRemoveCommit', 'SetNTPodsRemoveDrivers', 'SetNTPodsRemoveDriversRollback', 'SetNTPodsRemoveDriversCommit') {
         if (-not $actions[$name].Value.Contains('-TransactionId "[DriverTransaction]"')) { throw "Action loses its driver transaction ownership: $name" }
     }
     if ($sequence.CaptureDriverTransaction.Order -ge $sequence.InstallInitialize.Order -or
@@ -180,6 +180,31 @@ try {
         $sequence.NTPodsCommit.Order -lt $sequence.InstallFinalize.Order)) { throw 'Driver rollback/commit is scheduled outside the installation transaction.' }
     if (($actions.NTPodsRollback.Type -band 0x500) -ne 0x500 -or
         ($actions.NTPodsCommit.Type -band 0x600) -ne 0x600) { throw 'Driver backup cleanup is not a commit action, or rollback is not a rollback action.' }
+    if (($actions.NTPodsRemoveDriversRollback.Type -band 0x500) -ne 0x500 -or
+        ($actions.NTPodsRemoveDriversCommit.Type -band 0x600) -ne 0x600 -or
+        $sequence.NTPodsRemoveDriversRollback.Order -ge $sequence.NTPodsRemoveDrivers.Order -or
+        $sequence.NTPodsRemoveDrivers.Order -ge $sequence.RemoveFiles.Order -or
+        $sequence.NTPodsRemoveDriversCommit.Order -le $sequence.NTPodsRemoveDrivers.Order -or
+        $sequence.NTPodsRemoveDriversCommit.Order -ge $sequence.NTPodsCommit.Order) {
+        throw 'Driver removal must register rollback before changing drivers and commit before normal checkpoint cleanup.'
+    }
+    foreach ($upgrading in '', '1') {
+        Set-Property 'UPGRADINGPRODUCTCODE' $upgrading
+        foreach ($remove in '', 'ALL') {
+            Set-Property 'REMOVE' $remove
+            foreach ($current in 2, 3) {
+                foreach ($requested in 2, 3) {
+                    $expected = $current -eq 3 -and $requested -eq 2 -and -not $upgrading
+                    foreach ($name in 'NTPodsRemoveDrivers', 'NTPodsRemoveDriversRollback', 'NTPodsRemoveDriversCommit') {
+                        $condition = $sequence[$name].Condition.Replace('!Drivers', [string]$current).Replace('&Drivers', [string]$requested)
+                        $wanted = $expected -and ($name -ne 'NTPodsRemoveDriversCommit' -or $remove -ne 'ALL')
+                        if (($session.EvaluateCondition($condition) -eq 1) -ne $wanted) { throw "Wrong removal transaction condition: $name" }
+                    }
+                }
+            }
+        }
+    }
+    Write-Host 'MSI removal rollback, full-uninstall commit and driver-feature commit ordering passed.'
 } finally {
     [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($database)
     [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($session)

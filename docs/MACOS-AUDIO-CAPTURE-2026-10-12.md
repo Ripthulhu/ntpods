@@ -133,6 +133,75 @@ NTPods' [temporary buffer trial](WINDOWS-AUDIO-LATENCY.md#earbud-delay-and-buffe
 therefore requires an explicit restoration value. A completed send confirms
 neither application by the earbuds nor return to their original setting.
 
+### Profile Fast Connect delay metadata
+
+Apple Profile Fast Connect (PFC) exchanges profile configurations and channel
+parameters during setup. Apple's [protocol description](https://patents.google.com/patent/US20190373430A1/en)
+includes AVDTP delay parameters; [ToothPicker, appendix A.1.2](https://www.usenix.org/system/files/woot20-paper-heinze.pdf)
+describes discovery over L2CAP Echo followed by configuration on a dynamic channel.
+
+A [public Pro 2 text export](https://github.com/BorgoGustavo/airpods-ctl/blob/b42f4e8a944d39fdd9fa25533ae262bf647ddb3b/docs/captures/2026-08-31-open-and-set-mode.txt)
+shows PFC discovery, a 200 ms flush timeout, then a PFC-labelled Delay Report
+and acceptance before ordinary AVDTP setup. It includes no bytes for that
+signal or Game Mode transition.
+
+The saved Tahoe daemon above contains a separate PFC A2DP descriptor path:
+
+| Address | Observation |
+| --- | --- |
+| `0x100454372`, dispatch table `0x100454A1C` | Descriptor key `0x12` selects a 16-bit delay reader at `0x100454547` |
+| `0x100454547` | Logs tenths of a millisecond, multiplies by 100, and calls stream-latency setter `0x100482D10` |
+| `0x10044F7FA`–`0x10044F85F` | Ordinary AVDTP Delay Report callback converts the same units and calls the same setter |
+
+Three saved case/wear connections contain complete PFC setup. In the first,
+frame 927 carries A2DP descriptor `12 02 DC 05`, reporting 150 ms. Nested
+descriptor readers use little-endian integers; construction at
+`0x1006AE2FD` and helper `0x1004F182E` confirm the byte order. The
+[PFC reference](APPLE-FAST-CONNECT.md) documents the exchange, endpoint
+selection and Windows API limits. This is delay metadata; NTPods continues
+to use ordinary negotiated AVDTP reporting.
+
+### Game Mode capability checks
+
+The same saved daemon checks both remote support and its own controller before
+publishing low-latency gaming support:
+
+| Address | Condition |
+| --- | --- |
+| `0x100449735`–`0x100449761` | Requires remote capability `0x31` and the platform check at virtual slot `+0xF8` |
+| `0x1004AA8D0`, table `0x1004AAC34` | Remote capability `0x31` reads device byte `+0x46E`, mask `0x10`, with valid capability data at `+0x44D` |
+| `0x1004AC44E`–`0x1004AC8BE` | Reads PnP Information service `0x1200`: base features from four-byte SDP attribute `0xA000`, extended features from eight-byte attribute `0xA001` |
+| `0x1004AF45C` | Stores the extended-feature word at device `+0x468`; the gaming check reads bit 52 of this stored word |
+| `0x1006B3038` / `0x1006B303D` → `0x1006B33E9`–`0x1006B33FC` | Incoming PFC Echo parser reads little-endian words at command offsets `+0x24` / `+0x28`, placing the first in the upper half of the stored word |
+| Platform table `0x100ABBDD0 + 0xF8` → `0x1004127F6` | Requires `AudioAccessoryFeatures` / `AoSGaming`, then controller virtual slot `+0xB48` |
+| Constructor `0x100339650` | Installs controller table `0x100AB5950`; slot `+0xB48` resolves to `0x10033BBDC` |
+| `0x10033BBDC` | Reads chipset enum `+0x334`; accepts 23–1999 or 3000–3999 and rejects zero |
+
+The captured AX200 uses chipset zero (`THIRD_PARTY_DONGLE`), so it fails this
+host check regardless of the feature flag's live value. Advertising an Apple
+identity to the earbuds does not change that macOS controller classification.
+This explains a software restriction in the guest; it does not establish a
+physical latency limit for the AX200 under Windows.
+
+The Pro 3 pairing capture's frame 4760 contains SDP attribute `0xA001` with
+value bytes `00 00 00 00 08 7C 7C 1B`. A separate pairing capture's frame 878
+contains PFC words `1B 7C 7C 08` and `00 00 00 00`; the parser above produces
+internal value `0x087C7C1B00000000`. Its bit 52 is set, consistent with the
+guest's remote gaming support value of `1`.
+
+The SDP uint64 conversion follows the same word ordering. Data-element header
+`0B` selects the eight-byte path at `0x10015BC87`; `0x10015BF66` and
+`0x10015BF8D` read the two big-endian 32-bit halves and store each in native
+byte order. A 64-bit load on x86 therefore rotates the canonical SDP integer
+by 32 bits. The captured value becomes `0x087C7C1B00000000`, matching PFC.
+Internal bit 52 corresponds to bit 20 (`0x00100000`) of this canonical SDP
+value's low half. This mapping is specific to the inspected representation.
+
+Cached/iCloud data can also fill that word. Internal query `0x31` is not
+bit 49 of the outgoing AACP feature declaration. These checks establish
+eligibility conditions; they do not establish the complete Game Mode transition
+or a safe controller override.
+
 ### Coordinated audio adjustment
 
 The dynamic-change path at `0x100453A74` stores the target, sends `0x0B` and

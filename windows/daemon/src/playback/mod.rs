@@ -3,6 +3,7 @@ mod aac_protocol;
 mod buffer;
 mod codec;
 mod encoder;
+mod engine_period;
 mod pcm;
 mod protocol;
 mod render;
@@ -13,7 +14,10 @@ mod settings;
 mod timing;
 
 use crate::{bt, driver::Driver, Ctx};
-pub use buffer::{set as set_buffer, stop as stop_buffer, Active as BufferActive};
+pub use buffer::{
+    begin_automatic_pause, set as set_buffer, stop as stop_buffer, Active as BufferActive,
+    AutomaticPause,
+};
 use codec::{AudioEncoder, MediaPackets, Mode};
 use ntpods_ipc::{PlaybackBitrate, PlaybackMode};
 use pcm::{FrameAssembler, FrameClock, MAX_READ_BYTES};
@@ -66,11 +70,23 @@ pub fn start(ctx: Ctx) {
     });
 }
 
-pub fn set_bitrate(ctx: &Ctx, mode: PlaybackMode, bitrate: PlaybackBitrate) {
+pub fn set_bitrate(
+    ctx: &Ctx,
+    mode: PlaybackMode,
+    bitrate: PlaybackBitrate,
+    expected: (u64, u64, [PlaybackBitrate; 2]),
+) {
     {
         let _preference = ctx.mic_preference.lock().unwrap();
         let mut selected = ctx.playback_selection.lock().unwrap();
         let mut state = ctx.state.lock().unwrap();
+        if ctx.shutting_down.load(Ordering::Acquire)
+            || bt::playback_intent() != expected.0
+            || selected.revision != expected.1
+            || selected.bitrates != expected.2
+        {
+            return;
+        }
         let busy = selection::microphone_busy(
             &state,
             ctx.capture_active.load(Ordering::Acquire),
@@ -105,11 +121,18 @@ pub fn set_bitrate(ctx: &Ctx, mode: PlaybackMode, bitrate: PlaybackBitrate) {
     ctx.push_state();
 }
 
-pub fn set_mode(ctx: &Ctx, mode: Option<PlaybackMode>) {
+pub fn set_mode(ctx: &Ctx, mode: Option<PlaybackMode>, expected: (u64, u64, [PlaybackBitrate; 2])) {
     let result = {
         let _preference = ctx.mic_preference.lock().unwrap();
         let mut selected = ctx.playback_selection.lock().unwrap();
         let mut state = ctx.state.lock().unwrap();
+        if ctx.shutting_down.load(Ordering::Acquire)
+            || bt::playback_intent() != expected.0
+            || selected.revision != expected.1
+            || selected.bitrates != expected.2
+        {
+            return;
+        }
         let retry = mode.is_none()
             || state.playback_state == "error"
             || mode.is_some_and(|mode| mode != state.playback_mode);
@@ -456,11 +479,6 @@ fn run(
         return Ok(());
     }
     let settings = settings::Settings::load()?;
-    crate::log(&format!(
-        "playback: ELD AUs per packet={}, source reserve={} ms",
-        settings.eld_aus,
-        settings.reserve.as_millis()
-    ));
     session::driver_ready(&driver, address)?;
     render.set_ready(false)?;
     let session_ctx = ctx.clone();
@@ -484,6 +502,18 @@ fn run(
     )?;
     let mut buffer = buffer::Stream::new(ctx, address, intent, buffer_driver);
     let mode = session.mode;
+    let reserve = settings.reserve(mode)?;
+    crate::log(&format!(
+        "playback: ELD AUs per packet={}, source reserve={} ms",
+        settings.eld_aus,
+        reserve.as_millis()
+    ));
+    if mode == Mode::Eld {
+        crate::log(&format!(
+            "playback: AAC-ELD RTP clock={} Hz",
+            settings.eld_rtp_clock
+        ));
+    }
     session.suspend()?;
     let mut encoder = AudioEncoder::new(mode, session.bitrate, session.variable)?;
     let (reset, requests) = mpsc::sync_channel(1);
@@ -509,12 +539,14 @@ fn run(
         &mut session,
         &mut buffer,
         render,
+        address,
         &mut encoder,
         &stop,
         intent,
         &requests,
         mode,
-        settings.reserve,
+        reserve,
+        settings.eld_rtp_clock,
         &mut timing,
         &report_delay,
         || {
@@ -600,23 +632,39 @@ fn primed_status(
     Ok(status)
 }
 
+fn playback_wait(
+    notified: bool,
+    adjusting: bool,
+    control_wait: Duration,
+    frame_wait: Option<Duration>,
+) -> Duration {
+    let wait = frame_wait.map_or(control_wait, |frame| frame.min(control_wait));
+    if !notified || adjusting {
+        wait.min(Duration::from_millis(1))
+    } else {
+        wait
+    }
+}
+
 fn stream(
     session: &mut Session,
     buffer: &mut buffer::Stream,
     render: &Render,
+    address: u64,
     encoder: &mut AudioEncoder,
     stop: &AtomicBool,
     intent: u64,
     requests: &Receiver<Reset>,
     mode: Mode,
     reserve: Duration,
+    eld_rtp_clock: u32,
     timing: &mut timing::Timing,
     report_delay: impl Fn(bool, Option<u16>),
     mut disconnected: impl FnMut() -> bool,
 ) -> io::Result<()> {
     let _timer = TimerResolution::acquire()?;
     let _scheduling = scheduling::AudioScheduling::acquire();
-    let mut packets = MediaPackets::new(encoder, session.eld_aus)?;
+    let mut packets = MediaPackets::new(encoder, session.eld_aus, eld_rtp_clock)?;
     let samples = mode.frame_samples();
     let mut pcm = FrameAssembler::new(samples)?;
     let mut active = false;
@@ -626,6 +674,14 @@ fn stream(
     let mut dropped = initial[2];
     let mut generation = initial[3];
     let mut outstanding = 0usize;
+    let mut engine_period = engine_period::Lease::default();
+    let notifications = match render.notifications(thread::current()) {
+        Ok(notifications) => notifications,
+        Err(error) => {
+            crate::log(&format!("playback: PCM notifications unavailable: {error}"));
+            None
+        }
+    };
     let driver_clock = match render.clock() {
         Ok(_) => true,
         Err(error) if matches!(error.raw_os_error(), Some(1 | 50)) => false,
@@ -671,7 +727,28 @@ fn stream(
             report_delay(session.delay_reporting, session.delay_report);
             next_poll = now + Duration::from_millis(20);
         }
-        let status = render.status()?;
+        let mut status = render.status()?;
+        if engine_period.update((status[0] != 0).then_some(status[3]), || {
+            engine_period::EnginePeriod::acquire(address, || {
+                stop.load(Ordering::Acquire) || !bt::audio_request_is_current(intent)
+            })
+            .map_err(|error| {
+                crate::log(&format!(
+                    "playback: automatic 5 ms period unavailable: {error}"
+                ))
+            })
+            .ok()
+        }) {
+            // Changing the engine period can replace Windows' producer and its generation.
+            status = render.status()?;
+            engine_period.settled((status[0] != 0).then_some(status[3]));
+            if stop.load(Ordering::Acquire)
+                || !bt::audio_request_is_current(intent)
+                || disconnected()
+            {
+                break;
+            }
+        }
         if active && (status[0] == 0 || status[3] != generation) {
             buffer.cleanup_before(render, || {
                 session.restore_media_timeout()?;
@@ -727,15 +804,19 @@ fn stream(
             buffer.started();
             continue;
         }
+        let observed_at = Instant::now();
+        let mut adjusting = false;
         let host_time = if active && driver_clock {
             let snapshot = render.clock()?;
             if snapshot.generation != generation {
                 continue;
             }
+            adjusting = matches!(snapshot.phase, 1 | 2);
             Some(snapshot.virtual_hns)
         } else {
             None
         };
+        let mut waiting_for_pcm = false;
         if let Some(lateness) = if active {
             clock.lateness(Instant::now(), host_time)?
         } else {
@@ -762,6 +843,8 @@ fn stream(
                 timing.frame(samples, status[1], lateness);
                 outstanding += 1;
                 clock.advance();
+            } else {
+                waiting_for_pcm = true;
             }
         }
         while active {
@@ -776,7 +859,23 @@ fn stream(
                 sent?;
             }
         }
-        thread::park_timeout(Duration::from_millis(1));
+        let frame_wait = if active && !waiting_for_pcm {
+            Some(
+                clock
+                    .until_due(observed_at, host_time)?
+                    .saturating_sub(observed_at.elapsed()),
+            )
+        } else {
+            None
+        };
+        thread::park_timeout(playback_wait(
+            notifications
+                .as_ref()
+                .is_some_and(|notifications| notifications.available()),
+            adjusting,
+            next_poll.saturating_duration_since(Instant::now()),
+            frame_wait,
+        ));
     }
     Ok(())
 }
@@ -784,6 +883,25 @@ fn stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notification_waits_preserve_frame_and_control_deadlines_and_polling_fallback() {
+        let ms = Duration::from_millis;
+        assert_eq!(playback_wait(true, false, ms(20), Some(ms(4))), ms(4));
+        assert_eq!(playback_wait(true, false, ms(2), Some(ms(9))), ms(2));
+        assert_eq!(
+            playback_wait(true, false, ms(20), Some(Duration::ZERO)),
+            Duration::ZERO
+        );
+        // Once a due frame has no PCM, wait for data instead of spinning on its deadline.
+        assert_eq!(playback_wait(true, false, ms(20), None), ms(20));
+        assert_eq!(playback_wait(false, false, ms(20), None), ms(1));
+        assert_eq!(playback_wait(true, true, ms(20), Some(ms(4))), ms(1));
+        assert_eq!(
+            playback_wait(false, true, Duration::ZERO, None),
+            Duration::ZERO
+        );
+    }
 
     #[test]
     fn old_transport_cannot_publish_ready_over_a_new_reconnect() {
@@ -805,7 +923,11 @@ mod tests {
         use std::cell::RefCell;
         use std::collections::VecDeque;
         for samples in [480, 1024] {
-            for reserve in [Duration::from_millis(30), Duration::from_millis(50)] {
+            for reserve_ms in [20, 30, 50] {
+                if samples == 1024 && reserve_ms == 20 {
+                    continue;
+                }
+                let reserve = Duration::from_millis(reserve_ms);
                 let queue = RefCell::new(VecDeque::new());
                 for _ in 0..2 {
                     let before = Instant::now();

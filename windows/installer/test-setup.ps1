@@ -2,6 +2,22 @@
 $ErrorActionPreference = 'Stop'
 & (Join-Path $PSScriptRoot 'test-stop-ntpods.ps1')
 . (Join-Path $PSScriptRoot 'setup-common.ps1')
+& {
+    $script:removalCalls = @()
+    function Stop-NTPods { $script:removalCalls += 'stop' }
+    function Prepare-IdentityRemoval { param($root, $transaction) $script:removalCalls += "stage:$transaction" }
+    function Unregister-NTPodsTasks { throw 'Tasks were removed before MSI commit.' }
+    function Remove-RunValues { throw 'Startup was removed before MSI commit.' }
+    function Remove-ItemProperty { throw 'Installation metadata was removed before MSI commit.' }
+    $tokens = $null; $parseErrors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'msi-setup.ps1'), [ref]$tokens, [ref]$parseErrors)
+    if ($parseErrors.Count) { throw 'Invalid MSI setup script.' }
+    $actionSwitch = $ast.Find({ param($node) $node -is [Management.Automation.Language.SwitchStatementAst] -and $node.Condition.Extent.Text -eq '$Action' }, $true)
+    $body = ($actionSwitch.Clauses | Where-Object { $_.Item1.Value -eq 'uninstall' }).Item2.Extent.Text
+    $TransactionId = 'cancel-removal'
+    & ([scriptblock]::Create($body.Substring(1, $body.Length - 2)))
+    if ($script:removalCalls -join ',' -ne 'stop,stage:cancel-removal') { throw 'Uninstall must only stage its commit helper before file removal.' }
+}
 function Assert-Fails([scriptblock]$body) {
     $failed = $false
     try { & $body } catch { $failed = $true }

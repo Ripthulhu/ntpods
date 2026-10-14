@@ -350,8 +350,10 @@ function Save-NTPodsDriverCheckpoint([string]$transactionId) {
         })
         $audioOriginals = @(Read-NativeAudioBackup)
         $audioOriginalsPresent = Test-Path -LiteralPath (Join-Path (Get-NativeAudioBackupPath) 'bindings.json') -PathType Leaf
+        $pending = Join-Path (Get-NativeAudioBackupPath) 'restore-pending.json'
+        if (Test-Path -LiteralPath $pending) { Copy-Item -LiteralPath $pending -Destination (Join-Path $path 'audio-restore-pending.json') }
         [pscustomobject]@{ TransactionId = $transactionId; Packages = $packages; Devices = $devices; AudioBindings = @(Get-NativeAudioBindings);
-            AudioOriginals = $audioOriginals; AudioOriginalsPresent = $audioOriginalsPresent; Policy = $policy; Certificates = @(Get-NTPodsCertificates) } |
+            AudioOriginals = $audioOriginals; AudioOriginalsPresent = $audioOriginalsPresent; AudioPendingCaptured = $true; Policy = $policy; Certificates = @(Get-NTPodsCertificates) } |
             ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $path 'checkpoint.json') -Encoding UTF8
     } catch {
         # No driver or certificate has changed before this checkpoint is complete.
@@ -412,6 +414,14 @@ function Restore-NTPodsDriverCheckpoint([string]$root, [string]$transactionId) {
         } elseif (Test-Path -LiteralPath $manifest) {
             Remove-Item -LiteralPath $manifest -Force
         }
+    }
+    if ($saved.AudioPendingCaptured -eq $true) {
+        $pending = Join-Path (Get-NativeAudioBackupPath) 'restore-pending.json'
+        $previous = Join-Path $path 'audio-restore-pending.json'
+        if (Test-Path -LiteralPath $previous) {
+            New-Item -ItemType Directory -Path (Get-NativeAudioBackupPath) -Force | Out-Null
+            Copy-Item -LiteralPath $previous -Destination $pending -Force
+        } elseif (Test-Path -LiteralPath $pending) { Remove-Item -LiteralPath $pending -Force }
     }
     Complete-NTPodsDriverTransaction $transactionId
 }
@@ -564,22 +574,38 @@ function Install-NTPodsDrivers([string]$root, [string]$work, [string]$micDriver 
     }
 }
 
-function Uninstall-NTPodsDrivers([string]$root) {
-    Uninstall-NativeAudioDriver $root
-    $devcon = Join-Path $root 'tools\devcon.exe'
-    if (Test-Path $devcon) {
-        Write-Host '==> Removing the NTPods microphone device...'
-        Remove-MicDevices $devcon
+function Uninstall-NTPodsDrivers([string]$root, [string]$transactionId) {
+    Save-NTPodsDriverCheckpoint $transactionId
+    try {
+        Set-Content -LiteralPath (Join-Path (Get-DriverCheckpointPath) 'replacing') -Value 'Driver removal started.'
+        Uninstall-NativeAudioDriver $root -PreserveBackup
+        $devcon = Join-Path $root 'tools\devcon.exe'
+        if (Test-Path $devcon) {
+            Write-Host '==> Removing the NTPods microphone device...'
+            Remove-MicDevices $devcon
+        }
+        foreach ($oem in (Get-DriverPackages 'NTPodsAAP.inf' @('NTPods'))) {
+            Write-Host "==> Removing driver package $oem (NTPodsAAP.inf)"
+            Invoke-Tool 'Removing NTPodsAAP' @(0, 3010) { pnputil /delete-driver $oem /uninstall /force }
+        }
+        Remove-MicDriverPackages
+        foreach ($service in 'NTPodsAAP', 'NTPodsMicACX', 'NTPodsAudio') {
+            Remove-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\$service\Parameters" -Name AllowedUserSid -ErrorAction SilentlyContinue
+        }
+    } catch {
+        $failure = $_
+        try { Restore-NTPodsDriverCheckpoint $root $transactionId }
+        catch { throw "Driver removal failed: $failure Recovery also failed: $_ Backup retained at $(Get-DriverCheckpointPath)." }
+        throw $failure
     }
-    foreach ($oem in (Get-DriverPackages 'NTPodsAAP.inf' @('NTPods'))) {
-        Write-Host "==> Removing driver package $oem (NTPodsAAP.inf)"
-        Invoke-Tool 'Removing NTPodsAAP' @(0, 3010) { pnputil /delete-driver $oem /uninstall /force }
-    }
-    Remove-MicDriverPackages
+}
+
+function Complete-NTPodsDriverRemoval([string]$transactionId) {
+    if (-not (Read-NTPodsDriverCheckpoint $transactionId)) { return }
     Remove-TestCert 'CN=NTPods Test Cert'
-    foreach ($service in 'NTPodsAAP', 'NTPodsMicACX', 'NTPodsAudio') {
-        Remove-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\$service\Parameters" -Name AllowedUserSid -ErrorAction SilentlyContinue
-    }
+    # Disconnected pairs still need their original packages and restore list.
+    if (-not (Test-Path -LiteralPath (Join-Path (Get-NativeAudioBackupPath) 'restore-pending.json'))) { Remove-NativeAudioBackup }
+    Remove-NTPodsDriverCheckpointFiles
 }
 
 # Remove every mic driver package from the driver store, PortCls and ACX alike.

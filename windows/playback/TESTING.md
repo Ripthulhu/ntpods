@@ -49,6 +49,15 @@ Record the codec, bitrate setting, AirPods model/firmware, Windows version,
 Bluetooth adapter and failed step. Logs are under `%LOCALAPPDATA%\NTPods`; remove
 personal device identifiers before sharing. Audio payloads are not logged.
 
+For latency changes, also check repeated pause/resume and mic start/stop while
+music plays, then repeat under system load. On Pro 3, confirm automatic receiver
+buffer restoration completes before a mic start or codec change. Stop or
+disconnect during restoration to check that an older command cannot restart
+audio afterward. Check sleep/removal with a pending driver notification and
+Driver Verifier enabled on the test PC. See the
+[latency reference](../../docs/WINDOWS-AUDIO-LATENCY.md) for period queries,
+diagnostic overrides and current hardware limits.
+
 Installation saves previous playback bindings under
 `%ProgramData%\NTPods\audio-original`; failed driver transactions keep recovery
 data under `%ProgramData%\NTPods\driver-rollback`. Do not delete either to bypass a

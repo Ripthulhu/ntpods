@@ -214,11 +214,19 @@ mod tests {
     }
 
     #[test]
-    fn captures_decode_and_unexposed_values_survive_edits() {
+    fn edits_preserve_distinct_curves_and_own_voice_bytes() {
         let mut bytes = value();
         assert!(!parse(&bytes).unwrap().enabled);
-        for offset in (4..36).chain(52..84).step_by(4) {
-            bytes[offset..offset + 4].copy_from_slice(&12.5f32.to_le_bytes());
+        for (offset, gain) in (4..36)
+            .step_by(4)
+            .zip([0.0f32, -0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0])
+            .chain(
+                (52..84)
+                    .step_by(4)
+                    .zip([-0.0f32, 0.0, 4.0, 8.0, 12.0, 16.0, 20.0, 24.0]),
+            )
+        {
+            bytes[offset..offset + 4].copy_from_slice(&gain.to_le_bytes());
         }
         let original = bytes.clone();
         let mut requested = parse(&bytes).unwrap();

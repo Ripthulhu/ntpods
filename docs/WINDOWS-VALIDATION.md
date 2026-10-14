@@ -165,9 +165,23 @@ microphone capture and recovery after stopping. First microphone PCM arrived
 after 368 ms, capture had one startup discontinuity and none afterward, and
 stop recovery took 1.82 seconds. The installed 0.2.33 app, with unchanged drivers
 and the same trial settings, also passed music and two pause/resume cycles.
-Volume stayed unchanged. One frame per packet and a 30 ms reserve are now the
-defaults. This checks compatibility; acoustic latency, sustained playback and
-other models remain untested for this combination.
+Volume stayed unchanged. These checks used a 30 ms reserve.
+
+Installed 0.2.35 with its updated native drivers passed short Pro 3 A3063 / 9A348
+checks on AX200: AAC-ELD Variable at 256 kbps peak with one frame per packet and
+a 20 ms reserve, and AAC at 256 kbps with a 30 ms reserve. Both kept music clean
+through pause/resume and codec changes, with the selected volume preserved.
+AAC-ELD also stayed clean during a 20-second high-quality microphone capture and
+after stopping. First microphone PCM arrived after 477 ms; capture had one
+startup discontinuity, no malformed packets and no nonfinite samples. Stop
+recovery finished in 1.55 seconds.
+
+Read-only endpoint queries reported an active shared period of 240 frames at
+48 kHz (5 ms) during playback with each codec and after microphone recovery.
+The probe did not initialize an audio client or request that period. These
+checks validate short playback compatibility, not acoustic latency or the
+driver's notification completion path. Long sessions, loaded-system behavior,
+disconnects, sleep/removal and other models remain untested for this combination.
 
 ### Earbud buffer control
 
@@ -206,8 +220,7 @@ a calibrated measurement-error bound. Wired-input delay remains uncalibrated.
 The 0.9 ms trial difference does not demonstrate an improvement. Delay was
 already declining before restoration; rejected markers and timestamp variation
 limit comparison of the phase medians. This single run cannot exclude a small
-or delayed effect. Exact remote buffer restoration also
-remains unverified. Earbud target changes remain finite diagnostic trials. See the
+or delayed effect. Exact remote buffer restoration also remains unverified. See the
 [coordinated macOS transition](MACOS-AUDIO-CAPTURE-2026-10-12.md#coordinated-audio-adjustment)
 for the additional host audio adjustment absent from this trial.
 
@@ -227,6 +240,22 @@ the 150 ms restore request, before its 21 ms reverse clock adjustment. The norma
 clock and 200 ms media flush timeout were restored, and playback resumed without
 reported errors. Neither report verifies a requested buffer target or measures
 acoustic latency; exact remote-buffer restoration remains unverified.
+
+The 0.2.35 preview with the zero-report resume fix passed two automatic
+restore/reapply cycles on Pro 3 A3063 / 9A348 and AX200, using AAC-ELD Variable
+at 256 kbps peak and a 20 ms source reserve. Each paused configuration reported
+zero; after resume, the 120 ms request received a fresh 137 ms report before a
+finite 7 ms clock adjustment. The listener confirmed clean stereo, unchanged
+loudness and working pause/resume. Zero was not used as a clock input.
+
+Automatic microphone demand restored the 150 ms target, normal clock and
+200 ms flush timeout before starting capture. Recovery after stopping took
+1.84 seconds, with no malformed packets. The listener confirmed clean stereo
+and unchanged loudness during capture and after recovery. The restored
+configuration reported 102 ms, so automation left it unchanged. These reports
+do not verify the remote buffer setting or establish acoustic latency.
+Sustained operation, loaded-system behavior and other models remain untested
+for this policy.
 
 ## Software and interface checks
 

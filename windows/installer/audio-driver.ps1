@@ -165,7 +165,7 @@ function Restore-NativeAudioBindings([string]$root, $bindings, $packages = @(), 
     }
 }
 
-function Uninstall-NativeAudioDriver([string]$root) {
+function Uninstall-NativeAudioDriver([string]$root, [switch]$PreserveBackup) {
     $savedBindings = @(Read-NativeAudioBackup)
     $path = Get-NativeAudioBackupPath
     $pendingPath = Join-Path $path 'restore-pending.json'
@@ -203,6 +203,11 @@ function Uninstall-NativeAudioDriver([string]$root) {
         Write-Warning "The previous playback packages are staged. Reconnect absent AirPods to finish driver selection. Binding backups remain at $path."
         return
     }
+    if (Test-Path -LiteralPath $pendingPath) { Remove-Item -LiteralPath $pendingPath -Force }
+    if (-not $PreserveBackup) { Remove-NativeAudioBackup }
+}
+
+function Remove-NativeAudioBackup {
     $path = [IO.Path]::GetFullPath((Get-NativeAudioBackupPath))
     if ($path -ine [IO.Path]::GetFullPath((Join-Path $env:ProgramData 'NTPods\audio-original'))) { throw 'Unsafe playback backup cleanup path.' }
     if (Test-Path -LiteralPath $path) {
