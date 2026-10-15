@@ -163,6 +163,97 @@ request send time separately from response wait to distinguish driver delays
 from later reply handling during the next playback check. Response wait also
 includes processing incoming peer commands; it is not a radio-only measurement.
 
+## Relationship to Windows Swift Pair
+
+[Swift Pair](https://learn.microsoft.com/en-us/windows-hardware/design/component-guidelines/bluetooth-swift-pair)
+provides nearby discovery and a Windows pairing notification. PFC sets up profiles
+and channels on a Classic Bluetooth connection. Enabling Swift Pair would not
+give NTPods the channel control described above or reduce an active stream's delay.
+
+Swift Pair requires a Microsoft manufacturer advertisement (`0x0006`) while the
+peripheral is in pairing mode. Its BR/EDR-only format includes the Classic address;
+the dual-mode format instead requires Secure Connections on both LE and BR/EDR,
+with Windows pairing over LE and deriving the Classic keys. The LE address must
+remain stable during the Swift Pair session. The identifying information must be
+in the advertisement itself, since Windows does not request a scan response.
+
+The AirPods proximity format used by NTPods is Apple manufacturer data (`0x004C`,
+type `0x07`) from a private LE address. It is not the Swift Pair format. The
+[battery decoder](WINDOWS-AIRPODS-CONTROL-PROTOCOL.md#battery-over-aap-and-ble)
+uses keys obtained from an existing paired AAP connection to resolve that address
+and decode the report. The model and lid state are public: a complete `07 19`
+record with subtype `01` carries the big-endian model at bytes 3–4. Lid state is
+present when byte 5 has either bit in `0x44` set; bit `0x08` in byte 8 means closed.
+NTPods uses an explicit open report from a known earbud model to offer pairing.
+It does not use these public fields as battery readings or device identity.
+
+Before pairing, a matching model, name or signal strength does not establish
+which Classic device sent an advertisement. Two Pro 3 captures also contain
+public-address subtype `07` reports whose address matches the Classic peer, but
+no verified field links those reports to an earlier private subtype `01` report.
+Subtype `07` does not share the normal lid/battery layout and is excluded here.
+
+There is no demonstrated route to native Swift Pair with unchanged AirPods firmware
+and the documented Windows APIs. A supported route would need the peripheral to
+emit the required payload. Windows' [advertisement publisher](https://learn.microsoft.com/en-us/uwp/api/windows.devices.bluetooth.advertisement.bluetoothleadvertisementpublisher)
+transmits local advertisements; it does not provide an API to submit a received
+Apple advertisement to Swift Pair. A local or external relay is untested and would
+still need correct device identity, pairing-mode lifetime and radio behavior.
+PFC does not add the required LE advertisement.
+
+NTPods provides its own pairing flow without PFC or firmware changes. Pair AirPods
+in the header menu opens a native dialog. A
+[Classic pairing-state selector](https://learn.microsoft.com/en-us/uwp/api/windows.devices.bluetooth.bluetoothdevice.getdeviceselectorfrompairingstate)
+and `DeviceWatcher` enumerate actual Windows `AssociationEndpoint` devices.
+The user selects a device and presses Pair; names are not converted into addresses.
+The manual list includes renamed devices, while automatic Classic invitations use AirPods
+in the name only as a discovery hint. Existing pairs retain their usual Connect action.
+After pairing, NTPods verifies the selected Classic device's paired status and AAP
+service before connecting; it cannot fall back to an older pair.
+
+Opening an unpaired case can show the white bottom card before the pairing
+gesture. The passive LE watcher accepts public lid reports without saved keys;
+reports resolved to the selected paired device keep their existing battery and
+reconnection handling. Scanning pauses during microphone capture or uplink, and
+connected scanning retains the existing opt-in. Invitations are bounded by model
+and lid visit so the two buds do not open duplicate cards.
+
+Connect shows the model's pairing gesture and starts Classic discovery. The card
+automatically pairs a single available AirPods endpoint, without a device list.
+If several AirPods are available, it waits for the other cases to be closed.
+Candidates need AirPods in their name; known non-headphone device classes are
+excluded. The candidate must remain unique for two seconds; Windows can delay
+its enumeration-complete event. Renamed devices without AirPods in their name
+use the manual dialog.
+The public lid report supplies the model hint; Windows discovery supplies the
+pairing endpoint. One 60-second deadline covers discovery and pairing. Closing
+the card or the case
+cancels the request. A closed-lid report dismisses only a lid invitation for that
+advertised model; it cannot dismiss an unrelated Classic or reconnect card.
+Reopening the case can offer pairing again. The card's 20-second dismissal timer
+pauses during interaction or pairing.
+
+Background Classic discovery runs for 15 seconds, then pauses for 45 seconds,
+including while NTPods is in the tray. It pauses while a card or dialog is open,
+the microphone is active, or the app is shutting down. A discovered AirPods
+endpoint can also open the card, at most once per device per app session; Connect
+then pairs that displayed endpoint directly. Temporary not-ready, connection and
+authentication failures retry every two seconds against the same endpoint while
+the gesture instructions stay visible. Manual discovery lasts 30 seconds and
+offers Search again. Removed or newly paired devices leave the list.
+
+NTPods uses `DeviceInformation.Pairing.Custom.PairAsync` with `ConfirmOnly`,
+accepting only the chosen endpoint while the request remains active.
+It does not accept PIN ceremonies or remove existing pairings. Basic
+`DeviceInformationPairing.PairAsync` is
+[unsupported in desktop apps](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/winrt-api-desktop-app-support#methods).
+The [custom pairing API](https://learn.microsoft.com/en-us/windows/apps/develop/devices-sensors/pair-devices#custom-pairing)
+lets the desktop app supply its confirmation handler. Pairing times out after
+60 seconds; the handler is detached on completion or cancellation.
+
+This is an NTPods prompt using ordinary Windows pairing and profile setup. No
+native Swift Pair integration or advertisement relay is implemented.
+
 ## Decode a capture
 
 Select one complete, reassembled PFC payload from TShark/Wireshark. Exclude the

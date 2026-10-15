@@ -24,10 +24,15 @@ thread so a slow UI does not block Bluetooth processing.
 The authoritative types are in [`ipc/src/lib.rs`](../../ipc/src/lib.rs), with C#
 definitions in [`Messages.cs`](../../winui/NTPods.WinUI/Ipc/Messages.cs). Commands
 cover connection, device settings, audio, sensors and shutdown. Events include
-full state snapshots, command results, overlays and head movement. Change both
+full state snapshots, command results, overlays, nearby invitations and head movement. Change both
 definitions together and run [`test-ipc.ps1`](../../tests/test-ipc.ps1).
 
 ## Connection lifecycle
+
+`PairingNearby` carries the public advertisement's 16-bit model hint and
+`lid_open` state. Opening the lid can show a pairing card; closing it cancels and
+dismisses that model's lid invitation. This event cannot identify or connect a
+Classic endpoint. The client finds that endpoint through Windows discovery.
 
 The app starts the daemon if needed and reconnects after a lost pipe. The daemon
 is single-instance and sends a state snapshot when an event client connects.
@@ -38,6 +43,13 @@ seconds to detect a broken command pipe even if events are still arriving.
 Closing a pipe releases that client's resources; it does not stop the daemon.
 `Shutdown` requests daemon cleanup and exit. Head-tracking requests belong to the
 command connection that made them, so losing that connection releases its stream.
+
+After Windows pairing succeeds, `PairingCompleted` carries the selected device's
+Classic Bluetooth address. The daemon waits up to 30 seconds for that exact
+remembered, authenticated pair and its AAP service before changing audio. It
+closes the previous control session, selects the new pair and requests its audio
+connection. Automatic discovery cannot replace this target; a later `Connect`,
+`RepairConnection` or `Disconnect` cancels the pending handoff.
 
 ## Implementation
 

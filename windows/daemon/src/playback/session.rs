@@ -30,6 +30,7 @@ pub struct Session {
     pub bitrate: u32,
     pub variable: bool,
     pub delay_reporting: bool,
+    pub gaming_supported: Option<bool>,
     // AVDTP reports use 100-microsecond units, not measured end-to-end latency.
     pub delay_report: Option<u16>,
     pub delay_serial: u64,
@@ -61,6 +62,7 @@ impl Session {
         on_mode: impl FnOnce(Mode),
     ) -> io::Result<Self> {
         validate_eld_aus(eld_aus)?;
+        let gaming_supported = super::capabilities::gaming_supported(address);
         let mut session = Self {
             driver,
             address,
@@ -83,6 +85,7 @@ impl Session {
             bitrate: 0,
             variable: false,
             delay_reporting: false,
+            gaming_supported,
             delay_report: None,
             delay_serial: 0,
         };

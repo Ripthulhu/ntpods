@@ -633,6 +633,10 @@ pub enum Command {
     },
     /// Request AAP and Windows audio connections.
     Connect,
+    /// Select the exact Classic device after Windows pairing succeeds.
+    PairingCompleted {
+        address: String,
+    },
     /// Rebuild playback without requesting AAP repair.
     RebuildAudio,
     /// Reopen AAP and ATT after microphone cleanup and any pending audio recovery.
@@ -669,6 +673,8 @@ pub enum Event {
     Overlay { title: String, body: String },
     /// Report a nearby device that the client may offer to connect.
     ConnectPrompt { name: String },
+    /// Public lid report; the model is an invitation hint, not a paired identity.
+    PairingNearby { model: u16, lid_open: bool },
     CommandResult {
         command: String,
         #[serde(default)]
@@ -701,6 +707,34 @@ pub fn from_line<T: for<'de> Deserialize<'de>>(line: &str) -> Option<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pairing_invitation_contains_only_the_public_model_and_lid_hint() {
+        for lid_open in [false, true] {
+            let line = to_line(&Event::PairingNearby {
+                model: 0x2720,
+                lid_open,
+            });
+            assert_eq!(
+                line,
+                format!(
+                    "{{\"event\":\"pairing_nearby\",\"model\":10016,\"lid_open\":{lid_open}}}\n"
+                )
+            );
+            assert!(matches!(
+                from_line::<Event>(&line),
+                Some(Event::PairingNearby { model: 0x2720, lid_open: actual }) if actual == lid_open
+            ));
+        }
+        for malformed in [
+            r#"{"event":"pairing_nearby","model":65536,"lid_open":true}"#,
+            r#"{"event":"pairing_nearby","model":-1,"lid_open":true}"#,
+            r#"{"event":"pairing_nearby","model":10016}"#,
+            r#"{"event":"pairing_nearby","model":10016,"lid_open":1}"#,
+        ] {
+            assert!(from_line::<Event>(malformed).is_none());
+        }
+    }
 
     #[test]
     fn hearing_settings_require_complete_finite_curves_and_never_infer_defaults() {

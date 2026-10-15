@@ -452,4 +452,24 @@
   <data name="HeartRateGraph_KeyboardHelp" xml:space="preserve"><value>Use Left and Right to choose a reading; Home and End go to the first and last reading.</value></data>
   <data name="HeadTracking.Values" xml:space="preserve"><value>Horizontal {0} · Vertical {1}</value></data>
   <data name="HeadTracking.ValuesHelp" xml:space="preserve"><value>Relative movement values, not degrees.</value></data>
+  <data name="Pairing.Title" xml:space="preserve"><value>Pair AirPods</value></data>
+  <data name="Pairing.Pair" xml:space="preserve"><value>Pair</value></data>
+  <data name="Pairing.SearchAgain" xml:space="preserve"><value>Search again</value></data>
+  <data name="Pairing.Instructions" xml:space="preserve"><value>Put your AirPods in pairing mode, then choose them below.</value></data>
+  <data name="Pairing.Devices" xml:space="preserve"><value>Nearby Bluetooth devices</value></data>
+  <data name="Pairing.Nearby" xml:space="preserve"><value>Nearby</value></data>
+  <data name="Pairing.Searching" xml:space="preserve"><value>Searching…</value></data>
+  <data name="Pairing.Pairing" xml:space="preserve"><value>Pairing…</value></data>
+  <data name="Pairing.PrepareCase" xml:space="preserve"><value>Keep both AirPods in the open case. Double-tap the front or hold the back button until the light flashes white.</value></data>
+  <data name="Pairing.DoubleTapCase" xml:space="preserve"><value>Keep both AirPods in the open case, then double-tap the front until the light flashes white.</value></data>
+  <data name="Pairing.HoldNoiseControl" xml:space="preserve"><value>Hold the listening mode button until the light flashes white.</value></data>
+  <data name="Pairing.Choose" xml:space="preserve"><value>Choose your AirPods.</value></data>
+  <data name="Pairing.NoneFound" xml:space="preserve"><value>No devices found.</value></data>
+  <data name="Pairing.ScanFailed" xml:space="preserve"><value>Couldn't search for devices. Check Bluetooth in Windows and try again.</value></data>
+  <data name="Pairing.Failed" xml:space="preserve"><value>Couldn't pair. Put the AirPods in pairing mode and try again.</value></data>
+  <data name="Pairing.Cancelled" xml:space="preserve"><value>Pairing was cancelled. Choose Pair to try again.</value></data>
+  <data name="Pairing.TimedOut" xml:space="preserve"><value>Pairing timed out. Put the AirPods in pairing mode and try again.</value></data>
+  <data name="Pairing.OpenFailed" xml:space="preserve"><value>Couldn't open pairing. Close any other dialog and try again.</value></data>
+  <data name="Pairing.HandoffUnavailable" xml:space="preserve"><value>Paired in Windows. Restart NTPods to connect.</value></data>
+  <data name="Pairing.MultipleFound" xml:space="preserve"><value>More than one pair found. Close the other AirPods cases.</value></data>
 </root>

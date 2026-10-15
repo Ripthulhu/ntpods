@@ -1,6 +1,7 @@
 //! AAC and Apple AAC-ELD playback through the AirPods AudioSink driver.
 mod aac_protocol;
 mod buffer;
+mod capabilities;
 mod codec;
 mod encoder;
 mod engine_period;
@@ -336,6 +337,11 @@ fn manage(ctx: &Ctx) {
             let mut state = ctx.state.lock().unwrap();
             let intent = bt::playback_intent();
             if ctx.mac() != address
+                || ctx
+                    .pending_audio_disconnect
+                    .lock()
+                    .unwrap()
+                    .blocks_playback()
                 || !selected.should_attempt(
                     selection::attempted_revision(attempted, intent),
                     ctx.shutting_down.load(Ordering::Acquire),
@@ -434,11 +440,16 @@ impl Drop for Registration {
 }
 
 /// Native playback resets its transport without removing the AudioSink devnode.
-pub fn reset_if_active(address: u64, intent: u64) -> Option<(u32, u32)> {
+pub fn reset_if_active(address: u64, intent: u64, reconnecting: bool) -> Option<(u32, u32)> {
     let (sender, stop) = {
         let active = CONTROL.lock().unwrap_or_else(|e| e.into_inner());
         let Some(control) = active.as_ref() else {
-            return owns_sink(address).then_some((1167, 1167));
+            return reset_without_session(
+                owns_sink(address),
+                reconnecting,
+                || bt::is_connected(address),
+                || intent & 1 != 0 && bt::audio_request_is_current(intent),
+            );
         };
         if control.address != address || control.intent != intent {
             control.stop.store(true, Ordering::Release);
@@ -455,6 +466,26 @@ pub fn reset_if_active(address: u64, intent: u64) -> Option<(u32, u32)> {
         stop.store(true, Ordering::Release);
         Some((1460, 1460))
     }
+}
+
+fn reset_without_session(
+    native: bool,
+    reconnecting: bool,
+    connected: impl FnOnce() -> bool,
+    current: impl FnOnce() -> bool,
+) -> Option<(u32, u32)> {
+    if !native {
+        return None;
+    }
+    let needs_reset = !reconnecting && connected();
+    Some(if !current() {
+        (1223, 1223)
+    } else if needs_reset {
+        (1167, 1167)
+    } else {
+        // A deferred Connect opens a fresh session; mic recovery still needs a reset.
+        (0, 0)
+    })
 }
 
 fn shutdown_complete(shutting_down: bool, receiver_done: bool) -> bool {
@@ -976,12 +1007,106 @@ mod tests {
         let worker = thread::spawn(move || {
             let Reset(reply) = requests.recv_timeout(Duration::from_secs(1)).unwrap();
             reply.send(Ok(())).unwrap();
+            let Reset(reply) = requests.recv_timeout(Duration::from_secs(1)).unwrap();
+            reply.send(Err(io::Error::other("reset failed"))).unwrap();
         });
-        assert_eq!(reset_if_active(1, 3), Some((0, 0)));
+        assert_eq!(reset_if_active(1, 3, false), Some((0, 0)));
+        assert_eq!(reset_if_active(1, 3, true), Some((1460, 1460)));
+        assert!(stop.load(Ordering::Acquire));
         worker.join().unwrap();
-        assert_eq!(reset_if_active(1, 5), Some((1223, 1223)));
+        stop.store(false, Ordering::Release);
+        assert_eq!(reset_if_active(1, 5, true), Some((1223, 1223)));
         assert!(stop.load(Ordering::Acquire));
         drop(_registration);
-        assert_eq!(reset_if_active(1, 3), None);
+        assert_eq!(reset_if_active(1, 3, false), None);
+    }
+
+    #[test]
+    fn disconnected_native_reconnect_does_not_require_an_existing_session() {
+        assert_eq!(
+            reset_without_session(true, false, || false, || true),
+            Some((0, 0))
+        );
+        assert_eq!(
+            reset_without_session(true, false, || true, || true),
+            Some((1167, 1167))
+        );
+        assert_eq!(
+            reset_without_session(
+                false,
+                true,
+                || panic!("not native"),
+                || panic!("not native")
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn retained_bluetooth_link_reconnect_waits_for_cleanup_then_rearms_playback() {
+        let mut pending = crate::PendingAudioDisconnect::default();
+        let selected = Selection::new(PlaybackMode::AacEld);
+        let state = ntpods_ipc::Snapshot {
+            playback_state: "starting".into(),
+            ..Default::default()
+        };
+        let attempted = Some((selected.revision, 1));
+        pending.queue_disconnect(2);
+        assert!(pending.blocks_playback());
+        assert_eq!(pending.take(), Some((2, true)));
+        assert_eq!(pending.queue_connect(3), None);
+        assert_eq!(pending.take(), Some((3, true)));
+        assert!(pending.blocks_playback());
+        // Windows can retain its link after AAP closes; only reconnect can skip reset.
+        assert_eq!(
+            reset_without_session(true, false, || true, || true),
+            Some((1167, 1167))
+        );
+        assert_eq!(
+            reset_without_session(true, true, || true, || true),
+            Some((0, 0))
+        );
+        pending.rebuild_finished(true);
+        assert!(!pending.blocks_playback());
+        assert!(selected.should_attempt(
+            selection::attempted_revision(attempted, 3),
+            false,
+            &state,
+            false,
+            false,
+        ));
+        assert!(!selected.should_attempt(None, true, &state, false, false));
+
+        pending.queue_disconnect(4);
+        assert_eq!(pending.queue_connect(5), None);
+        assert_eq!(pending.take(), Some((5, true)));
+        pending.queue_disconnect(6);
+        assert_eq!(
+            reset_without_session(true, true, || true, || false),
+            Some((1223, 1223))
+        );
+        pending.rebuild_finished(false);
+        assert!(pending.blocks_playback());
+        assert_eq!(pending.take(), Some((6, true)));
+    }
+
+    #[test]
+    fn native_reconnect_rechecks_intent_after_querying_the_link() {
+        use std::cell::Cell;
+        for connected in [false, true] {
+            let current = Cell::new(true);
+            assert_eq!(
+                reset_without_session(
+                    true,
+                    false,
+                    || {
+                        current.set(false);
+                        connected
+                    },
+                    || current.get(),
+                ),
+                Some((1223, 1223))
+            );
+        }
     }
 }

@@ -448,4 +448,24 @@
   <data name="HeartRateGraph_KeyboardHelp" xml:space="preserve"><value>Use as setas Esquerda e Direita para escolher uma leitura; Home e End levam à primeira e à última.</value></data>
   <data name="HeadTracking.Values" xml:space="preserve"><value>Horizontal {0} · Vertical {1}</value></data>
   <data name="HeadTracking.ValuesHelp" xml:space="preserve"><value>Valores de movimento relativo, não em graus.</value></data>
+  <data name="Pairing.Title" xml:space="preserve"><value>Emparelhar AirPods</value></data>
+  <data name="Pairing.Pair" xml:space="preserve"><value>Emparelhar</value></data>
+  <data name="Pairing.SearchAgain" xml:space="preserve"><value>Procurar novamente</value></data>
+  <data name="Pairing.Instructions" xml:space="preserve"><value>Coloque os AirPods em modo de emparelhamento e selecione-os abaixo.</value></data>
+  <data name="Pairing.Devices" xml:space="preserve"><value>Dispositivos Bluetooth próximos</value></data>
+  <data name="Pairing.Nearby" xml:space="preserve"><value>Por perto</value></data>
+  <data name="Pairing.Searching" xml:space="preserve"><value>A procurar…</value></data>
+  <data name="Pairing.Pairing" xml:space="preserve"><value>A emparelhar…</value></data>
+  <data name="Pairing.PrepareCase" xml:space="preserve"><value>Mantenha os AirPods na caixa aberta. Toque duas vezes na frente ou mantenha o botão traseiro premido até a luz piscar a branco.</value></data>
+  <data name="Pairing.DoubleTapCase" xml:space="preserve"><value>Mantenha os AirPods na caixa aberta e toque duas vezes na frente até a luz piscar a branco.</value></data>
+  <data name="Pairing.HoldNoiseControl" xml:space="preserve"><value>Mantenha o botão do modo de audição premido até a luz piscar a branco.</value></data>
+  <data name="Pairing.Choose" xml:space="preserve"><value>Selecione os seus AirPods.</value></data>
+  <data name="Pairing.NoneFound" xml:space="preserve"><value>Nenhum dispositivo encontrado.</value></data>
+  <data name="Pairing.ScanFailed" xml:space="preserve"><value>Não foi possível procurar dispositivos. Verifique o Bluetooth no Windows e tente novamente.</value></data>
+  <data name="Pairing.Failed" xml:space="preserve"><value>Não foi possível emparelhar. Coloque os AirPods em modo de emparelhamento e tente novamente.</value></data>
+  <data name="Pairing.Cancelled" xml:space="preserve"><value>O emparelhamento foi cancelado. Selecione Emparelhar para tentar novamente.</value></data>
+  <data name="Pairing.TimedOut" xml:space="preserve"><value>O emparelhamento demorou demasiado. Coloque os AirPods em modo de emparelhamento e tente novamente.</value></data>
+  <data name="Pairing.OpenFailed" xml:space="preserve"><value>Não foi possível abrir o emparelhamento. Feche qualquer outra caixa de diálogo e tente novamente.</value></data>
+  <data name="Pairing.HandoffUnavailable" xml:space="preserve"><value>Emparelhados no Windows. Reinicie o NTPods para ligar.</value></data>
+  <data name="Pairing.MultipleFound" xml:space="preserve"><value>Foram encontrados vários pares. Feche as outras caixas dos AirPods.</value></data>
 </root>

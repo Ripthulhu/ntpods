@@ -1,0 +1,40 @@
+<UserControl x:Class="NTPods.WinUI.Popup.ConnectPromptView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Width="400" RequestedTheme="Light">
+    <ScrollViewer x:Name="CardScroll" Background="{ThemeResource AppleGroupBrush}"
+                  HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled"
+                  VerticalScrollBarVisibility="Auto">
+        <StackPanel x:Name="CardContent" Padding="24,20,24,24" Spacing="16">
+            <Grid MinHeight="40" ColumnSpacing="8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="36"/><ColumnDefinition Width="*"/><ColumnDefinition Width="36"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="DeviceName" Grid.Column="1" FontSize="24" FontWeight="SemiBold"
+                           TextAlignment="Center" VerticalAlignment="Center" TextWrapping="Wrap"
+                           MaxLines="2" TextTrimming="CharacterEllipsis" />
+                <Button Grid.Column="2" Width="36" Height="36" Padding="0"
+                        Style="{StaticResource QuietButton}" VerticalAlignment="Top" Click="Close_Click"
+                        AutomationProperties.Name="{Binding [Action_Close], Source={StaticResource Loc}}">
+                    <FontIcon Glyph="&#xE711;" FontSize="14" />
+                </Button>
+            </Grid>
+            <Image x:Name="DeviceImage" Height="180" Stretch="Uniform"
+                   AutomationProperties.AccessibilityView="Raw" />
+            <Grid MinHeight="64">
+                <TextBlock x:Name="StatusText" FontSize="13" TextAlignment="Center" TextWrapping="Wrap"
+                           VerticalAlignment="Center"
+                           Foreground="{ThemeResource AppleSecondaryBrush}"
+                           AutomationProperties.LiveSetting="Polite" />
+            </Grid>
+            <Button x:Name="ConnectButton" Height="48" HorizontalAlignment="Stretch" CornerRadius="24"
+                    Style="{StaticResource AccentButtonStyle}" Click="Connect_Click"
+                    AutomationProperties.Name="{Binding [ConnectPrompt_Connect], Source={StaticResource Loc}}">
+                <Grid>
+                    <TextBlock x:Name="ConnectLabel" Text="{Binding [ConnectPrompt_Connect], Source={StaticResource Loc}}"
+                               FontSize="16" HorizontalAlignment="Center" />
+                    <ProgressRing x:Name="Progress" Width="24" Height="24" IsActive="False" Visibility="Collapsed" />
+                </Grid>
+            </Button>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

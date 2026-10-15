@@ -11,6 +11,7 @@
   <ItemGroup>
     <EmbeddedResource Include="../../device-models.json" LogicalName="ntpods.device-models.json" />
     <Compile Include="../../winui/NTPods.WinUI/Services/AppVersion.cs" Link="AppVersion.cs" />
+    <Compile Include="../../winui/NTPods.WinUI/Services/PairingDiscoveryState.cs" Link="PairingDiscoveryState.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Services/DeviceModels.cs" Link="DeviceModels.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Controls/HeadTrackingLiveState.cs" Link="HeadTrackingLiveState.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Services/DeviceArt.cs" Link="DeviceArt.cs" />

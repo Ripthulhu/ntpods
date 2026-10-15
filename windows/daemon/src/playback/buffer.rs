@@ -11,6 +11,7 @@ const REPORT_WAIT: Duration = Duration::from_secs(2);
 const TRIAL: Duration = Duration::from_secs(30);
 const TRANSITION: Duration = Duration::from_secs(15);
 const STOP_WAIT: Duration = Duration::from_secs(20);
+const AUTOMATIC_TARGET_MS: u16 = 60;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Lifetime {
@@ -455,12 +456,14 @@ impl Stream {
         }
         if session
             .delay_report
-            .is_some_and(|delay| delay != 0 && delay <= 1200)
+            .is_some_and(|delay| delay != 0 && delay <= AUTOMATIC_TARGET_MS * 10)
         {
             self.automatic_held = false;
         }
         let Some(request) = automatic_request(
             &state,
+            session.gaming_supported,
+            session.mode == super::codec::Mode::Eld,
             session.delay_reporting,
             session.delay_report,
             self.automatic_held,
@@ -776,25 +779,31 @@ fn closing_error() -> io::Error {
     )
 }
 
-// This policy has coordinated clock/flush listening coverage only on Pro 3.
 fn automatic_request(
     state: &ntpods_ipc::Snapshot,
+    gaming_supported: Option<bool>,
+    apple_codec: bool,
     reporting: bool,
     delay: Option<u16>,
     previously_held: bool,
 ) -> Option<Request> {
-    let supported = ["A3063", "A3064", "A3065"]
+    let pro3 = ["A3063", "A3064", "A3065"]
         .iter()
         .any(|known| state.model.trim().eq_ignore_ascii_case(known));
+    // Keep the tested Pro 3 AAC path; other models need the Apple codec and SDP bit.
+    let supported = gaming_supported != Some(false)
+        && (pro3 || (gaming_supported == Some(true) && apple_codec));
     (supported
         && state.connected
         && state.playback_native_driver
         && state.playback_state == "ready"
         && reporting
         // A resumed configuration can report zero after a successful hold/restore.
-        && delay.is_some_and(|delay| delay > 1200 || (delay == 0 && previously_held)))
+        && delay.is_some_and(|delay| {
+            delay > AUTOMATIC_TARGET_MS * 10 || (delay == 0 && previously_held)
+        }))
     .then_some(Request {
-        target: 120,
+        target: AUTOMATIC_TARGET_MS,
         // Explicit policy restore value; DelayReport is not the prior setting.
         restore: 150,
         lifetime: Lifetime::Playback,
@@ -1067,7 +1076,7 @@ mod tests {
 
     fn automatic() -> Request {
         Request {
-            target: 120,
+            target: AUTOMATIC_TARGET_MS,
             restore: 150,
             lifetime: Lifetime::Playback,
         }
@@ -1164,6 +1173,8 @@ mod tests {
 
     #[test]
     fn apple_adjustment_preserves_direction_rounding_and_restore_exception() {
+        assert_eq!(adjustment(280, 60), (9, 22));
+        assert_eq!(adjustment(900, 150), (9, 60));
         assert_eq!(adjustment(1500, 60), (11, 80));
         assert_eq!(adjustment(1499, 100), (11, 39));
         assert_eq!(adjustment(600, 150), (9, 90));
@@ -1283,33 +1294,43 @@ mod tests {
             playback_state: "ready".into(),
             ..Default::default()
         };
-        let request = automatic_request(&state, true, Some(1490), false).unwrap();
-        assert_eq!((request.target, request.restore), (120, 150));
+        let request = automatic_request(&state, None, false, true, Some(1490), false).unwrap();
+        assert_eq!((request.target, request.restore), (60, 150));
         assert!(request.lifetime == Lifetime::Playback);
-        for report in [None, Some(0), Some(600), Some(1000), Some(1200)] {
-            assert!(automatic_request(&state, true, report, false).is_none());
+        for report in [None, Some(0), Some(280), Some(599), Some(600)] {
+            assert!(automatic_request(&state, None, false, true, report, false).is_none());
         }
-        assert!(automatic_request(&state, true, Some(0), true).is_some());
-        for report in [None, Some(600), Some(1000), Some(1200)] {
-            assert!(automatic_request(&state, true, report, true).is_none());
+        assert!(automatic_request(&state, None, false, true, Some(0), true).is_some());
+        for report in [None, Some(280), Some(599), Some(600)] {
+            assert!(automatic_request(&state, None, false, true, report, true).is_none());
         }
-        assert!(automatic_request(&state, false, Some(1490), true).is_none());
+        for report in [601, 900, 1200, 1500] {
+            assert!(automatic_request(&state, None, false, true, Some(report), false).is_some());
+        }
+        assert!(automatic_request(&state, None, false, false, Some(1490), true).is_none());
         for model in ["", "unknown", "A2084", "A3048", "A3055", "A2096"] {
             state.model = model.into();
-            assert!(automatic_request(&state, true, Some(1490), true).is_none());
+            assert!(automatic_request(&state, None, false, true, Some(1490), true).is_none());
         }
         for model in ["A3063", "a3064", " A3065 "] {
             state.model = model.into();
-            assert!(automatic_request(&state, true, Some(1490), false).is_some());
+            assert!(automatic_request(&state, None, false, true, Some(1490), false).is_some());
         }
+        state.model = "A3048".into();
+        assert!(automatic_request(&state, Some(true), true, true, Some(900), false).is_some());
+        assert!(automatic_request(&state, Some(true), false, true, Some(900), false).is_none());
+        assert!(automatic_request(&state, None, true, true, Some(900), false).is_none());
+        state.model = "A3064".into();
+        assert!(automatic_request(&state, Some(false), true, true, Some(900), false).is_none());
+        assert!(automatic_request(&state, Some(false), false, true, Some(900), false).is_none());
         state.connected = false;
-        assert!(automatic_request(&state, true, Some(1490), true).is_none());
+        assert!(automatic_request(&state, None, false, true, Some(1490), true).is_none());
         state.connected = true;
         state.playback_native_driver = false;
-        assert!(automatic_request(&state, true, Some(1490), true).is_none());
+        assert!(automatic_request(&state, None, false, true, Some(1490), true).is_none());
         state.playback_native_driver = true;
         state.playback_state = "starting".into();
-        assert!(automatic_request(&state, true, Some(1490), true).is_none());
+        assert!(automatic_request(&state, None, false, true, Some(1490), true).is_none());
     }
 
     #[test]

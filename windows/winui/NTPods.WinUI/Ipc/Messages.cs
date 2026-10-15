@@ -434,6 +434,12 @@ public sealed class ConnectCmd
     [JsonPropertyName("cmd")] public string Cmd => "connect";
 }
 
+public sealed class PairingCompletedCmd
+{
+    [JsonPropertyName("cmd")] public string Cmd => "pairing_completed";
+    [JsonPropertyName("address")] public string Address { get; init; } = "";
+}
+
 public sealed class DisconnectCmd
 {
     [JsonPropertyName("cmd")] public string Cmd => "disconnect";
@@ -476,6 +482,7 @@ public abstract record DaemonEvent
 
     /// BLE proximity notification; the UI checks connection state before offering Connect.
     public sealed record ConnectPrompt(string Name) : DaemonEvent;
+    public sealed record PairingNearby(ushort Model, bool LidOpen) : DaemonEvent;
     public sealed record CommandResult(string Command, ulong RequestId, bool Ok, string Message) : DaemonEvent;
     public sealed record HeadTracking(ulong TimestampMs, short Horizontal, short Vertical) : DaemonEvent;
 }
@@ -533,6 +540,12 @@ public static class Wire
 
                 case "connect_prompt":
                     return new DaemonEvent.ConnectPrompt(GetStr(root, "name"));
+
+                case "pairing_nearby":
+                    if (!root.TryGetProperty("model", out var model) || model.ValueKind != JsonValueKind.Number ||
+                        !model.TryGetUInt16(out var modelId) || !root.TryGetProperty("lid_open", out var lidOpen) ||
+                        lidOpen.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) return null;
+                    return new DaemonEvent.PairingNearby(modelId, lidOpen.GetBoolean());
 
                 case "command_result":
                     if (!root.TryGetProperty("ok", out var ok) || ok.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) return null;

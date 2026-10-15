@@ -1,4 +1,4 @@
-//! Paired-device BLE battery reports. Keys come only from the existing AAP link.
+//! BLE lid invitations and paired battery reports. Keys come only from the AAP link.
 use ntpods_ipc::{Battery, BatteryFreshness, BatteryObservation, Snapshot};
 use std::{
     io::{self, Read},
@@ -13,6 +13,61 @@ const KEYS_HEADER: [u8; 6] = [4, 0, 4, 0, 0x31, 0];
 // Closed-case reports on Pro 3 can arrive roughly a minute apart.
 pub const FRESH_MS: u64 = 90_000;
 const VISIT_ABSENCE_MS: u64 = 45_000;
+const INVITATION_ABSENCE_MS: u64 = 30_000;
+const EARBUD_MODELS: [u16; 11] = [
+    0x0220, 0x0f20, 0x1320, 0x1920, 0x1b20, 0x0e20, 0x1420, 0x2420, 0x2720, 0x3020, 0x3620,
+];
+
+#[derive(Default)]
+pub struct Invitations([InvitationVisit; EARBUD_MODELS.len()]);
+
+#[derive(Clone, Copy, Default)]
+struct InvitationVisit {
+    last_seen_ms: Option<u64>,
+    lid_open: bool,
+    offered: bool,
+}
+
+impl Invitations {
+    pub fn observe(
+        &mut self,
+        manufacturer: &[u8],
+        now_ms: u64,
+        already_paired: impl FnOnce() -> bool,
+    ) -> Option<(u16, bool)> {
+        let data = proximity_record(manufacturer)?;
+        if data[2] != 1 {
+            return None;
+        }
+        let model = u16::from_be_bytes([data[3], data[4]]);
+        let index = EARBUD_MODELS
+            .iter()
+            .position(|candidate| *candidate == model)?;
+        // Both buds can advertise with different private addresses.
+        let visit = &mut self.0[index];
+        if visit
+            .last_seen_ms
+            .is_none_or(|at| now_ms.saturating_sub(at) >= INVITATION_ABSENCE_MS)
+        {
+            visit.offered = false;
+        }
+        visit.last_seen_ms = Some(now_ms);
+        if data[5] & 0x44 == 0 {
+            return None;
+        }
+        if data[8] & 8 != 0 {
+            visit.offered = false;
+            let was_open = std::mem::replace(&mut visit.lid_open, false);
+            return was_open.then_some((model, false));
+        }
+        visit.lid_open = true;
+        if visit.offered {
+            return None;
+        }
+        visit.offered = true;
+        (!already_paired()).then_some((model, true))
+    }
+}
 
 #[derive(Clone, Copy, Default)]
 pub struct Cache(Option<(u64, Battery, BatteryFreshness)>);
@@ -41,9 +96,14 @@ impl Cache {
             return false;
         };
         let invalidated = state.battery_freshness.is_some_and(|freshness| {
-            [freshness.left, freshness.right, freshness.case, freshness.headphone]
-                .iter()
-                .all(|part| part.present.is_none())
+            [
+                freshness.left,
+                freshness.right,
+                freshness.case,
+                freshness.headphone,
+            ]
+            .iter()
+            .all(|part| part.present.is_none())
         });
         if (state.connected && !state.link_stale)
             || now_ms < at
@@ -304,7 +364,7 @@ fn aes_block(key: &[u8; 16], input: &[u8; 16], decrypt: bool) -> Option<[u8; 16]
 }
 
 impl Keys {
-    fn matches_address(&self, address: u64) -> bool {
+    pub fn matches_address(&self, address: u64) -> bool {
         if address > 0xffff_ffff_ffff || (address >> 46) != 1 {
             return false;
         }
@@ -323,22 +383,7 @@ impl Keys {
         }
         let model = u16::from_be_bytes([data[3], data[4]]);
         let headset = matches!(model, 0x0a20 | 0x1f20);
-        if !headset
-            && !matches!(
-                model,
-                0x0220
-                    | 0x0f20
-                    | 0x1320
-                    | 0x1920
-                    | 0x1b20
-                    | 0x0e20
-                    | 0x1420
-                    | 0x2420
-                    | 0x2720
-                    | 0x3020
-                    | 0x3620
-            )
-        {
+        if !headset && !EARBUD_MODELS.contains(&model) {
             return None;
         }
         let encrypted = data[11..].try_into().ok()?;
@@ -684,7 +729,10 @@ mod tests {
         assert!(state.battery_live && state.battery.left_charging);
         assert_eq!(state.battery.left, Some(77));
         assert_eq!(state.battery_timestamp_ms, Some(2_000));
-        assert_eq!(state.battery_freshness.unwrap().left.timestamp_ms, Some(2_000));
+        assert_eq!(
+            state.battery_freshness.unwrap().left.timestamp_ms,
+            Some(2_000)
+        );
         assert!(!cache.restore(&mut state, 6_000));
         assert!(refresh_live(&mut state, 2_000 + FRESH_MS));
         assert!(!state.battery_live);
@@ -753,6 +801,202 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn lid_invitations_require_a_complete_known_earbud_report_with_an_open_lid() {
+        let mut data = [0u8; 27];
+        data[..11].copy_from_slice(&[7, 25, 1, 0x27, 0x20, 0x35, 0x88, 0xb3, 0x31, 0, 4]);
+        for model in EARBUD_MODELS {
+            data[3..5].copy_from_slice(&model.to_be_bytes());
+            assert_eq!(
+                Invitations::default().observe(&data, 0, || false),
+                Some((model, true))
+            );
+        }
+        for model in [0x0a20u16, 0x1f20, 0, 0xffff] {
+            data[3..5].copy_from_slice(&model.to_be_bytes());
+            assert_eq!(
+                Invitations::default().observe(&data, 0, || panic!("unknown model")),
+                None
+            );
+        }
+        data[3..5].copy_from_slice(&0x2720u16.to_be_bytes());
+        for (offset, value) in [(1, 24), (1, 26), (2, 0), (2, 7), (5, 0x20), (8, 0x38)] {
+            let mut invalid = data;
+            invalid[offset] = value;
+            assert_eq!(
+                Invitations::default().observe(&invalid, 0, || panic!("invalid report")),
+                None
+            );
+        }
+        for length in 0..data.len() {
+            assert_eq!(
+                Invitations::default().observe(&data[..length], 0, || panic!("truncated report")),
+                None
+            );
+        }
+        let mut compound = vec![0x10, 1, 0x42];
+        compound.extend(data);
+        compound.extend([0x15, 0]);
+        assert_eq!(
+            Invitations::default().observe(&compound, 0, || false),
+            Some((0x2720, true))
+        );
+        compound.push(0);
+        assert_eq!(
+            Invitations::default().observe(&compound, 0, || panic!("malformed suffix")),
+            None
+        );
+        let mut duplicate = data.to_vec();
+        duplicate.extend(data);
+        assert_eq!(
+            Invitations::default().observe(&duplicate, 0, || panic!("duplicate record")),
+            None
+        );
+    }
+
+    #[test]
+    fn lid_invitations_rearm_only_after_closing_or_absence_and_coalesce_siblings() {
+        let mut data = [0u8; 27];
+        data[..11].copy_from_slice(&[7, 25, 1, 0x27, 0x20, 0x35, 0x88, 0xb3, 0x31, 0, 4]);
+        let mut invitations = Invitations::default();
+        assert_eq!(
+            invitations.observe(&data, 100, || false),
+            Some((0x2720, true))
+        );
+        data[5] = 0x55;
+        for now in (101..120_101).step_by(1_000) {
+            assert_eq!(
+                invitations.observe(&data, now, || panic!("same visit")),
+                None
+            );
+        }
+        data[5] = 0x20;
+        assert_eq!(
+            invitations.observe(&data, 120_101, || panic!("unknown lid")),
+            None
+        );
+        data[5] = 0x35;
+        assert_eq!(
+            invitations.observe(&data, 120_102, || panic!("unknown lid did not rearm")),
+            None
+        );
+        data[8] = 0x38;
+        assert_eq!(
+            invitations.observe(&data, 121_000, || panic!("closed lid")),
+            Some((0x2720, false))
+        );
+        assert_eq!(
+            invitations.observe(&data, 121_000, || panic!("duplicate close")),
+            None
+        );
+        data[8] = 0x31;
+        assert_eq!(
+            invitations.observe(&data, 121_001, || false),
+            Some((0x2720, true))
+        );
+        data[8] = 0x38;
+        assert_eq!(
+            invitations.observe(&data, 121_002, || panic!("closed lid")),
+            Some((0x2720, false))
+        );
+        data[8] = 0x31;
+        assert_eq!(
+            invitations.observe(&data, 121_003, || false),
+            Some((0x2720, true))
+        );
+        assert_eq!(
+            invitations.observe(&data, 126_001, || panic!("same visit")),
+            None
+        );
+        data[3..5].copy_from_slice(&0x0e20u16.to_be_bytes());
+        assert_eq!(
+            invitations.observe(&data, 126_002, || false),
+            Some((0x0e20, true))
+        );
+        data[3..5].copy_from_slice(&0x2720u16.to_be_bytes());
+        assert_eq!(
+            invitations.observe(&data, 126_003, || panic!("same visit")),
+            None
+        );
+        assert_eq!(
+            invitations.observe(&data, 126_003 + INVITATION_ABSENCE_MS, || false),
+            Some((0x2720, true))
+        );
+        assert_eq!(
+            invitations
+                .0
+                .iter()
+                .filter(|visit| visit.last_seen_ms.is_some())
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn cached_keys_suppress_invitations_only_while_the_windows_pair_exists() {
+        let mut data = [0u8; 27];
+        data[..11].copy_from_slice(&[7, 25, 1, 0x27, 0x20, 0x35, 0x88, 0xb3, 0x31, 0, 4]);
+        let owned = keys().matches_address(0x5a162b91d1cd);
+        assert!(owned);
+        for paired in [false, true] {
+            let mut invitations = Invitations::default();
+            assert_eq!(
+                invitations.observe(&data, 0, || owned && paired),
+                (!paired).then_some((0x2720, true))
+            );
+            assert_eq!(
+                invitations.observe(&data, 1000, || panic!("pair lookup repeated")),
+                None
+            );
+            data[8] = 0x38;
+            assert_eq!(
+                invitations.observe(&data, 1001, || panic!("closing does not query pairing")),
+                Some((0x2720, false))
+            );
+            data[8] = 0x31;
+        }
+    }
+
+    #[test]
+    fn lid_close_is_reported_after_silence_but_unknown_and_other_subtypes_are_ignored() {
+        let mut data = [0u8; 27];
+        data[..11].copy_from_slice(&[7, 25, 1, 0x27, 0x20, 0x35, 0x88, 0xb3, 0x38, 0, 4]);
+        let mut invitations = Invitations::default();
+        assert_eq!(
+            invitations.observe(&data, 0, || panic!("initial close")),
+            None
+        );
+        data[8] = 0x31;
+        assert_eq!(
+            invitations.observe(&data, 1, || false),
+            Some((0x2720, true))
+        );
+        data[8] = 0x38;
+        data[5] = 0x20;
+        assert_eq!(
+            invitations.observe(&data, 2, || panic!("unknown lid")),
+            None
+        );
+        data[5] = 0x35;
+        data[2] = 7;
+        assert_eq!(
+            invitations.observe(&data, 3, || panic!("other subtype")),
+            None
+        );
+        data[2] = 1;
+        assert_eq!(
+            invitations.observe(&data, 2 + INVITATION_ABSENCE_MS, || panic!("late close")),
+            Some((0x2720, false))
+        );
+        assert_eq!(
+            invitations.observe(&data, 3 + INVITATION_ABSENCE_MS, || panic!(
+                "duplicate close"
+            )),
+            None
+        );
+    }
+
     fn advertisement(status: u8, levels: [u8; 3]) -> Vec<u8> {
         let mut data = vec![7, 25, 1, 0x27, 0x20, status, 0x99, 0x8f, 8, 0, 5];
         let mut plain = [0; 16];

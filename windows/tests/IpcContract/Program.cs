@@ -10,9 +10,9 @@ static void Check(bool condition, string message)
 Check(args.Length == 2, "usage: IpcContract INPUT OUTPUT");
 string[] phases = ["idle", "starting", "capturing", "stopping", "recovering", "unavailable", "error", "waiting_for_ear"];
 var lines = File.ReadAllLines(args[0]);
-Check(lines.Length == phases.Length + 1, "Expected each lifecycle fixture and one legacy fixture");
+Check(lines.Length == phases.Length + 2, "Expected lifecycle states, one legacy state and one nearby invitation");
 var output = new List<string>();
-for (var index = 0; index < lines.Length; ++index)
+for (var index = 0; index < lines.Length - 1; ++index)
 {
     var evt = Wire.ParseEvent(lines[index]) as DaemonEvent.State;
     Check(evt is not null, $"Rust fixture {index} did not parse as a flattened state");
@@ -424,6 +424,21 @@ foreach (ulong id in new ulong[] { 0, 73 })
 output.Add(Wire.ToLine(new SetHearingAidCmd { RequestId = 74, On = false }).TrimEnd('\n'));
 foreach (ushort? target in new ushort?[] { null, 60, 80, 100, 120, 140 })
     output.Add(Wire.ToLine(new SetPlaybackBufferCmd { TargetMs = target, RestoreMs = target.HasValue ? (ushort)150 : null }).TrimEnd('\n'));
+output.Add(Wire.ToLine(new PairingCompletedCmd { Address = "12:34:56:78:9a:bc" }).TrimEnd('\n'));
+Check(Wire.ParseEvent(lines[^1]) is DaemonEvent.PairingNearby(0x2720, true),
+    "Nearby invitations must retain the public model hint and lid state.");
+Check(Wire.ParseEvent("{\"event\":\"pairing_nearby\",\"model\":10016,\"lid_open\":false}")
+    is DaemonEvent.PairingNearby(0x2720, false), "Closing the lid must survive event parsing.");
+foreach (string value in new[] { "null", "-1", "65536", "1.5", "true", "\"10016\"", "[]", "{}" })
+    Check(Wire.ParseEvent("{\"event\":\"pairing_nearby\",\"model\":" + value + ",\"lid_open\":true}") is null,
+        "Malformed invitation models must not reach the UI.");
+Check(Wire.ParseEvent("{\"event\":\"pairing_nearby\"}") is null, "Missing invitation models must be rejected.");
+foreach (string value in new[] { "null", "0", "1", "\"true\"", "[]", "{}" })
+    Check(Wire.ParseEvent("{\"event\":\"pairing_nearby\",\"model\":10016,\"lid_open\":" + value + "}") is null,
+        "Malformed lid states must not dismiss or open a pairing card.");
+Check(Wire.ParseEvent("{\"event\":\"pairing_nearby\",\"model\":10016}") is null,
+    "Missing lid states must not become open invitations.");
+output.Add(JsonSerializer.Serialize(new { @event = "pairing_nearby", model = 0x2720, lid_open = true }));
 File.WriteAllLines(args[1], output);
 Console.WriteLine($"C#: {lines.Length} production/legacy events, VBR/Transparency roundtrips and malformed-input checks passed");
 

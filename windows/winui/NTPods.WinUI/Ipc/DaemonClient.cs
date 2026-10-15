@@ -14,6 +14,7 @@ public sealed class DaemonClient : IDisposable
     public event Action<Snapshot>? SnapshotReceived;
     public event Action<string, string>? OverlayReceived;
     public event Action<string>? ConnectPromptReceived;
+    public event Action<ushort, bool>? PairingNearbyReceived;
     public event Action<DaemonEvent.CommandResult>? CommandResultReceived;
     public event Action<DaemonEvent.HeadTracking>? HeadTrackingReceived;
     public event Action<bool>? ConnectionChanged;
@@ -89,6 +90,7 @@ public sealed class DaemonClient : IDisposable
     public void ToggleMute() => Send(new ToggleMuteCmd());
     public void SetHeartRate(bool on) => Send(new SetHeartRateCmd { On = on });
     public void Connect() => Send(new ConnectCmd());
+    public bool PairingCompleted(string address) => Send(new PairingCompletedCmd { Address = address });
     public void Disconnect() => Send(new DisconnectCmd());
     public void RepairConnection() => Send(new RepairConnectionCmd());
     public void RebuildAudio() => Send(new RebuildAudioCmd());
@@ -225,6 +227,9 @@ public sealed class DaemonClient : IDisposable
                     break;
                 case DaemonEvent.ConnectPrompt prompt:
                     ConnectPromptReceived?.Invoke(prompt.Name);
+                    break;
+                case DaemonEvent.PairingNearby nearby:
+                    PairingNearbyReceived?.Invoke(nearby.Model, nearby.LidOpen);
                     break;
                 case DaemonEvent.CommandResult result:
                     CommandResultReceived?.Invoke(result);

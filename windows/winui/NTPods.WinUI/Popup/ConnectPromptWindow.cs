@@ -1,168 +1,247 @@
-using System;
-using System.Runtime.InteropServices;
-using NTPods.WinUI.Services;
+using System.Diagnostics;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
-using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
-using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.Graphics;
+using Windows.UI.ViewManagement;
 
 namespace NTPods.WinUI.Popup;
 
-/// Nearby connection prompt; activation is required for its buttons to receive clicks.
+/// Reused bottom card for pairing and reconnecting, shown without activating it.
 public sealed class ConnectPromptWindow : Window
 {
-    private readonly DispatcherQueueTimer _autoClose;
-    private bool _closed;
+    private readonly ConnectPromptView _view = new();
+    private readonly IslandMotion _motion = new(double.PositiveInfinity);
+    private readonly UISettings _settings = new();
+    private readonly Stopwatch _clock = Stopwatch.StartNew();
+    private readonly DispatcherQueueTimer _expiry;
+    private Func<CancellationToken, Task<string?>>? _connect;
+    private string _busyStatusKey = "Pairing.Pairing";
+    private CancellationTokenSource? _request;
+    private bool _closed, _rendering, _hovered, _active, _shown, _hiding;
+    private int _generation, _width, _height;
+    private double _scale = 1;
+    private (int Left, int Top, int Width, int Height, int Diameter)? _region;
+    public bool Busy => _request is not null;
+    public bool PromptVisible => _motion.Visible;
+    public event Action? Dismissed;
+    public event Action? BusyChanged;
 
-    public ConnectPromptWindow(string name, Action onConnect)
+    public ConnectPromptWindow()
     {
         Title = "NTPods";
-
-        var display = string.IsNullOrWhiteSpace(name) ? Localize.Get("Device_DefaultName") : name;
-
-        // The event has no model metadata; use the shared artwork fallback.
-        var image = new Image
+        Content = _view;
+        PopupWindowNative.Configure(this, interactive: true);
+        _expiry = DispatcherQueue.CreateTimer();
+        _expiry.IsRepeating = false;
+        _expiry.Tick += (_, _) =>
         {
-            Source = new BitmapImage(new Uri(DeviceArt.MainImage(null))),
-            Stretch = Stretch.Uniform,
-            Width = 96,
-            Height = 96,
-            HorizontalAlignment = HorizontalAlignment.Center,
+            if (Busy || _hovered || _active) ArmExpiry();
+            else HidePrompt();
         };
-
-        var title = new TextBlock
+        _view.ConnectRequested += Connect;
+        _view.DismissRequested += HidePrompt;
+        _view.PointerEntered += (_, _) => _hovered = true;
+        _view.PointerExited += (_, _) => { _hovered = false; ArmExpiry(); };
+        _view.AddHandler(UIElement.KeyDownEvent, new KeyEventHandler((_, args) =>
         {
-            Text = display,
-            FontSize = 17,
-            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            TextAlignment = TextAlignment.Center,
-        };
-        var subtitle = new TextBlock
+            if (args.Key != Windows.System.VirtualKey.Escape) return;
+            args.Handled = true;
+            HidePrompt();
+        }), true);
+        _view.Loaded += (_, _) => RefreshLayout();
+        _view.SizeChanged += (_, _) => RefreshLayout();
+        Activated += (_, args) =>
         {
-            Text = Localize.Get("ConnectPrompt_Nearby"),
-            FontSize = 12,
-            HorizontalAlignment = HorizontalAlignment.Center,
+            _active = args.WindowActivationState != WindowActivationState.Deactivated;
+            if (!_active) ArmExpiry();
         };
-        if (Application.Current.Resources.TryGetValue("TextFillColorSecondaryBrush", out var sb) && sb is Brush secondary)
-            subtitle.Foreground = secondary;
-
-        var connect = new Button
+        if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
+            _settings.AnimationsEnabledChanged += AnimationsChanged;
+        Closed += (_, _) =>
         {
-            Content = Localize.Get("ConnectPrompt_Connect"),
-            HorizontalAlignment = HorizontalAlignment.Stretch,
+            _closed = true;
+            CancelRequest();
+            _expiry.Stop();
+            StopRendering();
+            if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
+                _settings.AnimationsEnabledChanged -= AnimationsChanged;
         };
-        if (Application.Current.Resources.TryGetValue("AccentButtonStyle", out var st) && st is Style accent)
-            connect.Style = accent;
-        connect.Click += (_, _) => { try { onConnect(); } catch { } SafeClose(); };
+    }
 
-        var dismiss = new Button
-        {
-            Content = Localize.Get("ConnectPrompt_Dismiss"),
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-        };
-        dismiss.Click += (_, _) => SafeClose();
+    public void ShowPrompt(string name, Func<CancellationToken, Task<string?>> connect,
+        string statusKey = "Pairing.Nearby", string busyStatusKey = "Pairing.Pairing")
+    {
+        if (_closed || Busy) return;
+        ++_generation;
+        _hiding = false;
+        _shown = true;
+        _connect = connect;
+        _busyStatusKey = busyStatusKey;
+        _view.SetName(name);
+        _view.SetState(false, statusKey);
+        var work = DisplayArea.Primary.WorkArea;
+        AppWindow.Move(new PointInt32(work.X + work.Width / 2, work.Y + work.Height / 2));
+        Prepare();
+        _motion.Show(_clock.Elapsed.TotalMilliseconds, _settings.AnimationsEnabled);
+        Advance();
+        if (!PromptVisible) return;
+        AppWindow.Show(false);
+        ArmExpiry();
+    }
 
-        var panel = new StackPanel { Spacing = 10, Padding = new Thickness(20, 18, 20, 20) };
-        panel.Children.Add(title);
-        panel.Children.Add(subtitle);
-        panel.Children.Add(image);
-        panel.Children.Add(connect);
-        panel.Children.Add(dismiss);
-
-        // An opaque background avoids the white edge produced by acrylic on this tool window.
-        var root = new Grid { RequestedTheme = AppSettings.Theme };
-        if (Application.Current.Resources.TryGetValue("SolidBackgroundFillColorBaseBrush", out var bg) && bg is Brush bgBrush)
-            root.Background = bgBrush;
+    private async void Connect()
+    {
+        if (!PromptVisible || _closed || _request?.IsCancellationRequested == true) return;
+        if (Busy || _connect is null) return;
+        using var request = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        _request = request;
+        int generation = _generation;
+        _expiry.Stop();
+        _view.SetState(true, _busyStatusKey);
+        BusyChanged?.Invoke();
+        string? error;
+        try { error = await _connect(request.Token); }
+        catch (OperationCanceledException) { error = "Pairing.TimedOut"; }
+        catch (Exception) { error = "Pairing.Failed"; }
+        if (_closed || generation != _generation) return;
+        _request = null;
+        if (error is null) HidePrompt();
         else
-            root.Background = new SolidColorBrush(Microsoft.UI.Colors.Black);
-        root.Children.Add(panel);
-        Content = root;
-
-        try { ConfigurePresenter(); } catch { }
-
-        _autoClose = DispatcherQueue.CreateTimer();
-        _autoClose.Interval = TimeSpan.FromSeconds(20);
-        _autoClose.IsRepeating = false;
-        _autoClose.Tick += (_, _) => SafeClose();
-
-        Closed += (_, _) => { _closed = true; try { _autoClose.Stop(); } catch { } };
-
-        root.Loaded += (_, _) => { try { Prepare(); } catch { } };
-    }
-
-    /// Show the prompt (activating it so the button works).
-    public void ShowPrompt()
-    {
-        if (_closed) return;
-        try
         {
-            AppWindow.Show();
-            Activate();
-            _autoClose.Start();
+            _view.SetState(false, error);
+            RefreshLayout();
+            ArmExpiry();
         }
-        catch { SafeClose(); }
+        BusyChanged?.Invoke();
     }
 
-    private void ConfigurePresenter()
+    public void SetPairingStatus(string key)
     {
-        AppWindow.IsShownInSwitchers = false;
-        if (AppWindow.Presenter is OverlappedPresenter p)
-        {
-            p.SetBorderAndTitleBar(false, false);
-            p.IsAlwaysOnTop = true;
-            p.IsResizable = false;
-            p.IsMaximizable = false;
-            p.IsMinimizable = false;
-        }
+        if (_closed || _hiding || !Busy || _request?.IsCancellationRequested == true) return;
+        _view.SetState(true, key);
+        RefreshLayout();
     }
 
-    /// Fit the content above the bottom edge of the nearest display's work area.
+    public void HidePrompt()
+    {
+        if (_closed || _hiding || !PromptVisible) return;
+        _hiding = true;
+        bool busy = Busy;
+        CancelRequest();
+        _connect = null;
+        _expiry.Stop();
+        _motion.Dismiss(_clock.Elapsed.TotalMilliseconds, _settings.AnimationsEnabled);
+        Advance();
+        if (busy) BusyChanged?.Invoke();
+    }
+
+    private void CancelRequest()
+    {
+        ++_generation;
+        _request?.Cancel();
+        _request = null;
+    }
+
+    private void ArmExpiry()
+    {
+        if (_closed || _hiding || !PromptVisible || Busy) return;
+        _expiry.Stop();
+        _expiry.Interval = TimeSpan.FromSeconds(20);
+        _expiry.Start();
+    }
+
     private void Prepare()
     {
-        double scale = (Content as FrameworkElement)?.XamlRoot?.RasterizationScale ?? 1.0;
-        if (scale <= 0) scale = 1.0;
-
-        var fe = (FrameworkElement)Content;
-        fe.Measure(new Windows.Foundation.Size(300, double.PositiveInfinity));
-        double wDip = 300, hDip = fe.DesiredSize.Height > 0 ? fe.DesiredSize.Height : 260;
-
-        int w = (int)Math.Ceiling(wDip * scale);
-        int h = (int)Math.Ceiling(hDip * scale);
-        try { AppWindow.Resize(new SizeInt32(w, h)); } catch { }
-
-        var area = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Nearest);
-        var work = area.WorkArea;
-        int x = work.X + (work.Width - w) / 2;
-        int y = work.Y + work.Height - h - (int)Math.Round(56 * scale); // bottom-centre
-        try { AppWindow.Move(new PointInt32(x, y)); } catch { }
-
-        try { RoundCorners(); } catch { }
+        _scale = PopupWindowNative.Scale(this);
+        var work = DisplayArea.Primary.WorkArea;
+        _view.Width = Math.Max(240, Math.Min(400, work.Width / _scale - 32));
+        _view.Fit(Math.Max(160, work.Height / _scale - 32));
+        _view.Measure(new Windows.Foundation.Size(_view.Width, double.PositiveInfinity));
+        _width = (int)Math.Ceiling(_view.Width * _scale);
+        _height = (int)Math.Ceiling(_view.DesiredSize.Height * _scale);
+        _motion.SetHeight(_height, _clock.Elapsed.TotalMilliseconds, _settings.AnimationsEnabled);
+        if (AppWindow.Size.Width != _width || AppWindow.Size.Height != _height)
+            AppWindow.Resize(new SizeInt32(_width, _height));
+        AppWindow.Move(new PointInt32(work.X + (work.Width - _width) / 2,
+            work.Y + work.Height - _height - (int)Math.Round(16 * _scale)));
     }
 
-    private void SafeClose()
+    private void OnRendering(object? sender, object args) => Advance();
+
+    private void RefreshLayout()
+    {
+        if (!PromptVisible || _closed) return;
+        try { Prepare(); Advance(); }
+        catch (Exception) { HideImmediately(); }
+    }
+
+    private void Advance()
+    {
+        try { AdvanceCore(); }
+        catch (Exception) { HideImmediately(); }
+    }
+
+    private void HideImmediately()
+    {
+        _hiding = true;
+        CancelRequest();
+        _expiry.Stop();
+        StopRendering();
+        _motion.Hide();
+        try { AppWindow.Hide(); } catch (Exception) { }
+        if (!_shown) return;
+        _shown = false;
+        Dismissed?.Invoke();
+    }
+
+    private void AdvanceCore()
     {
         if (_closed) return;
-        try { Close(); } catch { _closed = true; }
+        _motion.Advance(_clock.Elapsed.TotalMilliseconds);
+        if (!PromptVisible)
+        {
+            StopRendering();
+            AppWindow.Hide();
+            if (_shown)
+            {
+                _shown = false;
+                Dismissed?.Invoke();
+            }
+            return;
+        }
+        int width = (int)Math.Round((96 * _scale) + (_width - 96 * _scale) * _motion.Expansion);
+        int height = (int)Math.Round(34 * _scale + (_motion.Height - 34 * _scale) * _motion.Expansion);
+        int diameter = (int)Math.Round((34 + 22 * _motion.Expansion) * _scale);
+        var region = ((_width - width) / 2, _height - height, width, height, diameter);
+        if (_region != region)
+        {
+            PopupWindowNative.SetRegion(this, region.Item1, region.Item2, width, height, diameter);
+            _region = region;
+        }
+        _view.Render(_motion.BatteryOpacity);
+        if (_motion.Animating && !_rendering)
+        {
+            CompositionTarget.Rendering += OnRendering;
+            _rendering = true;
+        }
+        else if (!_motion.Animating) StopRendering();
     }
 
-    private void RoundCorners()
+    private void StopRendering()
     {
-        var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
-        int pref = DWMWCP_ROUND;
-        DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, ref pref, sizeof(int));
-        // Suppress DWM's border around the card.
-        int none = unchecked((int)0xFFFFFFFE); // DWMWA_COLOR_NONE
-        DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, ref none, sizeof(int));
+        if (!_rendering) return;
+        CompositionTarget.Rendering -= OnRendering;
+        _rendering = false;
     }
 
-    private const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
-    private const int DWMWA_BORDER_COLOR = 34;
-    private const int DWMWCP_ROUND = 2;
-
-    [DllImport("dwmapi.dll", SetLastError = true)]
-    private static extern int DwmSetWindowAttribute(nint hwnd, int attribute, ref int pvAttribute, int cbAttribute);
+    private void AnimationsChanged(UISettings sender, UISettingsAnimationsEnabledChangedEventArgs args) =>
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (_closed || !PromptVisible) return;
+            _motion.SetAnimationsEnabled(_clock.Elapsed.TotalMilliseconds, sender.AnimationsEnabled);
+            Advance();
+        });
 }

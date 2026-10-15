@@ -14,6 +14,7 @@ namespace NTPods.WinUI.Controls;
 public sealed partial class DeviceHeader : UserControl
 {
     public event Action? SettingsRequested;
+    public event Action? PairingRequested;
     private DaemonClient? _client;
     public DaemonClient? Client
     {
@@ -103,6 +104,7 @@ public sealed partial class DeviceHeader : UserControl
     public void FocusActions() => MoreButton.Focus(FocusState.Programmatic);
 
     private void Settings_Click(object sender, RoutedEventArgs e) => SettingsRequested?.Invoke();
+    private void Pair_Click(object sender, RoutedEventArgs e) => PairingRequested?.Invoke();
 
     private void Connect_Click(object sender, RoutedEventArgs e)
     {

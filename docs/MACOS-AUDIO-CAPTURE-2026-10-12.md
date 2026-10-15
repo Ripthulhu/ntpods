@@ -1,8 +1,8 @@
 # Tahoe audio protocol findings
 
-Evidence: captured on 2026-10-12 with AirPods Pro 3 firmware 9A348,
+Evidence: captured on 2026-10-12 and 2026-10-14 with AirPods Pro 3 firmware 9A348,
 Tahoe 26.7.1 (25G241), and the patched Intel AX200 VM
-described in the [capture guide](MACOS-PROTOCOL-CAPTURE.md). This run used CVSD
+described in the [capture guide](MACOS-PROTOCOL-CAPTURE.md). The October 12 capture used CVSD
 hands-free capture and Apple AAC-ELD playback. It did not exercise the AACP
 microphone route used by NTPods.
 
@@ -92,8 +92,41 @@ playback. That microphone session used CVSD/HFP, not NTPods' AACP uplink.
 The guest logs report low-latency gaming support as local `0`, remote `1`, and
 reject dynamic latency as unsupported. This establishes a host-side restriction
 in this VM; it does not establish the command sequence for entering that mode.
-[Apple requires Apple silicon for Mac Game Mode](https://support.apple.com/en-us/105118),
-so the Intel-style VM cannot provide a normal Game Mode transition capture.
+[Apple requires Apple silicon for Mac Game Mode](https://support.apple.com/en-us/105118).
+The later transition below used an experimental eligibility patch in the Intel VM.
+
+### Working gaming transition
+
+On 2026-10-14, a capture with the local gaming and dynamic-latency checks patched
+recorded a complete transition during audible AAC-ELD playback. The listener
+reported clean audio when entering and leaving gaming mode.
+
+| Value | Gaming | Restored |
+| --- | --- | --- |
+| AACP `0x0B` requested buffer, LE32 milliseconds | 60 ms | 150 ms |
+| Immediate AVDTP DelayReport, BE16 tenths of a millisecond | 28 ms | 90 ms |
+| Completed HAL jitter target | 60 ms | 150 ms |
+| HCI Automatic Flush Timeout (`0x0C28`) | 96 slots / 60 ms | 320 slots / 200 ms |
+| AAC-ELD frames per RTP packet | Two 10 ms frames | Three 10 ms frames |
+
+The target command was followed by the earbuds' report, then the controller
+timeout update. Both timeout commands succeeded. All 2,632 RTP packets and
+their access-unit sequences were continuous, with no AVDTP Suspend or Close.
+Gaming packets averaged 19.968 ms apart; the maximum interval was 21.808 ms.
+The host requested 22 ms of clock adjustment entering gaming and 60 ms leaving
+it, matching the calculation in the next sections.
+
+The AX200 did not support Apple's vendor priority helpers, and no vendor HCI
+commands were transmitted. Standard timeout control was sufficient for this
+run. The capture starts after connection setup, so it cannot establish whether
+PFC was used. Requested buffer, reported delay and completed HAL target are
+distinct; none is an acoustic latency measurement. Restoration while idle or
+suspended is not established by this active-playback capture.
+
+NTPods retains one-frame AAC-ELD packets and a 20 ms source reserve. Its Windows
+profile driver must reopen media to change the flush timeout; the supported
+channel-update interface has no timeout field. See the
+[Windows policy](WINDOWS-AUDIO-LATENCY.md#automatic-receiver-buffer-policy).
 
 ### Buffer-control encoding in the saved daemon
 

@@ -9,6 +9,7 @@ namespace NTPods.WinUI.Pages;
 public sealed partial class DevicePage : UserControl
 {
     public event Action? SettingsRequested;
+    public event Action? PairingRequested;
     private DaemonClient? _client;
     private readonly AutoHideScrollbars _scrollbars;
     private readonly DeviceViewIdentity _identity = new();
@@ -40,6 +41,7 @@ public sealed partial class DevicePage : UserControl
     {
         InitializeComponent();
         Header.SettingsRequested += () => SettingsRequested?.Invoke();
+        Header.PairingRequested += () => PairingRequested?.Invoke();
         _scrollbars = new AutoHideScrollbars(PageScrollViewer);
         _sections = new SectionTransitions(this, DeviceRoot, DeviceSections, VolumeSections, ExtraSections);
         // Hearing assistance remains an opt-in for supported models.
@@ -74,6 +76,7 @@ public sealed partial class DevicePage : UserControl
         if (s.DeviceId != _snapshot.DeviceId || !DeviceModels.HeadTracking(s))
             HeadTrackingCard.Stop(notifyDevice: s.DeviceId == _snapshot.DeviceId);
         _snapshot = s;
+        PairFirstButton.Visibility = string.IsNullOrEmpty(s.DeviceId) ? Visibility.Visible : Visibility.Collapsed;
         NoiseControlCard.Visibility = DeviceModels.Listening(s) ? Visibility.Visible : Visibility.Collapsed;
         EqualizerCard.Visibility = DeviceModels.CustomEq(s) ? Visibility.Visible : Visibility.Collapsed;
         HeartRateCard.Visibility = profile.HeartRate || s.HeartRateEnabled ? Visibility.Visible : Visibility.Collapsed;
@@ -118,5 +121,27 @@ public sealed partial class DevicePage : UserControl
     }
 
     public void FocusActions() => Header.FocusActions();
+
+    public void ShowPairingError(string key = "Pairing.OpenFailed")
+    {
+        _sections.Capture();
+        PairingError.Message = Localize.Get(key);
+        PairingError.Visibility = Visibility.Visible;
+        PairingError.IsOpen = true;
+        _sections.AnimateChanges();
+    }
+
+    private void Pair_Click(object sender, RoutedEventArgs args)
+    {
+        PairingError.IsOpen = false;
+        PairingRequested?.Invoke();
+    }
+
+    private void PairingError_Closed(InfoBar sender, InfoBarClosedEventArgs args)
+    {
+        _sections.Capture();
+        PairingError.Visibility = Visibility.Collapsed;
+        _sections.AnimateChanges();
+    }
 
 }

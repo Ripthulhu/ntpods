@@ -41,6 +41,24 @@ decoded image visible while replacement artwork loads, and keep cached readings
 tied to the correct pair. Dim unavailable artwork independently of stale battery
 values. Earbuds use three readouts; headphones use one centered readout.
 
+Pair AirPods is available in the header menu and empty state without the daemon.
+Automatic pairing uses the bottom connection card with the advertised model or discovered name,
+shared fallback artwork, Connect and close. It works from the tray and never
+activates automatically. The card stays white with dark text and a blue Connect
+button in light and dark appearance; high contrast uses Windows system colors.
+The card uses the island's staged, interruptible motion
+and reduced-motion preference. A lid-open report can show the card before the
+pairing gesture. Connect shows the gesture while discovery finds a single AirPods
+endpoint to pair automatically. Keep device lists out of this card. If several
+AirPods are available, wait and ask the user to close the other cases. A Classic
+invitation already identifies its displayed endpoint and can pair it directly.
+Allow 60 seconds for discovery and pairing. Transient pairing failures keep the gesture visible.
+Closing the case cancels and dismisses its lid invitation; reopening can show it again, even during dismissal. Keep unrelated Classic and reconnect cards independent.
+Manual discovery remains available for renamed devices. Suppress duplicate lid
+invitations and repeated Classic invitations. Pause expiry while interacting or
+pairing. Pause background Classic scans while a card or dialog is open, but allow
+its requested scan. Inhibit discovery during microphone capture and shutdown.
+
 ## Checks
 
 Keep backend behavior, localization, themes and error handling intact. Visual

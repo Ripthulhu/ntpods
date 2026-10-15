@@ -43,7 +43,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 use std::{io, ptr};
 
-use connection_request::ConnectionRequest;
+use connection_request::{
+    pairing_allows_connect, pairing_allows_selection, ConnectionRequest, PairedTarget, PairingStage,
+};
 use mic_lifecycle::playback_allows_microphone;
 use ntpods_ipc as ipc;
 use ntpods_ipc::{to_line, Command, Event, Snapshot};
@@ -160,6 +162,7 @@ struct Ctx {
     hr_retrying: Arc<AtomicBool>,
     /// Connection intent and generation, shared with asynchronous workers.
     connect_requested: Arc<ConnectionRequest>,
+    paired_target: Arc<Mutex<Option<PairedTarget>>>,
     /// Repair request consumed by `run_receiver` to reopen AAP and ATT after cleanup.
     wants_reconnect: Arc<AtomicBool>,
     /// Consumed by the receiver; unlike repair, this must never stop a capture.
@@ -186,8 +189,8 @@ impl Ctx {
     fn mac(&self) -> u64 {
         self.mac.load(Ordering::Acquire)
     }
-    fn battery_scan_allowed(&self) -> bool {
-        if self.mac() == 0 || self.shutting_down.load(Ordering::Acquire) {
+    fn nearby_scan_allowed(&self) -> bool {
+        if self.shutting_down.load(Ordering::Acquire) {
             return false;
         }
         let (opt_in, allowed) = {
@@ -202,7 +205,7 @@ impl Ctx {
                 ),
             )
         };
-        allowed && (opt_in || !bt::is_connected(self.mac()))
+        allowed && (opt_in || self.mac() == 0 || !bt::is_connected(self.mac()))
     }
     /// Queue without waiting for writers; drop disconnected clients or full queues.
     fn send_event(&self, ev: &Event) {
@@ -492,8 +495,12 @@ impl PendingAudioDisconnect {
         self.token.is_some()
     }
 
+    fn blocks_playback(&self) -> bool {
+        self.is_pending() || self.needs_rebuild
+    }
+
     fn take_repair_if_ready(&self, repair: &AtomicBool) -> Option<bool> {
-        (!self.is_pending() && !self.needs_rebuild).then(|| repair.swap(false, Ordering::AcqRel))
+        (!self.blocks_playback()).then(|| repair.swap(false, Ordering::AcqRel))
     }
 
     fn take(&mut self) -> Option<(u64, bool)> {
@@ -909,9 +916,11 @@ fn claim_automatic_connection(
     requested: &ConnectionRequest,
     user_disconnected: &AtomicBool,
     shutting_down: &AtomicBool,
+    paired_target: Option<&PairedTarget>,
 ) -> bool {
     !user_disconnected.load(Ordering::Acquire)
         && !shutting_down.load(Ordering::Acquire)
+        && pairing_allows_selection(paired_target, requested, None)
         && requested.claim()
 }
 
@@ -2186,6 +2195,19 @@ fn native_reconnect_allowed(state: &Snapshot, mic_on: bool) -> bool {
                 )))
 }
 
+fn pairing_handoff_allowed(state: &Snapshot, capture_active: bool, mic_on: bool) -> bool {
+    // Switching pairs closes the microphone's recovery channel on either playback driver.
+    !capture_active
+        && !mic_on
+        && !state.mic_capture_active
+        && !state.mic_uplink_active
+        && !matches!(
+            state.mic_state.as_str(),
+            "starting" | "capturing" | "stopping" | "recovering"
+        )
+        && state.playback_buffer_target_ms.is_none()
+}
+
 #[cfg(feature = "experimental-playback")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BufferPauseFor {
@@ -2278,6 +2300,10 @@ fn audio_change_error(ctx: &Ctx, reason: BufferPauseFor, message: String) {
 fn apply_command(ctx: &Ctx, cmd: Command) {
     // Commands may contain personal settings; do not log payloads.
     if ctx.shutting_down.load(Ordering::Acquire) {
+        return;
+    }
+    if let Command::PairingCompleted { address } = &cmd {
+        begin_pairing_handoff(ctx, address);
         return;
     }
     #[cfg(feature = "experimental-playback")]
@@ -2654,6 +2680,9 @@ fn apply_prepared_command(
                 }),
             );
         }
+        Command::PairingCompleted { address } => {
+            begin_pairing_handoff(ctx, &address);
+        }
         Command::Connect => {
             {
                 let mut state = ctx.state.lock().unwrap();
@@ -3023,9 +3052,118 @@ fn reset_pair_snapshot(state: &mut Snapshot, mac: u64, name: &str) {
     };
 }
 
+fn begin_pairing_handoff(ctx: &Ctx, address: &str) {
+    let Some(address) = bt::parse_pairing_address(address) else {
+        return;
+    };
+    let request = {
+        let _state = ctx.state.lock().unwrap();
+        ctx.connect_requested.store(
+            ctx.connect_requested.load(Ordering::Acquire),
+            Ordering::Release,
+        );
+        let request = ctx.connect_requested.snapshot();
+        *ctx.paired_target.lock().unwrap() = Some(PairedTarget {
+            address,
+            request,
+            stage: PairingStage::Validating,
+        });
+        request
+    };
+    let ctx = ctx.clone();
+    thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if ctx.shutting_down.load(Ordering::Acquire)
+                || !ctx.connect_requested.is_current(request)
+            {
+                return;
+            }
+            // Windows may finish installing the AAP service after PairAsync returns.
+            if let Some(name) = bt::paired_aap_name(address) {
+                #[cfg(feature = "experimental-playback")]
+                let _pause = match playback::begin_automatic_pause(&ctx) {
+                    Ok(pause) => {
+                        if let Some(pause) = &pause {
+                            if let Err(error) = pause.wait() {
+                                log(&format!("pairing: could not restore playback: {error}"));
+                                cancel_pairing_handoff(
+                                    &ctx,
+                                    request,
+                                    "Could not restore playback. Try pairing again.",
+                                );
+                                return;
+                            }
+                        }
+                        pause
+                    }
+                    Err(error) => {
+                        log(&format!(
+                            "pairing: could not pause buffer adjustment: {error}"
+                        ));
+                        cancel_pairing_handoff(
+                            &ctx,
+                            request,
+                            "Could not restore playback. Try pairing again.",
+                        );
+                        return;
+                    }
+                };
+                let _mic = ctx.mic_preference.lock().unwrap();
+                let state = ctx.state.lock().unwrap();
+                if ctx.shutting_down.load(Ordering::Acquire)
+                    || !ctx.connect_requested.is_current(request)
+                {
+                    return;
+                }
+                if !pairing_handoff_allowed(
+                    &state,
+                    ctx.capture_active.load(Ordering::Acquire),
+                    ctx.mic_on.load(Ordering::Acquire),
+                ) {
+                    drop(state);
+                    drop(_mic);
+                    cancel_pairing_handoff(
+                        &ctx,
+                        request,
+                        "Stop the microphone before connecting the paired AirPods.",
+                    );
+                    return;
+                }
+                ctx.connect_requested.store(false, Ordering::Release);
+                ctx.user_disconnected.store(true, Ordering::Release);
+                ctx.wants_reconnect.store(false, Ordering::Release);
+                *ctx.paired_target.lock().unwrap() = Some(PairedTarget {
+                    address,
+                    request: ctx.connect_requested.snapshot(),
+                    stage: PairingStage::Ready(name),
+                });
+                return;
+            }
+            if Instant::now() >= deadline {
+                cancel_pairing_handoff(
+                    &ctx,
+                    request,
+                    "Paired, but AirPods controls aren’t ready. Reconnect in Windows Bluetooth.",
+                );
+                return;
+            }
+            thread::sleep(Duration::from_millis(500));
+        }
+    });
+}
+
+fn cancel_pairing_handoff(ctx: &Ctx, request: u64, message: &str) {
+    let _state = ctx.state.lock().unwrap();
+    if ctx.connect_requested.is_current(request) && !ctx.shutting_down.load(Ordering::Acquire) {
+        *ctx.paired_target.lock().unwrap() = None;
+        ctx.overlay(message);
+    }
+}
+
 // Receiver only, after the previous channel and its microphone cleanup have closed.
-fn select_paired_device(ctx: &Ctx, mac: u64, name: &str) -> bool {
-    if mac == 0 || mac == ctx.mac() {
+fn select_paired_device(ctx: &Ctx, mac: u64, name: &str, request: Option<u64>) -> bool {
+    if mac == 0 || (mac == ctx.mac() && request.is_none()) {
         return false;
     }
     let keys = battery_ble::Keys::load(mac);
@@ -3040,15 +3178,40 @@ fn select_paired_device(ctx: &Ctx, mac: u64, name: &str) -> bool {
     if state.connected
         || ctx.driver_cell.lock().unwrap().is_some()
         || ctx.shutting_down.load(Ordering::Acquire)
-        || ctx.user_disconnected.load(Ordering::Acquire)
+        || (ctx.user_disconnected.load(Ordering::Acquire) && request.is_none())
         || ctx.pending_audio_disconnect.lock().unwrap().is_pending()
         || ctx.wants_reconnect.load(Ordering::Acquire)
+        || !pairing_allows_selection(
+            ctx.paired_target.lock().unwrap().as_ref(),
+            &ctx.connect_requested,
+            request,
+        )
+        || request.is_some_and(|_| {
+            !pairing_handoff_allowed(
+                &state,
+                ctx.capture_active.load(Ordering::Acquire),
+                ctx.mic_on.load(Ordering::Acquire),
+            )
+        })
     {
         return false;
     }
     // Invalidate queued audio work; this does not connect or reset a Windows service.
-    let _ = bt::begin_audio_request(true);
-    ctx.connect_requested.store(connected, Ordering::Release);
+    let intent = bt::begin_audio_request(true);
+    if request.is_some() {
+        ctx.user_disconnected.store(false, Ordering::Release);
+    }
+    ctx.connect_requested
+        .store(connected || request.is_some(), Ordering::Release);
+    let dispatch = if request.is_some() {
+        let mut audio = ctx.pending_audio_disconnect.lock().unwrap();
+        if mac != ctx.mac() {
+            *audio = PendingAudioDisconnect::default();
+        }
+        intent.and_then(|intent| audio.queue_connect(intent))
+    } else {
+        None
+    };
     ctx.hr_on.store(false, Ordering::Release);
     ctx.hr_generation.fetch_add(1, Ordering::AcqRel);
     ctx.hr_db.end_session();
@@ -3067,6 +3230,13 @@ fn select_paired_device(ctx: &Ctx, mac: u64, name: &str) -> bool {
     *ctx.battery_keys.lock().unwrap() = keys;
     *ctx.dev_name.lock().unwrap() = name.into();
     ctx.mac.store(mac, Ordering::Release);
+    if let Some(request) = request {
+        let mut target = ctx.paired_target.lock().unwrap();
+        if let Some(target) = target.as_mut().filter(|target| target.request == request) {
+            target.request = ctx.connect_requested.snapshot();
+            target.stage = PairingStage::Selected;
+        }
+    }
     ctx.wants_settings_refresh.store(false, Ordering::Release);
     drop(state);
     drop(pending);
@@ -3075,6 +3245,9 @@ fn select_paired_device(ctx: &Ctx, mac: u64, name: &str) -> bool {
     drop(_write);
     rename::apply(name);
     ctx.push_state();
+    if let Some(intent) = dispatch {
+        dispatch_audio_request(mac, intent, "paired device");
+    }
     true
 }
 
@@ -3091,14 +3264,25 @@ fn run_receiver(ctx: Ctx) {
     if ctx.mac() == 0 {
         let found = discover_until_ready(
             || ctx.shutting_down.load(Ordering::Acquire),
-            bt::find_airpods,
+            || {
+                ctx.paired_target
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .filter(|target| target.current(&ctx.connect_requested))
+                    .and_then(|target| match &target.stage {
+                        PairingStage::Ready(name) => Some((target.address, name.clone())),
+                        _ => None,
+                    })
+                    .or_else(bt::find_airpods)
+            },
             || thread::park_timeout(Duration::from_secs(2)),
         );
         let Some((mac, name)) = found else {
             ctx.receiver_done.store(true, Ordering::Release);
             return;
         };
-        select_paired_device(&ctx, mac, &name);
+        select_paired_device(&ctx, mac, &name, None);
     }
     let mut buf = [0u8; 8192];
     let clock = ctx.mic_clock;
@@ -3136,7 +3320,16 @@ fn run_receiver(ctx: Ctx) {
         *fails += 1;
         if *fails >= 12 {
             *fails = 0;
+            let _state = ctx.state.lock().unwrap();
             if ctx.connect_requested.release(request) {
+                let mut target = ctx.paired_target.lock().unwrap();
+                if target
+                    .as_ref()
+                    .is_some_and(|target| target.request == request)
+                {
+                    *target = None;
+                    ctx.user_disconnected.store(true, Ordering::Release);
+                }
                 log("run_receiver: gave up reaching AirPods — releasing");
             }
         }
@@ -3150,24 +3343,48 @@ fn run_receiver(ctx: Ctx) {
             ctx.receiver_done.store(true, Ordering::Release);
             return;
         }
+        let target = {
+            let _state = ctx.state.lock().unwrap();
+            let mut target = ctx.paired_target.lock().unwrap();
+            if target
+                .as_ref()
+                .is_some_and(|target| !target.current(&ctx.connect_requested))
+            {
+                *target = None;
+            }
+            target.clone()
+        };
+        let mut selected = false;
+        if let Some(target) = &target {
+            if matches!(target.stage, PairingStage::Validating) {
+                thread::sleep(Duration::from_millis(500));
+                continue;
+            }
+            if let PairingStage::Ready(name) = &target.stage {
+                selected = select_paired_device(&ctx, target.address, name, Some(target.request));
+            }
+        }
         if ctx.user_disconnected.load(Ordering::Acquire) {
             thread::sleep(Duration::from_millis(500));
             continue;
         }
-        if cooldown_elapsed(discovery_poll, Instant::now(), Duration::from_secs(2)) {
+        if target.is_none()
+            && cooldown_elapsed(discovery_poll, Instant::now(), Duration::from_secs(2))
+        {
             discovery_poll = Some(Instant::now());
             if let Some((next, name)) = bt::find_airpods_for(ctx.mac()) {
-                if next != ctx.mac() && select_paired_device(&ctx, next, &name) {
-                    mic_ears = mic_lifecycle::WearState::default();
-                    hr_decoder.reset();
-                    last_anc = 0;
-                    last_devices.clear();
-                    reach_fails = 0;
-                    open_fails = 0;
-                    resume_poll = None;
-                    previous_request = None;
-                }
+                selected = next != ctx.mac() && select_paired_device(&ctx, next, &name, None);
             }
+        }
+        if selected {
+            mic_ears = mic_lifecycle::WearState::default();
+            hr_decoder.reset();
+            last_anc = 0;
+            last_devices.clear();
+            reach_fails = 0;
+            open_fails = 0;
+            resume_poll = None;
+            previous_request = None;
         }
         let mac = ctx.mac();
         // Reopen AAP when Windows reconnects, even if a phone call exhausted retries.
@@ -3184,6 +3401,7 @@ fn run_receiver(ctx: Ctx) {
                         &ctx.connect_requested,
                         &ctx.user_disconnected,
                         &ctx.shutting_down,
+                        ctx.paired_target.lock().unwrap().as_ref(),
                     ) {
                         log("run_receiver: Windows has the AirPods again — resuming the session");
                         continue;
@@ -3198,6 +3416,11 @@ fn run_receiver(ctx: Ctx) {
             if !ctx.connect_requested.load(Ordering::Acquire)
                 || ctx.user_disconnected.load(Ordering::Acquire)
                 || ctx.shutting_down.load(Ordering::Acquire)
+                || !pairing_allows_connect(
+                    ctx.paired_target.lock().unwrap().as_ref(),
+                    &ctx.connect_requested,
+                    mac,
+                )
             {
                 continue;
             }
@@ -3273,6 +3496,14 @@ fn run_receiver(ctx: Ctx) {
             st.link_stale = false;
             battery_ble::invalidate(&mut st);
             st.anc = 0;
+            let mut target = ctx.paired_target.lock().unwrap();
+            if target.as_ref().is_some_and(|target| {
+                matches!(target.stage, PairingStage::Selected)
+                    && target.address == mac
+                    && target.current(&ctx.connect_requested)
+            }) {
+                *target = None;
+            }
         }
         let mut pending_card = true;
         ctx.push_state();
@@ -4226,6 +4457,7 @@ fn main() {
         hr_stream_live: Arc::new(AtomicBool::new(false)),
         hr_retrying: Arc::new(AtomicBool::new(false)),
         connect_requested: Arc::new(ConnectionRequest::new(false)),
+        paired_target: Arc::new(Mutex::new(None)),
         wants_reconnect: Arc::new(AtomicBool::new(false)),
         wants_settings_refresh: Arc::new(AtomicBool::new(false)),
         pipe,
@@ -4253,26 +4485,36 @@ fn main() {
         let c = ctx.clone();
         thread::spawn(move || unsafe { ipc_server::cmds_server(c) });
     }
-    // Idle BLE reports are resolved to our paired AirPods before use. Keeping
-    // the audio connection separate lets a closed case report without waking it.
+    // Public lid reports invite pairing; battery data and automatic connections
+    // still require the selected pair's identity key.
     {
         let c = ctx.clone();
         let c_scan = ctx.clone();
         let prox = Arc::new(Mutex::new((mac, battery_ble::Visit::default())));
         thread::spawn(move || {
             let last_published = Mutex::new(0u64);
+            let invitations = Mutex::new(battery_ble::Invitations::default());
             le::watch_nearby(
                 move |address, data| {
-                    if !c.battery_scan_allowed() {
+                    if !c.nearby_scan_allowed() {
                         return;
                     }
                     let paired_mac = c.mac();
-                    let report = c
-                        .battery_keys
-                        .lock()
-                        .unwrap()
-                        .as_ref()
-                        .and_then(|keys| keys.decode(paired_mac, address, data));
+                    let (owned, report) = {
+                        let keys = c.battery_keys.lock().unwrap();
+                        let keys = keys.as_ref().filter(|keys| keys.mac == paired_mac);
+                        (
+                            keys.is_some_and(|keys| keys.matches_address(address)),
+                            keys.and_then(|keys| keys.decode(paired_mac, address, data)),
+                        )
+                    };
+                    if let Some((model, lid_open)) = invitations.lock().unwrap().observe(
+                        data,
+                        c.mic_clock.elapsed().as_millis() as u64,
+                        || owned && bt::paired_aap_name(paired_mac).is_some(),
+                    ) {
+                        c.send_event(&Event::PairingNearby { model, lid_open });
+                    }
                     let Some(report) = report else {
                         return;
                     };
@@ -4332,6 +4574,7 @@ fn main() {
                             &c.connect_requested,
                             &c.user_disconnected,
                             &c.shutting_down,
+                            c.paired_target.lock().unwrap().as_ref(),
                         )
                     {
                         return;
@@ -4349,9 +4592,7 @@ fn main() {
                     drop(state);
                     log("ble: verified AirPods available outside the closed case; auto-connecting");
                 },
-                move || {
-                    c_scan.battery_scan_allowed() && c_scan.battery_keys.lock().unwrap().is_some()
-                },
+                move || c_scan.nearby_scan_allowed(),
             );
         });
     }
@@ -4815,6 +5056,35 @@ mod tests {
         }
         state.playback_native_driver = false;
         assert!(super::native_reconnect_allowed(&state, true));
+    }
+
+    #[test]
+    fn pairing_preserves_mic_recovery_on_both_playback_drivers() {
+        for native in [false, true] {
+            let mut state = super::Snapshot {
+                playback_native_driver: native,
+                mic_state: "idle".into(),
+                ..Default::default()
+            };
+            assert!(super::pairing_handoff_allowed(&state, false, false));
+            assert!(!super::pairing_handoff_allowed(&state, true, false));
+            assert!(!super::pairing_handoff_allowed(&state, false, true));
+            state.mic_capture_active = true;
+            assert!(!super::pairing_handoff_allowed(&state, false, false));
+            state.mic_capture_active = false;
+            state.mic_uplink_active = true;
+            assert!(!super::pairing_handoff_allowed(&state, false, false));
+            state.mic_uplink_active = false;
+            // Capture and uplink can stop before Bluetooth recovery finishes.
+            for phase in ["starting", "capturing", "stopping", "recovering"] {
+                state.mic_state = phase.into();
+                assert!(!super::pairing_handoff_allowed(&state, false, false));
+            }
+            state.mic_state = "idle".into();
+            assert!(super::pairing_handoff_allowed(&state, false, false));
+            state.playback_buffer_target_ms = Some(60);
+            assert!(!super::pairing_handoff_allowed(&state, false, false));
+        }
     }
 
     #[test]
@@ -5608,22 +5878,65 @@ mod tests {
     }
 
     #[test]
+    fn pairing_reservation_blocks_ble_and_windows_automatic_resume() {
+        let requested = super::ConnectionRequest::new(false);
+        let latched = AtomicBool::new(false);
+        let shutdown = AtomicBool::new(false);
+        let mut target = super::PairedTarget {
+            address: 1,
+            request: requested.snapshot(),
+            stage: super::PairingStage::Validating,
+        };
+        for stage in [
+            super::PairingStage::Validating,
+            super::PairingStage::Ready("New buds".into()),
+            super::PairingStage::Selected,
+        ] {
+            target.stage = stage;
+            for _ in 0..10 {
+                assert!(!claim_automatic_connection(
+                    &requested,
+                    &latched,
+                    &shutdown,
+                    Some(&target)
+                ));
+                assert!(target.current(&requested));
+            }
+        }
+        requested.store(false, Ordering::Release);
+        assert!(claim_automatic_connection(
+            &requested,
+            &latched,
+            &shutdown,
+            Some(&target)
+        ));
+    }
+
+    #[test]
     fn repeated_ble_or_windows_resume_cannot_override_an_explicit_retry_latch() {
         let requested = super::ConnectionRequest::new(false);
         let latched = AtomicBool::new(true);
         let shutdown = AtomicBool::new(false);
         for _ in 0..100 {
-            assert!(!claim_automatic_connection(&requested, &latched, &shutdown));
+            assert!(!claim_automatic_connection(
+                &requested, &latched, &shutdown, None
+            ));
             assert!(!requested.load(Ordering::Acquire));
         }
         // Only an explicit Connect/Repair clears the latch. One automatic
         // request can then win; later advertisements cannot duplicate it.
         latched.store(false, Ordering::Release);
-        assert!(claim_automatic_connection(&requested, &latched, &shutdown));
-        assert!(!claim_automatic_connection(&requested, &latched, &shutdown));
+        assert!(claim_automatic_connection(
+            &requested, &latched, &shutdown, None
+        ));
+        assert!(!claim_automatic_connection(
+            &requested, &latched, &shutdown, None
+        ));
         requested.store(false, Ordering::Release);
         shutdown.store(true, Ordering::Release);
-        assert!(!claim_automatic_connection(&requested, &latched, &shutdown));
+        assert!(!claim_automatic_connection(
+            &requested, &latched, &shutdown, None
+        ));
         assert!(!requested.load(Ordering::Acquire));
     }
 

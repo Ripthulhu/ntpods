@@ -474,7 +474,7 @@ CStreamEngine::GetHWLatency(
     PAGED_CODE();
 
     *FifoSize = 0;
-    // shortcut: Remote audio timing is unknown until the bridges carry correlated timestamps.
+    // AVDTP receiver delay here can make Windows reject playback initialization.
     *Delay = 0;
 
     return STATUS_SUCCESS;

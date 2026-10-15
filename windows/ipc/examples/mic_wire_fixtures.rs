@@ -388,16 +388,17 @@ fn main() {
                     && old.battery_source.is_empty()
             );
             lines.push_str(&legacy_line);
+            lines.push_str(&to_line(&Event::PairingNearby { model: 0x2720, lid_open: true }));
             std::fs::write(&args[2], lines).unwrap();
-            println!("Rust: emitted eight production lifecycle events and one legacy event");
+            println!("Rust: emitted eight lifecycle states, one legacy state and one nearby invitation");
         }
         "check" => {
             let text = std::fs::read_to_string(&args[2]).unwrap();
             let lines: Vec<_> = text.lines().collect();
             assert_eq!(
                 lines.len(),
-                states.len() + 47,
-                "C# states, legacy state and forty-six commands expected"
+                states.len() + 49,
+                "C# states, legacy state, forty-seven commands and nearby invitation expected"
             );
             for (line, expected) in lines.iter().zip(&states) {
                 let Event::State(actual) = from_line::<Event>(line).expect("C# event must parse")
@@ -451,7 +452,11 @@ fn main() {
                     && legacy.battery_timestamp_ms.is_none()
                     && legacy.battery_source.is_empty()
             );
-            let commands = &lines[states.len() + 1..];
+            assert!(matches!(
+                from_line::<Event>(lines.last().unwrap()),
+                Some(Event::PairingNearby { model: 0x2720, lid_open: true })
+            ));
+            let commands = &lines[states.len() + 1..lines.len() - 1];
             for (line, expected_auto) in commands[..2].iter().zip([false, true]) {
                 let Command::SetMicMode { auto, manual } = from_line::<Command>(line).unwrap()
                 else {
@@ -612,6 +617,14 @@ fn main() {
                 assert!(matches!(from_line::<Command>(line),
                     Some(Command::SetPlaybackBuffer { target_ms, restore_ms })
                     if target_ms == expected && restore_ms == expected.map(|_| 150)));
+            }
+            assert!(matches!(from_line::<Command>(commands[46]),
+                Some(Command::PairingCompleted { address }) if address == "12:34:56:78:9a:bc"));
+            for malformed in [
+                r#"{"cmd":"pairing_completed"}"#,
+                r#"{"cmd":"pairing_completed","address":42}"#,
+            ] {
+                assert!(from_line::<Command>(malformed).is_none());
             }
             println!("Rust: C# state, microphone and device-setting command roundtrips passed");
         }

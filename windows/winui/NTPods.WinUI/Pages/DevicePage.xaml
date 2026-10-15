@@ -8,6 +8,9 @@
         <Grid HorizontalAlignment="Stretch">
             <StackPanel x:Name="DeviceRoot" MaxWidth="688" Padding="24,20,24,48" Spacing="24" HorizontalAlignment="Stretch">
                 <controls:DeviceHeader x:Name="Header" />
+                <HyperlinkButton x:Name="PairFirstButton" Visibility="Collapsed" HorizontalAlignment="Center" Click="Pair_Click"
+                                 Content="{Binding [Pairing_Title], Source={StaticResource Loc}}" />
+                <InfoBar x:Name="PairingError" IsOpen="False" Visibility="Collapsed" Severity="Error" Closed="PairingError_Closed" />
                 <ContentControl x:Name="DeviceBody" IsTabStop="False" HorizontalContentAlignment="Stretch">
                     <StackPanel x:Name="DeviceSections" Spacing="24">
                         <controls:BatteryCard x:Name="BatteryCard" />

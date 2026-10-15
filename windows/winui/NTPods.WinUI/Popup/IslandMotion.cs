@@ -1,6 +1,6 @@
 namespace NTPods.WinUI.Popup;
 
-internal sealed class IslandMotion
+internal sealed class IslandMotion(double holdMilliseconds = 4000)
 {
     private enum Phase { Hidden, Opening, Holding, Closing }
     private Phase _phase;
@@ -16,7 +16,7 @@ internal sealed class IslandMotion
     public bool Animating => _phase is Phase.Opening or Phase.Closing || Resizing;
     public double HeaderOpacity => Smooth(Math.Clamp((Expansion - 0.08) / 0.72, 0, 1));
     public double BatteryOpacity => Smooth(Math.Clamp((Expansion - 0.32) / 0.68, 0, 1));
-    public double DismissDelay(double now) => Math.Max(1, 4000 - (now - _started));
+    public double DismissDelay(double now) => Math.Max(1, holdMilliseconds - (now - _started));
 
     public void Show(double now, bool animate)
     {
@@ -34,7 +34,7 @@ internal sealed class IslandMotion
         double elapsed = Math.Max(0, now - _started);
         if (_phase == Phase.Holding)
         {
-            if (elapsed < 4000) return;
+            if (elapsed < holdMilliseconds) return;
             if (!_animate) { Hide(); return; }
             _from = Expansion;
             _started = now;
@@ -76,6 +76,16 @@ internal sealed class IslandMotion
         Expansion = 0;
         Height = _heightTarget;
         Resizing = false;
+    }
+
+    public void Dismiss(double now, bool animate)
+    {
+        Advance(now);
+        if (!Visible) return;
+        if (!animate) { Hide(); return; }
+        _from = Expansion;
+        _started = now;
+        _phase = Phase.Closing;
     }
 
     public void SetHeight(double height, double now, bool animate)

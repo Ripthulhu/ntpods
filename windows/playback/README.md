@@ -98,12 +98,17 @@ playback endpoint.
 
 When offered by the earbuds, NTPods negotiates AVDTP Delay Reporting and records
 their reported delay. This is separate from measured Windows-to-sound latency.
-Pro 3 uses an [automatic receiver-buffer policy](../../docs/WINDOWS-AUDIO-LATENCY.md#automatic-receiver-buffer-policy)
-that requests 120 ms during playback, with a coordinated host-clock adjustment
+Receiver reports stay in IPC and diagnostics. The ACX hardware-latency callback
+returns zero: publishing the remote delay there can prevent Windows from
+initializing playback. It is not an end-to-end latency estimate.
+The [automatic receiver-buffer policy](../../docs/WINDOWS-AUDIO-LATENCY.md#automatic-receiver-buffer-policy)
+requests 60 ms for gaming-capable AAC-ELD devices and Pro 3, with a coordinated host-clock adjustment
 and media flush timeout. It restores a chosen 150 ms target for microphone use,
-pause and playback changes. Other models retain their receiver settings.
-Short Pro 3 checks cover pause/resume with the lower reserve and restoration
-before microphone capture. Sustained operation still needs hardware checks.
+pause and playback changes. Other models without capability evidence retain their receiver settings.
+Pro 3 listening checks with 0.2.40 confirmed clean AAC-ELD playback and unchanged
+volume with the automatic 60 ms request. See the policy reference above for the
+hardware setup and limits: microphone transitions under this policy and other
+models remain unchecked, and no new acoustic latency measurement was made.
 The [packet and source-reserve overrides](../../docs/WINDOWS-AUDIO-LATENCY.md#packet-and-source-reserve-overrides)
 allow comparison with two-frame packets and a 50 ms reserve for a test session.
 They also provide a 1 kHz AAC-ELD timestamp comparison; the tested 48 kHz clock

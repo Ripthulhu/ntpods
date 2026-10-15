@@ -54,6 +54,21 @@ motion.SetAnimationsEnabled(28000, true);
 Check(!motion.Visible, "An animation preference change must never reopen a hidden popup.");
 Console.WriteLine("Island motion checks passed.");
 
+var pairing = new IslandMotion(double.PositiveInfinity);
+pairing.Show(0, true);
+pairing.Advance(420);
+pairing.Advance(60000);
+Check(pairing.Visible && !pairing.Animating, "An interactive card must remain open while its own expiry is paused.");
+pairing.Dismiss(60000, true);
+Check(pairing.Expansion == 1 && pairing.Animating, "Explicit dismissal must start without jumping.");
+pairing.Advance(60100);
+double dismissed = pairing.Expansion;
+Check(dismissed > 0 && dismissed < 1, "An interactive card must retract before hiding.");
+pairing.Show(60100, true);
+Check(pairing.Expansion == dismissed, "A new prompt must reverse dismissal from its current position.");
+pairing.Dismiss(60100, false);
+Check(!pairing.Visible && !pairing.Animating, "Reduced motion must finish explicit dismissal immediately.");
+
 motion.Show(30000, true);
 double previous = 0;
 for (int t = 0; t <= 420; t += 10)

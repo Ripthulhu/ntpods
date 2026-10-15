@@ -8,6 +8,7 @@ static void Check(bool condition, string message)
 }
 
 UiInteractionChecks.Run(Check);
+PairingChecks.Run(Check);
 HeadTrackingChecks.Run(Check);
 ModelCompatibilityChecks.Run(Check);
 MicrophoneNotificationChecks.Run(Check);

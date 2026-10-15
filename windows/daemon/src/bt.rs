@@ -371,12 +371,21 @@ pub fn reset_audio_services(mac: u64, sink_only: bool) -> (u32, u32) {
 }
 
 pub fn reset_audio_services_for_cleanup(mac: u64, sink_only: bool) -> (u32, u32) {
-    reset_audio_services_for_request(mac, sink_only, AUDIO_INTENT.snapshot())
+    reset_audio_services_inner(mac, sink_only, AUDIO_INTENT.snapshot(), true)
 }
 
 /// A deferred Connect must recover only its own generation, not whichever
 /// request happens to be newest when its worker starts.
 pub fn reset_audio_services_for_request(mac: u64, sink_only: bool, intent: u64) -> (u32, u32) {
+    #[cfg(feature = "experimental-playback")]
+    {
+        if !AUDIO_INTENT.allows_recovery(intent) {
+            return (1223, 1223);
+        }
+        if let Some(result) = crate::playback::reset_if_active(mac, intent, true) {
+            return result;
+        }
+    }
     reset_audio_services_inner(mac, sink_only, intent, true)
 }
 
@@ -392,7 +401,7 @@ fn reset_audio_services_inner(mac: u64, sink_only: bool, intent: u64, cleanup: b
         if !AUDIO_INTENT.allows_recovery(intent) || (!cleanup && !AUDIO_INTENT.accepts_requests()) {
             return (1223, 1223);
         }
-        if let Some(result) = crate::playback::reset_if_active(mac, intent) {
+        if let Some(result) = crate::playback::reset_if_active(mac, intent, false) {
             return result;
         }
         match AUDIO_GATE.0.try_lock() {
@@ -799,6 +808,49 @@ struct AirPodsCandidate {
     has_service: bool,
 }
 
+pub fn parse_pairing_address(value: &str) -> Option<u64> {
+    let mut hex = String::with_capacity(12);
+    match value.len() {
+        12 if value.bytes().all(|b| b.is_ascii_hexdigit()) => hex.push_str(value),
+        17 => {
+            for (i, b) in value.bytes().enumerate() {
+                if i % 3 == 2 {
+                    if b != b':' {
+                        return None;
+                    }
+                } else if b.is_ascii_hexdigit() {
+                    hex.push(b as char);
+                } else {
+                    return None;
+                }
+            }
+        }
+        _ => return None,
+    }
+    let address = u64::from_str_radix(&hex, 16).ok()?;
+    (address != 0 && address != 0xffff_ffff_ffff).then_some(address)
+}
+
+fn paired_aap_candidate(device: AirPodsCandidate) -> Option<String> {
+    if !device.has_service {
+        return None;
+    }
+    choose_airpods([device], 0).map(|(_, name)| name)
+}
+
+/// A successful pairing callback does not establish AAP support by itself.
+pub fn paired_aap_name(address: u64) -> Option<String> {
+    let info = unsafe { device_info(address)? };
+    paired_aap_candidate(AirPodsCandidate {
+        address,
+        name: utf16_name(&info.szName),
+        authenticated: info.fAuthenticated != 0,
+        remembered: info.fRemembered != 0,
+        connected: info.fConnected != 0,
+        has_service: aap_service_addresses().contains(&address),
+    })
+}
+
 fn choose_airpods(
     candidates: impl IntoIterator<Item = AirPodsCandidate>,
     current: u64,
@@ -905,7 +957,9 @@ pub fn find_airpods_for(current: u64) -> Option<(u64, String)> {
 
 #[cfg(test)]
 mod discovery_tests {
-    use super::{choose_airpods, last_airpods, AirPodsCandidate};
+    use super::{
+        choose_airpods, last_airpods, paired_aap_candidate, parse_pairing_address, AirPodsCandidate,
+    };
 
     fn device(address: u64, connected: bool) -> AirPodsCandidate {
         AirPodsCandidate {
@@ -915,6 +969,38 @@ mod discovery_tests {
             remembered: true,
             connected,
             has_service: true,
+        }
+    }
+
+    #[test]
+    fn pairing_handoff_requires_exact_classic_address_and_paired_aap_identity() {
+        assert_eq!(
+            parse_pairing_address("12:34:56:78:9a:bc"),
+            Some(0x123456789abc)
+        );
+        assert_eq!(parse_pairing_address("123456789ABC"), Some(0x123456789abc));
+        for bad in [
+            "",
+            "000000000000",
+            "FFFFFFFFFFFF",
+            "123456789abcd",
+            "12-34-56-78-9a-bc",
+            "12:34:56:78:9g:bc",
+            "12:34:56:78:9a:bc ",
+        ] {
+            assert_eq!(parse_pairing_address(bad), None, "{bad}");
+        }
+        let mut renamed = device(1, false);
+        renamed.name = "My earbuds".into();
+        assert_eq!(paired_aap_candidate(renamed).as_deref(), Some("My earbuds"));
+        for field in 0..3 {
+            let mut untrusted = device(1, false);
+            match field {
+                0 => untrusted.authenticated = false,
+                1 => untrusted.remembered = false,
+                _ => untrusted.has_service = false,
+            }
+            assert!(paired_aap_candidate(untrusted).is_none());
         }
     }
 

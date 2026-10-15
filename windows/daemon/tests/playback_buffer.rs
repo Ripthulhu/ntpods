@@ -166,10 +166,20 @@ mod render {
     }
 }
 
+mod codec {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub enum Mode {
+        Aac,
+        Eld,
+    }
+}
+
 mod session {
     use super::*;
 
     pub struct Session {
+        pub gaming_supported: Option<bool>,
+        pub mode: super::codec::Mode,
         pub delay_serial: u64,
         pub delay_report: Option<u16>,
         pub delay_reporting: bool,
@@ -246,6 +256,8 @@ fn capture_during_adjustment_keeps_gate_until_restored_start_or_cleanup() {
         let ctx = Ctx::new(hardware.clone());
         let render = render::Render(hardware.clone());
         let mut session = session::Session {
+            gaming_supported: None,
+            mode: codec::Mode::Eld,
             delay_serial: 1,
             delay_report: Some(1500),
             delay_reporting: true,
@@ -387,6 +399,8 @@ fn automatic_policy_restores_for_capture_then_reapplies_afterward() {
     ctx.state.lock().unwrap().model = "A3064".into();
     let render = render::Render(hardware.clone());
     let mut session = session::Session {
+        gaming_supported: None,
+        mode: codec::Mode::Eld,
         delay_serial: 1,
         delay_report: Some(1500),
         delay_reporting: true,
@@ -397,7 +411,7 @@ fn automatic_policy_restores_for_capture_then_reapplies_afterward() {
     stream.started();
     std::thread::sleep(Duration::from_millis(501));
     assert!(stream.poll(&mut session, &render).unwrap());
-    assert_eq!(session.flush_ms, 120);
+    assert_eq!(session.flush_ms, 60);
     session.start().unwrap();
     stream.started();
     std::thread::sleep(Duration::from_millis(501));
@@ -411,14 +425,14 @@ fn automatic_policy_restores_for_capture_then_reapplies_afterward() {
         .lock()
         .unwrap()
         .events
-        .contains(&Event::Control(120)));
+        .contains(&Event::Control(60)));
     hardware.lock().unwrap().poll_busy = false;
     assert!(!stream.poll(&mut session, &render).unwrap());
     assert!(hardware
         .lock()
         .unwrap()
         .events
-        .contains(&Event::Control(120)));
+        .contains(&Event::Control(60)));
     assert!(!stream.poll(&mut session, &render).unwrap());
     assert_eq!(hardware.lock().unwrap().phase, 0);
     session.delay_report = Some(0);
@@ -432,12 +446,12 @@ fn automatic_policy_restores_for_capture_then_reapplies_afterward() {
         .lock()
         .unwrap()
         .events
-        .contains(&Event::Clock(11, 19)));
+        .contains(&Event::Clock(11, 79)));
     hardware.lock().unwrap().phase = 3;
     assert!(!stream.poll(&mut session, &render).unwrap());
     assert_eq!(
         ctx.state.lock().unwrap().playback_buffer_target_ms,
-        Some(120)
+        Some(60)
     );
 
     ctx.capture_active.store(true, Ordering::Release);
@@ -490,7 +504,7 @@ fn automatic_policy_restores_for_capture_then_reapplies_afterward() {
     ctx.capture_active.store(false, Ordering::Release);
     std::thread::sleep(Duration::from_millis(501));
     assert!(stream.poll(&mut session, &render).unwrap());
-    assert_eq!(session.flush_ms, 120);
+    assert_eq!(session.flush_ms, 60);
     stream
         .cleanup_before(&render, || session.restore_media_timeout())
         .unwrap();
@@ -509,6 +523,8 @@ fn automatic_policy_reapplies_after_zero_report_on_pause() {
         ctx.state.lock().unwrap().model = "A3063".into();
         let render = render::Render(hardware.clone());
         let mut session = session::Session {
+            gaming_supported: None,
+            mode: codec::Mode::Eld,
             delay_serial: 1,
             delay_report: Some(0),
             delay_reporting: true,
@@ -537,7 +553,7 @@ fn automatic_policy_reapplies_after_zero_report_on_pause() {
             .lock()
             .unwrap()
             .events
-            .contains(&Event::Clock(11, 8)));
+            .contains(&Event::Clock(11, 68)));
         hardware.lock().unwrap().phase = 3;
         assert!(!stream.poll(&mut session, &render).unwrap());
 
@@ -561,7 +577,7 @@ fn automatic_policy_reapplies_after_zero_report_on_pause() {
                     .unwrap()
                     .events
                     .iter()
-                    .filter(|event| **event == Event::Reopen(120))
+                    .filter(|event| **event == Event::Reopen(60))
                     .count(),
                 1
             );
@@ -575,7 +591,7 @@ fn automatic_policy_reapplies_after_zero_report_on_pause() {
         stream.started();
         std::thread::sleep(Duration::from_millis(501));
         if outcome == "shorter_delay" {
-            session.delay_report = Some(1200);
+            session.delay_report = Some(600);
             session.delay_serial += 1;
             assert!(!stream.poll(&mut session, &render).unwrap());
             session.delay_report = Some(0);
@@ -588,7 +604,7 @@ fn automatic_policy_reapplies_after_zero_report_on_pause() {
                     .unwrap()
                     .events
                     .iter()
-                    .filter(|event| **event == Event::Reopen(120))
+                    .filter(|event| **event == Event::Reopen(60))
                     .count(),
                 1
             );
@@ -596,7 +612,7 @@ fn automatic_policy_reapplies_after_zero_report_on_pause() {
         }
 
         assert!(stream.poll(&mut session, &render).unwrap());
-        assert_eq!(session.flush_ms, 120);
+        assert_eq!(session.flush_ms, 60);
         session.start().unwrap();
         stream.started();
         std::thread::sleep(Duration::from_millis(501));
@@ -639,7 +655,7 @@ fn automatic_policy_reapplies_after_zero_report_on_pause() {
                     .unwrap()
                     .events
                     .iter()
-                    .filter(|event| **event == Event::Reopen(120))
+                    .filter(|event| **event == Event::Reopen(60))
                     .count(),
                 2
             );
@@ -663,7 +679,7 @@ fn automatic_policy_reapplies_after_zero_report_on_pause() {
                     .unwrap()
                     .events
                     .iter()
-                    .filter(|event| **event == Event::Clock(11, 8))
+                    .filter(|event| **event == Event::Clock(11, 68))
                     .count(),
                 2
             );
@@ -683,6 +699,8 @@ fn diagnostic_cancel_does_not_wait_or_allow_a_deferred_start() {
     ctx.state.lock().unwrap().model = "A3064".into();
     let render = render::Render(hardware.clone());
     let mut session = session::Session {
+        gaming_supported: None,
+        mode: codec::Mode::Eld,
         delay_serial: 1,
         delay_report: Some(1500),
         delay_reporting: true,
@@ -729,6 +747,8 @@ fn signaling_errors_prevent_target_and_restore_writes() {
             }
             let render = render::Render(hardware.clone());
             let mut session = session::Session {
+                gaming_supported: None,
+                mode: codec::Mode::Eld,
                 delay_serial: 1,
                 delay_report: Some(1500),
                 delay_reporting: true,
@@ -738,7 +758,7 @@ fn signaling_errors_prevent_target_and_restore_writes() {
             let mut stream = buffer::Stream::new(&ctx, 1, 7, driver::Driver(hardware.clone()));
             stream.started();
             std::thread::sleep(Duration::from_millis(501));
-            let target = if automatic { 120 } else { 60 };
+            let target = 60;
             if !automatic {
                 buffer::set(&ctx, Some(target), Some(150), || true);
             }
@@ -777,7 +797,7 @@ fn signaling_errors_prevent_target_and_restore_writes() {
 fn automatic_errors_fall_back_once_or_stop_without_reconnect_loops() {
     for failure in ["control", "apply_reopen", "restore_reopen"] {
         let hardware = Arc::new(Mutex::new(Hardware {
-            fail_control: Some(120),
+            fail_control: Some(60),
             fail_apply_reopen: failure == "apply_reopen",
             fail_reopen: failure == "restore_reopen",
             ..Default::default()
@@ -786,6 +806,8 @@ fn automatic_errors_fall_back_once_or_stop_without_reconnect_loops() {
         ctx.state.lock().unwrap().model = "A3064".into();
         let render = render::Render(hardware.clone());
         let mut session = session::Session {
+            gaming_supported: None,
+            mode: codec::Mode::Eld,
             delay_serial: 1,
             delay_report: Some(1500),
             delay_reporting: true,
@@ -800,7 +822,7 @@ fn automatic_errors_fall_back_once_or_stop_without_reconnect_loops() {
             assert_eq!(first.unwrap_err().kind(), io::ErrorKind::ConnectionReset);
             assert_eq!(
                 ctx.state.lock().unwrap().playback_buffer_target_ms,
-                Some(120)
+                Some(60)
             );
             ctx.state.lock().unwrap().playback_state = "stopping".into();
             stream.cleanup(&render).unwrap();
@@ -813,7 +835,7 @@ fn automatic_errors_fall_back_once_or_stop_without_reconnect_loops() {
         let fallback = stream.poll(&mut session, &render);
         assert_eq!(
             ctx.state.lock().unwrap().playback_buffer_target_ms,
-            Some(120)
+            Some(60)
         );
         assert!(!mic_lifecycle::playback_allows_microphone(
             &ctx.state.lock().unwrap()
@@ -845,7 +867,7 @@ fn automatic_errors_fall_back_once_or_stop_without_reconnect_loops() {
                     .unwrap()
                     .events
                     .iter()
-                    .filter(|event| **event == Event::Reopen(120))
+                    .filter(|event| **event == Event::Reopen(60))
                     .count(),
                 1
             );
@@ -865,6 +887,8 @@ fn automatic_policy_waits_for_microphone_demand_and_suppresses_unsupported_drive
     ctx.auto_mode.store(true, Ordering::Release);
     let render = render::Render(hardware.clone());
     let mut session = session::Session {
+        gaming_supported: None,
+        mode: codec::Mode::Eld,
         delay_serial: 1,
         delay_report: Some(1500),
         delay_reporting: true,

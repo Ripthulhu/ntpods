@@ -58,6 +58,7 @@ public sealed partial class MainWindow : Window
 
         DevicePageView.Client = _client;
         DevicePageView.SettingsRequested += () => ShowSettings(true);
+        InitializePairing();
         SettingsPageView.Client = _client;
         DevicePageView.SetDaemonReady(_client.IsReady);
 
@@ -139,7 +140,7 @@ public sealed partial class MainWindow : Window
     {
         bool opening = !AppWindow.IsVisible;
         if (opening) PrepareEntrance();
-        try { _connectPrompt?.Close(); } catch { }
+        try { if (!_pairingPromptActive) _connectPrompt?.HidePrompt(); } catch { }
         AppWindow.Show();
         Activate();
         if (_entrancePending && RootGrid.IsLoaded) AnimateEntrance();
@@ -194,7 +195,13 @@ public sealed partial class MainWindow : Window
 
     public void SetClosingState(bool closing)
     {
-        if (closing) DevicePageView.StopHeadTracking();
+        _pairingShuttingDown = closing;
+        if (closing)
+        {
+            StopPairing();
+            DevicePageView.StopHeadTracking();
+        }
+        else UpdatePairingAvailability();
         Title = closing ? Localize.Get("Shutdown.Closing") : "NTPods";
         DevicePageView.SetDaemonReady(!closing && _client.IsReady);
     }
@@ -228,6 +235,7 @@ public sealed partial class MainWindow : Window
     {
         if (_showingSettings == settings) return;
         _showingSettings = settings;
+        UpdatePairingAvailability();
         if (settings) DevicePageView.StopHeadTracking();
         DevicePageView.IsHitTestVisible = !settings;
         SettingsView.IsHitTestVisible = settings;
@@ -292,11 +300,12 @@ public sealed partial class MainWindow : Window
     private void RenderSnapshot(Snapshot s)
     {
             _connected = s.Connected;
+            UpdatePairingAvailability();
 
             // A live connection dismisses any stale nearby connection prompt.
             if (s.Connected)
             {
-                try { _connectPrompt?.Close(); } catch { }
+                try { if (!_pairingPromptActive) _connectPrompt?.HidePrompt(); } catch { }
             }
 
             DevicePageView.Update(s);
@@ -310,18 +319,20 @@ public sealed partial class MainWindow : Window
     private void OnConnectPrompt(string name) =>
         DispatcherQueue.TryEnqueue(() =>
         {
-            // Nearby reports can arrive while the AACP session is already live.
-            if (_connected || AppWindow.IsVisible) return;
-
-            // The visible page already offers Connect in its header.
+            if (_connected || AppWindow.IsVisible || _pairingDialog is not null || _pairingPromptActive) return;
             try
             {
-                _connectPrompt?.Close();
-                _connectPrompt = new Popup.ConnectPromptWindow(name, () => _client.Connect());
-                _connectPrompt.Closed += (_, _) => _connectPrompt = null;
-                _connectPrompt.ShowPrompt();
+                _pairingLid.Clear();
+                var prompt = GetConnectPrompt();
+                prompt.ShowPrompt(name, _ =>
+                {
+                    _client.Connect();
+                    return Task.FromResult<string?>(null);
+                }, "ConnectPrompt_Nearby");
+                UpdatePairingAvailability();
             }
             catch { }
+
         });
 
     private void OnConnectionChanged(bool connected) =>

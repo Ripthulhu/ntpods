@@ -1,6 +1,4 @@
-using System.ComponentModel;
 using System.Diagnostics;
-using System.Runtime.InteropServices;
 using NTPods.WinUI.Ipc;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
@@ -31,29 +29,7 @@ public sealed class IslandWindow : Window
     {
         Content = _view;
         Title = "NTPods";
-        AppWindow.IsShownInSwitchers = false;
-        if (AppWindow.Presenter is OverlappedPresenter presenter)
-        {
-            presenter.SetBorderAndTitleBar(false, false);
-            presenter.IsAlwaysOnTop = true;
-            presenter.IsResizable = false;
-            presenter.IsMaximizable = false;
-            presenter.IsMinimizable = false;
-        }
-        nint hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
-        SetWindowLongPtr(hwnd, -20, (GetWindowLongPtr(hwnd, -20) & ~(nint)0x00020301) | 0x08000000 | 0x00000080);
-        // The shaped popup owns its edge; Windows must not draw a rectangular frame.
-        SetWindowLongPtr(hwnd, -16, (GetWindowLongPtr(hwnd, -16) & ~(nint)0x00CF0000) | unchecked((nint)0x80000000));
-        int disabled = 1;
-        DwmSetWindowAttribute(hwnd, 2, ref disabled, sizeof(int)); // DWMNCRP_DISABLED
-        DwmSetWindowAttribute(hwnd, 3, ref disabled, sizeof(int)); // Own the show/hide transition.
-        if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
-        {
-            int noBorder = unchecked((int)0xFFFFFFFE);
-            DwmSetWindowAttribute(hwnd, 34, ref noBorder, sizeof(int));
-            DwmSetWindowAttribute(hwnd, 33, ref disabled, sizeof(int)); // DWMWCP_DONOTROUND
-        }
-        SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0037); // Apply the frame change without activation.
+        PopupWindowNative.Configure(this, interactive: false);
 
         _dismissTimer = DispatcherQueue.CreateTimer();
         _dismissTimer.IsRepeating = false;
@@ -121,8 +97,7 @@ public sealed class IslandWindow : Window
 
     private void Prepare()
     {
-        nint hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
-        _scale = Math.Max(1, GetDpiForWindow(hwnd) / 96.0);
+        _scale = PopupWindowNative.Scale(this);
         var work = (_display ?? DisplayArea.Primary).WorkArea;
         _view.Width = Math.Max(80, Math.Min(400, work.Width / _scale - 32));
         _view.Measure(new Windows.Foundation.Size(_view.Width, double.PositiveInfinity));
@@ -199,13 +174,7 @@ public sealed class IslandWindow : Window
         var bounds = (left, revealedWidth, revealedHeight, diameter);
         if (_lastRegion != bounds)
         {
-            nint region = CreateRoundRectRgn(left, 0, left + revealedWidth + 1, revealedHeight + 1, diameter, diameter);
-            if (region == 0) throw new Win32Exception();
-            if (SetWindowRgn(WinRT.Interop.WindowNative.GetWindowHandle(this), region, true) == 0)
-            {
-                DeleteObject(region);
-                throw new Win32Exception();
-            }
+            PopupWindowNative.SetRegion(this, left, 0, revealedWidth, revealedHeight, diameter);
             // SetWindowRgn transfers ownership to Windows and needlessly invalidates unchanged edges.
             _lastRegion = bounds;
         }
@@ -229,22 +198,4 @@ public sealed class IslandWindow : Window
         if (!_closed) try { AppWindow.Hide(); } catch { }
     }
 
-    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW", SetLastError = true)]
-    private static extern nint GetWindowLongPtr(nint hwnd, int index);
-    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
-    private static extern nint SetWindowLongPtr(nint hwnd, int index, nint value);
-    [DllImport("user32.dll")]
-    private static extern uint GetDpiForWindow(nint hwnd);
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool SetWindowPos(nint hwnd, nint after, int x, int y, int width, int height, uint flags);
-    [DllImport("dwmapi.dll")]
-    private static extern int DwmSetWindowAttribute(nint hwnd, uint attribute, ref int value, int size);
-    [DllImport("gdi32.dll", SetLastError = true)]
-    private static extern nint CreateRoundRectRgn(int left, int top, int right, int bottom, int ellipseWidth, int ellipseHeight);
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern int SetWindowRgn(nint hwnd, nint region, [MarshalAs(UnmanagedType.Bool)] bool redraw);
-    [DllImport("gdi32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool DeleteObject(nint obj);
 }

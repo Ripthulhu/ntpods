@@ -26,6 +26,8 @@ windows-sys = { version = "0.59", features = [
     "Win32_Security_Cryptography",
     "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Devices_Bluetooth",
+    "Win32_Networking_WinSock",
+    "Win32_System_Com",
 ] }
 # COM and WinRT APIs for audio, media controls and BLE advertisements.
 windows = { version = "0.58", features = [

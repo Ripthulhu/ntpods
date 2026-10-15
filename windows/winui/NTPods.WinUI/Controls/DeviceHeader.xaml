@@ -62,6 +62,7 @@
                     <MenuFlyoutItem x:Name="DisconnectButton" Click="Disconnect_Click" Visibility="Collapsed"
                                     Text="{Binding [HeaderDisconnectBtn_Text], Source={StaticResource Loc}}" />
                     <MenuFlyoutSeparator x:Name="DeviceActionsSeparator" Visibility="Collapsed" />
+                    <MenuFlyoutItem Click="Pair_Click" Text="{Binding [Pairing_Title], Source={StaticResource Loc}}" />
                     <MenuFlyoutItem Click="Settings_Click" Text="{Binding [SettingsTitle_Text], Source={StaticResource Loc}}">
                         <MenuFlyoutItem.Icon><SymbolIcon Symbol="Setting" /></MenuFlyoutItem.Icon>
                     </MenuFlyoutItem>
