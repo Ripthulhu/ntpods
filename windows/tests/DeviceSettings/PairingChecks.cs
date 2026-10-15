@@ -68,6 +68,7 @@ internal static class PairingChecks
             "Pairing guidance must cover both case controls when the model is unknown.");
         CheckRetries(check).GetAwaiter().GetResult();
         CheckAutomaticSelection(check);
+        CheckCandidateChanges(check);
         Console.WriteLine("Pairing discovery and invitation checks passed.");
     }
 
@@ -171,6 +172,33 @@ internal static class PairingChecks
         state.Close();
         check(state.AutomaticCandidate(23000, out _) is null,
             "Closing discovery must clear any remaining automatic pairing target.");
+    }
+
+    private static void CheckCandidateChanges(Action<bool, string> check)
+    {
+        var state = new PairingDiscoveryState();
+        int generation = state.Begin();
+        state.Update(generation, "pods", "AirPods", false, true, true, 4, 6);
+        check(state.AutomaticCandidate(0, out _) is null, "AirPods must begin their settling interval.");
+        for (int now = 100; now <= 2000; now += 100)
+        {
+            state.Update(generation, "tv", "TV in living room", false, true, true, 4, 15);
+            state.Update(generation, "tv", "AirPods TV", false, true, true, 4, 15);
+            state.Remove(generation, "tv");
+            check(state.AutomaticCandidate(now, out bool multiple) == (now == 2000 ? "pods" : null) && !multiple,
+                "Unrelated discovery changes must not restart the sole AirPods endpoint's settling interval.");
+        }
+        state.Update(generation, "other", "AirPods TV", false, true, true, 4, 15);
+        state.Update(generation, "other", "AirPods", false, true, true, 4, 6);
+        check(state.AutomaticCandidate(2100, out bool ambiguous) is null && ambiguous,
+            "An endpoint becoming AirPods must invalidate selection and expose the ambiguity.");
+        state.Update(generation, "other", "AirPods TV", false, true, true, 4, 15);
+        check(state.AutomaticCandidate(2200, out _) is null && state.AutomaticCandidate(4200, out _) == "pods",
+            "An endpoint ceasing to be AirPods must start a fresh settling interval for the remaining pair.");
+        state.Update(generation, "other", "AirPods", false, true, true, 4, 6);
+        state.Update(generation, "other", "AirPods TV", false, true, true, 4, 15);
+        check(state.AutomaticCandidate(4201, out _) is null,
+            "A competing endpoint recognized and rejected between polls must still reset selection.");
     }
 
     private static async Task CheckRetries(Action<bool, string> check)

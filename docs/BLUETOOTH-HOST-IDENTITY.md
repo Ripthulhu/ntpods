@@ -12,14 +12,16 @@ Product ID, or version. Microsoft documents the two registry values in
 
 ## Hardware coverage
 
-On Windows 11 with an Intel AX200, NTPods 0.2.25 and AirPods Pro 3 A3064 firmware
-9A348, hearing and Custom Transparency reads returned ATT error `0x0E` before
-this change. Both reads succeeded after applying it and restarting Windows,
-without re-pairing. NTPods 0.2.26 correctly reads the unenrolled hearing status.
-Custom Transparency passed an audible noise-reduction adjustment and restoration
-by readback. The hearing value remains read-only; hearing-assistance activation
-and edits are unverified. The Windows SDP reply has not yet been captured, and
-other models and adapters remain untested.
+Windows 11, Intel AX200, Pro 3 A3064 / 9A348:
+
+| Check | Result |
+| --- | --- |
+| Hearing and Custom Transparency reads (NTPods 0.2.25) | ATT `0x0E` without the override; succeeded after applying it and restarting, without re-pairing |
+| Unenrolled hearing status (0.2.26) | Read correctly |
+| Custom Transparency | Audible noise-reduction adjustment and restoration confirmed by readback |
+
+Hearing values remain read-only. Hearing activation/writes, the Windows SDP
+reply, other models and other adapters remain unverified.
 
 ## Backup and recovery
 

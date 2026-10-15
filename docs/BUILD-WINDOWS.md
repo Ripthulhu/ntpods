@@ -45,7 +45,8 @@ unit tests and encoder round trips, builds all three drivers and both encoder wo
 from source, generates catalogs, builds WinUI, and assembles
 `windows/build-output/NTPods-experimental.msi`. It never takes driver binaries
 from committed `prebuilt` folders. The manifest records artifact hashes and
-whether local source modifications were included. Package dependencies are
+the source state captured before the build. Source changes during the build
+stop packaging; ignored build output is excluded from this check. Package dependencies are
 pinned; hosted toolchain patches and generated timestamps can change output hashes.
 
 The MSI includes both playback codecs, the FDK notice and its complete pinned

@@ -2,7 +2,8 @@
 
 # NTPods
 
-AirPods controls, battery levels and a microphone for Windows 11 x64.
+Low-latency AirPods playback, controls, battery levels and a high-quality
+microphone for Windows 11 x64.
 Based on [arctumn/NTPods](https://github.com/arctumn/ntpods) and
 [LibrePods](https://github.com/librepods-org/librepods).
 
@@ -16,6 +17,7 @@ Based on [arctumn/NTPods](https://github.com/arctumn/ntpods) and
 
 [Download](https://github.com/Ripthulhu/ntpods/releases) ·
 [Installation](#installing-on-windows) ·
+[Low-latency playback](#low-latency-playback) ·
 [Model support](docs/WINDOWS-MODEL-SUPPORT.md)
 
 ## Preview
@@ -42,13 +44,24 @@ https://github.com/user-attachments/assets/44b47894-22f6-49f1-a891-99ce0b7346bc
 
 - Listening-mode controls with an adjustable Adaptive slider.
 - Earbud and case battery levels, including nearby charging updates.
+- A pairing popup when you open a nearby unpaired AirPods case.
 - Three-band EQ, Conversation Awareness and Personalized Volume.
-- AAC and AAC-ELD playback through one AirPods output, with separate bitrate settings.
+- Low-latency AAC-ELD and AAC playback through one AirPods output, with separate
+  bitrate settings.
 - Automatic pause when you remove an earbud. Manually paused audio stays paused.
-- A 48 kHz mono microphone on supported models while playback stays stereo,
-  with automatic start, a stop delay, keep-active and manual modes, and a keyboard shortcut.
-- Live head tracking and heart rate on supported models.
+- A 48 kHz mono microphone on supported models, with stereo playback and a
+  keyboard shortcut.
+- Custom Transparency adjustments on supported models, under experimental settings.
+- A live head-movement graph and heart-rate monitoring on supported models.
 - A Dynamic Island popup and Start with Windows.
+
+### Low-latency playback
+
+AAC-ELD is the default, with AAC fallback for pairs without a supported AAC-ELD
+profile. Low-latency tuning runs automatically on supported devices and adjusts
+for microphone use. Choose the codec and bitrate under **Playback and microphone**;
+upgrades keep your saved choices. See [audio latency](docs/WINDOWS-AUDIO-LATENCY.md)
+for supported devices, technical details and limits.
 
 ### Compatibility
 
@@ -76,12 +89,9 @@ Uninstall restores the original values.
 Both downloads include an experimental playback driver for AirPods 1–4,
 Pro 1–3 and the original Max (Lightning and USB-C). See the
 [playback model list](docs/WINDOWS-MODEL-SUPPORT.md#native-playback) for test status.
-It replaces the paired AirPods output driver, with AAC/AAC-ELD and separate
-bitrate settings under **Playback and microphone**. AAC-ELD is the default, with
-AAC fallback for pairs without a supported AAC-ELD profile. Upgrades preserve
-your saved codec choice. NTPods must stay running for playback. No extra speaker
-or per-app routing is needed. Keep the AirPods connected during uninstall to
-restore their saved driver, or Windows playback
+It replaces the paired AirPods output driver. NTPods must stay running for
+playback. No extra speaker or per-app routing is needed. Keep the AirPods
+connected during uninstall to restore their saved driver, or Windows playback
 when no prior binding was saved; see the
 [playback test guide](windows/playback/TESTING.md).
 

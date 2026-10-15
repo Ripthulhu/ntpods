@@ -1,10 +1,10 @@
 # Pro 3 case and sensor protocol findings
 
 Evidence: AirPods Pro 3 firmware 9A348, captured on 2026-10-12 with the
-[Tahoe Intel AX200 VM](MACOS-PROTOCOL-CAPTURE.md). Battery, charging and lid fields
-agree with NTPods. The captures also identify sensor descriptors, native motion
-reports and settings that remain partly decoded. These are host-to-bud traces;
-they do not expose all communication between the buds and case.
+[Tahoe Intel AX200 VM](MACOS-PROTOCOL-CAPTURE.md). These host-to-bud traces cover
+battery, charging, lid, sensor and settings traffic. They do not expose all
+communication between the buds and case. Run A covers bud removal, return and
+charging; run B covers charging with the lid open, then closed.
 
 ## Battery and case results
 
@@ -12,13 +12,13 @@ they do not expose all communication between the buds and case.
 | --- | --- | --- |
 | Individual buds leave and return to the case | AAP battery/wear reports and identity-matched BLE reports | Existing component charging and wear handling |
 | Case reading becomes unavailable while both buds are out | AAP reports both `0/status 4` and `255/status 4` | Unavailable status preserves the last known percentage |
-| Case starts charging | First run: AAP case 91%, status changes from `2` to `1` | Existing AAP charging flag |
-| Charger connected with lid open | Second run: BLE case 93%, charging bit changes to true | Existing BLE case charging flag |
-| Lid closes while charging | Second run: BLE closed-lid flag changes to true | Existing BLE lid interpretation |
+| Case starts charging | A: AAP case 91%, status changes from `2` to `1` | Existing AAP charging flag |
+| Charger connected with lid open | B: BLE case 93%, charging bit changes to true | Existing BLE case charging flag |
+| Lid closes while charging | B: BLE closed-lid flag changes to true | Existing BLE lid interpretation |
 
-The BLE check resolved private addresses with the paired identity key before
-filtering advertisement types. All matching Apple manufacturer reports were
-type `0x07`; none of another type matched that identity in either run.
+All Apple manufacturer reports resolved to the paired identity key were type
+`0x07`; no other type matched in either run. Address resolution preceded filtering
+by advertisement type.
 
 Production [battery_ble.rs](../windows/daemon/src/battery_ble.rs) decoded the
 captured manufacturer data through Windows BCrypt and matched an independent
@@ -26,34 +26,28 @@ interpretation of the fields:
 
 | Run | Apple manufacturer reports checked | Reports accepted for the paired buds | Disagreements |
 | --- | ---: | ---: | ---: |
-| Bud removal, return and charger | 816 | 106 | 0 |
-| Charger with lid open, then closed | 742 | 96 | 0 |
+| A | 816 | 106 | 0 |
+| B | 742 | 96 | 0 |
 
 This validates the decoder on these captures, not the Windows watcher or UI.
 AAP battery and wear results also match [aap.rs](../windows/daemon/src/aap.rs).
 
 ## Closed-case reporting
 
-In the first run, the last matching BLE report preceded the AAP case-charging
-report by about 255 ms. The case therefore reported charging through the live
-control connection even though no later matching BLE report arrived.
+| Run | Last matching BLE report | Subsequent evidence |
+| --- | --- | --- |
+| A | About 255 ms before the AAP case-charging report | Charging remained observable over the live control connection |
+| B | 2.737 seconds after the lid-closed report | No matching report for 103 seconds; scanning still received other devices |
 
-In the second run, the last matching BLE report arrived 2.737 seconds after the
-lid-closed report; none followed during the next 103 seconds. Scanning continued
-and received other devices.
-The controller used active 30 ms scan windows every 300 ms, without duplicate
-filtering. That 10% scan duty cycle cannot establish that the buds transmitted
-nothing over the air.
-
-These runs establish the charging and lid fields, but do not establish sustained
-closed-case updates in this VM. Retain the distinction between a fresh report
-and cached battery data.
+Active scan windows were 30 ms every 300 ms, without duplicate filtering. This
+10% duty cycle cannot establish radio silence or sustained closed-case updates.
+Keep fresh reports distinct from cached battery data.
 
 ## Messages beyond current coverage
 
-Both runs contained the following traffic. Frame references below use A for
-the first run and B for the second. Names from upstream decoders
-remain reference-derived unless the captured fields independently establish them.
+Both runs contained the following traffic. Frame references use the A/B run
+labels above. Upstream names remain reference-derived unless independently
+established by the captured fields.
 
 | Message | Current coverage or unresolved question |
 | --- | --- |
@@ -80,8 +74,8 @@ capability report alone does not validate the feature or its control sequence.
 NTPods currently uses its shared model catalog rather than parsing this message.
 
 Role `0x08` has a four-byte body. LibrePods maps body byte 0 as 1=left primary,
-2=right primary; only 1 occurs in the two case runs. The body changes from `01 00 01 00` to
-`01 00 00 00` just before a secondary-disconnected wear report in both runs
+2=right primary; only 1 occurs in the two case runs. The body changes from
+`01 00 01 00` to `01 00 00 00` just before secondary-disconnected wear reports
 (A4550/4559, B3821/3826). Byte 2 may describe the secondary link, but these
 captures do not establish all its values. NTPods' current pause and microphone
 policies treat the two wear slots symmetrically and do not need this role map.
@@ -158,8 +152,8 @@ controlled testing. The similar hearing-assistance layout at `0x002A` has a
 different header, so its encoder cannot be reused unchanged. NTPods'
 [experimental implementation](WINDOWS-AIRPODS-CONTROL-PROTOCOL.md#att-settings)
 uses UUID discovery, bounds and finite-float checks, preservation of unknown
-bytes and readback after writes. Its Windows read failure and acoustic testing
-remain unresolved.
+bytes and readback after writes. See [current Windows hardware coverage](WINDOWS-VALIDATION.md#controls-batteries-and-sensors)
+for read/write and acoustic results.
 
 AAP `0x53` carries a two-byte length followed by 132 bytes: a four-byte prefix
 and four blocks of eight float32 values. These match LibrePods' Headphone
@@ -205,28 +199,24 @@ installation or another battery path after the control connection closes.
 
 ### Primary-bud handoff
 
-A separate wearing/movement capture recorded a primary-bud handoff without an
-HCI disconnect. Role `0x08` changed from `01 00 01 00` to `02 00 01 01`
-at frame 2144. The reference mapping identifies a left-to-right primary handoff. A second set of sensor announcements followed at frames 2174–2210;
-their sequence restarted and log type changed from 3 to 1. These changes
-therefore do not require a new Bluetooth connection.
+A separate wearing/movement capture contains a left-to-right primary handoff
+(reference role mapping) without an HCI disconnect:
 
-Battery component records reordered at frame 2177 while retaining right 95%
-and left 93%. Parsers must use component IDs rather than record position.
-Adaptive Volume repeated its same two setup payloads around the handoff.
+| Evidence | Result |
+| --- | --- |
+| Role `0x08`, frame 2144 | `01 00 01 00` → `02 00 01 01` |
+| Sensor announcements, frames 2174–2210 | Sequence restarted; log type changed from 3 to 1 |
+| Battery records, frame 2177 | Records reordered; right 95% and left 93% unchanged |
+| All five HID report descriptors | Byte-identical to the case captures; ancillary properties including LocationID changed |
+| Adaptive Volume | Same two setup payloads repeated |
+| Transparency | 21 reads and eight writes matched the earlier 104-byte configuration; no new ATT discovery changed the UUID mapping |
 
-All five HID report descriptors matched the case captures byte for byte.
-Some ancillary properties changed, including LocationID; no report layout
-changed. Across all 13 RTBuddy packets there were no field-7 reports, field-8
-stream-setting requests or field-3 opaque streams. No RTBuddy packet occurred
-during the marked head movements. Log type 1 alone cannot identify a live
-sample: it also occurred on these descriptor announcements.
-
-Passive wearing and movement produced no sensor measurements in this run.
-A sensor-specific comparison needs a verified request to start the service.
-The Transparency characteristic remained unchanged across 21 reads and eight
-writes; each value matched the earlier 104-byte configuration. No new ATT
-discovery changed the UUID mapping.
+Descriptor restarts do not require a new Bluetooth connection. Parse batteries
+by component ID, not position. Log type 1 also carries descriptor announcements;
+it alone cannot identify a live sample. All 13 RTBuddy packets lacked field-7
+reports, field-8 stream-setting requests and field-3 opaque streams. None occurred
+during marked head movements. Passive wearing and movement produced no sensor
+measurements; a sensor comparison needs a verified service-start request.
 
 HSML/VERS assets matched the case runs; MTIC lengths varied without established
 field meanings. Incomplete transfers cannot establish unchanged contents, and
@@ -236,10 +226,9 @@ command appeared.
 ### Active SPL0 probes
 
 Native IOHID access on Tahoe reaches SPL0 through macOS's existing AAP
-connection. A 12-second open/close alone produced no RTBuddy traffic.
-`IOHIDDeviceGetReport` with feature type 2 and report ID 1 returned five bytes,
-`01 00 00 00 00`, despite the descriptor's 13-byte feature capacity.
-The remaining eight descriptor bytes are still unexplained.
+connection. `IOHIDDeviceGetReport` with feature type 2 and report ID 1 returned
+five bytes, `01 00 00 00 00`, despite the descriptor's 13-byte feature capacity.
+The remaining eight descriptor bytes are unexplained.
 
 The read maps to SensorDataWX field 10: nested field 1 is service 18, field 2
 is report type 2, and field 3 is report ID 1. The reply uses field 11, with
@@ -247,29 +236,22 @@ service 18 in nested field 1 and report bytes in nested field 3. A feature
 write maps to field 8 with service 18, type 2 and the complete report bytes;
 field 9 acknowledges it.
 
-A worn-bud SPL0 capture tested `01 40 42 0F 00`, using the 1,000,000 µs
-interval encoding known from the other sensors. Both buds were in the ears.
-Readback confirmed that exact value, and a native input listener then ran for
-12 seconds. It received zero callbacks. The wire capture also contains no
-field-7 reports, field-3 streams or alternate AAP payloads. The setting was
-nonzero for 13.20 seconds between writes. Its units and effect on SPL0 remain
-unverified because no measurements arrived.
+| Probe | Observed result |
+| --- | --- |
+| Open/close for 12 seconds | No RTBuddy traffic |
+| Write `01 40 42 0F 00`, both buds worn | Exact readback; nonzero setting retained for 13.20 seconds between writes |
+| Native input listener for 12 seconds during that setting | Zero callbacks; no wire field-7 reports, field-3 streams or alternate AAP payloads |
+| Restore `01 00 00 00 00` | Native and wire readback matched; no samples in the following 11.39 seconds |
+| Input report 1 read, 57-byte buffer | Timeout with no wire reply |
 
-Restoring `01 00 00 00 00` succeeded in both native and wire readback. The
-capture continued for 11.39 seconds after the stop write, with no samples.
-A separate Input report 1 read with a 57-byte buffer received no wire reply
-and timed out. This differs from the earlier feature-read timeouts, whose
-replies did arrive over Bluetooth.
+`01 40 42 0F 00` encodes 1,000,000 µs for other sensors; SPL0's units and
+effect remain unverified. Acknowledged settings alone do not establish a stream
+or justify a sound-level display.
 
-During the first probes, SetReport returned before the device acknowledgment,
-and macOS sometimes retried after 200 ms. GetReport failures coincided with
-outstanding write acknowledgments, even when the buds answered the read.
-Waiting one second between a write and readback worked in the final run;
-the cause of the earlier local failures remains unverified. Acknowledgments
-and retained configuration alone do not establish a working stream.
-
-SPL0 remains undecoded. Acknowledged configuration writes alone do not justify
-a sound-level display.
+SetReport returned before device acknowledgment, with occasional macOS retries
+after 200 ms. Feature GetReport failures coincided with outstanding write ACKs
+despite wire replies; their cause remains unknown. A one-second delay between
+write and readback succeeded. Input report timeouts above had no wire reply.
 
 ### Native head-tracking comparison
 
@@ -290,18 +272,16 @@ The devmotion6 descriptor assigns feature 4 to Sensors usage `0x20:031A`.
 The HID Usage Tables label it Maximum FIFO Events; the effect of Apple's
 writes on batching has not been measured. SPL0 does not declare feature 4.
 
-The first run has 599 reports across 11.99 seconds, about 50 per second.
-Each uses top-level field 3 with 58 bytes: `10 00` followed by 56 bytes of
-report data beginning `01`. Log type 5 packets also have a two-byte `FF FF`
-trailer after the protobuf, included in the outer RTBuddy length. Parsing
-that trailer as protobuf causes false truncation errors.
+Field-3 reports carry 58 bytes: `10 00` followed by 56 bytes of report data
+beginning `01`. Log type 5 adds a two-byte `FF FF` trailer after the protobuf,
+included in the outer RTBuddy length. Treating it as protobuf causes false
+truncation errors. One field-3 report shares a log-type-1 envelope with an
+acknowledgment and has no trailer.
 
-The second run has 581 field-3 reports and one field-7 service-16 report with
-56 data bytes. One field-3 report shares a log-type-1 envelope with an
-acknowledgment and has no trailer. The field-7 report arrives 5.10 ms after
-the zero-interval write, before its acknowledgment; nothing follows the
-acknowledgment during the remaining 3.38 seconds. The first run has no
-reports after its zero-interval write and a 3.41-second capture tail.
+| Native-motion capture | Reports | Stop behavior |
+| --- | --- | --- |
+| First | 599 field-3 reports over 11.99 seconds, about 50 Hz | None after the zero-interval write; capture continued for 3.41 seconds |
+| Second | 581 field-3 reports; one field-7 service-16 report with 56 data bytes | Field-7 report 5.10 ms after the zero-interval write, before its ACK; none after the ACK in the remaining 3.38 seconds |
 
 The [sensor implementation](WINDOWS-AIRPODS-CONTROL-PROTOCOL.md#sensors)
 accepts these macOS envelopes. The two-byte service prefix must not

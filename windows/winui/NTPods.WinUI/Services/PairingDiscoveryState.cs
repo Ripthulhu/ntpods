@@ -70,16 +70,18 @@ internal sealed class PairingDiscoveryState
         }
         if (existing is not null)
         {
-            if (existing.Name != name || existing.MajorClass != majorClass || existing.MinorClass != minorClass)
-                _automaticId = null;
+            bool changed = existing.Name != name || existing.MajorClass != majorClass || existing.MinorClass != minorClass;
+            bool wasAirPods = existing.IsAirPods;
             existing.Name = name;
             existing.MajorClass = majorClass;
             existing.MinorClass = minorClass;
+            if (changed && (wasAirPods || existing.IsAirPods)) _automaticId = null;
         }
         else if (Candidates.Count < 64)
         {
-            _automaticId = null;
-            Candidates.Add(new PairingCandidate(id, name, majorClass, minorClass));
+            var candidate = new PairingCandidate(id, name, majorClass, minorClass);
+            if (candidate.IsAirPods) _automaticId = null;
+            Candidates.Add(candidate);
         }
     }
 
@@ -87,7 +89,7 @@ internal sealed class PairingDiscoveryState
     {
         if (Accepts(generation) && Find(id) is { } candidate)
         {
-            _automaticId = null;
+            if (candidate.IsAirPods) _automaticId = null;
             Candidates.Remove(candidate);
         }
     }

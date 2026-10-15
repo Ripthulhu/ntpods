@@ -791,6 +791,7 @@ fn stream(
             outstanding = 0;
         }
         if status[0] != 0 && !active {
+            buffer.prepare(session, render)?;
             clock = prime_output(
                 samples,
                 reserve,

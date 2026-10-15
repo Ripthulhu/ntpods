@@ -27,31 +27,24 @@ restores them on uninstall. See the
 ## Playback
 
 The packages replace the playback driver for AirPods 1–4, Pro 1–3 and the original
-Max (Lightning and USB-C), using model-qualified Apple AudioSink IDs. AAC and
-AAC-ELD share the paired AirPods output. Initial driver replacement may require
+Max (Lightning and USB-C). AAC and AAC-ELD share the paired AirPods output.
+Initial driver replacement may require
 selecting that output again; later codec changes keep it.
 
 Choose the codec under **Playback and microphone**. AAC-ELD is the default;
-an existing saved codec choice is preserved. Playback uses one AAC-ELD frame
-per packet, with a 20 ms PCM reserve for AAC-ELD and 30 ms for AAC. Each codec
-saves its own Best effort or Manual bitrate. AAC-ELD also offers
-**Variable (experimental)** with a 256 kbps peak limit; it passed short Pro 3
-playback checks, including pause/resume and microphone recovery. Best effort
-selects the highest supported rate and does not adapt to radio conditions.
+an existing saved codec choice is preserved. Each codec saves its own Best effort
+or Manual bitrate. AAC-ELD also offers **Variable (experimental)** with a 256 kbps
+peak limit. Best effort selects the highest supported rate and does not adapt
+to radio conditions.
 
 If the pair lacks a supported AAC-ELD profile, NTPods uses AAC with its saved
 bitrate. The menu keeps the preferred codec, and its tooltip shows the one in
 use. Unsupported manual rates and stream failures report errors. Stop recording
 and wait for microphone recovery before changing playback settings.
 
-NTPods requests a supported 5 ms Windows processing period during playback and
-uses driver notifications when PCM is ready. Older drivers retain polling.
-Pro 3 also requests a 120 ms receiver buffer while the mic is idle, restoring
-an explicit 150 ms target for pause, microphone use and playback changes.
-Short Pro 3 checks passed with automatic pause/resume transitions, restoration
-before microphone capture and the 20 ms AAC-ELD reserve. Sustained use and
-loaded-system behavior remain untested; no measured latency improvement is
-claimed. See the
+NTPods can automatically request a smaller playback buffer on Pro 3 and AAC-ELD
+pairs that advertise gaming audio support while the microphone is idle.
+End-to-end latency has not been measured. See the
 [latency reference](https://github.com/Ripthulhu/ntpods/blob/main/docs/WINDOWS-AUDIO-LATENCY.md).
 
 Keep NTPods running, or enable Start with Windows. Playback stops if its backend
@@ -64,16 +57,14 @@ Unlisted models keep their current provider.
 
 ## Compatibility
 
-AirPods Pro 1 (6F21) and Pro 3 (9A348) passed short AAC/AAC-ELD stereo checks on an
-Intel AX200, including 70-second AAC-ELD playback. Pro 3 also kept stereo during
-short microphone captures and after stopping. Pro 1's high-quality microphone
-is disabled. Other models, long sessions and repeated lifecycle checks remain
-unverified with the native playback driver.
+Hardware testing covers AirPods Pro 1 (6F21) and Pro 3 (9A348) with an Intel
+AX200. Pro 1's high-quality microphone is disabled. Other models, long sessions
+and microphone transitions with the smaller buffer remain unverified.
 
 Available controls depend on model and firmware. Head tracking displays raw
-movement. Custom Transparency passed a Pro 3 adjustment and restoration check
-with the Apple host identity. The captured hearing profile remains read-only;
-hearing edits still need hardware validation. See the
+movement. Custom Transparency and hearing assistance are experimental. The
+captured hearing profile remains read-only; hearing edits still need hardware
+validation. See the
 [model list](https://github.com/Ripthulhu/ntpods/blob/main/docs/WINDOWS-MODEL-SUPPORT.md),
 [playback test guide](https://github.com/Ripthulhu/ntpods/blob/main/windows/playback/TESTING.md)
 and [validation results](https://github.com/Ripthulhu/ntpods/blob/main/docs/WINDOWS-VALIDATION.md).

@@ -4,15 +4,17 @@ use super::{
     apply_command, log, publish_head_tracking, security, set_head_tracking, volume, wide, Ctx,
 };
 use ntpods_ipc::{Command, PIPE_CMDS, PIPE_EVENTS};
-use std::ptr;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+use std::{io, ptr};
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE,
+    CloseHandle, GetLastError, ERROR_NO_DATA, ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
-use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile, PIPE_ACCESS_DUPLEX};
+use windows_sys::Win32::Storage::FileSystem::{
+    ReadFile, WriteFile, FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX,
+};
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
     PIPE_TYPE_BYTE, PIPE_WAIT,
@@ -106,11 +108,19 @@ fn client_reader(pipe: Arc<Pipe>, ctx: Ctx) {
     // Dropping the final Arc closes the command pipe.
 }
 
-/// Create one pipe instance and block until a client connects; returns its handle.
-unsafe fn accept(name: &[u16], sa: *const SECURITY_ATTRIBUTES) -> Option<HANDLE> {
+unsafe fn create_pipe(
+    name: &[u16],
+    sa: *const SECURITY_ATTRIBUTES,
+    first: bool,
+) -> io::Result<Arc<Pipe>> {
     let h = CreateNamedPipeW(
         name.as_ptr(),
-        PIPE_ACCESS_DUPLEX,
+        PIPE_ACCESS_DUPLEX
+            | if first {
+                FILE_FLAG_FIRST_PIPE_INSTANCE
+            } else {
+                0
+            },
         PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
         16,
         4096,
@@ -119,33 +129,59 @@ unsafe fn accept(name: &[u16], sa: *const SECURITY_ATTRIBUTES) -> Option<HANDLE>
         sa,
     );
     if h == INVALID_HANDLE_VALUE {
-        thread::sleep(Duration::from_secs(1));
-        return None;
+        return Err(io::Error::last_os_error());
     }
-    // ERROR_PIPE_CONNECTED = the client beat us to it (still a success).
-    let ok = ConnectNamedPipe(h, ptr::null_mut());
-    if ok == 0 && GetLastError() != ERROR_PIPE_CONNECTED {
-        CloseHandle(h);
-        return None;
-    }
-    Some(h)
+    Ok(Arc::new(Pipe(h)))
 }
 
-/// Separate event writers avoid serialization with command reads on synchronous handles.
-/// Each client has a bounded queue and its own writer thread.
-pub(super) unsafe fn events_server(ctx: Ctx) {
-    let name = wide(PIPE_EVENTS);
+unsafe fn accept(pipe: Arc<Pipe>) -> io::Result<Arc<Pipe>> {
+    // ERROR_PIPE_CONNECTED = the client beat us to it (still a success).
+    let ok = ConnectNamedPipe(pipe.0, ptr::null_mut());
+    if ok == 0 && GetLastError() != ERROR_PIPE_CONNECTED {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(pipe)
+}
+
+unsafe fn serve(name: &str, mut connected: impl FnMut(Arc<Pipe>)) {
+    let name = wide(name);
     let Ok(mut security) = security::PipeSecurity::new() else {
         log("IPC: cannot establish the current-user ACL; refusing connections");
         return;
     };
     let sa = security.attributes();
+    // Keep the first server handle alive so another account cannot replace the pipe ACL.
+    let first = match create_pipe(&name, &sa, true) {
+        Ok(pipe) => pipe,
+        Err(error) => {
+            log(&format!(
+                "IPC: cannot claim pipe ownership; refusing connections: {error}"
+            ));
+            return;
+        }
+    };
+    // An unused anchor could take a real client's connection without serving it.
+    match accept(first.clone()) {
+        Ok(pipe) => connected(pipe),
+        // A client can close before ConnectNamedPipe; the broken handle still owns the name.
+        Err(error) if error.raw_os_error() == Some(ERROR_NO_DATA as i32) => {}
+        Err(error) => {
+            log(&format!("IPC: first connection failed: {error}"));
+            return;
+        }
+    }
     loop {
-        let h = match accept(&name, &sa) {
-            Some(h) => h,
-            None => continue,
+        match create_pipe(&name, &sa, false).and_then(|pipe| accept(pipe)) {
+            Ok(pipe) => connected(pipe),
+            Err(_) => thread::sleep(Duration::from_secs(1)),
         };
-        let pipe = Arc::new(Pipe(h));
+    }
+}
+
+/// Separate event writers avoid serialization with command reads on synchronous handles.
+/// Each client has a bounded queue and its own writer thread.
+pub(super) unsafe fn events_server(ctx: Ctx) {
+    serve(PIPE_EVENTS, |pipe| {
         let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(32);
         let n = {
             let mut cl = ctx.clients.lock().unwrap();
@@ -162,31 +198,133 @@ pub(super) unsafe fn events_server(ctx: Ctx) {
             }
         });
         ctx.push_state(); // greet the newcomer
-    }
+    });
 }
 
 /// Read each client's commands on a separate connection.
 pub(super) unsafe fn cmds_server(ctx: Ctx) {
-    let name = wide(PIPE_CMDS);
-    let Ok(mut security) = security::PipeSecurity::new() else {
-        log("IPC: cannot establish the current-user ACL; refusing connections");
-        return;
-    };
-    let sa = security.attributes();
-    loop {
-        let h = match accept(&name, &sa) {
-            Some(h) => h,
-            None => continue,
-        };
+    serve(PIPE_CMDS, |pipe| {
         log("cmds: client connected");
-        let pipe = Arc::new(Pipe(h));
         let c = ctx.clone();
         thread::spawn(move || client_reader(pipe, c));
-    }
+    });
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, GENERIC_READ, GENERIC_WRITE};
+    use windows_sys::Win32::Storage::FileSystem::{CreateFileW, OPEN_EXISTING};
+
+    fn test_pipe_name() -> Vec<u16> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        wide(&format!(
+            "\\\\.\\pipe\\ntpods-ownership-test-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ))
+    }
+
+    unsafe fn client(name: &[u16]) -> Pipe {
+        let handle = CreateFileW(
+            name.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            0,
+            ptr::null(),
+            OPEN_EXISTING,
+            0,
+            ptr::null_mut(),
+        );
+        assert_ne!(
+            handle,
+            INVALID_HANDLE_VALUE,
+            "{}",
+            io::Error::last_os_error()
+        );
+        Pipe(handle)
+    }
+
+    #[test]
+    fn preexisting_pipe_is_refused_even_when_it_allows_another_instance() {
+        unsafe {
+            let name = test_pipe_name();
+            let mut security = security::PipeSecurity::new().unwrap();
+            let sa = security.attributes();
+            let existing = create_pipe(&name, ptr::null(), false).unwrap();
+            let secondary = create_pipe(&name, &sa, false).unwrap();
+            let error = create_pipe(&name, &sa, true)
+                .err()
+                .expect("must refuse existing name");
+            assert_eq!(error.raw_os_error(), Some(ERROR_ACCESS_DENIED as i32));
+            drop(secondary);
+            drop(existing);
+            assert!(create_pipe(&name, &sa, true).is_ok());
+        }
+    }
+
+    #[test]
+    fn retained_first_instance_serves_clients_and_keeps_ownership_after_disconnect() {
+        unsafe {
+            for early_close in [false, true] {
+                let name = test_pipe_name();
+                let mut security = security::PipeSecurity::new().unwrap();
+                let sa = security.attributes();
+                let first = create_pipe(&name, &sa, true).unwrap();
+                let connection = client(&name);
+                if early_close {
+                    drop(connection);
+                    let error = accept(first.clone()).err().expect("client already closed");
+                    assert_eq!(error.raw_os_error(), Some(ERROR_NO_DATA as i32));
+                } else {
+                    let accepted = accept(first.clone()).unwrap();
+                    assert!(write_all(accepted.0, b"hello"));
+                    let mut bytes = [0u8; 5];
+                    let mut read = 0;
+                    assert_ne!(
+                        ReadFile(
+                            connection.0,
+                            bytes.as_mut_ptr(),
+                            5,
+                            &mut read,
+                            ptr::null_mut()
+                        ),
+                        0
+                    );
+                    assert_eq!((bytes, read), (*b"hello", 5));
+                    drop(connection);
+                    drop(accepted);
+                }
+                for _ in 0..2 {
+                    let error = create_pipe(&name, &sa, true)
+                        .err()
+                        .expect("name must remain owned");
+                    assert_eq!(error.raw_os_error(), Some(ERROR_ACCESS_DENIED as i32));
+                    let next = create_pipe(&name, &sa, false).unwrap();
+                    let connection = client(&name);
+                    let accepted = accept(next).unwrap();
+                    assert!(write_all(accepted.0, b"next"));
+                    let mut bytes = [0u8; 4];
+                    let mut read = 0;
+                    assert_ne!(
+                        ReadFile(
+                            connection.0,
+                            bytes.as_mut_ptr(),
+                            4,
+                            &mut read,
+                            ptr::null_mut()
+                        ),
+                        0
+                    );
+                    assert_eq!((bytes, read), (*b"next", 4));
+                }
+            }
+        }
+    }
+
     #[test]
     fn fragmented_commands_preserve_non_ascii_names() {
         let name = "Zoë's 耳機 🎵";

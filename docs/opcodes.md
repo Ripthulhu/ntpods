@@ -42,7 +42,7 @@ for observed but unimplemented messages.
 | 0x004D       | Accessory   | [Host capabilities](AAP%20Definitions.md#setting-specific-features-for-airpods-pro-2)                    |
 | 0x004E       | Host        | Proximity-card status (reference label)                             |
 | 0x004F       | Both        | UARP information, asset and firmware protocol                        |
-| 0x0053       | Both        | [Headphone Accommodation](AAP%20Definitions.md#headphone-accomodation); separate from 0x0063 EQ |
+| 0x0053       | Both        | [Headphone Accommodation](AAP%20Definitions.md#headphone-accommodation); separate from 0x0063 EQ |
 | 0x0054       | Accessory   | Radio-band edges; units unknown                                     |
 | 0x0055       | Host        | Unknown                                                            |
 | 0x0058       | Both        | [High-quality microphone](WINDOWS-AIRPODS-AUDIO-PROTOCOL.md)          |

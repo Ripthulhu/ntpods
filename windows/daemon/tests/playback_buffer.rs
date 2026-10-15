@@ -877,6 +877,65 @@ fn automatic_errors_fall_back_once_or_stop_without_reconnect_loops() {
 }
 
 #[test]
+fn automatic_setup_reopens_before_start_and_does_not_restart_audible_playback() {
+    for mode in [codec::Mode::Aac, codec::Mode::Eld] {
+        let hardware = Arc::new(Mutex::new(Hardware::default()));
+        let ctx = Ctx::new(hardware.clone());
+        ctx.state.lock().unwrap().model = "A3064".into();
+        let render = render::Render(hardware.clone());
+        let mut session = session::Session {
+            gaming_supported: None,
+            mode,
+            delay_serial: 1,
+            delay_report: Some(1500),
+            delay_reporting: true,
+            flush_ms: 200,
+            hardware: hardware.clone(),
+        };
+        let mut stream = buffer::Stream::new(&ctx, 1, 7, driver::Driver(hardware.clone()));
+        for resumed in [false, true] {
+            hardware.lock().unwrap().events.clear();
+            if resumed {
+                session.delay_report = Some(0);
+            }
+            stream.prepare(&mut session, &render).unwrap();
+            assert_eq!(session.flush_ms, 60);
+            assert!(hardware.lock().unwrap().events.contains(&Event::Reopen(60)));
+            assert!(!hardware.lock().unwrap().events.contains(&Event::Control(60)));
+            assert!(!mic_lifecycle::playback_allows_microphone(
+                &ctx.state.lock().unwrap()
+            ));
+            session.start().unwrap();
+            stream.started();
+            assert!(!stream.poll(&mut session, &render).unwrap());
+            assert!(!hardware.lock().unwrap().events.contains(&Event::Control(60)));
+            std::thread::sleep(Duration::from_millis(501));
+            assert!(!stream.poll(&mut session, &render).unwrap());
+            assert!(hardware.lock().unwrap().events.contains(&Event::Control(60)));
+            session.delay_serial += 1;
+            session.delay_report = Some(1400);
+            assert!(!stream.poll(&mut session, &render).unwrap());
+            hardware.lock().unwrap().phase = 3;
+            assert!(!stream.poll(&mut session, &render).unwrap());
+            {
+                let hardware = hardware.lock().unwrap();
+                let transitions: Vec<_> = hardware
+                    .events
+                    .iter()
+                    .filter(|event| matches!(event, Event::Reopen(_) | Event::Start))
+                    .collect();
+                assert_eq!(transitions, [&Event::Reopen(60), &Event::Start]);
+            }
+            stream
+                .cleanup_before(&render, || session.restore_media_timeout())
+                .unwrap();
+            assert_eq!(session.flush_ms, 200);
+            assert_eq!(ctx.state.lock().unwrap().playback_buffer_target_ms, None);
+        }
+    }
+}
+
+#[test]
 fn automatic_policy_waits_for_microphone_demand_and_suppresses_unsupported_drivers() {
     let hardware = Arc::new(Mutex::new(Hardware {
         fail_preflight: true,

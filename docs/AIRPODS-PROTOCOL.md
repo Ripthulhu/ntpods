@@ -1,8 +1,6 @@
 # AirPods protocol reference
 
-These documents describe the protocol NTPods implements and the measurements
-behind it. Start with the wire format for the feature you are changing, then
-check its model and hardware test coverage.
+Wire formats, implementation links and hardware coverage for NTPods.
 
 | Reference | Contents |
 | --- | --- |
@@ -10,6 +8,7 @@ check its model and hardware test coverage.
 | [Playback and microphone](WINDOWS-AIRPODS-AUDIO-PROTOCOL.md) | AAC/AAC-ELD negotiation, media packets, mic uplink, start/stop and recovery |
 | [Apple Profile Fast Connect](APPLE-FAST-CONNECT.md) | Discovery, channel assignment, profile descriptors and the Windows driver boundary |
 | [macOS capture procedure](MACOS-PROTOCOL-CAPTURE.md) | Repeatable comparisons with Apple's implementation and a record for unknown traffic |
+| [macOS audio captures](MACOS-AUDIO-CAPTURE-2026-10-12.md) | Codec negotiation, gaming-audio buffer control and host timing |
 | [macOS case and sensor captures](MACOS-CASE-CAPTURE-2026-10-12.md) | Battery/charger checks, sensor descriptors, Transparency settings, UARP assets and a primary-bud handoff on Pro 3 |
 | [Model support](WINDOWS-MODEL-SUPPORT.md) | Capability profiles and which models have passed hardware checks |
 | [Hardware validation](WINDOWS-VALIDATION.md) | Test conditions, results and unresolved failures |
@@ -41,8 +40,8 @@ is evidence of that report, not a capture of the case's own radio exchange.
   observed outcome. A successful write alone does not confirm a setting changed.
 - **Reference-derived:** the mapping comes from a named upstream implementation
   or capture. It still needs hardware comparison when marked unverified.
-- **Unknown:** we have bytes or a suspected purpose without enough evidence to
-  assign semantics. Keep the uncertainty with the field or command.
+- **Unknown:** bytes or a suspected purpose without enough evidence to assign
+  semantics. Keep the uncertainty with the field or command.
 
 Recorded hardware checks cover Pro 3 on firmware 9A348 and selected first-generation
 Pro features. A shared parser or catalog entry does not establish the same

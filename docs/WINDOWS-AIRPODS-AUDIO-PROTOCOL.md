@@ -4,11 +4,9 @@ NTPods implements AAC and Apple AAC-ELD playback over AVDTP, and a separate
 AAC-ELD microphone uplink over AAP. This reference covers their packet formats,
 lifecycle and known limits.
 
-The [microphone sources](WINDOWS-MIC-PROTOCOL-RESEARCH.md) explain the
-clock and recovery assumptions.
-[Windows validation](WINDOWS-VALIDATION.md#native-playback-driver-and-bitrate-controls)
-records hardware results; [model support](WINDOWS-MODEL-SUPPORT.md) owns the
-capability list.
+See [microphone research](WINDOWS-MIC-PROTOCOL-RESEARCH.md) for clock and recovery
+assumptions, [validation](WINDOWS-VALIDATION.md) for hardware results, and
+[model support](WINDOWS-MODEL-SUPPORT.md) for capability gates.
 
 ## Channels and ownership
 
@@ -21,10 +19,12 @@ capability list.
 
 The AAP kernel driver opens these channels through the Windows Bluetooth stack.
 Playback signaling and media are authenticated and encrypted, with separate
-handles from AAP and ATT. Media uses a negotiated 200 ms L2CAP flush timeout;
-signaling requests an infinite flush timeout. This is a stale-packet limit, not
-an end-to-end latency measurement. The accepted media MTU determines packet
-size; the host's receive MTU request is at most 8,192 bytes.
+handles from AAP and ATT. Media normally uses a negotiated 200 ms L2CAP flush
+timeout; the [buffer policy](WINDOWS-AUDIO-LATENCY.md#automatic-receiver-buffer-policy)
+can request a shorter timeout. Signaling requests an infinite timeout. A finite
+timeout limits packet lifetime; it does not measure end-to-end latency. The
+accepted media MTU determines packet size; the host's receive MTU request is at
+most 8,192 bytes.
 
 The AudioSink driver supplies 48 kHz stereo signed 16-bit PCM to the backend.
 The backend encodes and packetizes it. The microphone takes the reverse path
@@ -41,7 +41,6 @@ Sources: [L2CAP transport](../windows/drivers/aap/L2cap.c),
 NTPods opens signaling, sends `DISCOVER`, then queries unused audio sink SEIDs
 with `GET_ALL_CAPABILITIES`, falling back to `GET_CAPABILITIES` when unsupported.
 The selected sink SEID comes from the reply; the local source SEID is 1.
-NTPods does not assume the earbuds use a fixed sink SEID.
 
 The sequence is `SET_CONFIGURATION` → `OPEN` → open media channel → `START`
 when Windows playback starts. `SUSPEND` pauses the stream when playback stops.
@@ -81,10 +80,10 @@ categories are rejected before configuration.
 
 AAC-ELD is the default codec when no preference is saved. NTPods uses it only
 when a sink advertises the implemented profile. Otherwise it tries AAC after
-examining the sinks. An invalid
-manual ELD bitrate, malformed response or transport error is an error, not a reason to
-silently change codec. Best effort selects the highest implemented rate within
-the advertised limit and packet budget; it does not adapt to radio conditions.
+examining all sinks. An invalid manual ELD bitrate, malformed response or
+transport error fails playback. Best effort selects the highest implemented
+rate within the advertised limit and packet budget; it does not adapt to radio
+conditions.
 
 Sources and parser tests: [session.rs](../windows/daemon/src/playback/session.rs),
 [protocol.rs](../windows/daemon/src/playback/protocol.rs),
@@ -152,10 +151,10 @@ It retains the same ASC, packet framing and 321-byte AU limit. Mode 5 has a
 nominal stereo rate of 192 kbps, but does not target that average: actual bitrate
 depends on the signal. Negotiation requires the full 256 kbps packet budget;
 otherwise the profile reports an error. Encoder resets preserve the selection.
-Existing preferences default to CBR, and normal AAC settings are unchanged.
-The macOS encoder is a different implementation, so matching its nominal rates
-does not establish matching fidelity or latency. Short Pro 3 VBR playback and
-microphone checks passed; see the [validation record](WINDOWS-VALIDATION.md#playback-latency-investigation).
+Existing preferences default to CBR. The macOS encoder is a different
+implementation; matching its nominal rates does not establish matching fidelity
+or latency. See [validation](WINDOWS-VALIDATION.md#playback-latency-investigation)
+for VBR hardware coverage.
 
 Each AU immediately follows this four-byte header:
 
@@ -185,8 +184,8 @@ On Suspend/restart, the ELD packetizer discards pending AUs and resets its
 AU sequence and timestamp; RTP packet sequence continues within that session.
 The encoder is recreated. NTPods clears queued PCM and primes playback with a
 20 ms scheduling lead for AAC-ELD and 30 ms for AAC. Diagnostic overrides allow
-comparison with the earlier 30/50 ms reserves. Its frame clock counts samples
-from one origin, avoiding rounding drift from repeated millisecond delays.
+30 or 50 ms reserves. Its frame clock counts samples from one origin, avoiding
+rounding drift from repeated millisecond delays.
 These host choices still need comparison with macOS packet pacing and buffering.
 
 Sources and fixtures: [protocol.rs](../windows/daemon/src/playback/protocol.rs),
@@ -275,9 +274,9 @@ recovery from acting on a newly selected pair.
 
 Removing both buds while recording stops the stream. Automatic and Keep active
 may restart after reinsertion and completed recovery; Manual intent is cleared
-on removal. Resetting only the decoder did not fix the observed reinsertion
-static. The stop/recovery/new-start sequence did, on the earlier Alternative
-A2DP setup. Reinsertion remains unverified with native playback.
+on removal. The stop/recovery/new-start sequence fixed reinsertion static on
+the Alternative A2DP setup; a decoder reset alone did not. Reinsertion remains
+unverified with native playback; see [validation](WINDOWS-VALIDATION.md#microphone-checks-with-alternative-a2dp).
 
 Conversation Awareness currently restores host volume ducking when capture
 starts and skips host ducking during capture. NTPods does not temporarily write
@@ -292,17 +291,18 @@ Sources and transition tests: [mic_lifecycle.rs](../windows/daemon/src/mic_lifec
 
 ## Hardware evidence and macOS comparison
 
-Pro 3 on firmware 9A348 and Pro 1 on 6F21 passed AAC 256 kbps and AAC-ELD
-128/192/256 kbps stereo checks on Intel AX200. Both completed 70 seconds of ELD
-at 256 kbps, crossing the 12-bit AU sequence wrap. Pro 3 also passed short
-simultaneous stereo playback/microphone captures and post-stop stereo checks
-with both codecs. Recorded native recovery was about 1.8 seconds. Pro 1's
-high-quality microphone remains disabled.
+Native-driver checks with NTPods 0.2.11–0.2.15 used Intel AX200:
 
-Other listed playback models and newer microphone-eligible models are
-source-supported candidates, not locally verified hardware. ELD advertisement
-does not establish microphone support. Long native sessions, reinsertion,
-sleep/resume and repeated failure recovery remain open in the validation record.
+| Pair | Coverage |
+| --- | --- |
+| Pro 3, firmware 9A348 | AAC 256 kbps and AAC-ELD 128/192/256 kbps stereo; short microphone coexistence and post-stop recovery with both codecs |
+| Pro 1, firmware 6F21 | The same playback rates; high-quality microphone disabled |
+
+Both pairs completed 70 seconds of AAC-ELD at 256 kbps, crossing the 12-bit AU
+sequence wrap. See [validation](WINDOWS-VALIDATION.md#native-playback-driver-and-bitrate-controls)
+for recovery timings and later coverage. Other models, long sessions,
+reinsertion with native playback, sleep/resume and repeated failure recovery
+remain unverified. AAC-ELD playback support does not establish microphone support.
 
 For each macOS trace, keep model, firmware, macOS version, adapter and application
 with the observation. Answer these questions before changing the implementation:

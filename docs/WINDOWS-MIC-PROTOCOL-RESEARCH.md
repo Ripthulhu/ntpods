@@ -1,12 +1,9 @@
 # Microphone protocol sources and open questions
 
-The [audio protocol](WINDOWS-AIRPODS-AUDIO-PROTOCOL.md) documents NTPods' current
-packets, decoder and recovery behavior. This reference records the upstream
-evidence behind that implementation and questions still requiring measurements.
+Sources and unresolved questions behind the
+[microphone implementation](WINDOWS-AIRPODS-AUDIO-PROTOCOL.md).
 
 ## Pinned sources
-
-These revisions were reviewed in October 2026.
 
 | Source | Revision | Contribution |
 | --- | --- | --- |
@@ -65,13 +62,16 @@ stopped. PR 774's report and the Pico
 [coexistence report](https://github.com/librepods-org/librepods/pull/655#issuecomment-4980170555)
 show that a full Bluetooth-service reset is not universal.
 
-On the older Windows/Alternative A2DP path, a long recording ended with quiet
-uplink but only one audible playback channel. An audio-service reset restored
-both. Decoder/resampler resets alone also failed to resolve reinsertion static;
-stopping while both buds were out, recovering playback and starting a fresh
-stream restored speech. Check audible left/right playback after capture;
-endpoint presence and decode success cannot confirm it. Current native results
-and remaining coverage are in [Windows validation](WINDOWS-VALIDATION.md).
+The older Windows/Alternative A2DP path had two recovery failures:
+
+| Failure | Recovery |
+| --- | --- |
+| Quiet uplink after a long recording, but only one audible playback channel | Audio-service reset restored both channels |
+| Static after reinsertion; decoder/resampler resets were insufficient | Stop with both buds out, recover playback, then start a fresh stream |
+
+Check audible left/right playback after capture; endpoint presence and decoder
+success cannot confirm it. See [Windows validation](WINDOWS-VALIDATION.md) for
+current native-playback results and limits.
 
 ## Conversation Awareness during capture
 
@@ -89,9 +89,9 @@ cannot guarantee restoration, so a blind off/on pair is insufficient.
 
 [NTPods upstream PR 7](https://github.com/arctumn/ntpods/pull/7) reported Pro 3 SDU
 arrival gaps of roughly 26 ms median, 56 ms p95, 78 ms p99 and 91 ms maximum.
-A 32 ms cushion underran and a 64 ms watermark discarded bursts. This motivated
-the 100 ms target and 160 ms watermark. Measure the current producer before
-reducing either.
+A 32 ms cushion underran and a 64 ms watermark discarded bursts. The microphone
+buffer normally trims a backlog above 160 ms back to 100 ms. Measure the current
+producer before reducing either.
 
 NTPods validates complete SDUs and fixed decoder output, rejects corrupt or
 nonfinite samples, bounds resampler output, and clears old audio after invalid

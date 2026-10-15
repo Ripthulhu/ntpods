@@ -1,16 +1,14 @@
 # Comparing AirPods traffic with macOS
 
-Capture a complete connection and change one thing at a time. The first goal
-is to compare macOS's handshake, codec selection and microphone stop sequence
-with [NTPods' current protocol](AIRPODS-PROTOCOL.md). Later runs can identify
-notifications and settings that NTPods does not yet handle.
+Capture a complete connection and change one thing at a time. Compare handshakes,
+settings, codec negotiation and stream recovery with
+[NTPods' current protocol](AIRPODS-PROTOCOL.md).
 
 ## Capture point and limits
 
-The reference Tahoe setup passes a USB Bluetooth controller from Windows through
-WSL to QEMU. Capture that WSL USB bus with `usbmon` and `dumpcap`, beginning
-before controller handover. This retains controller initialization and L2CAP
-channel setup, which the dissectors need to identify later packets.
+The reference setup passes a USB Bluetooth controller through WSL to QEMU.
+Capture its WSL USB bus with `usbmon` and `dumpcap` before controller handover
+to retain the initialization and L2CAP setup needed for dissection.
 
 The reference captures used x86-64 Tahoe 26.7.1 (25G241), with an Intel AX200
 USB controller (`8087:0029`) through usbipd, WSL's virtual USB host and QEMU
@@ -60,10 +58,9 @@ are not distributed with NTPods.
 7. Return the controller to Windows and verify it is available before restarting
    NTPods.
 
-The [audio findings](MACOS-AUDIO-CAPTURE-2026-10-12.md) document the VM's
-AAC-ELD playback and CVSD hands-free recording. It did not use the AAP microphone
-route. The [case and sensor findings](MACOS-CASE-CAPTURE-2026-10-12.md) cover
-battery fields, charger/lid transitions, descriptor discovery and unknown traffic.
+See the [audio findings](MACOS-AUDIO-CAPTURE-2026-10-12.md) for AAC-ELD playback
+and CVSD recording, and the [case and sensor findings](MACOS-CASE-CAPTURE-2026-10-12.md)
+for battery, charger/lid and sensor traffic. The VM did not use the AAP microphone route.
 
 ## Runs
 
@@ -93,11 +90,10 @@ Adaptive or newer sensors on Pro 1 is not a protocol failure.
 
 ### Custom Transparency and hearing settings
 
-The AX200/Tahoe reference contains successful reads of both settings. Windows
-also reads both after the [Apple host identity override](BLUETOOTH-HOST-IDENTITY.md),
-and Custom Transparency writes have been verified on Pro 3. The remaining gap
-is a real macOS hearing adjustment and its readback for the format documented in
-the [ATT reference](WINDOWS-AIRPODS-CONTROL-PROTOCOL.md#att-settings).
+Both settings are readable on AX200/Tahoe and on Windows with the
+[Apple host identity](BLUETOOTH-HOST-IDENTITY.md). Pro 3 Custom Transparency
+writes are verified; macOS hearing-adjustment writes and readback remain unverified.
+Use the layouts in the [ATT reference](WINDOWS-AIRPODS-CONTROL-PROTOCOL.md#att-settings).
 
 1. Start capture before handover. Connect Pro 3 with both buds worn and other
    hosts disconnected. Leave hearing controls untouched for the baseline.
@@ -137,17 +133,14 @@ Decode with TShark/Wireshark and the
 Keep the trace, action markers, tool versions and parse errors together. Run Lua
 dissection as an ordinary user; the local TShark setup disables Lua under root.
 
-When capture starts with the controller already attached, Linux may not send
-its USB descriptors again. Do not detach the guest controller just to obtain
-them: that disrupted Tahoe's existing Bluetooth session in the local test.
-Identify the controller's USB bus/address and, if needed, restrict Decode As
-Bluetooth to that device. Record any override with the trace. Verify the address
-for every session; it can change after reattachment.
+Linux may omit USB descriptors when capture starts after controller attachment.
+Use the controller's USB bus/address to restrict Decode As Bluetooth, and record
+the override. Detaching the controller to obtain descriptors can disrupt the
+guest Bluetooth session. Verify the USB address after every reattachment.
 
-Check that the trace contains Bluetooth traffic, includes the connection setup,
-and has no truncated frames or Lua errors. A zero Bluetooth count needs capture
-or dissection investigation before any protocol conclusion. Check dumpcap's output,
-pcapng interface statistics and USB errors for drops.
+Check for connection setup, truncated frames, Lua errors and capture drops in
+dumpcap's output, pcapng statistics and USB errors. A zero Bluetooth count can
+mean a capture or dissection failure.
 
 Use the full trace with TShark's two-pass dissection. TShark
 4.2.2 reassembles USB HCI transfers and enables ACL reassembly by default.

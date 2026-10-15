@@ -3,8 +3,9 @@
 NTPods sends Windows PCM through its ACX playback driver, the user-mode encoder
 and AVDTP transport, then the AirPods' decoder and playback buffer. AAC-ELD is
 the default codec when no preference is saved, with AAC fallback for pairs that
-lack a supported AAC-ELD profile. Buffer capacity alone does not establish how
-much audio is waiting; a latency claim needs measurement of the whole path.
+lack a supported AAC-ELD profile. Engine periods, buffer targets and packet
+timeouts describe parts of that path. End-to-end latency requires acoustic
+measurement.
 
 ## Windows requirements
 
@@ -29,8 +30,9 @@ when changing this path.
   flags do not replace its private PCM notification request.
 
 The circuits and driver INF audio interfaces publish a RAW 5 ms quantum
-(50,000 HNS, zero sample count) with a 4 ms absolute minimum. Runtime and INF
-values must match. See Microsoft's
+(50,000 HNS, zero sample count) with a 4 ms absolute minimum. Tests compare the
+full INF property bytes with the circuit declaration and check short-packet
+delivery and clock arithmetic. See Microsoft's
 [packet constraints](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ksmedia/ns-ksmedia-_ksaudio_packetsize_constraints2)
 and [processing-mode fields](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ksmedia/ns-ksmedia-_ksaudio_packetsize_signalprocessingmode_constraint).
 
@@ -44,40 +46,37 @@ driver, uses its existing mix format, and checks the negotiated period. A faster
 supported period is retained. Unsupported periods, exclusive use and other
 initialization failures leave ordinary playback working.
 
-The client stays initialized without starting or submitting audio. This keeps
-the request separate from the driver's running-stream count. NTPods releases it
-when real playback stops or the playback session ends, then tries again on the
-next start. A changed driver stream generation also renews the request, so a
-stop/start between status checks cannot retain an invalid client. It does not
-change the default output, volume or routing, and does not force a previous
-period when releasing the client. Releasing it while idle also avoids retaining
-a shared connection that could obstruct
+The client stays initialized without starting or submitting audio, leaving the
+driver's running-stream count unchanged. NTPods releases it when real playback
+or the session ends, then tries again on the next start. A changed driver stream
+generation also renews the request. The client preserves the default output,
+volume and routing; releasing it does not force the previous period. Releasing
+it while idle avoids holding a shared connection that could obstruct
 [exclusive-mode access](https://learn.microsoft.com/en-us/windows/win32/coreaudio/exclusive-mode-streams).
 
-With installed 0.2.35, read-only queries confirmed 5 ms during Pro 3 playback
-with both codecs and after microphone recovery. Pause/resume listening checks
-also passed; see the [hardware results](WINDOWS-VALIDATION.md#playback-latency-investigation).
-Disconnects, sleep/removal and exclusive-mode takeover still need hardware
-checks. Other clients can change the engine period after a successful query.
+Read-only queries with installed 0.2.35, Pro 3 A3063 / 9A348 and Intel AX200
+reported 5 ms during AAC and AAC-ELD playback and after microphone recovery.
+Short listening checks covered pause/resume and the default packet/reserve settings; see
+[validation](WINDOWS-VALIDATION.md#playback-latency-investigation). Long sessions,
+system load, disconnects, sleep/removal, exclusive-mode takeover and other models
+remain unverified. Other clients can change the period after a successful query.
 
 ### Manual checks
 
-Shared-mode checks with the 0.2.31 app and installed 0.2.29 native drivers:
+Recorded initialization checks; see [validation](WINDOWS-VALIDATION.md#playback-latency-investigation)
+for the hardware conditions:
 
-| Path | Observed period at 48 kHz | Limit |
+| Path and version | Observed period at 48 kHz | Limit |
 | --- | --- | --- |
-| Shared playback, default and RAW, mix and PCM16 formats | 240 frames / 5 ms accepted | The exposed range was 240–480 frames; ordinary playback used the 480-frame default |
-| Exclusive event-driven PCM16 playback | 240 frames / 5 ms accepted in the earlier check | Initialized and queried without starting audio; sustained streaming unverified |
-| Microphone, default and RAW | 240 frames / 5 ms accepted in the earlier check | Silent initialization only |
+| Shared playback, default/RAW, mix/PCM16; app 0.2.31, drivers 0.2.29 | 240 frames / 5 ms accepted; exposed range 240–480 frames | Initialization without audio; ordinary playback used the 480-frame default |
+| Exclusive event-driven PCM16; earlier check | 240 frames / 5 ms accepted | Initialization without audio; sustained streaming unverified |
+| Microphone, default/RAW; earlier check | 240 frames / 5 ms accepted | Silent initialization only |
 
-Earlier shared render checks exposed only 480 frames despite the constraint.
-That endpoint accepted 240-frame initialization; the exact change that
-made it available was not isolated. `GetCurrentSharedModeEnginePeriod` reported
-240 while the initialized client existed and 480 after release. The 240-frame
-client had a 528-frame WASAPI capacity; capacity is not another fixed delay.
-Publishing a constraint alone still does not prove successful negotiation on
-another PC. Tests compare the full INF property bytes with the circuit
-declaration and check short-packet delivery and clock arithmetic.
+The shared engine reported 240 frames while the initialized client existed and
+480 after release. Its 528-frame WASAPI capacity is not an additional fixed
+delay. Earlier shared-render queries exposed only 480 frames; the cause of the
+change was not isolated. Verify negotiation on each PC rather than relying on
+the published driver constraint.
 
 Use [test-audio-periods.ps1](../windows/playback/test-audio-periods.ps1) from a
 source checkout with VS2022 C++ tools. Supply the exact Windows render endpoint
@@ -99,14 +98,12 @@ their delay. Check each supported probe's `initialize` result for `0x00000000`;
 the tool's exit code alone does not establish successful initialization.
 Default and RAW 10 ms playback must still initialize when 5 ms is unavailable.
 
-The hold accepts 1–120 seconds. It supplies silence to the existing mixer, with
-no new audio device, routing or volume change. It checks the active period at
-start and end, then stops and releases its client. It reports the period after
-release rather than forcing other apps back to the prior value. In the Pro 3
-check, the engine remained at 5 ms immediately after release and returned to
-10 ms in a later query. The listener heard clean AAC-ELD playback during the
-30-second hold. This establishes a short streaming check, not acoustic latency
-or stability under sustained load. `-SelfTest` checks the tool without hardware.
+The hold accepts 1–120 seconds and supplies silence to the existing mixer,
+preserving devices, routing and volume. It checks the active period at start
+and end, then releases its client and reports the resulting period without
+forcing a change. The period may return to its prior value later. A 30-second
+Pro 3 hold passed a listening check; acoustic latency and sustained-load behavior
+remain unmeasured. `-SelfTest` checks the tool without hardware.
 
 ## Implementation
 
@@ -119,37 +116,25 @@ or stability under sustained load. `-SelfTest` checks the tool without hardware.
    The encoder reader and driver PCM notifications wake playback when work is
    ready. Otherwise playback waits until its next frame or control deadline.
    Old drivers, notification failures and active clock adjustments retain the
-   1 ms polling fallback. Control checks remain bounded to 20 ms. This removes
-   idle polling without changing codec frame sizes or establishing an acoustic
-   latency gain. The [notification contract](../windows/drivers/mic/README.md#shared-playback-bridge)
+   1 ms polling fallback. Control checks remain bounded to 20 ms.
+   The [notification contract](../windows/drivers/mic/README.md#shared-playback-bridge)
    covers cancellation and driver compatibility.
-3. Both ACX circuits publish the complete packet constraint structure, including
-   the RAW 5 ms entry. Tests cover its values, short packet delivery and clock
-   arithmetic. The backend requests 5 ms while an app uses the native output;
-   if Windows rejects it, the existing shared-engine period remains in use.
-4. A stream-end diagnostic summarizes accepted frames, queue depth, deadline
+3. A stream-end diagnostic summarizes accepted frames, queue depth, deadline
    lateness and media-send duration. It contains no audio or device identifiers.
-5. The shared stream engine reports zero hardware FIFO bytes instead of the
-   sample driver's invented 128. Microsoft's
+4. The shared stream engine reports zero hardware FIFO bytes. Microsoft's
    [latency callback](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/acxstreams/nc-acxstreams-evt_acx_stream_get_hw_latency)
    describes circuit delay. Both circuits return zero delay. Publishing the
    AVDTP receiver delay through this callback can make Windows reject playback
    initialization with `AUDCLNT_E_BUFFER_SIZE_ERROR`; receiver reports remain
-   available through IPC. Zero here does not mean zero end-to-end latency.
-   Queue occupancy and the source reserve must not be added
-   together as if they were separate fixed delays.
+   available through IPC. This callback does not report end-to-end latency.
 
 The source reserve defaults to 20 ms for AAC-ELD and 30 ms for AAC, chosen after
-codec negotiation so an AAC fallback keeps its larger reserve. Installed 0.2.35
-passed short Pro 3 playback, pause/resume and microphone checks with one-frame
-AAC-ELD packets and the 20 ms reserve; see the
-[hardware results](WINDOWS-VALIDATION.md#playback-latency-investigation).
-Long sessions, loaded-system checks and other models remain unverified for this
-combination. These listening results do not measure a latency reduction.
-The 100 ms ring capacity is a separate safety bound.
+codec negotiation so an AAC fallback keeps its larger reserve. The 100 ms ring
+capacity is a separate safety bound. Queue occupancy and the source reserve
+must not be added as separate fixed delays.
 
 The sample-count frame clock preserves AAC's fractional 21.333 ms period.
-Keep that arithmetic. AAC-ELD sends one 10 ms access unit per packet. Changing
+AAC-ELD sends one 10 ms access unit per packet. Changing
 the Windows period does not change either codec's frame size.
 
 ### Packet and source-reserve overrides
@@ -211,8 +196,8 @@ The [macOS capture](MACOS-AUDIO-CAPTURE-2026-10-12.md#aac-eld-playback-compariso
 and [USBPods analysis](https://github.com/wasdwasd0105/USBPods-Pico2W/blob/6286ab1618ec1143d828b1fc377d8e22c449e567/aac-eld-apple.md#rtp-timestamp-is-millisecond-based-not-sample-based)
 show approximately millisecond-based AAC-ELD timestamps. This comparison changes
 the units only; it does not reproduce macOS's varying wall-clock increments.
-The 48 kHz default has passed playback checks. The 1 kHz setting still needs
-hardware validation and does not establish Game Mode support or lower latency.
+The 48 kHz default has passed playback checks; the 1 kHz setting remains
+unverified on hardware, including its effect on latency.
 
 Keep music, codec, bitrate and volume consistent between comparisons. Check
 sustained playback, pause/resume, volume and microphone stop/recovery; repeat
@@ -224,9 +209,9 @@ double the packet rate relative to two-frame packets and may affect radio schedu
 The [working Tahoe gaming capture](MACOS-AUDIO-CAPTURE-2026-10-12.md#working-gaming-transition)
 shows a 60 ms buffer request and controller timeout during active AAC-ELD
 playback, followed by restoration to a 150 ms target and 200 ms timeout.
-Immediate earbud reports were 28 and 90 ms. The patched AX200 VM completed
-both transitions without stopping playback. This establishes the command
-sequence on Pro 3, not a minimum buffer or acoustic latency.
+Immediate earbud reports were 28 and 90 ms. The patched AX200 VM completed both
+Pro 3 transitions without stopping playback. These observations identify the
+command sequence; minimum buffer size and acoustic latency remain unmeasured.
 
 NTPods requests `GET_ALL_CAPABILITIES`, falls back to `GET_CAPABILITIES` when
 unsupported, and negotiates Delay Reporting category `08 00` when offered.
@@ -234,8 +219,7 @@ It acknowledges valid `0x0D` reports addressed to the local SEID in Configured,
 Open and Streaming states, including reports received while waiting for Open
 or Start. [AVDTP 1.3, section 8.19](https://www.bluetooth.org/DocMan/handlers/DownloadDoc.ashx?doc_id=260860)
 requires the initial report after configuration, before Open. IPC exposes
-negotiation through
-`playback_delay_reporting` and the latest report through
+negotiation through `playback_delay_reporting` and the latest report through
 `playback_delay_tenths_ms`. The latter preserves the big-endian 16-bit value in
 0.1 ms units; null means no report. It describes earbud-reported delay, not the
 whole Windows-to-sound path or the current AACP buffer target. See
@@ -255,8 +239,7 @@ connects millisecond targets to this control and has an AACP implementation
 that writes a four-byte little-endian value. Its host mode table includes
 discrete targets from 30 to 300, and separate configuration paths send 500.
 The inspected macOS getter reads cached host state; no remote read request was
-established. Neither 150 as a universal default nor a reported AVDTP delay as
-the original buffer target is justified.
+established. The original buffer target and any universal default remain unknown.
 USBPods defines [90/60 ms gaming profiles](https://github.com/wasdwasd0105/USBPods-Pico2W/blob/6286ab1618ec1143d828b1fc377d8e22c449e567/src/settings.h#L90),
 but also changes the host queue, startup priming and ELD bitrate. Its
 [playback code](https://github.com/wasdwasd0105/USBPods-Pico2W/blob/6286ab1618ec1143d828b1fc377d8e22c449e567/src/btstack/btstack_avdtp_source.c#L1426)
@@ -304,8 +287,11 @@ AAC-ELD. A cleared bit disables it. Missing or invalid records retain the existi
 Pro 3 (A3063/A3064/A3065) fallback; Pro 3 also retains its tested AAC path.
 The query uses the Windows cache without starting an over-air SDP lookup.
 
-Application requires negotiated Delay Reporting, a reported delay above 60 ms,
-compatible clock/flush drivers and at least 500 ms since Start. Unsupported models
+Application requires negotiated Delay Reporting, a reported delay above 60 ms
+and compatible clock/flush drivers. At playback start, the media channel reopens
+before the first audio packet, avoiding a second start after music becomes audible.
+The AACP target still waits until 500 ms after Start. If eligibility arrives
+during playback, the existing coordinated restart applies. Unsupported models
 and streams already reporting a shorter delay keep their receiver settings.
 
 The policy uses the coordinated transition described below: reopen with a
@@ -323,9 +309,9 @@ disconnect and volume commands remain available; another start or route change
 must wait. Newer stop or disconnect requests supersede the pending command.
 Playback can apply the policy again after a successful restoration. If that
 configuration reports zero, a session that previously completed the automatic
-adjustment may try again. The new attempt
-still needs a fresh nonzero report before changing the clock. An initial zero
-does not qualify, and a known delay of 60 ms or less clears that eligibility.
+adjustment may try again. It still needs a fresh nonzero report before changing
+the clock. An initial zero does not qualify, and a known delay of 60 ms or less
+clears that eligibility.
 A manual buffer trial disables automation for that playback session.
 
 If applying the policy fails, NTPods attempts restoration and continues ordinary
@@ -333,16 +319,18 @@ playback only after the transport is restored and re-primed. Automation stays
 disabled for that session. An uncertain media reopen or failed restoration
 stops playback with an error instead of repeatedly reconnecting.
 
-The 150 ms restore value is a policy choice, not a readback of the original
-receiver setting. Earlier 120 ms Pro 3 checks cover automatic pause/resume
-transitions with the 20 ms AAC-ELD reserve and restoration before microphone
-capture; see the [hardware results](WINDOWS-VALIDATION.md#earbud-buffer-control).
+The 150 ms restore value is a policy choice; no remote readback confirms it.
+Hardware coverage uses Pro 3 firmware 9A348 and Intel AX200:
 
-With NTPods 0.2.40 on Windows, Pro 3 firmware 9A348 and Intel AX200, the listener
-confirmed clean AAC-ELD playback in both ears with unchanged volume. The automatic
-60 ms request was logged; no new end-to-end acoustic latency measurement was
-made. Microphone transitions under the 60 ms policy, sustained use, loaded-system
-behavior and other models still need hardware checks.
+| Policy and version | Recorded coverage |
+| --- | --- |
+| 60 ms, NTPods 0.2.40 | Clean AAC-ELD in both ears, unchanged volume and the automatic request logged |
+| Earlier 120 ms, 0.2.35 preview with zero-report resume fix | Pause/resume and restoration before microphone capture; AAC-ELD Variable at 256 kbps peak, 20 ms source reserve |
+
+These listening checks do not measure end-to-end latency or confirm the remote
+buffer setting. Microphone transitions under the 60 ms policy, sustained use,
+system load and other models still need hardware checks. See
+[validation](WINDOWS-VALIDATION.md#earbud-buffer-control) for detailed conditions.
 
 ### Buffer trial
 
@@ -399,14 +387,12 @@ requests restoration when it exits. It plays no audio and does not adjust volume
 pwsh -File windows/playback/test-buffer.ps1 -TargetMs 60 -RestoreMs 150
 ```
 
-Here 150 is an explicit chosen restore target, not a discovered default. The
-trial keeps the same Windows output, codec, bitrate, packet grouping and selected
-source reserve (AAC-ELD: 20 ms; AAC: 30 ms by default). A flush timeout limits
+The trial keeps the same Windows output, codec, bitrate, packet grouping and
+selected source reserve (AAC-ELD: 20 ms; AAC: 30 ms by default). A flush timeout limits
 packet lifetime; it is not a fixed delay.
-Coordinated AAC and AAC-ELD trials passed short Pro 3 listening checks; see the
-[hardware results](WINDOWS-VALIDATION.md#earbud-buffer-control) for versions and
-conditions. The listening checks establish neither a numerical latency reduction
-nor exact earbud-buffer restoration.
+See [validation](WINDOWS-VALIDATION.md#earbud-buffer-control) for short Pro 3
+AAC/AAC-ELD listening checks and their limits. Numerical latency reduction and
+exact earbud-buffer restoration remain unverified.
 
 ### Playback clock interface
 

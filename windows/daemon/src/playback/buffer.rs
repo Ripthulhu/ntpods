@@ -42,16 +42,17 @@ struct Shared {
 }
 
 impl Shared {
-    fn can_automate(&self, now: Instant) -> bool {
+    fn can_automate(&self, now: Instant, starting: bool) -> bool {
         !self.busy
             && !self.closing
             && !self.owner_done
             && !self.restore_failed
             && !self.automatic_disabled
             && self.automatic_holds == 0
-            && self
-                .started
-                .is_some_and(|started| now.duration_since(started) >= SETTLE)
+            && match self.started {
+                None => starting,
+                Some(started) => now.duration_since(started) >= SETTLE,
+            }
     }
 
     fn queue(&mut self, request: Request) {
@@ -372,9 +373,15 @@ impl Stream {
         }
     }
 
+    pub fn prepare(&mut self, session: &mut Session, render: &Render) -> io::Result<()> {
+        // Reopen before the first media packet, not after audible playback begins.
+        self.queue_automatic(session, true);
+        self.poll(session, render).map(|_| ())
+    }
+
     /// Returns true when media was reopened and the caller must re-prime/start.
     pub fn poll(&mut self, session: &mut Session, render: &Render) -> io::Result<bool> {
-        self.queue_automatic(session);
+        self.queue_automatic(session, false);
         let result = self.poll_inner(session, render);
         if let Err(error) = &result {
             // The owner publishes stopping before cleanup. Completing here
@@ -424,15 +431,15 @@ impl Stream {
         result
     }
 
-    fn queue_automatic(&mut self, session: &Session) {
+    fn queue_automatic(&mut self, session: &Session, starting: bool) {
         let now = Instant::now();
-        if now < self.next_automatic {
+        if !starting && now < self.next_automatic {
             return;
         }
         self.next_automatic = now + SETTLE;
         let _preference = self.ctx.mic_preference.lock().unwrap();
         let mut shared = self.active.shared.lock().unwrap();
-        if !shared.can_automate(now) || !self.current() {
+        if !shared.can_automate(now, starting) || !self.current() {
             return;
         }
         let mut state = self.ctx.state.lock().unwrap();
@@ -1360,27 +1367,69 @@ mod tests {
     }
 
     #[test]
+    fn automatic_setup_can_precede_audio_without_bypassing_session_guards() {
+        let now = Instant::now();
+        let mut shared = Shared::default();
+        assert!(!shared.can_automate(now, false));
+        assert!(shared.can_automate(now, true));
+        shared.queue(automatic());
+        assert!(!shared.can_automate(now, true));
+        shared.started = Some(now);
+        assert!(!shared.can_automate(now + SETTLE, false));
+        shared.busy = false;
+        assert!(!shared.can_automate(now, true));
+        assert!(shared.can_automate(now + SETTLE, false));
+        // A pause clears started; resuming prepares again before sending audio.
+        shared.started = None;
+        assert!(shared.can_automate(now, true));
+        for blocked in [
+            Shared {
+                closing: true,
+                ..Default::default()
+            },
+            Shared {
+                owner_done: true,
+                ..Default::default()
+            },
+            Shared {
+                restore_failed: true,
+                ..Default::default()
+            },
+            Shared {
+                automatic_disabled: true,
+                ..Default::default()
+            },
+            Shared {
+                automatic_holds: 1,
+                ..Default::default()
+            },
+        ] {
+            assert!(!blocked.can_automate(now, true));
+        }
+    }
+
+    #[test]
     fn automatic_work_reapplies_after_stop_but_not_after_failure() {
         let now = Instant::now();
         let mut shared = Shared::default();
-        assert!(!shared.can_automate(now));
+        assert!(!shared.can_automate(now, false));
         shared.started = Some(now);
-        assert!(!shared.can_automate(now + SETTLE - Duration::from_millis(1)));
-        assert!(shared.can_automate(now + SETTLE));
+        assert!(!shared.can_automate(now + SETTLE - Duration::from_millis(1), false));
+        assert!(shared.can_automate(now + SETTLE, false));
         shared.queue(automatic());
-        assert!(!shared.can_automate(now + SETTLE));
+        assert!(!shared.can_automate(now + SETTLE, false));
         shared.busy = false;
         shared.started = None;
-        assert!(!shared.can_automate(now + SETTLE));
+        assert!(!shared.can_automate(now + SETTLE, false));
         shared.started = Some(now + SETTLE);
-        assert!(shared.can_automate(now + SETTLE * 2));
+        assert!(shared.can_automate(now + SETTLE * 2, false));
         shared.automatic_disabled = true;
-        assert!(!shared.can_automate(now + Duration::from_secs(3600)));
+        assert!(!shared.can_automate(now + Duration::from_secs(3600), false));
         let fresh = Shared {
             started: Some(now),
             ..Default::default()
         };
-        assert!(fresh.can_automate(now + SETTLE));
+        assert!(fresh.can_automate(now + SETTLE, false));
     }
 
     #[test]
@@ -1411,14 +1460,14 @@ mod tests {
         pause.wait_for(Duration::from_secs(2)).unwrap();
         worker.join().unwrap();
         assert!(!pause.is_pending());
-        assert!(!active.shared.lock().unwrap().can_automate(Instant::now()));
+        assert!(!active.shared.lock().unwrap().can_automate(Instant::now(), false));
         let nested = begin_pause(active.clone()).unwrap();
         assert!(!nested.is_pending());
         nested.wait_for(Duration::ZERO).unwrap();
         drop(pause);
-        assert!(!active.shared.lock().unwrap().can_automate(Instant::now()));
+        assert!(!active.shared.lock().unwrap().can_automate(Instant::now(), false));
         drop(nested);
-        assert!(active.shared.lock().unwrap().can_automate(Instant::now()));
+        assert!(active.shared.lock().unwrap().can_automate(Instant::now(), false));
     }
 
     #[test]

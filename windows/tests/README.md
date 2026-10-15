@@ -83,6 +83,10 @@ event-pipe loss, discarded queued commands, and shutdown waiting for recovery
 and process exit. A timeout must leave the test backend alive. These fixtures
 never use NTPods' installed pipes or connect to Bluetooth.
 
+Backend IPC tests use unique Windows pipe names to check ownership, rejection of
+pre-existing pipes, and reconnection after the first client closes. They run with
+the backend tests in the complete build.
+
 `dotnet run --project windows/tests/DeviceSettings --configuration Release`
 also checks rename byte limits and reply correlation, real heart-rate timestamps,
 unchanged BPM samples, stale readings, and gaps without invented samples.

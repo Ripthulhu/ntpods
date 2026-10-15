@@ -15,6 +15,31 @@ param(
     [string]$Version
 )
 $ErrorActionPreference = 'Stop'
+function Get-BuildSourceIdentity([string]$Repository) {
+    $commit = & git -C $Repository rev-parse HEAD
+    if ($LASTEXITCODE) { throw 'Cannot identify the source commit.' }
+    $status = @(& git -C $Repository status --porcelain --untracked-files=all)
+    if ($LASTEXITCODE) { throw 'Cannot identify source changes.' }
+    $paths = @(& git -C $Repository -c core.quotePath=false ls-files --cached --others --exclude-standard)
+    if ($LASTEXITCODE) { throw 'Cannot enumerate source files.' }
+    $sources = @(foreach ($path in $paths | Sort-Object -CaseSensitive -Unique) {
+        $file = Join-Path $Repository $path
+        if (Test-Path -LiteralPath $file -PathType Leaf) {
+            [pscustomobject][ordered]@{ path = $path; sha256 = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash }
+        }
+    })
+    [pscustomobject][ordered]@{ commit = $commit; dirty = [bool]$status.Count; status = $status; sources = $sources }
+}
+
+function Assert-BuildSourceUnchanged([string]$Repository, $Identity) {
+    $current = Get-BuildSourceIdentity $Repository
+    if (($Identity | ConvertTo-Json -Depth 4 -Compress) -cne ($current | ConvertTo-Json -Depth 4 -Compress)) {
+        throw 'Source changed during the build. Rebuild before packaging.'
+    }
+}
+
+$repo = Split-Path -Parent $PSScriptRoot
+$sourceIdentity = Get-BuildSourceIdentity $repo
 & python.exe (Join-Path $PSScriptRoot 'tests/test-localization.py')
 if ($LASTEXITCODE) { throw 'Localization checks failed.' }
 & python.exe (Join-Path $PSScriptRoot 'tests/test-aap-extract.py')
@@ -22,9 +47,9 @@ if ($LASTEXITCODE) { throw 'AAP extraction checks failed.' }
 & python.exe (Join-Path $PSScriptRoot 'tests/test-pfc-decode.py')
 if ($LASTEXITCODE) { throw 'PFC decoding checks failed.' }
 & (Join-Path $PSScriptRoot 'tests\test-build-version.ps1')
+& (Join-Path $PSScriptRoot 'tests\test-build-source.ps1')
 & (Join-Path $PSScriptRoot 'playback\test-buffer.ps1') -SelfTest
 & (Join-Path $PSScriptRoot 'tests\test-bluetooth-host-identity.ps1')
-$repo = Split-Path -Parent $PSScriptRoot
 $Out = [IO.Path]::GetFullPath($Out)
 $uiVersionArguments = @()
 $msiVersionArguments = @{}
@@ -159,15 +184,16 @@ try {
     & windows/installer/msi/test-startup.ps1 -Msi (Join-Path $Out 'NTPods-experimental.msi')
     $manifest = [ordered]@{
         baseline = '188e45df20259b616ce155be812086259d1a2488'
-        commit = (& git rev-parse HEAD)
-        dirty = [bool](& git status --porcelain)
+        commit = $sourceIdentity.commit
+        dirty = $sourceIdentity.dirty
         rust = (& $cargo --version)
         dotnet = (& dotnet --version)
         sdkWdk = '10.0.26100.0'
         signing = 'unsigned-development-package'
         msi = @{ path = 'NTPods-experimental.msi'; sha256 = (Get-FileHash -LiteralPath (Join-Path $Out 'NTPods-experimental.msi') -Algorithm SHA256).Hash }
-        sources = @(& git -c core.quotePath=false ls-files --cached --others --exclude-standard | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | ForEach-Object { @{ path = $_; sha256 = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash } })
+        sources = $sourceIdentity.sources
         files = @(Get-ChildItem (Join-Path $Out 'dist') -Recurse -File | ForEach-Object { @{ path = $_.FullName.Substring($Out.Length + 1); sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash } })
     }
+    Assert-BuildSourceUnchanged $repo $sourceIdentity
     $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $Out 'build-manifest.json') -Encoding UTF8
 } finally { $env:PATH = $oldPath; Pop-Location }

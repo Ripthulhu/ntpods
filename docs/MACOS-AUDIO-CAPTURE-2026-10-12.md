@@ -1,25 +1,24 @@
 # Tahoe audio protocol findings
 
-Evidence: captured on 2026-10-12 and 2026-10-14 with AirPods Pro 3 firmware 9A348,
-Tahoe 26.7.1 (25G241), and the patched Intel AX200 VM
-described in the [capture guide](MACOS-PROTOCOL-CAPTURE.md). The October 12 capture used CVSD
-hands-free capture and Apple AAC-ELD playback. It did not exercise the AACP
-microphone route used by NTPods.
+Evidence: AirPods Pro 3 firmware 9A348, Tahoe 26.7.1 (25G241), and the Intel
+AX200 VM in the [capture guide](MACOS-PROTOCOL-CAPTURE.md). The 2026-10-12 traces
+contain CVSD hands-free capture and Apple AAC-ELD playback. The 2026-10-14 trace
+contains an AAC-ELD gaming transition with experimental host eligibility patches.
+Neither exercises NTPods' AACP microphone route.
 
 ## Capture scope
 
-The first session contains pairing and profile setup; the second contains the
-microphone check. They have 15,329 and
-12,322 frames respectively, with no capture drops or truncated frames. The
-second trace starts mid-connection, so decoding it alone misses dynamic channel
-bindings. Analysis merged both traces chronologically and forced Bluetooth
-decoding for the verified USB controller. Its first 15,329 frames belong to
-the pairing session; subtract 15,329 from later merged frame numbers to locate
-them in the original microphone trace.
+The October 12 pairing/profile trace has 15,329 frames; the microphone trace
+has 12,322. Neither has capture drops or truncated frames. The microphone trace
+starts mid-connection and needs the pairing trace's dynamic channel bindings.
+Merge them chronologically and force Bluetooth decoding for the verified USB
+controller. The first 15,329 merged frames belong to pairing; subtract 15,329
+from later frame numbers to locate them in the original microphone trace.
 
 Complete CaseInfo `0x23` and certificate `0x27` packets needed empty-tail guards
 in the pinned Lua dissector. HFP and AVDTP decoding was unaffected; see
 [capture limits](MACOS-CASE-CAPTURE-2026-10-12.md#capture-quality-and-limits).
+Keep raw traces, merged captures and unredacted logs outside Git.
 
 ## Microphone and return to playback
 
@@ -39,12 +38,11 @@ codec identification comes from HFP negotiation and the HCI connection event.
 | Start accepted | 21:28:16.010 | 11513 |
 | First subsequent RTP packet | 21:28:16.099 | 11547 |
 
-No AACP `0x58` start, stop or uplink appears. The ACL connection and configured
-AAC-ELD playback channel remain present across microphone use. Later playback
-starts on that channel without codec reconfiguration. Playback was started
-separately, so the gap before Start is not a recovery-delay measurement. This
-run also does not verify simultaneous stereo playback during capture or acoustic
-channel separation afterward.
+No AACP `0x58` start, stop or uplink appears. The ACL connection and AAC-ELD
+channel survive microphone use; later playback starts without reconfiguration.
+Playback was started separately, so the gap before Start does not measure
+recovery delay. Simultaneous stereo playback during capture and acoustic channel
+separation afterward remain unverified.
 
 ## AAC-ELD playback comparison
 
@@ -66,14 +64,12 @@ its encoder separately, so that field is not the measured stream bitrate.
 Guest encoder logs report `delayMode=1` and `mCodecDelay=240` samples. These are
 encoder properties, not a measured end-to-end delay. The trace did not establish
 the encoder's AudioSpecificConfig, SBR setting or a minimum playback buffer.
-The timestamp and packet-grouping differences warrant further decoding; this
-capture does not establish that NTPods' hardware-tested packet format is wrong.
-
-Raw traces, merged captures and unredacted logs remain outside Git.
+The timestamp and grouping differences remain unresolved; this capture does not
+establish an error in NTPods' hardware-tested packet format.
 
 ## Delay reporting and low-latency mode
 
-The pairing trace separates delay reporting from buffer control:
+Ordinary AVDTP reports delay in big-endian tenths of a millisecond:
 
 | Frame | Direction | Observation |
 | --- | --- | --- |
@@ -82,24 +78,21 @@ The pairing trace separates delay reporting from buffer control:
 | 5204 | Buds to host | DelayReport addresses host SEID 6 and carries `05 DC`: 1,500 units of 0.1 ms, or 150 ms |
 | 5215 | Host to buds | Accepts the report, before the Open response at frame 5221 |
 
-macOS logs add 30 ms of RTP packet grouping to the 150 ms sink report and expose
-180 ms to the audio system. This accounting does not measure acoustic latency
-or identify how much of the sink delay is an adjustable buffer. The merged
-pairing/microphone trace contains one report and its acknowledgement; it has no
-AACP control `0x0B` or later delay report during microphone use or resumed
-playback. That microphone session used CVSD/HFP, not NTPods' AACP uplink.
+macOS adds 30 ms of RTP packet grouping to the 150 ms sink report and exposes
+180 ms to the audio system. This does not measure acoustic latency or identify
+the adjustable part of the sink delay. The October 12 pairing/microphone traces
+contain one report and acknowledgement, with no AACP control `0x0B` or later
+report during CVSD/HFP capture or resumed playback.
 
-The guest logs report low-latency gaming support as local `0`, remote `1`, and
-reject dynamic latency as unsupported. This establishes a host-side restriction
-in this VM; it does not establish the command sequence for entering that mode.
+The unpatched gaming checks report local support `0`, remote support `1`, and
+reject dynamic latency. This establishes a host restriction in this VM.
 [Apple requires Apple silicon for Mac Game Mode](https://support.apple.com/en-us/105118).
-The later transition below used an experimental eligibility patch in the Intel VM.
 
 ### Working gaming transition
 
-On 2026-10-14, a capture with the local gaming and dynamic-latency checks patched
-recorded a complete transition during audible AAC-ELD playback. The listener
-reported clean audio when entering and leaving gaming mode.
+The October 14 capture, with local gaming and dynamic-latency checks patched,
+records entry to and exit from gaming mode during audible AAC-ELD playback.
+The listener reported clean audio in both transitions.
 
 | Value | Gaming | Restored |
 | --- | --- | --- |
@@ -109,23 +102,21 @@ reported clean audio when entering and leaving gaming mode.
 | HCI Automatic Flush Timeout (`0x0C28`) | 96 slots / 60 ms | 320 slots / 200 ms |
 | AAC-ELD frames per RTP packet | Two 10 ms frames | Three 10 ms frames |
 
-The target command was followed by the earbuds' report, then the controller
-timeout update. Both timeout commands succeeded. All 2,632 RTP packets and
-their access-unit sequences were continuous, with no AVDTP Suspend or Close.
+Each target command precedes the earbuds' report and controller timeout update.
+Both timeout commands succeeded. All 2,632 RTP packets and their access-unit
+sequences were continuous, with no AVDTP Suspend or Close.
 Gaming packets averaged 19.968 ms apart; the maximum interval was 21.808 ms.
 The host requested 22 ms of clock adjustment entering gaming and 60 ms leaving
-it, matching the calculation in the next sections.
+it, matching the [audio adjustment calculation](#coordinated-audio-adjustment).
 
-The AX200 did not support Apple's vendor priority helpers, and no vendor HCI
-commands were transmitted. Standard timeout control was sufficient for this
-run. The capture starts after connection setup, so it cannot establish whether
-PFC was used. Requested buffer, reported delay and completed HAL target are
-distinct; none is an acoustic latency measurement. Restoration while idle or
-suspended is not established by this active-playback capture.
+The AX200 lacked Apple's vendor priority helpers; no vendor HCI commands were
+transmitted. Standard timeout control sufficed for this run. Capture began after
+connection setup, so PFC use is unknown. Requested buffer, reported delay and HAL
+target are distinct, and none measures acoustic latency. Restoration while idle
+or suspended remains unverified.
 
-NTPods retains one-frame AAC-ELD packets and a 20 ms source reserve. Its Windows
-profile driver must reopen media to change the flush timeout; the supported
-channel-update interface has no timeout field. See the
+For NTPods packet grouping, source reserve and the Windows requirement to reopen
+media when changing flush timeout, see the
 [Windows policy](WINDOWS-AUDIO-LATENCY.md#automatic-receiver-buffer-policy).
 
 ### Buffer-control encoding in the saved daemon
@@ -146,53 +137,36 @@ Addresses below are unslid virtual addresses for this build.
 | `0x100498CCB` → `0x1005A8460` → `0x1000469A6` → `0x100046A58` | Bluetooth path of `GetAdaptiveLatencyJitterBufferLevel` returns a cached host audio-object value at `+0x10`; it sends no read request |
 | `0x1002A1DD0` | Incoming control dispatcher routes `0x0B` to `Unsupported control type` at `0x1002A269C` |
 
-The mode table contains targets 30, 60, 80, 100, 120, 140, 150 and 300; 500
-appears in separate configuration paths. These are host implementation values;
-the capture does not show the earbuds accepting them. The common sender
-dispatches through a device-specific implementation. Predicate `0x1002948AA`
-checks specific product IDs and firmware versions for some configuration paths;
-it is not a complete modern-model support list. The inspected code establishes
-the available AACP encoding and intended units, without proving every model
-supports it.
+The mode table contains 30, 60, 80, 100, 120, 140, 150 and 300 ms; separate
+configuration paths use 500 ms. The sender dispatches through a device-specific
+implementation. Predicate `0x1002948AA` checks product IDs and firmware in some
+paths and is not a complete modern-model support list. Only the 60/150 ms
+transition above has capture evidence here.
 
-For control `0x0B`, that serializer produces body `09 00 0B 3C 00 00 00` for
-60 and `09 00 0B 2C 01 00 00` for 300. A decoder that reads only the first
-value byte would misread the latter as 44. These examples exclude the outer
-AACP header and are derived from code, not observed writes in this capture.
-Neither 30 as a usable minimum nor 150 as every device's original setting is
-verified. The cached getter and incoming dispatcher do not establish a remote
-readback command, and an AVDTP DelayReport does not identify the AACP target.
-NTPods' [temporary buffer trial](WINDOWS-AUDIO-LATENCY.md#earbud-delay-and-buffer-control)
-therefore requires an explicit restoration value. A completed send confirms
-neither application by the earbuds nor return to their original setting.
+The serializer produces body `09 00 0B 3C 00 00 00` for 60 ms and
+`09 00 0B 2C 01 00 00` for 300 ms, excluding the outer AACP header. These
+examples derive from code; 300 ms has no observed write here. Reading only the
+first value byte would misread 300 as 44. A usable 30 ms minimum and a universal
+150 ms original setting remain unverified.
+
+The cached getter and incoming dispatcher establish no remote readback command.
+An AVDTP DelayReport does not identify the AACP target. NTPods'
+[temporary buffer trial](WINDOWS-AUDIO-LATENCY.md#earbud-delay-and-buffer-control)
+requires an explicit restoration value; a completed send confirms neither
+application by the earbuds nor restoration of their original setting.
 
 ### Profile Fast Connect delay metadata
 
-Apple Profile Fast Connect (PFC) exchanges profile configurations and channel
-parameters during setup. Apple's [protocol description](https://patents.google.com/patent/US20190373430A1/en)
-includes AVDTP delay parameters; [ToothPicker, appendix A.1.2](https://www.usenix.org/system/files/woot20-paper-heinze.pdf)
-describes discovery over L2CAP Echo followed by configuration on a dynamic channel.
+PFC A2DP descriptor `0x12` reports delay as LE16 tenths of a millisecond.
+Three case/wear connections contain complete PFC setup; frame 927 in the first
+carries `12 02 DC 05` (150 ms). See the [PFC reference](APPLE-FAST-CONNECT.md#a2dp-descriptors)
+for decoder addresses, byte order, the shared AVDTP latency setter and sources.
+NTPods uses ordinary negotiated AVDTP reporting.
 
 A [public Pro 2 text export](https://github.com/BorgoGustavo/airpods-ctl/blob/b42f4e8a944d39fdd9fa25533ae262bf647ddb3b/docs/captures/2026-08-31-open-and-set-mode.txt)
 shows PFC discovery, a 200 ms flush timeout, then a PFC-labelled Delay Report
 and acceptance before ordinary AVDTP setup. It includes no bytes for that
 signal or Game Mode transition.
-
-The saved Tahoe daemon above contains a separate PFC A2DP descriptor path:
-
-| Address | Observation |
-| --- | --- |
-| `0x100454372`, dispatch table `0x100454A1C` | Descriptor key `0x12` selects a 16-bit delay reader at `0x100454547` |
-| `0x100454547` | Logs tenths of a millisecond, multiplies by 100, and calls stream-latency setter `0x100482D10` |
-| `0x10044F7FA`–`0x10044F85F` | Ordinary AVDTP Delay Report callback converts the same units and calls the same setter |
-
-Three saved case/wear connections contain complete PFC setup. In the first,
-frame 927 carries A2DP descriptor `12 02 DC 05`, reporting 150 ms. Nested
-descriptor readers use little-endian integers; construction at
-`0x1006AE2FD` and helper `0x1004F182E` confirm the byte order. The
-[PFC reference](APPLE-FAST-CONNECT.md) documents the exchange, endpoint
-selection and Windows API limits. This is delay metadata; NTPods continues
-to use ordinary negotiated AVDTP reporting.
 
 ### Game Mode capability checks
 
@@ -210,11 +184,10 @@ publishing low-latency gaming support:
 | Constructor `0x100339650` | Installs controller table `0x100AB5950`; slot `+0xB48` resolves to `0x10033BBDC` |
 | `0x10033BBDC` | Reads chipset enum `+0x334`; accepts 23–1999 or 3000–3999 and rejects zero |
 
-The captured AX200 uses chipset zero (`THIRD_PARTY_DONGLE`), so it fails this
-host check regardless of the feature flag's live value. Advertising an Apple
-identity to the earbuds does not change that macOS controller classification.
-This explains a software restriction in the guest; it does not establish a
-physical latency limit for the AX200 under Windows.
+The AX200 uses chipset zero (`THIRD_PARTY_DONGLE`) and fails the unpatched host
+check regardless of the feature flag. Advertising an Apple identity to the buds
+does not change this classification. The check establishes a guest software
+restriction, not an AX200 physical latency limit under Windows.
 
 The Pro 3 pairing capture's frame 4760 contains SDP attribute `0xA001` with
 value bytes `00 00 00 00 08 7C 7C 1B`. A separate pairing capture's frame 878
@@ -230,10 +203,9 @@ by 32 bits. The captured value becomes `0x087C7C1B00000000`, matching PFC.
 Internal bit 52 corresponds to bit 20 (`0x00100000`) of this canonical SDP
 value's low half. This mapping is specific to the inspected representation.
 
-Cached/iCloud data can also fill that word. Internal query `0x31` is not
-bit 49 of the outgoing AACP feature declaration. These checks establish
-eligibility conditions; they do not establish the complete Game Mode transition
-or a safe controller override.
+Cached/iCloud data can also fill that word. Internal query `0x31` is not bit 49
+of the outgoing AACP feature declaration. These checks establish eligibility;
+they do not establish the safety of a controller override.
 
 ### Coordinated audio adjustment
 
@@ -281,12 +253,12 @@ Completion clears the active state and sends XPC message 14 with status true
 does not prove that the desired drift was achieved. The daemon's completion
 handler at `0x100453466` then restores multiplier 1.0 with zero adjustment and
 clears its transition flag. The two-second timer only bounds the earlier report
-wait. No live transition was captured in the capability-limited VM.
+wait. Live transition evidence is limited to the patched October 14 capture.
 
 Controller flush timing is separate. Function `0x10044F910` selects 60 ms for
 target 30, the matching timeout for targets 60/80/100/120/140, normally 200 ms
 for target 150, and 300 ms for target 300. Platform checks can skip the controller
-write. No supported Windows runtime equivalent was established.
+write. The Windows profile driver's channel-update interface has no timeout field.
 
 Sending `0x0B` alone therefore does not reproduce this host transition. Slowing
 NTPods' packet loop without coordinating its Windows PCM producer could move
@@ -296,16 +268,14 @@ it is not confirmation that the requested target has been reached.
 
 ## Intel controller and microphone eligibility
 
-At capture time, the VM loaded IntelBTPatcher 2.5.1, BlueToolFixup 2.7.2 and
-Lilu 1.7.2.
+The VM loaded IntelBTPatcher 2.5.1, BlueToolFixup 2.7.2 and Lilu 1.7.2.
 Setup records identify IntelBTPatcher as the
 [lshbluesky 2.5.1 release](https://github.com/lshbluesky/IntelBluetoothFirmware/releases/tag/v2.5.1),
-whose source includes the upstream Tahoe changes and later BLE fixes. This is
-release provenance, not an independent hash check of the running kext.
-The captured IORegistry showed the AX200NativeComposite personality active.
-IntelBluetoothFirmware was disabled in the saved config and was not loaded;
-the passed-through controller had running firmware. The captured Bluetooth
-NVRAM values matched the [BlueToolFixup instructions](https://github.com/acidanthera/BrcmPatchRAM/blob/2.7.2/README.md#bluetoolfixupkext),
+whose source includes upstream Tahoe changes and later BLE fixes; the running
+kext was not independently hashed. IORegistry showed AX200NativeComposite
+active. IntelBluetoothFirmware was disabled in the saved config and not loaded;
+the passed-through controller already had firmware. Bluetooth NVRAM matched the
+[BlueToolFixup instructions](https://github.com/acidanthera/BrcmPatchRAM/blob/2.7.2/README.md#bluetoolfixupkext),
 including 14 zero bytes for `bluetoothInternalControllerInfo`.
 
 System Information reported `THIRD_PARTY_DONGLE`. Captured controller logs classify

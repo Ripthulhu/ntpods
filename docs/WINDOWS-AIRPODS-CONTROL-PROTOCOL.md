@@ -1,8 +1,8 @@
 # AirPods control, battery and sensor protocol
 
 This reference describes NTPods' reverse-engineered Windows implementation.
-Packet offsets are zero-based; hex values
-have a `0x` prefix. `H → B` means host to buds and `B → H` means buds to host.
+Packet offsets are zero-based; hex values have a `0x` prefix. `H → B` means host
+to buds and `B → H` means buds to host.
 
 “Implemented” below means the code constructs or accepts that format. Hardware
 evidence is listed separately, by model and firmware. A successful Bluetooth write
@@ -132,11 +132,10 @@ invalidate old write completions. A timeout means unconfirmed, not rejected.
 
 Adaptive strength and Pro 3 Allow Off can apply without an immediate echo. Their
 successfully sent values are stored as requests, without inventing a report.
-Adaptive strength requires a confirmed Adaptive listening mode. Pro 3/9A348
-reconnect reports were coarse (0, 50, 100); that observation did not establish
-three audible levels. The current app sends the full 0–100 range and listening checks
-confirmed an audible effect. A macOS comparison should retain both the requested
-value and each later report.
+Adaptive strength requires a confirmed Adaptive listening mode. NTPods sends the
+full 0–100 range. Strength changes were audible on Pro 3/9A348, but reconnect
+reports were coarse (0, 50, 100); these do not establish three audible levels.
+Keep requested values and device reports separate in capture comparisons.
 
 EQ mode `1` is recommended sound; mode `2` selects custom low/mid/high values,
 each `0..100`. The implementation requires a matching EQ-capable profile and
@@ -246,12 +245,12 @@ case is currently charging if its case slot is absent.
 RTBuddy packets begin `04 00 04 00 17 00 00 00 10 00`, then a little-endian
 16-bit payload length and protobuf-like fields. Both decoders reassemble split
 frames and bound payloads to 16 KiB. [rtbuddy.rs](../windows/daemon/src/rtbuddy.rs)
-parses descriptor announcements with bounded field counts and dictionary lengths. Parse nested fields rather than fixed offsets
-into an entire Bluetooth packet; sequence varints and wrappers change its size.
+parses descriptor announcements with bounded field counts and dictionary lengths.
+Parse nested fields; sequence varints and wrappers change packet offsets.
 
 Head tracking uses [head_tracking.rs](../windows/daemon/src/head_tracking.rs).
 A recognized device descriptor selects the native path described below. Without
-one, the firmware fallback uses this format. The outgoing payload is field 1 sequence, field 8 ServiceSettings containing
+one, the firmware fallback sends field 1 sequence and field 8 ServiceSettings:
 field 1 service, field 2 value `2`, field 3 five bytes `01 period_us_LE32`.
 Period 40,000 µs starts reporting; zero stops it. Public firmware major 8+ uses
 service `16`, older recognized firmware service `14`. A received sample requires
@@ -265,19 +264,19 @@ connection loss or a five-second sample timeout. The fallback publishes at most 
 per second. Service 14's shorter activity records do not count as head movement.
 
 The [native macOS comparison](MACOS-CASE-CAPTURE-2026-10-12.md#native-head-tracking-comparison)
-uses service 16, first writing feature report `04 01 00 00 00` (Maximum FIFO
+uses service 16. Start writes feature report `04 01 00 00 00` (Maximum FIFO
 Events = 1), then `01 20 4E 00 00` (interval 20,000). Stop writes FIFO value
-10 followed by interval zero. Captured reports arrive at about 50 Hz in a
-different envelope: top-level field 3, a two-byte service prefix and 56 bytes
-of report data. Log type 5 also carries a two-byte trailer after the protobuf.
-A final field-7 report contains 56 bytes. NTPods accepts both native forms after
-matching the announced `devmotion6` HID layout, strips the service prefix and
-log-5 trailer, then reads report-relative raw channels at offsets 28 and 30.
-Windows Pro 3 firmware 9A348 also sends a 60-byte packed field: the two-byte
-service prefix followed by a 58-byte report. The A3063 primary used log type 1;
-the A3064 primary used type 3. Neither Windows form had the log-5 trailer.
-Those channels remain uncalibrated. It uses the captured 50 Hz/FIFO sequence only
-for that descriptor; other firmware keeps the existing 25 Hz commands. The FIFO
+10, then interval zero. Reports arrive at about 50 Hz:
+
+| Source | Envelope | Report data |
+| --- | --- | --- |
+| macOS | Top-level field 3: two-byte service prefix + 56 bytes; log type 5 adds a two-byte trailer after the protobuf | 56 bytes; also seen in a final field-7 report |
+| Windows Pro 3 / 9A348 | 60-byte packed field: two-byte service prefix + 58 bytes; no log-5 trailer | A3063 primary: log type 1; A3064 primary: log type 3 |
+
+NTPods accepts these forms after matching the announced `devmotion6` HID layout.
+It strips the service prefix and log-5 trailer before reading raw channels at
+report offsets 28 and 30. The channels remain uncalibrated. Only that descriptor
+uses the 50 Hz/FIFO sequence; other firmware keeps the 25 Hz commands. The FIFO
 setting's effect on latency remains unmeasured.
 
 Heart rate uses [hr.rs](../windows/daemon/src/hr.rs), `aap::hr_stream`, and
@@ -307,19 +306,18 @@ from fixed service labels in the community dissector. Its HeartRate HID
 descriptor confirms the 18-byte report and BPM at byte 1; the confidence and
 status interpretations above still depend on observed records. SPL0's report
 framing is known, but its vendor-defined fields have no established decibel
-scale. Neither sensor descriptor is itself a live sample. NTPods recognizes the captured
-`devmotion6` and `HeartRate` dictionary/layout pairs and discovers their report
-service IDs. Heart-rate activation still uses the separately tested IDs 84/19.
-A restarted descriptor sequence or mapping change clears partial sensor data and
-queues recovery of user-enabled streams on the existing channel. Disabling a
-sensor cancels that intent; discovery cannot re-enable it.
-When a discovered motion address changes, NTPods retires the old address without
-writing to it. A withdrawn mapping waits for a new descriptor; firmware fallback
-remains available when no native mapping has been discovered.
-The receiver only queues refreshes; the sensor worker takes the control locks
-and sends the commands. New mappings replace queued older mappings. Heart-rate
-refreshes retain the user's request generation and cannot restart an active
-enable campaign in response to that campaign's own descriptor announcements.
+scale. A descriptor is not a live sample. NTPods recognizes the captured
+`devmotion6` and `HeartRate` dictionary/layout pairs to discover report service
+IDs; heart-rate activation still uses the separately tested IDs 84/19.
+
+Descriptor restarts or mapping changes clear partial sensor data and queue
+recovery of user-enabled streams on the existing channel. Disabled sensors stay
+disabled. NTPods retires changed motion addresses without writing to them; a
+withdrawn mapping waits for a new descriptor. Firmware fallback applies only when
+no native mapping has been discovered. The sensor worker sends queued refreshes under the control
+locks; newer mappings replace queued older ones. Heart-rate refreshes retain the
+user's request generation and cannot restart an active enable campaign from its
+own descriptor announcements.
 
 An [active SPL0 probe](MACOS-CASE-CAPTURE-2026-10-12.md#active-spl0-probes)
 read and wrote feature report 1 through Tahoe's native IOHID API. The device
@@ -360,8 +358,7 @@ and its ACK instead. It exposes the float32 enable flag at offset 0 and
 per-ear amplification/tone (−1–1), Conversation Boost (0/1), and ambient-noise
 reduction (0–1) at the offsets below. It sends no settings when opened or at startup.
 The Pro family may attempt discovery; older 100-byte layouts remain unsupported.
-Pro 3 reads, writes, an audible adjustment and restoration passed with the Apple
-host identity. Persistence across reconnects remains unverified; see
+Persistence across reconnects remains unverified; see
 [hardware coverage](WINDOWS-VALIDATION.md#controls-batteries-and-sensors).
 
 Two [public listening-mode captures](https://github.com/BorgoGustavo/airpods-ctl/tree/b42f4e8a944d39fdd9fa25533ae262bf647ddb3b/docs/captures)
@@ -375,17 +372,16 @@ that mode changes alter these settings. The preservation regression uses
 distinct synthetic left/right curves, including signed zero, to check that
 editing exposed controls leaves all curve and own-voice bytes unchanged.
 
-The saved Pro 3 / 9A348 captures from Tahoe 26.7.1 (25G241) on the AX200 contain
-successful 104-byte reads of both Custom Transparency and hearing settings. The
-four hearing values are identical, with zero per-ear curves; this does not
-verify reading or retaining a fitted audiogram. In the pairing
-trace, encryption completed before ATT opened on BR/EDR PSM `0x001F`. Tahoe
-subscribed to each characteristic before reading it. Both reads were requested
-before AACP Connect; the hearing response also arrived before that exchange.
-Both reads succeeded before the buds' `0x2C`/`0x33` state reports, and the host
-sent neither hearing-enable control in that trace. This establishes that
-the Intel adapter can carry these reads. It does not establish hearing-write
-semantics.
+Pro 3 / 9A348 captures from Tahoe 26.7.1 (25G241) on AX200 contain successful
+104-byte reads of Custom Transparency and hearing settings. All four hearing
+values have identical zero per-ear curves; fitted-audiogram preservation and
+hearing-write semantics remain unverified. The pairing trace establishes:
+
+- Encryption completed before ATT opened on BR/EDR PSM `0x001F`.
+- Tahoe subscribed before reading each characteristic.
+- Both requests and the hearing response preceded AACP Connect.
+- Both reads succeeded before the buds' `0x2C`/`0x33` reports, without either
+  hearing-enable control from the host.
 
 Hearing settings use characteristic UUID `A4120005-95C5-4D6F-9098-0F0B41457E0A`.
 The captured properties are `0x16` (Read, Write Without Response, Notify).
@@ -395,8 +391,8 @@ Request (`0x12`) and requires the exact `0x13` response. A characteristic that
 advertises only Read remains readable. Each write requires matching readback;
 there is no notification consumer or fixed CCCD write.
 
-Four successful hearing reads, across connection, case and wearing captures,
-return header `02 00 60 00`. NTPods accepts this exact 104-byte layout for
+The four hearing reads across connection, case and wearing captures return
+header `02 00 60 00`. NTPods accepts this exact 104-byte layout for
 read-only display, with the same scalar and audiogram validation. It blocks
 enable and edits before sending any hearing controls. Other unknown headers
 remain unsupported. The existing formats with byte 2 equal to `0` or `0x64`
@@ -404,12 +400,16 @@ remain editable when the characteristic advertises writes. Their original
 header is preserved; the writer does not force `0x64`. No hearing-value write
 was captured, so header semantics and hardware write behavior remain unresolved.
 
-Windows 11 with AX200 and Pro 3 A3064 / 9A348 returned ATT `0x0E` for both
-values without the Apple host identity. Reads succeeded after applying it and
-restarting Windows, without re-pairing. Custom Transparency enable and per-ear
-noise reduction of `0.125` produced an audible change and matching readback;
-restoration preserved the separate hearing settings. NTPods 0.2.26 independently
-read both restored values. The Windows SDP response has not yet been captured.
+On Windows 11 with AX200 and Pro 3 A3064 / 9A348:
+
+| Condition | Observed result |
+| --- | --- |
+| Without the Apple host identity | Both values returned ATT `0x0E` |
+| Apple identity applied, Windows restarted, no re-pairing | Both reads succeeded |
+| Custom Transparency enabled, per-ear noise reduction `0.125` | Audible change and matching readback; restoration preserved the separate hearing settings |
+| NTPods 0.2.26 | Both restored values read successfully |
+
+The Windows SDP response has not been captured.
 
 In the Tahoe pairing capture, the buds requested the host's SDP Device ID before the
 first successful read; Tahoe replied with Apple vendor `0x004C` and vendor source
