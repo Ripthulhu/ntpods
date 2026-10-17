@@ -90,6 +90,9 @@ the backend tests in the complete build.
 `dotnet run --project windows/tests/DeviceSettings --configuration Release`
 also checks rename byte limits and reply correlation, real heart-rate timestamps,
 unchanged BPM samples, stale readings, and gaps without invented samples.
+Settings-save checks interrupt a write in a separate process and deny replacement
+of an existing file. The previous settings must survive, and a later save must
+succeed. All files stay in isolated temporary directories.
 Microphone policy checks cover the unchanged automatic default, delay bounds,
 pending versus confirmed choices, manual demand, the permission toggle and recovery.
 They also check microphone notifications for repeated snapshots, reconnects,

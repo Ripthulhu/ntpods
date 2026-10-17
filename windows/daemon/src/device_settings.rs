@@ -37,8 +37,11 @@ pub fn save_allow_off_choice(mac: u64, enabled: bool) -> std::io::Result<()> {
         std::io::Error::new(std::io::ErrorKind::NotFound, "LOCALAPPDATA is unavailable")
     })?;
     let path = allow_off_choice_path(Path::new(&base), mac);
-    std::fs::create_dir_all(path.parent().unwrap())?;
-    std::fs::write(path, if enabled { "true" } else { "false" })
+    let result = crate::atomic_file::write(&path, if enabled { b"true" } else { b"false" });
+    if result.is_err() {
+        crate::log("Could not save the Allow Off preference");
+    }
+    result
 }
 
 pub fn is_toggle(id: u8) -> bool {

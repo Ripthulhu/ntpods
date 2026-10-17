@@ -28,12 +28,18 @@ control connection:
 | H → B | `00 00 04 00 01 00 02 00 00 00 00 00 00 00 00 00` | AACP 1.2 handshake; wait 300 ms |
 | H → B | `04 00 04 00 4D 00 FF 00 00 00 00 00 00 00` | Feature mask; wait 300 ms |
 | H → B | `04 00 04 00 0F 00 FF FF FF FF` | Subscribe to notifications |
+| H → B | `04 00 04 00 01 00 08` | Request the capability list |
+| H → B | `04 00 04 00 24 00 02 00 01 00 10` | Identify the source as Mac |
 | H → B | `04 00 04 00 30 00 05 00` | Request keys for paired-device BLE battery reports |
 
 The `0x4D` mask enables features used by Adaptive and Conversation Awareness on
 tested devices. The meaning of every mask bit is unknown. The delays are current
 host behavior, not measured protocol requirements. NTPods marks its control
 connection up after sending this sequence; individual reports establish settings.
+
+Opcode `0x24` carries a little-endian device-info subtype (`2`), payload length (`1`),
+and source type (`0x10` for Mac). Tahoe sends it after feature setup and before audio
+Start. Its effect on AAC-ELD timestamp handling is unverified.
 
 Most control packets then have `04 00 04 00`, a 16-bit little-endian opcode, and an
 opcode-specific payload. There is no universal payload length field. Preserve
@@ -48,6 +54,8 @@ another file is named.
 
 | Opcode | Direction | Payload or handling |
 | --- | --- | --- |
+| `0x0001` | H → B | Capability request with captured selector `08` |
+| `0x0002` | B → H | Capability count, then fixed-width ID/value entries |
 | `0x0004` | B → H | Battery count and five-byte component records; see below |
 | `0x0006` | B → H | Primary and secondary ear states at offsets 6 and 7 |
 | `0x0009` | Both | One-byte setting ID, then a four-byte little-endian value; exactly 11 bytes for `parse_device_control` |
@@ -63,14 +71,21 @@ another file is named.
 | `0x0058` | Both | High-quality microphone control/audio; [audio reference](WINDOWS-AIRPODS-AUDIO-PROTOCOL.md) |
 | `0x0063` | Both | Three-band EQ: `05 00 01 mode low mid high`; exactly 13 bytes |
 
-The receive path recognizes `0x2B`, `0x44`, and `0x52` for bounded route diagnostics
+[`capabilities.rs`](../windows/daemon/src/capabilities.rs) keeps reported capability
+IDs and raw values in the IPC `aacp_capabilities` map for the current control
+connection. IDs `03`–`08` and `30` carry uint32 LE values; other recognized IDs
+carry one byte. Entries have no length field, so unknown widths, duplicate IDs,
+truncated values and trailing bytes are rejected without replacing the previous
+report. Reconnecting clears the map. Values use different schemes across IDs;
+this map does not change feature availability or activate hearing modes.
+
+The receive path recognizes `0x2B`, `0x44`, and `0x52` for route diagnostics
 but does not decode their state. Their names in `route_opcode_name` are working
 labels inherited from research. A `0x2E` list contains six-byte big-endian host
 addresses followed by two flag bytes. The flags are not a reliable device type:
-the same PC has reported several values. The parser retains complete entries
-from a truncated list, so such a list is not evidence that omitted hosts left.
-The daemon's existing `route:` log lines include up to 64 packet bytes, including
-addresses in `0x2E`. Redact identities in those logs as well as in raw captures.
+the same PC has reported several values. The parser rejects malformed or partial
+lists without replacing the previous host state. Routine route logs show opcode,
+length and safe counts without host identities or packet payloads.
 
 Metadata parsing requires eleven NUL-terminated UTF-8 strings after the five-byte
 information prefix. NTPods uses string 1 for model and string 3 for serial
@@ -80,6 +95,42 @@ conversion is inferred: major `value >> 20`, letter `A + ((value >> 16) & 15)`,
 build `(value >> 4) & 4095`, with a zero low nibble. Unknown/internal versions do
 not grant firmware-dependent capabilities. Trailing identity data is unparsed.
 Do not publish names, serials or host addresses from a capture.
+
+## Captured host clock: AACP 0x1B
+
+Tahoe 25G241 sends this wall-clock message on the captured Pro 3 / 9A348
+connections. NTPods sends it once per control connection after identifying a
+hearing-capable model, using UTC for both numeric and text fields. Offsets include the complete
+`04 00 04 00 1B 00` header:
+
+| Offset | Field |
+| --- | --- |
+| 6 | Unix seconds, uint32 LE |
+| 10 | Microseconds within the second, uint32 LE; less than 1,000,000 |
+| 14 | UTF-8 date-text byte length `N`, uint16 LE |
+| 16 | Exactly `N` text bytes; no trailing NUL |
+
+The complete length is `16 + N`. Apple's sender uses `gettimeofday` and
+formats the same whole second as RFC3339 text in the host's local time zone.
+An offset such as `+02:00` belongs to that text representation; it is not added
+to the numeric seconds. A separate periodic sender supplies no text (`N = 0`,
+16 bytes). Preserve both forms when present. The pinned [Wireshark decoder](https://github.com/pabloaul/apple-wireshark/blob/2e9822247195fad2f79c729010308c33a29546ea/plugins/aacp/aacp_parse_message.lua#L150-L159)
+displays the fractional field as nanoseconds, so its displayed fraction is
+1,000 times too small. Decode that field as microseconds.
+
+This is calendar time, separate from audio sample timestamps. The inspected sender
+checks local submission status, with no identified clock-specific acknowledgment
+or device-clock readback.
+
+Pro 3 / 9A348 in-case comparisons sent current numeric UTC with equivalent
+RFC3339 text, then requested a self-check through `A4120004`. With `+02:00`
+text, one ear's new measurement date was 7,223 seconds after the clock send;
+with `+00:00` text it was 29 seconds after. Both followed audible case sweeps;
+cached dates stayed unchanged immediately after the messages. This strongly
+supports a formatted-time offset affecting new diagnostic dates. The receiver
+implementation is unverified, and neither run established a new successful
+measurement in the other ear. Keep raw dates; do not apply a blanket correction
+or infer a completed check from an ATT acknowledgment.
 
 ## Setting values and confirmation
 
@@ -140,7 +191,7 @@ Keep requested values and device reports separate in capture comparisons.
 EQ mode `1` is recommended sound; mode `2` selects custom low/mid/high values,
 each `0..100`. The implementation requires a matching EQ-capable profile and
 public firmware major at least 9. This is opcode `0x63`; the older `0x53`
-headphone-accommodation format is not the app's EQ writer.
+[PME format](#pme-record-aacp-0x53) is separate from the app's EQ writer.
 
 ## Ear and conversation events
 
@@ -288,8 +339,11 @@ sequence. Disabling requests interval zero on both services. Existing descriptor
 and raw PPG packet builders remain research helpers. Normal startup requests
 sensor descriptors once per connection.
 
-The HR decoder accepts live log types `1`/`3`, report services `19`/`20`/`84`, and
-bounded nested command envelopes. An accepted record is exactly 18 bytes: byte 1
+The HR decoder accepts live log types `1`/`3` and bounded nested command
+envelopes. Before descriptor mapping, it accepts report services `19`/`20`/`84`;
+once mapped, it accepts only the advertised HeartRate service. If that mapping
+is withdrawn, it waits for a new descriptor instead of using the legacy list.
+An accepted record is exactly 18 bytes: byte 1
 is BPM (30–220), byte 2 confidence (at least `0x80`), and bytes 15–17 must match
 one of `10 00 00`, `10 00 80`, `20 00 00`, `20 80 00`, `20 02 80`, `20 82 80`.
 Other bytes remain uninterpreted. This filtering is based on observed records;
@@ -373,9 +427,9 @@ distinct synthetic left/right curves, including signed zero, to check that
 editing exposed controls leaves all curve and own-voice bytes unchanged.
 
 Pro 3 / 9A348 captures from Tahoe 26.7.1 (25G241) on AX200 contain successful
-104-byte reads of Custom Transparency and hearing settings. All four hearing
-values have identical zero per-ear curves; fitted-audiogram preservation and
-hearing-write semantics remain unverified. The pairing trace establishes:
+104-byte reads of Custom Transparency and hearing settings. The four unenrolled
+hearing values have identical zero per-ear curves; hardware hearing-write
+semantics remain unverified. The pairing trace establishes:
 
 - Encryption completed before ATT opened on BR/EDR PSM `0x001F`.
 - Tahoe subscribed before reading each characteristic.
@@ -391,10 +445,14 @@ Request (`0x12`) and requires the exact `0x13` response. A characteristic that
 advertises only Read remains readable. Each write requires matching readback;
 there is no notification consumer or fixed CCCD write.
 
-The four hearing reads across connection, case and wearing captures return
-header `02 00 60 00`. NTPods accepts this exact 104-byte layout for
-read-only display, with the same scalar and audiogram validation. It blocks
-enable and edits before sending any hearing controls. Other unknown headers
+The four unenrolled hearing reads across connection, case and wearing captures
+return header `02 00 60 00`. After iPhone Hearing Test setup, Pro 3 / 9A348
+returned `02 02 60 00` with nonzero per-ear curves while Hearing Aid and Media
+Assist were off. The stored value matched after refreshing the Windows control
+connection. NTPods accepts both exact 104-byte layouts for read-only display,
+with the same scalar and audiogram validation. It blocks fitting edits in those
+formats; the separate mode controls can activate an already enrolled profile
+without rewriting it. Other unknown headers
 remain unsupported. The existing formats with byte 2 equal to `0` or `0x64`
 remain editable when the characteristic advertises writes. Their original
 header is preserved; the writer does not force `0x64`. No hearing-value write
@@ -441,14 +499,16 @@ defines CCCD state per client, shared across ATT bearers and persistent for bond
 devices. Closing a diagnostic socket therefore does not guarantee restoration
 of an unknown previous subscription.
 
-Hearing-assistance enable sends controls `0x2C=[01,01,00,00]`, listening mode 3,
-then `0x33=1`, with delays, before opening ATT. Disable sends `0x33=2` then
-`0x2C=[01,02,00,00]`. These are dedicated operations outside the generic setting
-allowlist. Settings offsets relative to the characteristic value are:
+Hearing Aid uses control `0x2C`: its first value byte is enrollment and its
+second is enabled (`1`/`2`). Mode changes preserve enrollment. Control `0x33`
+is the shared gate: on while Hearing Aid or Media Assist is on. Disabling one
+must preserve the other. Hearing Aid enable selects Transparency; Media Assist
+keeps the current listening mode. These controls remain outside the generic
+setting allowlist. Settings offsets relative to the characteristic value are:
 
 | Offset | Field |
 | --- | --- |
-| 0–3 | Preserved header; captured `02 00 60 00` is read-only |
+| 0–3 | Preserved header; captured `02 00 60 00` and `02 02 60 00` are read-only |
 | 4 / 52 | Left/right eight-band audiogram, eight little-endian float32 values |
 | 36 / 84 | Left/right amplification |
 | 40 / 88 | Tone |
@@ -456,11 +516,20 @@ allowlist. Settings offsets relative to the characteristic value are:
 | 48 / 96 | Ambient-noise reduction |
 | 100 | Own voice |
 
+Mode-only enables read the enrolled fitting first and verify its complete bytes
+afterward; mode-only requests never write `A4120005` or notification subscriptions.
+Device reports, rather than successful sends, confirm both switches. NTPods
+refreshes the control connection after a mode change while the microphone is
+idle, then checks fresh reports. Enables also verify the unchanged fitting;
+disables do not read it. Missing or inconsistent mode reports leave the result
+unconfirmed. An explicit Off retry retains its last confirmed raw template
+within the same connection; reconnects discard that template.
+
 Hearing assistance has an explicit read operation that sends no enable command
-or notification subscription. Enabling or editing requires that successful read
+or notification subscription. Fitting edits require that successful read
 in the current connection, complete eight-band curves for both ears and a known
-AAP enabled state. Before any enable command or settings write, the backend
-compares the caller's original baseline with the latest confirmed state, reads
+AAP enabled state. Before a fitting edit's enable command or settings write,
+the backend compares the caller's original baseline with the latest confirmed state, reads
 again and rejects any mismatch. A refresh by another client cannot authorize an
 older draft. It retains the original value across the enable sequence,
 preserves opaque bytes and requires matching settings and
@@ -469,9 +538,11 @@ write handle and method.
 
 The editor starts from those confirmed per-ear values. Scalar edits retain both
 audiograms and untouched per-ear controls, including noise reduction and own
-voice. Empty or incomplete curves are rejected. The supported editor range is
-0–90 dB HL for each threshold, −1–1 for each ear's amplification and tone, and
-0–1 for noise reduction and own voice. Unsupported values are rejected rather
+voice. Empty or incomplete curves are rejected. Reads accept amplification
+from −1.5–1.5, matching Apple's version-2 reader. The editor still offers −1–1
+amplification and tone, 0–90 dB HL thresholds, and 0–1 noise reduction and own
+voice. A saved amplification outside the editor's range stays read-only.
+Unsupported values are rejected rather
 than clamped. Failed reads or writes require another read before editing; a
 reconnect clears the saved baseline. The UI uses a session-bound editability
 flag; missing flags from older backends default to read-only. Disable remains
@@ -482,8 +553,8 @@ requests require an idle microphone and defer new microphone startup until they
 finish. Disabling assistance remains available during recording.
 Transactions share one lock. A failed ambiguous ATT transaction requires a new
 connection before retry because late read responses and write ACKs lack handles.
-Custom Transparency enable requires a confirmed inactive hearing-assistance
-`0x2C` report on hearing-capable models. The complete `02 00 00 00` payload is an
+Custom Transparency enable requires both Hearing Aid and Media Assist to be
+confirmed off on hearing-capable models. The complete `02 00 00 00` payload is an
 inactive, unenrolled state observed in both the Pro 3 macOS capture and Windows
 test. An unset enabled byte is not accepted for other enrollment values.
 Hearing-assistance enable first reads
@@ -500,6 +571,127 @@ collects raw replies and notifications for about 15 seconds. It blocks normal
 AAP receive work during the probe and does not restore the hearing-assistance
 settings or subscriptions afterward. Keep it disabled for baseline captures;
 its raw diagnostic output also needs review before sharing.
+
+### Diagnostic and dosimetry records
+
+These records belong to service `7798082B-B7B7-45A6-9933-563492EFE04E`.
+NTPods has no diagnostic trigger or diagnostics UI. Its offline decoder reads
+saved 71-byte records without connecting to the buds:
+
+```powershell
+cargo run --locked --manifest-path windows/daemon/Cargo.toml --example decode_hearing_diagnostics -- record.bin 2027
+```
+
+The optional final argument is the hexadecimal product ID. Without it, component
+flags remain uninterpreted. The formats below come from captured traffic and pinned Apple-framework decompilations;
+they are not a published protocol specification.
+
+| Characteristic UUID | Value format |
+| --- | --- |
+| `A4120001-95C5-4D6F-9098-0F0B41457E0A` | One observed byte; meaning unresolved |
+| `A4120002-95C5-4D6F-9098-0F0B41457E0A` | Hardware diagnostic status; observed version 8 is 71 bytes |
+| `A4120004-95C5-4D6F-9098-0F0B41457E0A` | On-demand diagnostic request: ASCII `1` (`31`), Write Request |
+| `82F6BC0A-1BCA-4873-AFC9-EC5890E3469A` | Dosimetry Sensitivity: one little-endian float32, 4 bytes |
+| `D5F96AFA-2F2C-41BB-A7E6-F54ABE6235B4` | Dosimetry Volume Curve: 17 consecutive little-endian float32 values, 68 bytes; no header or count |
+
+The [UUID table](https://github.com/EthanArbuckle/iPhone18-3_26.1_23B85_Restore/blob/90aa0cfe59d9682b4265e1354c8b19ec3c7823ab/System/Library/Frameworks/CoreBluetooth.framework/CoreBluetooth/CBUUID.mm#L523-L528)
+names the dosimetry fields. Apple's [audio reader](https://github.com/EthanArbuckle/iPhone18-3_26.1_23B85_Restore/blob/90aa0cfe59d9682b4265e1354c8b19ec3c7823ab/System/Library/Audio/Plug-Ins/HAL/BTAudioHALPlugin.driver/BTHearingHealthObject.mm#L560-L654)
+establishes their float layout. The [iOS 18.2 volume-map reader](https://github.com/EthanArbuckle/iPhone17-1_18.2_22C152_Restore/blob/e26ed4563f78871c59d2d96856756a65d62517e5/Library/Audio/Plug-Ins/HAL/VirtualAudio.plugin/VirtualAudio_4.m#L13582-L13688)
+pairs the entries with equally spaced points across the audio device's reported
+minimum/maximum volume range: 17 entries give 16 intervals. The ATT value does
+not encode that range. Reference stimulus and weighting remain unverified;
+these are not personal hearing thresholds or enough information for an absolute
+SPL meter.
+
+Apple [documents periodic quiet in-case sounds](https://support.apple.com/en-euro/guide/airpods/devd9aac5b42/web)
+to help ensure microphone and speaker performance. In a controlled Pro 3 / 9A348
+check, an on-demand request coincided with audible case sweeps and a fresh
+left-ear diagnostic result. Whether Apple's periodic sounds use the same request,
+or change firmware calibration, remains unverified.
+
+The [diagnostic parser](https://github.com/EthanArbuckle/iPhone18-3_26.1_23B85_Restore/blob/90aa0cfe59d9682b4265e1354c8b19ec3c7823ab/System/Library/PrivateFrameworks/HearingModeService.framework/HearingModeService/HMDeviceDiagnosticRecord.mm#L2112-L2235)
+identifies the first 41 bytes; the [matching 18.2 reader](https://github.com/EthanArbuckle/iPhone17-1_18.2_22C152_Restore/blob/e26ed4563f78871c59d2d96856756a65d62517e5/System/Library/PrivateFrameworks/HearingModeService.framework/HMDeviceDiagnosticRecord.m#L1726-L1765)
+confirms the packed field widths. Offsets are relative to the characteristic value:
+
+| Offset | Field |
+| --- | --- |
+| 0 | Version byte |
+| 1 / 9 | Left/right last diagnostic measurement time, uint64 LE Unix seconds |
+| 17 / 21 | Left/right diagnostic result words, uint32 LE |
+| 25–32 | ANC-loss score structure; individual score units remain unresolved |
+| 33 / 37 | Left/right first-use time, uint32 LE Unix seconds |
+| 41–70 | Opaque version-8 tail |
+
+Read-only inspection of Tahoe 25G241's `HMDeviceDiagnosticRecord` confirms these
+enum names and model gates:
+
+| Raw value | General status, bits 0–2 | Measurement status, bits 3–5 |
+| --- | --- | --- |
+| 0 | `Pass` | `SuccessHarmonic` |
+| 1 | `Fail` | `SuccessNonHarmonic` |
+| 2 | `NoDataOutOfFactoryLessThanAYear` | `LidOpenAbort` |
+| 3 | `NoUTPConnection` | `MotionAbort` |
+| 4 | `NoDataOutOfFactoryMoreThanAYear` | `TempAbort` |
+| 5 | Unmapped | `NoiseAbort` |
+| 6 | Unmapped | `SystemAbort` |
+| 7 | Unmapped | `NoStatus` |
+
+Component flags cover distortion, frequency accuracy, speaker, vents and
+microphones. Their raw `0`/`1` labels are `Pass`/`Fail`, consumed only for
+measurement status `0` or `1`, a nonzero measurement timestamp, and product IDs
+`0x2014`, `0x2024` or Pro 3 `0x2027`. The same products pass the occlusion-support
+gate, but an occlusion
+assessment also needs accumulated fault history and indication state. ANC
+scores have a separate gate: product `0x201B` with record version at least 4;
+Pro 3 does not pass it. These cached fields alone are not a current health
+verdict. [Later source changes](https://github.com/blacktop/ipsw-diffs/blob/af456047befbab058df4c3d7c7094462ad4753d6/iOS/26_5_23F77_vs_27_0_24A5355q/DYLIBS/System/Library/PrivateFrameworks/HearingModeService.framework/HearingModeService.md#L85-L158)
+name mileage, model version, test-start time, attempt hash and pre-check flags;
+their offsets and widths in this tail are unverified. Diagnostic times must not
+be labelled Hearing Test dates.
+
+Apple's [on-demand request](https://github.com/EthanArbuckle/iPhone18-3_26.1_23B85_Restore/blob/90aa0cfe59d9682b4265e1354c8b19ec3c7823ab/System/Library/PrivateFrameworks/HearingModeService_Private.framework/HearingModeService_Private/HMDeviceAHPSConnectionManager.mm#L1000-L1125)
+writes `31` with response. The saved Tahoe pairing capture
+`20261012T211811Z-048041f7` confirms handle `0x0028`, request frame 5473 and
+ACK frame 5507. Its [completion callback](https://github.com/EthanArbuckle/iPhone18-3_26.1_23B85_Restore/blob/90aa0cfe59d9682b4265e1354c8b19ec3c7823ab/System/Library/PrivateFrameworks/HearingModeService_Private.framework/HearingModeService_Private/HMDeviceAHPSConnectionManager.mm#L805-L861)
+confirms the write only. Fresh per-ear diagnostic timestamps/results are needed
+to establish a new measurement. The inspected host path does not establish
+firmware requirements for lid state, playback or microphone use, or prove that
+all internal calibration remains unchanged.
+
+## PME record: AACP 0x53
+
+NTPods retains complete subtype-2 reports for the Media Assist switch. It is separate from ATT hearing
+settings and opcode `0x63` EQ. The [version-2 Apple writer](https://github.com/EthanArbuckle/iPhone18-3_26.1_23B85_Restore/blob/90aa0cfe59d9682b4265e1354c8b19ec3c7823ab/System/Library/PrivateFrameworks/HearingModeService_Private.framework/HearingModeService_Private/HMDeviceManager.mm#L1046)
+builds a 132-byte body after `04 00 04 00 53 00 84 00`:
+
+| Body offset | Full packet offset | Field |
+| --- | --- | --- |
+| 0 | 8 | Version `2` |
+| 1 | 9 | Enroll PME Voice |
+| 2 | 10 | Enable PME Voice |
+| 3 | 11 | Enable PME Media |
+| 4 | 12 | Voice left: eight float32 LE values |
+| 36 | 44 | Media left: eight float32 LE values |
+| 68 | 76 | Voice right: eight float32 LE values |
+| 100 | 108 | Media right: eight float32 LE values |
+
+The writer uses `01` for enabled/enrolled and `02` for disabled. A zero input
+configuration field preserves its existing byte; this does not establish a
+meaning for received wire value `00`. Media Assist changes only the voice/media
+enable bytes, using both on as Apple's initial enrollment default and both off when
+disabled. Enrollment and all curve bytes are preserved; missing profiles are
+never synthesized. The aggregate state requires `0x33` on and either enable
+flag on. Apple's [configuration policy](https://github.com/EthanArbuckle/iPhone18-3_26.1_23B85_Restore/blob/90aa0cfe59d9682b4265e1354c8b19ec3c7823ab/System/Library/PrivateFrameworks/HearingModeService.framework/HearingModeService/HMDeviceConfigurations.mm#L1354-L1425)
+keeps that shared gate on while either hearing mode needs it.
+
+A separate `0x53` subtype-1 body `01 01`/`01 02` controls Apple's `PME On Buds`
+audio-route property. NTPods does not write that gate; its activation policy
+remains unresolved. On Windows with AX200 and an iPhone-fitted Pro 3 / 9A348,
+the listener reported a music change with Media Assist on and Hearing Aid off.
+That observation does not establish where processing runs or whether every
+configuration needs the separate gate.
+The subtype-2 arrays' frequency bins and physical units remain
+unverified, and the record does not establish a 24-band fitting transform.
 
 ## Evidence and comparison gaps
 
@@ -540,9 +732,15 @@ Tests live beside the implementation unless linked separately. Useful names:
 - `head_tracking.rs`: `signed_axes_decode_across_every_fragment_boundary_and_batched_frames`,
   `only_live_exact_motion_records_are_accepted`,
   `old_client_disconnect_cannot_stop_new_owner_and_session_end_never_rearms`.
-- `hearing.rs`: `only_the_write_acknowledgment_confirms_hearing_settings`,
+- `hearing.rs`: `stored_mode_packets_preserve_the_other_mode_enrollment_and_every_curve_byte`,
+  `refreshed_mode_verification_checks_every_profile_byte_and_never_writes`,
+  `mode_confirmation_rejects_changed_enrollment_even_when_off_flags_match`,
   `loud_sound_writes_only_the_characteristic_and_confirms_readback`,
   `loud_sound_rejects_missing_malformed_or_unacknowledged_replies`.
+- [`host_clock.rs`](../windows/daemon/src/host_clock.rs),
+  [`capabilities.rs`](../windows/daemon/src/capabilities.rs) and
+  [`hearing_diagnostics.rs`](../windows/daemon/src/hearing_diagnostics.rs)
+  keep their wire-format checks beside their parsers.
 - [DeviceSettings tests](../windows/tests/DeviceSettings) check profile gating and
   presentation. [Windows test instructions](../windows/tests/README.md) describe
   the backend and native checks.

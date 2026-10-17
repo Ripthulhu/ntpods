@@ -62,9 +62,10 @@ AX200. Pro 1's high-quality microphone is disabled. Other models, long sessions
 and microphone transitions with the smaller buffer remain unverified.
 
 Available controls depend on model and firmware. Head tracking displays raw
-movement. Custom Transparency and hearing assistance are experimental. The
-captured hearing profile remains read-only; hearing edits still need hardware
-validation. See the
+movement. Custom Transparency, Hearing Aid and Media Assist are experimental.
+On Pro 3 (9A348), Hearing Aid and Media Assist can independently use a profile
+already fitted on an iPhone. NTPods cannot create or edit that fitting; other
+models remain untested. See the
 [model list](https://github.com/Ripthulhu/ntpods/blob/main/docs/WINDOWS-MODEL-SUPPORT.md),
 [playback test guide](https://github.com/Ripthulhu/ntpods/blob/main/windows/playback/TESTING.md)
 and [validation results](https://github.com/Ripthulhu/ntpods/blob/main/docs/WINDOWS-VALIDATION.md).

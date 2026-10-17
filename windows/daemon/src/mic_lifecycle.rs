@@ -1,5 +1,7 @@
 //! Pure microphone policy. All Bluetooth actions run on the receive thread.
 const PCM_TIMEOUT_MS: u64 = 5_000;
+const QUIET_MS: u64 = 500;
+const DRAIN_TIMEOUT_MS: u64 = 2_000;
 use ntpods_ipc::{MicMode, Snapshot};
 
 pub fn playback_allows_microphone(state: &Snapshot) -> bool {
@@ -206,7 +208,7 @@ impl Lifecycle {
                 Action::Stop
             }
             Phase::Stopping if now >= self.deadline_ms => {
-                if self.quiet_for_ms(now) >= 500 {
+                if self.quiet_for_ms(now) >= QUIET_MS {
                     self.uplink_active = false;
                     if self.audio_restore_pending {
                         self.phase = Phase::Recovering;
@@ -221,8 +223,8 @@ impl Lifecycle {
                     // START may complete after a short capture already sent
                     // STOP. Repeat only STOP once before touching playback.
                     self.stop_retried = true;
-                    self.deadline_ms = now + 500;
-                    self.recovery_expires_ms = now + 2_000;
+                    self.deadline_ms = now + QUIET_MS;
+                    self.recovery_expires_ms = now + DRAIN_TIMEOUT_MS;
                     Action::RetryStop
                 } else {
                     self.phase = Phase::Recovering;
@@ -232,7 +234,7 @@ impl Lifecycle {
             Phase::Recovering if self.reset_finished && now >= self.deadline_ms => {
                 let still_arriving = self
                     .last_audio_ms
-                    .is_some_and(|t| now.saturating_sub(t) < 500);
+                    .is_some_and(|t| now.saturating_sub(t) < QUIET_MS);
                 if still_arriving && !self.reset_failed && now < self.recovery_expires_ms {
                     return Action::None; // drain queued SDUs before judging the stop
                 }
@@ -265,7 +267,12 @@ impl Lifecycle {
         }
     }
     pub fn request_stop(&mut self, now: u64) {
-        self.begin_stop(now);
+        if self.cleanup_pending() {
+            self.begin_stop(now);
+        } else {
+            // A cancelled START that never reached Bluetooth needs no drain window.
+            self.finish_stop();
+        }
     }
     pub fn start_attempted(&mut self) {
         self.uplink_active = true;
@@ -302,8 +309,8 @@ impl Lifecycle {
     }
     fn begin_stop(&mut self, now: u64) {
         self.phase = Phase::Stopping;
-        self.deadline_ms = now + 500;
-        self.recovery_expires_ms = now + 2_000;
+        self.deadline_ms = now + QUIET_MS;
+        self.recovery_expires_ms = now + DRAIN_TIMEOUT_MS;
         self.stop_started_ms = Some(now);
         self.stop_packets = 0;
         self.stop_retried = false;
@@ -337,8 +344,27 @@ impl Lifecycle {
     pub fn reset_completed(&mut self, now: u64, success: bool) {
         self.reset_finished = true;
         self.reset_failed = !success;
-        self.deadline_ms = now + 500;
-        self.recovery_expires_ms = now + 2_000;
+        self.deadline_ms = now + QUIET_MS;
+        self.recovery_expires_ms = now + DRAIN_TIMEOUT_MS;
+    }
+    /// Receiver polling must not add another idle wait after a recovery deadline.
+    pub fn wait_ms(&self, now: u64, maximum: u32) -> u32 {
+        match self.phase {
+            Phase::Stopping => {}
+            Phase::Recovering if self.reset_finished => {}
+            _ => return maximum,
+        }
+        let deadline = if self.reset_failed {
+            self.deadline_ms
+        } else {
+            self.deadline_ms.max(
+                self.last_audio_ms
+                    .unwrap_or(0)
+                    .saturating_add(QUIET_MS)
+                    .min(self.recovery_expires_ms),
+            )
+        };
+        deadline.saturating_sub(now).min(u64::from(maximum)) as u32
     }
     pub fn accepts_pcm(&self) -> bool {
         matches!(self.phase, Phase::Starting | Phase::Capturing)
@@ -783,10 +809,90 @@ mod tests {
         assert_eq!(m.tick(0, true, true), Action::Start);
         assert!(!m.uplink_active);
         m.request_stop(1);
-        assert_eq!(m.tick(501, false, true), Action::None);
         assert_eq!(m.phase, Phase::Idle);
+        assert_eq!(m.tick(1, false, true), Action::None);
         assert!(!m.cleanup_pending());
         assert!(!m.uplink_active);
+        assert_eq!(m.tick(2, true, true), Action::Start);
+    }
+    #[test]
+    fn cancellation_after_start_was_attempted_keeps_the_full_recovery() {
+        let mut m = Lifecycle::default();
+        assert_eq!(m.tick(0, true, true), Action::Start);
+        m.start_attempted();
+        m.request_stop(100);
+        assert_eq!(m.phase, Phase::Stopping);
+        assert!(m.cleanup_pending());
+        assert_eq!(m.tick(599, true, true), Action::None);
+        assert_eq!(m.wait_ms(599, 100), 1);
+        assert_eq!(m.tick(600, true, true), Action::ResetAudio);
+        assert!(!m.accepts_pcm());
+    }
+    #[test]
+    fn receiver_wait_tracks_quiet_deadline_and_late_packets() {
+        let mut m = Lifecycle::default();
+        assert_eq!(m.wait_ms(0, 150), 150);
+        assert_eq!(m.tick(0, true, true), Action::Start);
+        m.start_attempted();
+        assert_eq!(m.wait_ms(50, 150), 150);
+        m.request_stop(100);
+        assert_eq!(m.wait_ms(501, 150), 99);
+        m.audio_packet(550);
+        assert_eq!(m.tick(600, true, true), Action::None);
+        assert_eq!(m.wait_ms(600, 150), 150);
+        assert_eq!(m.wait_ms(1000, 100), 50);
+        assert_eq!(m.wait_ms(1050, 150), 0);
+        assert_eq!(m.tick(1050, true, true), Action::ResetAudio);
+        // Waiting for playback completion has no expired polling deadline.
+        assert_eq!(m.wait_ms(10_000, 150), 150);
+        m.reset_completed(10_000, true);
+        assert_eq!(m.wait_ms(10_499, 150), 1);
+        assert_eq!(m.tick(10_499, true, true), Action::None);
+        assert_eq!(m.tick(10_500, true, true), Action::None);
+        assert_eq!(m.phase, Phase::Idle);
+        assert_eq!(m.wait_ms(10_500, 150), 150);
+        assert_eq!(m.tick(10_501, true, true), Action::Start);
+    }
+    #[test]
+    fn receiver_wait_respects_retry_and_recovery_drain_limits() {
+        let mut m = Lifecycle::default();
+        m.tick(0, true, true);
+        m.start_attempted();
+        m.request_stop(100);
+        for (audio_at, deadline, action) in [
+            (2050, 2100, Action::RetryStop),
+            (4050, 4100, Action::ResetAudio),
+        ] {
+            m.audio_packet(audio_at);
+            assert_eq!(m.wait_ms(deadline - 1, 150), 1);
+            assert_eq!(m.tick(deadline, false, true), action);
+        }
+        m.reset_completed(5000, true);
+        m.audio_packet(5400);
+        assert_eq!(m.wait_ms(5500, 150), 150);
+        assert_eq!(m.tick(5500, true, true), Action::None);
+        m.audio_packet(6950);
+        assert_eq!(m.wait_ms(6999, 150), 1);
+        assert_eq!(m.tick(7000, true, true), Action::Reconnect);
+        assert_eq!(m.wait_ms(7000, 150), 150);
+        assert_eq!(m.tick(7001, true, true), Action::None);
+    }
+    #[test]
+    fn failed_reset_waits_once_then_stays_latched_despite_new_demand() {
+        let mut m = Lifecycle::default();
+        m.tick(0, true, true);
+        m.start_attempted();
+        m.request_stop(100);
+        assert_eq!(m.tick(600, false, true), Action::ResetAudio);
+        m.reset_completed(1000, false);
+        m.audio_packet(1450);
+        assert_eq!(m.wait_ms(1499, 150), 1);
+        assert_eq!(m.tick(1499, true, true), Action::None);
+        assert_eq!(m.tick(1500, true, true), Action::Reconnect);
+        assert_eq!(m.wait_ms(1500, 150), 150);
+        m.retry_after_revocation();
+        assert_eq!(m.tick(1501, true, true), Action::None);
+        assert_eq!(m.phase, Phase::Error);
     }
     #[test]
     fn quiet_stop_requires_one_restore_before_new_capture_or_shutdown_completion() {

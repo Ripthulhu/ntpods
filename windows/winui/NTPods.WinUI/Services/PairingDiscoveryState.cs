@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Text.RegularExpressions;
 
 namespace NTPods.WinUI.Services;
 
@@ -8,8 +9,31 @@ public sealed class PairingCandidate(string id, string name, ushort? majorClass 
     public string Id { get; } = id;
     internal ushort? MajorClass { get; set; } = majorClass;
     internal ushort? MinorClass { get; set; } = minorClass;
-    internal bool IsAirPods => Name.Contains("AirPods", StringComparison.OrdinalIgnoreCase) &&
+    internal bool IsAirPods => Regex.IsMatch(Name, @"\bAirPods\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant) &&
         MajorClass is null or 0 or 4 && (MajorClass is not 4 || MinorClass is null or 0 or 1 or 6);
+    internal bool MatchesModel(ushort? model)
+    {
+        if (!IsAirPods) return false;
+        if (model is null) return true;
+        if (PairingInvitationPolicy.NearbyName(model.Value) is null) return false;
+        const RegexOptions options = RegexOptions.IgnoreCase | RegexOptions.CultureInvariant;
+        bool pro = model is 0x0e20 or 0x1420 or 0x2420 or 0x2720;
+        bool namedPro = Regex.IsMatch(Name, @"\bAirPods\s+Pro\b", options);
+        if (Regex.IsMatch(Name, @"\bAirPods\s+(?:Pro\s+)?Max\b", options) || namedPro && !pro)
+            return false;
+        var generation = Regex.Match(Name, @"\bAirPods\s+(?:Pro\s+)?([1-5])\b", options);
+        if (!generation.Success) return true;
+        int expected = model switch
+        {
+            0x0220 or 0x0e20 => 1,
+            0x0f20 or 0x1420 or 0x2420 => 2,
+            0x1320 or 0x2720 => 3,
+            0x1920 or 0x1b20 => 4,
+            0x3020 or 0x3620 => 5,
+            _ => 0,
+        };
+        return namedPro == pro && generation.Groups[1].Value == expected.ToString();
+    }
     private string _name = name;
     public string Name
     {
@@ -94,9 +118,9 @@ internal sealed class PairingDiscoveryState
         }
     }
 
-    public string? AutomaticCandidate(long nowMs, out bool ambiguous)
+    public string? AutomaticCandidate(long nowMs, out bool ambiguous, ushort? model = null)
     {
-        var matches = Candidates.Where(c => c.IsAirPods).Take(2).ToArray();
+        var matches = Candidates.Where(c => c.MatchesModel(model)).Take(2).ToArray();
         ambiguous = matches.Length > 1;
         string? id = Scanning && matches.Length == 1 ? matches[0].Id : null;
         if (id is null || id != _automaticId)
@@ -114,18 +138,17 @@ internal sealed class PairingInvitationPolicy
 {
     private readonly HashSet<string> _shown = new(StringComparer.Ordinal);
 
-    public static string? NearbyName(ushort model)
-    {
-        // Advertisement models select the invitation title, never the paired device's capabilities.
-        string? catalogModel = model switch
+    public static string? NearbyCatalogModel(ushort model) => model switch
         {
             0x0220 => "A1523", 0x0f20 => "A2032", 0x1320 => "A2565",
             0x1920 => "A3053", 0x1b20 => "A3056", 0x3620 => "A3531", 0x3020 => "A3439",
             0x0e20 => "A2084", 0x1420 => "A2931", 0x2420 => "A3047", 0x2720 => "A3063",
             _ => null
         };
-        return catalogModel is null ? null : DeviceModels.Find(catalogModel).Name;
-    }
+
+    // Advertisement models select invitation artwork and title, never paired capabilities.
+    public static string? NearbyName(ushort model) => NearbyCatalogModel(model) is { } catalogModel
+        ? DeviceModels.Find(catalogModel).Name : null;
 
     public PairingCandidate? Next(IEnumerable<PairingCandidate> candidates)
     {
@@ -145,6 +168,7 @@ internal sealed class PairingLidState
 {
     private ushort? _model, _pending;
     private bool _closing;
+    public bool Showing => _model is not null;
 
     public void Show(ushort model)
     {
@@ -187,6 +211,19 @@ internal static class PairingConfirmation
 
 internal static class PairingInstructions
 {
+    public static string ForModel(ushort model) => model switch
+    {
+        0x1920 or 0x1b20 or 0x2720 or 0x3020 or 0x3620 => "Pairing.DoubleTapCase",
+        0x0220 or 0x0f20 or 0x1320 or 0x0e20 or 0x1420 or 0x2420 => "Pairing.HoldSetupButton",
+        _ => "Pairing.PrepareCase",
+    };
+
+    public static string? InitialGesture(string statusKey, string busyStatusKey) =>
+        statusKey == "Pairing.Nearby" && busyStatusKey is
+            "Pairing.DoubleTapCase" or "Pairing.HoldSetupButton" or
+            "Pairing.HoldNoiseControl" or "Pairing.PrepareCase"
+            ? busyStatusKey : null;
+
     public static string ForName(string name)
     {
         if (name.Contains("AirPods Max", StringComparison.OrdinalIgnoreCase)) return "Pairing.HoldNoiseControl";

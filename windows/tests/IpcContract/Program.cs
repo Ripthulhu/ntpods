@@ -10,9 +10,9 @@ static void Check(bool condition, string message)
 Check(args.Length == 2, "usage: IpcContract INPUT OUTPUT");
 string[] phases = ["idle", "starting", "capturing", "stopping", "recovering", "unavailable", "error", "waiting_for_ear"];
 var lines = File.ReadAllLines(args[0]);
-Check(lines.Length == phases.Length + 2, "Expected lifecycle states, one legacy state and one nearby invitation");
+Check(lines.Length == phases.Length + 3, "Expected lifecycle states, one legacy state and two lid events");
 var output = new List<string>();
-for (var index = 0; index < lines.Length - 1; ++index)
+for (var index = 0; index < lines.Length - 2; ++index)
 {
     var evt = Wire.ParseEvent(lines[index]) as DaemonEvent.State;
     Check(evt is not null, $"Rust fixture {index} did not parse as a flattened state");
@@ -21,6 +21,7 @@ for (var index = 0; index < lines.Length - 1; ++index)
     Check(s.PlaybackMode == (raw.RootElement.TryGetProperty("playback_mode", out var playbackMode) ? playbackMode.GetString() : "windows") &&
         s.PlaybackPreferredMode == (raw.RootElement.TryGetProperty("playback_preferred_mode", out var preferredMode) ? preferredMode.GetString() : null) &&
         s.PlaybackState == (raw.RootElement.TryGetProperty("playback_state", out var playbackState) ? playbackState.GetString() : "windows") &&
+        s.AudioOutputReady == (raw.RootElement.TryGetProperty("audio_output_ready", out var outputReady) && outputReady.GetBoolean()) &&
         s.PlaybackAvailable == (raw.RootElement.TryGetProperty("playback_available", out var playbackAvailable) && playbackAvailable.GetBoolean()) &&
         s.PlaybackNativeDriver == (raw.RootElement.TryGetProperty("playback_native_driver", out var nativeDriver) && nativeDriver.GetBoolean()) &&
         s.PlaybackError == (raw.RootElement.TryGetProperty("playback_error", out var playbackError) && playbackError.ValueKind != JsonValueKind.Null ? playbackError.GetString() : null),
@@ -57,6 +58,13 @@ for (var index = 0; index < lines.Length - 1; ++index)
         hearing.ValueKind != JsonValueKind.Null ? hearing.GetBoolean() : (bool?)null) &&
         s.HearingAidRevision == (raw.RootElement.TryGetProperty("hearing_aid_revision", out var hearingRevision) ? hearingRevision.GetUInt64() : 0),
         "Reported hearing state and its revision must survive IPC; missing state stays unknown.");
+    Check(s.HearingAidEnrolled == (raw.RootElement.TryGetProperty("hearing_aid_enrolled", out var enrolled) &&
+        enrolled.ValueKind != JsonValueKind.Null ? enrolled.GetBoolean() : (bool?)null) &&
+        s.MediaAssistEnabled == (raw.RootElement.TryGetProperty("media_assist_enabled", out var mediaEnabled) &&
+        mediaEnabled.ValueKind != JsonValueKind.Null ? mediaEnabled.GetBoolean() : (bool?)null) &&
+        s.MediaAssistRevision == (raw.RootElement.TryGetProperty("media_assist_revision", out var mediaRevision) ? mediaRevision.GetUInt64() : 0) &&
+        s.MediaAssistAvailable == (raw.RootElement.TryGetProperty("media_assist_available", out var mediaAvailable) && mediaAvailable.GetBoolean()),
+        "Enrollment and media reports must retain unknown state and exact revisions across IPC.");
     var expectedHearing = raw.RootElement.TryGetProperty("hearing_aid_settings", out var hearingSettings) && hearingSettings.ValueKind != JsonValueKind.Null
         ? hearingSettings.Deserialize<HearingAidSettings>() : null;
     Check((s.HearingAidSettings is null ? expectedHearing is null : s.HearingAidSettings.SameValues(expectedHearing)) &&
@@ -108,6 +116,9 @@ for (var index = 0; index < lines.Length - 1; ++index)
         Check(s.DeviceControls.Count == 4 && s.DeviceControls[1] == 0 && s.DeviceControls[31] == 0x504B &&
             s.DeviceControls[36] == 0x0300 && s.DeviceControls[40] == 2, $"Four-byte device controls changed: {phase}");
         Check(s.DeviceControlsPending.Count == (phase == "starting" ? 2 : 0), $"Pending controls changed: {phase}");
+        Check(s.AacpCapabilities.Count == 3 && s.AacpCapabilities[0x11] == 1 &&
+            s.AacpCapabilities[0xC0] == 2 && s.AacpCapabilities[0x30] == uint.MaxValue,
+            $"Raw AACP capability IDs and full values changed: {phase}");
         uint? requestedStrength = phase switch { "idle" => 0u, "starting" => 50u, "capturing" => 100u, _ => null };
         Check(s.AdaptiveStrengthRequested == requestedStrength, $"Sent strength changed: {phase}");
         Check(s.AllowOffRequested == (phase == "idle" ? true : phase == "starting" ? false : (bool?)null),
@@ -131,6 +142,7 @@ for (var index = 0; index < lines.Length - 1; ++index)
         Check(!s.BleScanWhileConnected, "Legacy snapshots must keep playback BLE scanning disabled.");
         Check(s.PlaybackPreferredMode is null && s.PlaybackMode == "windows" && s.PlaybackState == "windows" && !s.PlaybackAvailable && !s.PlaybackNativeDriver && s.PlaybackError is null,
             "Legacy snapshots must keep Windows playback and must not claim native playback support.");
+        Check(!s.AudioOutputReady, "Legacy snapshots must not claim an active AirPods output.");
         Check(s.PlaybackAacBitrate == new PlaybackBitrate() && s.PlaybackAacEldBitrate == new PlaybackBitrate() && s.PlaybackBitrateKbps is null,
             "Missing bitrate preferences default to Best effort without inventing a current bitrate.");
         Check(!s.PlaybackDelayReporting && s.PlaybackDelayTenthsMs is null && s.PlaybackBufferTargetMs is null && s.PlaybackBufferError is null,
@@ -154,6 +166,7 @@ for (var index = 0; index < lines.Length - 1; ++index)
             "Missing lifecycle fields must not infer capture permission or uplink state");
         Check(s.AutoPause && !s.AncUnconfirmed && s.DeviceControls.Count == 0 && s.DeviceControlsPending.Count == 0 &&
             s.Eq is null && s.EqPending is null && s.DeviceSettingsError is null, "Legacy device settings must remain unknown");
+        Check(s.AacpCapabilities.Count == 0, "Older snapshots must not invent AACP capabilities.");
     }
     // Serialize the actual C# Snapshot, then add the same flattened event tag.
     var json = JsonSerializer.SerializeToNode(s, Wire.Json)!.AsObject();
@@ -170,6 +183,8 @@ string[] malformed = ["", " ", "{", "null", "true", "12", "\"text\"", "[]", "[{}
     "{\"event\":\"state\",\"playback_preferred_mode\":1}",
     "{\"event\":\"state\",\"playback_state\":null}",
     "{\"event\":\"state\",\"playback_state\":\"playing\"}",
+    "{\"event\":\"state\",\"audio_output_ready\":null}",
+    "{\"event\":\"state\",\"audio_output_ready\":1}",
     "{\"event\":\"state\",\"playback_available\":1}",
     "{\"event\":\"state\",\"playback_available\":null}",
     "{\"event\":\"state\",\"playback_native_driver\":null}",
@@ -237,6 +252,10 @@ string[] malformed = ["", " ", "{", "null", "true", "12", "\"text\"", "[]", "[{}
     "{\"event\":\"state\",\"allow_off_requested\":\"true\"}",
     "{\"event\":\"state\",\"device_controls\":null}",
     "{\"event\":\"state\",\"device_controls_pending\":null}",
+    "{\"event\":\"state\",\"aacp_capabilities\":null}",
+    "{\"event\":\"state\",\"aacp_capabilities\":{\"256\":1}}",
+    "{\"event\":\"state\",\"aacp_capabilities\":{\"1\":-1}}",
+    "{\"event\":\"state\",\"aacp_capabilities\":{\"1\":4294967296}}",
     "{\"event\":\"state\",\"adaptive_strength_requested\":101}",
     "{\"event\":\"state\",\"adaptive_strength_requested\":-1}",
     "{\"event\":\"state\",\"adaptive_strength_requested\":1.5}",
@@ -318,6 +337,14 @@ Check(Wire.ParseEvent(hearingState.ToJsonString()) is DaemonEvent.State { Snapsh
     hearingRoundtrip.SameValues(Hearing()), "Asymmetric hearing curves and tuning must survive C# parsing.");
 Check(Wire.ParseEvent(hearingState.ToJsonString()) is DaemonEvent.State { Snapshot.HearingAidEditable: false },
     "An older daemon's hearing settings must remain read-only without explicit editability.");
+foreach (var amplification in new[] { -1.5f, 1.5f })
+{
+    var boundary = hearingState.DeepClone();
+    boundary["hearing_aid_settings"]!["left_amplification"] = amplification;
+    boundary["hearing_aid_settings"]!["right_amplification"] = -amplification;
+    Check(Wire.ParseEvent(boundary.ToJsonString()) is DaemonEvent.State,
+        "Hearing amplification must accept both fitted profile boundaries.");
+}
 foreach (bool editable in new[] { false, true })
 {
     var state = hearingState.DeepClone();
@@ -335,7 +362,7 @@ foreach (string key in hearingState["hearing_aid_settings"]!.AsObject().Select(p
     Check(Wire.ParseEvent(nullValue.ToJsonString()) is null, $"Null hearing field {key} must be rejected.");
 }
 foreach (var (key, value) in new[] {
-    ("left_amplification", -1.01f), ("right_amplification", 1.01f), ("left_tone", -1.01f), ("right_tone", 1.01f),
+    ("left_amplification", -1.51f), ("right_amplification", 1.51f), ("left_tone", -1.01f), ("right_tone", 1.01f),
     ("left_ambient_noise_reduction", -0.01f), ("right_ambient_noise_reduction", 1.01f), ("own_voice", 1.01f) })
 {
     var invalid = hearingState.DeepClone();
@@ -425,7 +452,23 @@ output.Add(Wire.ToLine(new SetHearingAidCmd { RequestId = 74, On = false }).Trim
 foreach (ushort? target in new ushort?[] { null, 60, 80, 100, 120, 140 })
     output.Add(Wire.ToLine(new SetPlaybackBufferCmd { TargetMs = target, RestoreMs = target.HasValue ? (ushort)150 : null }).TrimEnd('\n'));
 output.Add(Wire.ToLine(new PairingCompletedCmd { Address = "12:34:56:78:9a:bc" }).TrimEnd('\n'));
-Check(Wire.ParseEvent(lines[^1]) is DaemonEvent.PairingNearby(0x2720, true),
+Check(Wire.ToLine(new ConnectCmd()) == "{\"cmd\":\"connect\"}\n",
+    "Existing Connect callers must keep the legacy wire shape.");
+output.Add(Wire.ToLine(new ConnectCmd()).TrimEnd('\n'));
+output.Add(Wire.ToLine(new ConnectCmd { DeviceId = "001122334455" }).TrimEnd('\n'));
+foreach (bool on in new[] { false, true })
+{
+    string aid = Wire.ToLine(new SetHearingAidModeCmd { RequestId = 81, On = on });
+    string media = Wire.ToLine(new SetMediaAssistCmd { RequestId = 82, On = on });
+    foreach (string line in new[] { aid, media })
+    {
+        using var modeCommand = JsonDocument.Parse(line);
+        Check(!modeCommand.RootElement.TryGetProperty("settings", out _) &&
+            !modeCommand.RootElement.TryGetProperty("expected", out _), "Mode switches must never carry fitting edits.");
+        output.Add(line.TrimEnd('\n'));
+    }
+}
+Check(Wire.ParseEvent(lines[^2]) is DaemonEvent.PairingNearby(0x2720, true),
     "Nearby invitations must retain the public model hint and lid state.");
 Check(Wire.ParseEvent("{\"event\":\"pairing_nearby\",\"model\":10016,\"lid_open\":false}")
     is DaemonEvent.PairingNearby(0x2720, false), "Closing the lid must survive event parsing.");
@@ -439,6 +482,17 @@ foreach (string value in new[] { "null", "0", "1", "\"true\"", "[]", "{}" })
 Check(Wire.ParseEvent("{\"event\":\"pairing_nearby\",\"model\":10016}") is null,
     "Missing lid states must not become open invitations.");
 output.Add(JsonSerializer.Serialize(new { @event = "pairing_nearby", model = 0x2720, lid_open = true }));
+Check(Wire.ParseEvent(lines[^1]) is DaemonEvent.PairedLid("001122334455", false, 2),
+    "Paired lid edges must retain exact owner, state and daemon-session sequence.");
+foreach (string malformedLid in new[] {
+    "{\"event\":\"paired_lid\",\"device_id\":\"001122334455\",\"lid_open\":true}",
+    "{\"event\":\"paired_lid\",\"device_id\":\"001122334455\",\"sequence\":1}",
+    "{\"event\":\"paired_lid\",\"lid_open\":true,\"sequence\":1}",
+    "{\"event\":\"paired_lid\",\"device_id\":\"001122334455\",\"lid_open\":1,\"sequence\":1}",
+    "{\"event\":\"paired_lid\",\"device_id\":\"001122334455\",\"lid_open\":true,\"sequence\":0}",
+    "{\"event\":\"paired_lid\",\"device_id\":\"00112233445g\",\"lid_open\":true,\"sequence\":1}",
+}) Check(Wire.ParseEvent(malformedLid) is null, "Malformed paired lid edges must not reach the island.");
+output.Add(JsonSerializer.Serialize(new { @event = "paired_lid", device_id = "001122334455", lid_open = false, sequence = 2UL }));
 File.WriteAllLines(args[1], output);
 Console.WriteLine($"C#: {lines.Length} production/legacy events, VBR/Transparency roundtrips and malformed-input checks passed");
 

@@ -628,7 +628,7 @@ function Register-NTPodsTasks([string]$scriptDir, [string]$userSid) {
     $user = (New-Object Security.Principal.SecurityIdentifier($userSid)).Translate([Security.Principal.NTAccount]).Value
     Write-Host "==> Registering the elevated helper tasks for $user..."
     foreach ($t in @(
-            @('NTPods Fix Driver', 'fix-driver.ps1', 'Recover the NTPods AAP devnode from Code 38 (no reboot).'),
+            @('NTPods Fix Driver', 'fix-driver.ps1', 'Recover the selected AirPods control driver and report whether Windows needs a restart.'),
             @('NTPods Rename Mic', 'rename-mic.ps1', 'Rename the NTPods virtual mic to the connected device name.'))) {
         # PowerShell's WindowStyle hides its console only after allocation.
         $action = New-ScheduledTaskAction -Execute (Join-Path $scriptDir 'ntpodsd.exe') `

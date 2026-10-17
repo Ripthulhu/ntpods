@@ -19,9 +19,10 @@ Windows 11, Intel AX200, Pro 3 A3064 / 9A348:
 | Hearing and Custom Transparency reads (NTPods 0.2.25) | ATT `0x0E` without the override; succeeded after applying it and restarting, without re-pairing |
 | Unenrolled hearing status (0.2.26) | Read correctly |
 | Custom Transparency | Audible noise-reduction adjustment and restoration confirmed by readback |
+| Saved hearing modes | With an iPhone-fitted profile, Hearing Aid and Media Assist changed independently; the fitting bytes stayed unchanged |
 
-Hearing values remain read-only. Hearing activation/writes, the Windows SDP
-reply, other models and other adapters remain unverified.
+The captured fitting remains read-only; NTPods cannot run the iPhone Hearing
+Test. The Windows SDP reply, other models and other adapters remain unverified.
 
 ## Backup and recovery
 

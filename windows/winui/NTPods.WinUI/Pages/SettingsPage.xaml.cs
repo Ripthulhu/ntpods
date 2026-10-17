@@ -31,6 +31,7 @@ public sealed partial class SettingsPage : UserControl
     public event Action? ExperimentalVisibilityChanged;
 
     private bool _applyingLang;
+    private bool _applyingPreferences = true;
     private bool _applyingStartup;
     private bool _applyingNearbyBattery;
     private bool _nearbyHasSnapshot;
@@ -60,6 +61,7 @@ public sealed partial class SettingsPage : UserControl
         catch { }
 
         InitLanguageCombo();
+        _applyingPreferences = false;
     }
 
     /// Select the saved language without writing it back during initialization.
@@ -84,23 +86,32 @@ public sealed partial class SettingsPage : UserControl
     {
         if (_applyingLang) return;
         var tag = (LanguageCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
-        AppSettings.SetLanguageTag(tag);
+        bool saved = AppSettings.SetLanguageTag(tag);
         Loc.Instance.SetCulture(tag);
+        ShowSaveResult(saved);
     }
 
     public void InitThemeSelector(int index)
     {
-        if (index >= 0 && index <= 2) ThemeButtons.SelectedIndex = index;
+        _applyingPreferences = true;
+        try { if (index >= 0 && index <= 2) ThemeButtons.SelectedIndex = index; }
+        finally { _applyingPreferences = false; }
     }
 
     private void ThemeButtons_SizeChanged(object sender, SizeChangedEventArgs e) =>
         ThemeButtons.MaxColumns = e.NewSize.Width < 400 ? 1 : 3;
 
-    public void InitExperimentalSetting() => ExperimentalSetting.IsOn = AppSettings.EnableExperimental;
+    public void InitExperimentalSetting()
+    {
+        _applyingPreferences = true;
+        try { ExperimentalSetting.IsOn = AppSettings.EnableExperimental; }
+        finally { _applyingPreferences = false; }
+    }
 
     private void ExperimentalSetting_Toggled(object sender, RoutedEventArgs e)
     {
-        AppSettings.SetEnableExperimental(ExperimentalSetting.IsOn);
+        if (_applyingPreferences) return;
+        ShowSaveResult(AppSettings.SetEnableExperimental(ExperimentalSetting.IsOn));
         ExperimentalVisibilityChanged?.Invoke();
     }
 
@@ -216,14 +227,28 @@ public sealed partial class SettingsPage : UserControl
 
     private void Theme_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        if (_applyingPreferences) return;
         var index = ThemeButtons.SelectedIndex;
-        AppSettings.SetThemeIndex(index);
+        ShowSaveResult(AppSettings.SetThemeIndex(index));
         ThemeChanged?.Invoke(index switch
         {
             1 => ElementTheme.Light,
             2 => ElementTheme.Dark,
             _ => ElementTheme.Default,
         });
+    }
+
+    private void ShowSaveResult(bool saved)
+    {
+        if (saved)
+        {
+            if (SettingsInfoBar.Message == Localize.Get("Settings.SaveFailed")) SettingsInfoBar.IsOpen = false;
+            return;
+        }
+        SettingsInfoBar.ActionButton = null;
+        SettingsInfoBar.Severity = InfoBarSeverity.Error;
+        SettingsInfoBar.Message = Localize.Get("Settings.SaveFailed");
+        SettingsInfoBar.IsOpen = true;
     }
 
     /// Refresh nearby-battery preferences and the hidden device metadata.

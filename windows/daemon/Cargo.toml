@@ -52,6 +52,10 @@ cc = "1"
 name = "ntpodsd"
 path = "src/main.rs"
 
+[[example]]
+name = "decode_hearing_diagnostics"
+test = true
+
 [profile.release]
 opt-level = "s"
 lto = true

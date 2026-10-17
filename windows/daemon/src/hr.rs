@@ -87,6 +87,7 @@ struct HeartRateCommand {
 pub struct RtBuddyHeartRateDecoder {
     carry: Vec<u8>,
     report_service: Option<u8>,
+    awaiting_descriptor: bool,
 }
 
 /// One validated reading: BPM plus the sensor's confidence byte (payload[2]).
@@ -107,24 +108,29 @@ impl RtBuddyHeartRateDecoder {
         RtBuddyHeartRateDecoder {
             carry: Vec::new(),
             report_service: None,
+            awaiting_descriptor: false,
         }
     }
 
     /// Report discovery must not change the separate firmware-specific activation IDs.
     pub fn set_report_service(&mut self, service: Option<u8>) {
+        self.awaiting_descriptor =
+            (self.report_service.is_some() || self.awaiting_descriptor) && service.is_none();
         self.report_service = service;
-        self.reset();
+        self.carry.clear();
     }
 
-    /// Drop any partial-frame carry (call on connect/disconnect).
+    /// Device-supplied mappings and partial frames belong to one connection.
     pub fn reset(&mut self) {
         self.carry.clear();
+        self.report_service = None;
+        self.awaiting_descriptor = false;
     }
 
     /// Feed one received chunk; returns any newly-decoded samples.
     pub fn feed(&mut self, chunk: &[u8]) -> Vec<HrSample> {
         let mut samples = Vec::new();
-        if chunk.is_empty() {
+        if chunk.is_empty() || self.awaiting_descriptor {
             return samples;
         }
 
@@ -527,7 +533,17 @@ mod tests {
             assert!(decoder.feed(&frame(id)).is_empty());
         }
         decoder.set_report_service(None);
+        for id in [19, 20, 27, 84] {
+            assert!(decoder.feed(&frame(id)).is_empty());
+        }
+        decoder.set_report_service(None);
+        assert!(decoder.feed(&frame(20)).is_empty());
+        decoder.set_report_service(Some(28));
+        assert_eq!(decoder.feed(&frame(28)), expected);
+        assert!(decoder.feed(&frame(20)).is_empty());
+        decoder.reset();
         assert_eq!(decoder.feed(&frame(20)), expected);
+        assert!(decoder.feed(&frame(28)).is_empty());
     }
 
     #[test]

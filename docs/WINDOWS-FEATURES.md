@@ -11,7 +11,7 @@ AirPods. See the [model list](WINDOWS-MODEL-SUPPORT.md) for capability gates and
 | Microphone | Automatic, Keep active, Manual Start/Stop and a keyboard shortcut |
 | Stems | Press-and-hold actions, noise-mode cycle, volume swipe, press speed, hold/swipe duration and stored call gestures |
 | Accessibility and charging | One-bud ANC, tone and case volume, case sounds, optimized charging and experimental Loud Sound Reduction |
-| Sensors and hearing | Heart rate, live head movement, experimental hearing assistance and Custom Transparency |
+| Sensors and hearing | Heart rate, live head movement, experimental Hearing Aid, Media Assist and Custom Transparency |
 
 Automatic pause is a local NTPods preference. It resumes only the same media
 session that NTPods paused. Editing an AirPods call or assistant preference does
@@ -128,18 +128,17 @@ at most 25 times per second. The graph follows the
 The values are not calibrated angles; nod/shake actions and spatial audio are
 not implemented.
 
-Heart rate, hearing assistance and multipoint remain experimental. Custom
+Heart rate, Hearing Aid, Media Assist and multipoint remain experimental. Custom
 Transparency offers per-ear amplification, tone, ambient-noise reduction and
 Conversation Boost after reading the current settings. On Pro 3, the
 [Apple Bluetooth identity](BLUETOOTH-HOST-IDENTITY.md) allowed reads, writes
 and an audible Custom Transparency adjustment, with restoration confirmed by
-readback. Hearing assistance uses a separate eight-band
-audiogram. Use **Read** before enabling or editing hearing assistance; all eight
-thresholds for each ear must be available. Captured formats whose write behavior
-is unresolved are displayed read-only; Off remains available. Scalar changes
-preserve those curves and untouched per-ear controls. A changed connection or failed request requires
-a fresh read, and writes are confirmed by readback. Neither feature is the native
-three-band EQ.
+readback. Hearing Aid and Media Assist can switch an existing iPhone-fitted
+profile independently on Pro 3 / 9A348. NTPods reads and preserves its separate
+eight-band audiogram; the captured fitting formats remain read-only. The mode
+switches require confirmed device reports, and other models remain untested.
+Neither feature is the native three-band EQ. See the
+[control protocol](WINDOWS-AIRPODS-CONTROL-PROTOCOL.md#att-settings).
 
 Find My and firmware updates are not implemented. SPL0 sensor messages have no
 verified measurement scale and no UI. See the

@@ -19,7 +19,7 @@ fn helper_script(args: &[OsString]) -> Option<&'static str> {
     }
 }
 
-fn machine_directory(key: &str, value: &str) -> io::Result<PathBuf> {
+pub(crate) fn machine_directory(key: &str, value: &str) -> io::Result<PathBuf> {
     let mut buffer = [0u16; 32768];
     let mut bytes = std::mem::size_of_val(&buffer) as u32;
     let result = unsafe {
@@ -142,7 +142,7 @@ mod tests {
         std::fs::write(&script, r#"$ErrorActionPreference = 'Stop'
 Add-Type -Name ConsoleProbe -Namespace NTPodsTest -MemberDefinition '[DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();'
 if ([NTPodsTest.ConsoleProbe]::GetConsoleWindow() -ne [IntPtr]::Zero) { exit 1 }
-exit 73"#).unwrap();
+exit 3010"#).unwrap();
         let powershell = machine_directory(
             r"SOFTWARE\Microsoft\Windows NT\CurrentVersion",
             "SystemRoot",
@@ -157,6 +157,6 @@ exit 73"#).unwrap();
         std::fs::remove_file(script).unwrap();
         std::fs::remove_file(exe).unwrap();
         std::fs::remove_dir(directory).unwrap();
-        assert_eq!(result.unwrap().code(), Some(73));
+        assert_eq!(result.unwrap().code(), Some(3010));
     }
 }

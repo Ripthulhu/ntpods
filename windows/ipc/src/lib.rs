@@ -98,14 +98,12 @@ impl HearingAidSettings {
             .iter()
             .chain(&self.right_eq)
             .all(|v| v.is_finite() && (0.0..=90.0).contains(v))
-            && [
-                self.left_amplification,
-                self.right_amplification,
-                self.left_tone,
-                self.right_tone,
-            ]
-            .iter()
-            .all(|v| v.is_finite() && (-1.0..=1.0).contains(v))
+            && [self.left_amplification, self.right_amplification]
+                .iter()
+                .all(|v| v.is_finite() && (-1.5..=1.5).contains(v))
+            && [self.left_tone, self.right_tone]
+                .iter()
+                .all(|v| v.is_finite() && (-1.0..=1.0).contains(v))
             && [
                 self.left_ambient_noise_reduction,
                 self.right_ambient_noise_reduction,
@@ -243,6 +241,9 @@ pub struct Snapshot {
     pub device_controls: BTreeMap<u8, u32>,
     #[serde(default, deserialize_with = "deserialize_device_controls")]
     pub device_controls_pending: BTreeMap<u8, u32>,
+    /// Raw capability IDs and values reported by the current AACP connection.
+    #[serde(default, deserialize_with = "deserialize_device_controls")]
+    pub aacp_capabilities: BTreeMap<u8, u32>,
     /// Strength sent successfully, but not yet reported by the AirPods; never confirmed state.
     #[serde(default, deserialize_with = "deserialize_adaptive_strength_requested")]
     pub adaptive_strength_requested: Option<u32>,
@@ -257,6 +258,14 @@ pub struct Snapshot {
     pub hearing_aid_enabled: Option<bool>,
     #[serde(default)]
     pub hearing_aid_revision: u64,
+    #[serde(default)]
+    pub hearing_aid_enrolled: Option<bool>,
+    #[serde(default)]
+    pub media_assist_enabled: Option<bool>,
+    #[serde(default)]
+    pub media_assist_revision: u64,
+    #[serde(default)]
+    pub media_assist_available: bool,
     #[serde(default)]
     pub hearing_aid_settings: Option<HearingAidSettings>,
     #[serde(default)]
@@ -294,6 +303,9 @@ pub struct Snapshot {
     /// windows, disconnected, starting, ready, stopping, or error.
     #[serde(default = "default_playback_state")]
     pub playback_state: String,
+    /// The selected AirPods have an active Windows render endpoint or ready native output.
+    #[serde(default)]
+    pub audio_output_ready: bool,
     #[serde(default)]
     pub playback_error: Option<String>,
     #[serde(default)]
@@ -437,12 +449,17 @@ impl Default for Snapshot {
             allow_off_requested: None,
             device_controls: BTreeMap::new(),
             device_controls_pending: BTreeMap::new(),
+            aacp_capabilities: BTreeMap::new(),
             adaptive_strength_requested: None,
             device_settings_error: None,
             eq: None,
             eq_pending: None,
             hearing_aid_enabled: None,
             hearing_aid_revision: 0,
+            hearing_aid_enrolled: None,
+            media_assist_enabled: None,
+            media_assist_revision: 0,
+            media_assist_available: false,
             hearing_aid_settings: None,
             hearing_aid_editable: false,
             hearing_aid_pending: false,
@@ -459,6 +476,7 @@ impl Default for Snapshot {
             playback_mode: PlaybackMode::Windows,
             playback_preferred_mode: None,
             playback_state: default_playback_state(),
+            audio_output_ready: false,
             playback_error: None,
             playback_available: false,
             playback_native_driver: false,
@@ -620,6 +638,16 @@ pub enum Command {
     },
     /// Read both existing audiograms and per-ear controls without enabling or writing.
     GetHearingAid,
+    /// Toggle the stored fitting without editing its audiogram or adjustments.
+    SetHearingAidMode {
+        request_id: u64,
+        on: bool,
+    },
+    /// Toggle the stored voice/media fitting while preserving its curves.
+    SetMediaAssist {
+        request_id: u64,
+        on: bool,
+    },
     /// Enabling or editing requires complete settings and a read in this connection.
     /// Disabling remains available without settings, including after a read failure.
     SetHearingAid {
@@ -631,8 +659,12 @@ pub enum Command {
         #[serde(default)]
         settings: Option<HearingAidSettings>,
     },
-    /// Request AAP and Windows audio connections.
-    Connect,
+    /// Request AAP and Windows audio connections. An optional device ID binds
+    /// an island action to the pair shown when the user pressed Connect.
+    Connect {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device_id: Option<String>,
+    },
     /// Select the exact Classic device after Windows pairing succeeds.
     PairingCompleted {
         address: String,
@@ -675,6 +707,12 @@ pub enum Event {
     ConnectPrompt { name: String },
     /// Public lid report; the model is an invitation hint, not a paired identity.
     PairingNearby { model: u16, lid_open: bool },
+    /// Authenticated selected-pair lid edge, ordered within this daemon session.
+    PairedLid {
+        device_id: String,
+        lid_open: bool,
+        sequence: u64,
+    },
     CommandResult {
         command: String,
         #[serde(default)]
@@ -737,6 +775,70 @@ mod tests {
     }
 
     #[test]
+    fn paired_lid_edges_carry_exact_owner_and_session_order() {
+        for (lid_open, sequence) in [(true, 1), (false, 2)] {
+            let line = to_line(&Event::PairedLid {
+                device_id: "001122334455".into(),
+                lid_open,
+                sequence,
+            });
+            assert_eq!(
+                line,
+                format!(
+                    "{{\"event\":\"paired_lid\",\"device_id\":\"001122334455\",\"lid_open\":{lid_open},\"sequence\":{sequence}}}\n"
+                )
+            );
+            assert!(matches!(
+                from_line::<Event>(&line),
+                Some(Event::PairedLid { device_id, lid_open: actual, sequence: actual_sequence })
+                    if device_id == "001122334455" && actual == lid_open && actual_sequence == sequence
+            ));
+        }
+        for malformed in [
+            r#"{"event":"paired_lid","device_id":"001122334455","lid_open":true}"#,
+            r#"{"event":"paired_lid","device_id":"001122334455","sequence":1}"#,
+            r#"{"event":"paired_lid","lid_open":true,"sequence":1}"#,
+            r#"{"event":"paired_lid","device_id":"001122334455","lid_open":1,"sequence":1}"#,
+            r#"{"event":"paired_lid","device_id":"001122334455","lid_open":true,"sequence":-1}"#,
+        ] {
+            assert!(from_line::<Event>(malformed).is_none());
+        }
+    }
+
+    #[test]
+    fn connect_accepts_legacy_request_and_optional_pair_identity() {
+        let legacy = r#"{"cmd":"connect"}"#;
+        assert!(matches!(
+            from_line::<Command>(legacy),
+            Some(Command::Connect { device_id: None })
+        ));
+        assert_eq!(
+            to_line(&Command::Connect { device_id: None }),
+            format!("{legacy}\n")
+        );
+
+        let bound = Command::Connect {
+            device_id: Some("001122334455".into()),
+        };
+        let line = to_line(&bound);
+        assert_eq!(
+            line,
+            "{\"cmd\":\"connect\",\"device_id\":\"001122334455\"}\n"
+        );
+        assert!(matches!(
+            from_line::<Command>(&line),
+            Some(Command::Connect { device_id: Some(id) }) if id == "001122334455"
+        ));
+        for malformed in [
+            r#"{"cmd":"connect","device_id":42}"#,
+            r#"{"cmd":"connect","device_id":true}"#,
+            r#"{"cmd":"connect","device_id":[]}"#,
+        ] {
+            assert!(from_line::<Command>(malformed).is_none());
+        }
+    }
+
+    #[test]
     fn hearing_settings_require_complete_finite_curves_and_never_infer_defaults() {
         let settings = HearingAidSettings {
             left_eq: [5.; 8],
@@ -752,6 +854,38 @@ mod tests {
             own_voice: 0.5,
         };
         assert!(settings.is_valid());
+        for amplification in [-1.5, -1.25, 1.25, 1.5] {
+            assert!(HearingAidSettings {
+                left_amplification: amplification,
+                right_amplification: -amplification,
+                ..settings
+            }
+            .is_valid());
+        }
+        for amplification in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.5001, 1.5001] {
+            assert!(!HearingAidSettings {
+                left_amplification: amplification,
+                ..settings
+            }
+            .is_valid());
+            assert!(!HearingAidSettings {
+                right_amplification: amplification,
+                ..settings
+            }
+            .is_valid());
+        }
+        for tone in [-1.0001, 1.0001] {
+            assert!(!HearingAidSettings {
+                left_tone: tone,
+                ..settings
+            }
+            .is_valid());
+            assert!(!HearingAidSettings {
+                right_tone: tone,
+                ..settings
+            }
+            .is_valid());
+        }
         let encoded = serde_json::to_value(settings).unwrap();
         for key in encoded.as_object().unwrap().keys() {
             let mut missing = encoded.clone();
@@ -1065,6 +1199,7 @@ mod tests {
     fn tagged_state_roundtrip_preserves_numeric_keys_and_full_control_values() {
         let state = Snapshot {
             device_controls: [(0x24, 0x0200), (0x1F, 0x5064)].into(),
+            aacp_capabilities: [(0x11, 1), (0xC0, 2), (0x30, u32::MAX)].into(),
             allow_off_requested: Some(false),
             adaptive_strength_requested: Some(25),
             anc_unconfirmed: true,
@@ -1090,6 +1225,7 @@ mod tests {
             "auto_pause",
             "device_controls",
             "device_controls_pending",
+            "aacp_capabilities",
             "adaptive_strength_requested",
             "allow_off_requested",
             "eq",
@@ -1105,6 +1241,7 @@ mod tests {
             panic!("expected legacy state");
         };
         assert!(actual.auto_pause && actual.device_controls.is_empty() && actual.eq.is_none());
+        assert!(actual.aacp_capabilities.is_empty());
         assert!(!actual.anc_unconfirmed);
         assert!(actual.adaptive_strength_requested.is_none());
         assert!(actual.allow_off_requested.is_none());
@@ -1146,9 +1283,14 @@ mod tests {
             "null",
             "[]",
         ] {
-            let mut state = serde_json::to_value(Event::State(Snapshot::default())).unwrap();
-            state["device_controls"] = serde_json::from_str(map).unwrap();
-            assert!(from_line::<Event>(&to_line(&state)).is_none(), "{map}");
+            for field in ["device_controls", "aacp_capabilities"] {
+                let mut state = serde_json::to_value(Event::State(Snapshot::default())).unwrap();
+                state[field] = serde_json::from_str(map).unwrap();
+                assert!(
+                    from_line::<Event>(&to_line(&state)).is_none(),
+                    "{field}: {map}"
+                );
+            }
         }
     }
 

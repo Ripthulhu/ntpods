@@ -1,4 +1,5 @@
 using System.IO;
+using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.UI.Xaml;
 
@@ -51,20 +52,54 @@ public static class AppSettings
         }
     }
 
-    private static void Save(Model m)
+    private static bool Update(Action<Model> update)
     {
         lock (_gate)
         {
-            _cache = m;
+            var model = Load();
+            update(model);
+            return SaveFile(Path_(), stream => JsonSerializer.Serialize(stream, model));
+        }
+    }
+
+    internal static bool SaveFile(string? path, Action<FileStream> write)
+    {
+        try
+        {
+            if (path is null) throw new IOException("Local app data is unavailable.");
+            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
+            var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None);
             try
             {
-                var path = Path_();
-                if (path is null) return;
-                var dir = System.IO.Path.GetDirectoryName(path);
-                if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-                File.WriteAllText(path, JsonSerializer.Serialize(m));
+                using (stream)
+                {
+                    write(stream);
+                    stream.Flush(flushToDisk: true);
+                }
+                File.Move(temporary, path, overwrite: true);
+            }
+            finally
+            {
+                try { File.Delete(temporary); }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
+            return true;
+        }
+        catch (Exception error)
+        {
+            // Exception messages can contain profile paths; retain only the error type and code.
+            string message = $"App settings save failed: {error.GetType().Name} (0x{error.HResult:X8}).";
+            Trace.TraceError(message);
+            try
+            {
+                if (path is not null)
+                    File.AppendAllText(System.IO.Path.Combine(System.IO.Path.GetDirectoryName(path)!, "winui.log"),
+                        $"{DateTimeOffset.UtcNow:O} {message}{Environment.NewLine}");
             }
             catch { }
+            return false;
         }
     }
 
@@ -80,37 +115,28 @@ public static class AppSettings
     };
 
     /// Persist the chosen theme index.
-    public static void SetThemeIndex(int index)
-    {
-        var m = Load();
-        m.ThemeIndex = index;
-        Save(m);
-    }
+    public static bool SetThemeIndex(int index) => Update(m => m.ThemeIndex = index);
 
     /// Whether experimental settings are shown (off by default).
     public static bool EnableExperimental => Load().EnableExperimental;
 
     /// Persist the experimental-features opt-in.
-    public static void SetEnableExperimental(bool on)
-    {
-        var m = Load();
-        m.EnableExperimental = on;
-        Save(m);
-    }
+    public static bool SetEnableExperimental(bool on) => Update(m => m.EnableExperimental = on);
 
     /// The last-seen device model number (for the connect island's early artwork).
     public static string LastModel => Load().LastModel ?? "";
     public static string LastDeviceId => Load().LastDeviceId ?? "";
 
     /// Persist the last-seen device model number.
-    public static void SetLastModel(string model, string deviceId)
+    public static bool SetLastModel(string model, string deviceId)
     {
-        if (string.IsNullOrWhiteSpace(model)) return;
-        var m = Load();
-        if (m.LastModel == model && m.LastDeviceId == deviceId) return;
-        m.LastModel = model;
-        m.LastDeviceId = deviceId;
-        Save(m);
+        if (string.IsNullOrWhiteSpace(model)) return true;
+        lock (_gate)
+        {
+            var m = Load();
+            if (m.LastModel == model && m.LastDeviceId == deviceId) return true;
+            return Update(m => { m.LastModel = model; m.LastDeviceId = deviceId; });
+        }
     }
 
     /// The saved UI language override (BCP-47, e.g. "pt-PT"); "" = follow the system.
@@ -118,18 +144,9 @@ public static class AppSettings
 
     public static HotkeyGesture? MicHotkey => Load().MicHotkey is { IsValid: true } gesture ? gesture : null;
 
-    public static void SetMicHotkey(HotkeyGesture? gesture)
-    {
-        var m = Load();
-        m.MicHotkey = gesture is { IsValid: true } ? gesture : null;
-        Save(m);
-    }
+    public static bool SetMicHotkey(HotkeyGesture? gesture) =>
+        Update(m => m.MicHotkey = gesture is { IsValid: true } ? gesture : null);
 
     /// Persist the language choice; the caller updates Loc for the current session.
-    public static void SetLanguageTag(string tag)
-    {
-        var m = Load();
-        m.LanguageTag = tag ?? "";
-        Save(m);
-    }
+    public static bool SetLanguageTag(string tag) => Update(m => m.LanguageTag = tag ?? "");
 }

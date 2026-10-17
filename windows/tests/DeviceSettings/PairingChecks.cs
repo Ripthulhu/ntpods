@@ -1,4 +1,6 @@
 using NTPods.WinUI.Services;
+using NTPods.WinUI.Ipc;
+using NTPods.WinUI.Popup;
 
 internal static class PairingChecks
 {
@@ -66,9 +68,33 @@ internal static class PairingChecks
               PairingInstructions.ForName("My AirPods") == "Pairing.PrepareCase" &&
               PairingInstructions.ForName("AirPods Pro") == "Pairing.PrepareCase",
             "Pairing guidance must cover both case controls when the model is unknown.");
+        check(PairingInstructions.ForModel(0x2720) == "Pairing.DoubleTapCase" &&
+              PairingInstructions.ForModel(0x1920) == "Pairing.DoubleTapCase" &&
+              PairingInstructions.ForModel(0x1b20) == "Pairing.DoubleTapCase" &&
+              PairingInstructions.ForModel(0x3020) == "Pairing.DoubleTapCase" &&
+              PairingInstructions.ForModel(0x3620) == "Pairing.DoubleTapCase" &&
+              PairingInstructions.ForModel(0x0220) == "Pairing.HoldSetupButton" &&
+              PairingInstructions.ForModel(0x0f20) == "Pairing.HoldSetupButton" &&
+              PairingInstructions.ForModel(0x1320) == "Pairing.HoldSetupButton" &&
+              PairingInstructions.ForModel(0x0e20) == "Pairing.HoldSetupButton" &&
+              PairingInstructions.ForModel(0x1420) == "Pairing.HoldSetupButton" &&
+              PairingInstructions.ForModel(0x2420) == "Pairing.HoldSetupButton" &&
+              PairingInstructions.ForModel(0xffff) == "Pairing.PrepareCase",
+            "Known lid models must name the correct pairing control; an unknown model stays generic.");
+        check(PairingInstructions.InitialGesture("Pairing.Nearby", "Pairing.DoubleTapCase") == "Pairing.DoubleTapCase" &&
+              PairingInstructions.InitialGesture("Pairing.Nearby", "Pairing.HoldSetupButton") == "Pairing.HoldSetupButton" &&
+              PairingInstructions.InitialGesture("ConnectPrompt_Nearby", "Pairing.Pairing") is null &&
+              PairingInstructions.InitialGesture("Pairing.Nearby", "Pairing.Pairing") is null,
+            "Preparation appears only on an initial pairing card, never on reconnect or generic progress.");
         CheckRetries(check).GetAwaiter().GetResult();
         CheckAutomaticSelection(check);
         CheckCandidateChanges(check);
+        CheckPairedBattery(check);
+        check(!PairingBatteryLayout.Split(0, 0, false, false) &&
+              PairingBatteryLayout.Split(0, 0, true, false) &&
+              PairingBatteryLayout.Split(null, 92, false, false) &&
+              !PairingBatteryLayout.Split(null, null, false, false),
+            "The completed card combines equal bud readings, but keeps different levels or charging states separate.");
         Console.WriteLine("Pairing discovery and invitation checks passed.");
     }
 
@@ -76,6 +102,9 @@ internal static class PairingChecks
     {
         check(PairingInvitationPolicy.NearbyName(0x2720) == DeviceModels.Find("A3063").Name,
             "A lid invitation uses the catalog name for its advertised model.");
+        check(PairingInvitationPolicy.NearbyCatalogModel(0x2720) == "A3063" &&
+              PairingInvitationPolicy.NearbyCatalogModel(0xffff) is null,
+            "Pairing artwork must follow only a recognized advertised model.");
         check(PairingInvitationPolicy.NearbyName(0x0e20) == DeviceModels.Find("A2084").Name,
             "Each nearby case uses its own advertised model name.");
         check(PairingInvitationPolicy.NearbyName(0xffff) is null && PairingInvitationPolicy.NearbyName(0x0a20) is null,
@@ -129,6 +158,24 @@ internal static class PairingChecks
               !new PairingCandidate("speaker", "AirPods speaker", 4, 5).IsAirPods &&
               !new PairingCandidate("other", "Sony headphones", 4, 6).IsAirPods,
             "A name and any available headphone class must agree; unrelated devices must not be chosen.");
+        check(new PairingCandidate("custom", "My AirPods", 4, 6).MatchesModel(0x2720) &&
+              new PairingCandidate("pro3", "AirPods Pro 3", 4, 6).MatchesModel(0x2720) &&
+              !new PairingCandidate("pro2", "AirPods Pro 2", 4, 6).MatchesModel(0x2720) &&
+              !new PairingCandidate("regular", "AirPods 3", 4, 6).MatchesModel(0x2720) &&
+              !new PairingCandidate("max", "AirPods Max", 4, 6).MatchesModel(0x2720) &&
+              !new PairingCandidate("fake", "NotAirPods", 4, 6).IsAirPods,
+            "An advertised model may select only a compatible Classic endpoint, even after a rename.");
+
+        var matched = new PairingDiscoveryState();
+        int matchedGeneration = matched.Begin();
+        matched.Update(matchedGeneration, "pro3", "AirPods Pro 3", false, true, true, 4, 6);
+        matched.Update(matchedGeneration, "regular", "AirPods 4", false, true, true, 4, 6);
+        check(matched.AutomaticCandidate(0, out bool mixed, 0x2720) is null && !mixed &&
+              matched.AutomaticCandidate(2000, out mixed, 0x2720) == "pro3" && !mixed,
+            "A different AirPods generation must not block selection of the advertised case.");
+        matched.Update(matchedGeneration, "second", "AirPods Pro 3", false, true, true, 4, 6);
+        check(matched.AutomaticCandidate(2100, out mixed, 0x2720) is null && mixed,
+            "Two compatible pairs must block automatic pairing.");
 
         var state = new PairingDiscoveryState();
         int generation = state.Begin();
@@ -249,5 +296,62 @@ internal static class PairingChecks
             check(false, "An access failure must leave the retry loop.");
         }
         catch (UnauthorizedAccessException) { check(attempts == 1, "Permission failures must not retry."); }
+    }
+
+    private static void CheckPairedBattery(Action<bool, string> check)
+    {
+        check(PairingBatteryState.DeviceId("01:23:45:67:89:AB") == "0123456789ab" &&
+              PairingBatteryState.DeviceId("0123456789AB") == "0123456789ab" &&
+              PairingBatteryState.DeviceId("0:123456789ab") is null,
+            "Pairing success must identify only the exact paired device.");
+        var snapshot = new Snapshot
+        {
+            DeviceId = "0123456789ab",
+            BatterySource = "ble",
+            BatteryLive = true,
+            Battery = new Battery { Left = 0, Right = 60, Case = 77,
+                LeftCharging = true, RightCharging = true, CaseCharging = true },
+            BatteryFreshness = new BatteryFreshness
+            {
+                Left = new BatteryObservation { TimestampMs = 2100, Live = true, Present = true },
+                Right = new BatteryObservation { TimestampMs = 2000, Live = true, Present = true },
+                Case = new BatteryObservation { TimestampMs = 2200, Live = true, Present = true },
+            },
+        };
+        check(PairingBatteryState.Read(snapshot, "01:23:45:67:89:ac", 2000, 5000) is null &&
+              PairingBatteryState.Read(snapshot, "01:23:45:67:89:ab:cd", 2000, 5000) is null,
+            "The completed card cannot inherit another pair's battery readings.");
+        var levels = PairingBatteryState.Read(snapshot, "01:23:45:67:89:ab", 2000, 5000);
+        check(levels is { Left: 0, Right: null, Case: 77, LeftCharging: true, RightCharging: false,
+                CaseCharging: true, NextExpiryMs: 92100 },
+            "A real zero stays visible; pre-bond readings remain unknown and valid parts expire separately.");
+        snapshot.BatteryFreshness.Left.TimestampMs = 1000;
+        snapshot.BatteryFreshness.Case.Live = false;
+        levels = PairingBatteryState.Read(snapshot, "0123456789ab", 2000, 5000);
+        check(levels is { Left: null, Right: null, Case: null, NextExpiryMs: null },
+            "Cached and unavailable readings must not appear in the completed card.");
+        snapshot.BatteryFreshness.Left.TimestampMs = 2100;
+        snapshot.BatteryFreshness.Case.Live = true;
+        levels = PairingBatteryState.Read(snapshot, "0123456789ab", 2000, 92100);
+        check(levels is { Left: null, Right: null, Case: 77, NextExpiryMs: 92200 },
+            "One-shot expiry must remove a part at 90 seconds without hiding newer parts.");
+
+        snapshot.Battery.Headphone = 0;
+        snapshot.Battery.HeadphoneCharging = true;
+        snapshot.BatteryFreshness.Headphone = new BatteryObservation
+        {
+            TimestampMs = 2300, Live = true, Present = true,
+        };
+        levels = PairingBatteryState.Read(snapshot, "0123456789ab", 2000, 5000);
+        check(levels is { Headphone: 0, HeadphoneCharging: true, NextExpiryMs: 92100 },
+            "A newly paired AirPods Max must show its own live battery, including a real zero.");
+        snapshot.BatteryFreshness.Headphone.TimestampMs = 2000;
+        levels = PairingBatteryState.Read(snapshot, "0123456789ab", 2000, 5000);
+        check(levels is { Headphone: null, HeadphoneCharging: false },
+            "An AirPods Max reading from before the bond must remain unavailable.");
+        snapshot.BatteryFreshness.Headphone.TimestampMs = 2300;
+        levels = PairingBatteryState.Read(snapshot, "0123456789ab", 2000, 92300);
+        check(levels is { Headphone: null, HeadphoneCharging: false },
+            "An AirPods Max reading must expire after 90 seconds without hiding the card.");
     }
 }

@@ -24,8 +24,10 @@ internal sealed class HearingAidEditState
             _deviceId = snapshot.DeviceId;
         }
         if (!available || !validRead || snapshot.HearingAidSettings is not { } settings) return true;
-        bool editabilityChanged = Editable != snapshot.HearingAidEditable;
-        Editable = snapshot.HearingAidEditable;
+        bool editable = snapshot.HearingAidEditable &&
+            settings.LeftAmplification is >= -1 and <= 1 && settings.RightAmplification is >= -1 and <= 1;
+        bool editabilityChanged = Editable != editable;
+        Editable = editable;
         if (_baseline?.SameValues(settings) == true && !editabilityChanged) return false;
         _baseline = Copy(settings);
         Draft = Copy(settings);
@@ -73,8 +75,6 @@ internal sealed class HearingAidEditState
         Dirty = true;
         return true;
     }
-
-    public bool CanSetEnabled(bool on, bool? enabled) => on ? enabled is not null && CanApply : enabled == true;
 
     public void Reset()
     {

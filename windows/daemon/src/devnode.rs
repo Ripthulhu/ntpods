@@ -4,23 +4,51 @@
 //! the unelevated daemon triggers the installer-created "NTPods Fix Driver" task.
 //! Its `fix-driver.ps1` rechecks the devnode and leaves healthy devices alone.
 
-use std::io::{self, Write};
-use std::os::windows::{ffi::OsStrExt, process::CommandExt};
+use std::io;
+use std::os::windows::process::CommandExt;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use windows_sys::Win32::Storage::FileSystem::{
-    MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-};
 
-const TASK_NAME: &str = "NTPods Fix Driver";
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// Limit recovery attempts because each devnode restart interrupts audio.
 const COOLDOWN: Duration = Duration::from_secs(120);
 
 static LAST_FIRED: Mutex<Option<Instant>> = Mutex::new(None);
+static RECOVERING: AtomicBool = AtomicBool::new(false);
+static RESTART_REQUIRED: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecoveryResult {
+    Ready,
+    RestartRequired,
+    Failed,
+}
+
+impl RecoveryResult {
+    fn from_exit_code(code: Option<i32>) -> Self {
+        match code {
+            Some(0) => Self::Ready,
+            Some(3010) => Self::RestartRequired,
+            _ => Self::Failed,
+        }
+    }
+}
+
+pub fn recovering() -> bool {
+    RECOVERING.load(Ordering::Acquire)
+}
+
+pub fn restart_required(address: u64) -> bool {
+    address != 0 && RESTART_REQUIRED.load(Ordering::Acquire) == address
+}
+
+pub fn opened(address: u64) {
+    let _ = RESTART_REQUIRED.compare_exchange(address, 0, Ordering::AcqRel, Ordering::Acquire);
+}
 
 fn write_request(directory: &Path, address: u64, now: SystemTime) -> io::Result<()> {
     if address == 0 || address > 0xffff_ffff_ffff {
@@ -30,49 +58,53 @@ fn write_request(directory: &Path, address: u64, now: SystemTime) -> io::Result<
         ));
     }
     let time = now.duration_since(UNIX_EPOCH).map_err(io::Error::other)?;
-    let temporary = directory.join(format!(
-        "driver-recovery-{}-{}.tmp",
-        std::process::id(),
-        time.as_nanos()
-    ));
-    let destination = directory.join("driver-recovery.txt");
-    let result = (|| {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
-        write!(file, "{address:012x} {}", time.as_secs())?;
-        file.sync_all()?;
-        drop(file);
-        let wide = |path: &Path| {
-            path.as_os_str()
-                .encode_wide()
-                .chain(Some(0))
-                .collect::<Vec<_>>()
-        };
-        if unsafe {
-            MoveFileExW(
-                wide(&temporary).as_ptr(),
-                wide(&destination).as_ptr(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-            )
-        } == 0
-        {
-            return Err(io::Error::last_os_error());
+    crate::atomic_file::write(
+        &directory.join("driver-recovery.txt"),
+        format!("{address:012x} {}", time.as_secs()).as_bytes(),
+    )
+}
+
+fn run_recovery_task() -> io::Result<RecoveryResult> {
+    let powershell = crate::helper_launch::machine_directory(
+        r"SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+        "SystemRoot",
+    )?
+    .join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+    let mut child = Command::new(powershell)
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            include_str!("driver_recovery_task.ps1"),
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let deadline = Instant::now() + Duration::from_secs(130);
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(RecoveryResult::from_exit_code(status.code()));
         }
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(temporary);
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(RecoveryResult::Failed);
+        }
+        std::thread::sleep(Duration::from_millis(250));
     }
-    result
 }
 
 /// Publish the selected pair before triggering the fixed elevated task.
-pub fn request_recovery(address: u64) -> bool {
+pub fn request_recovery(
+    address: u64,
+    finished: impl FnOnce(RecoveryResult) + Send + 'static,
+) -> bool {
     {
         let mut last = LAST_FIRED.lock().unwrap_or_else(|e| e.into_inner());
-        if last.is_some_and(|t| t.elapsed() < COOLDOWN) {
+        if recovering() || restart_required(address) || last.is_some_and(|t| t.elapsed() < COOLDOWN)
+        {
             return false;
         }
         let Some(base) = std::env::var_os("LOCALAPPDATA") else {
@@ -82,13 +114,16 @@ pub fn request_recovery(address: u64) -> bool {
             return false;
         }
         *last = Some(Instant::now());
+        RECOVERING.store(true, Ordering::Release);
     }
-    std::thread::spawn(|| {
-        // Missing tasks fail quietly.
-        let _ = Command::new("schtasks")
-            .args(["/run", "/tn", TASK_NAME])
-            .creation_flags(CREATE_NO_WINDOW)
-            .status();
+    std::thread::spawn(move || {
+        let result = run_recovery_task().unwrap_or(RecoveryResult::Failed);
+        if result == RecoveryResult::RestartRequired {
+            RESTART_REQUIRED.store(address, Ordering::Release);
+        }
+        *LAST_FIRED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+        RECOVERING.store(false, Ordering::Release);
+        finished(result);
     });
     true
 }
@@ -96,6 +131,21 @@ pub fn request_recovery(address: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_requires_a_completed_verified_task_result() {
+        assert_eq!(
+            RecoveryResult::from_exit_code(Some(0)),
+            RecoveryResult::Ready
+        );
+        assert_eq!(
+            RecoveryResult::from_exit_code(Some(3010)),
+            RecoveryResult::RestartRequired,
+        );
+        for code in [None, Some(1), Some(267009), Some(-1)] {
+            assert_eq!(RecoveryResult::from_exit_code(code), RecoveryResult::Failed);
+        }
+    }
 
     #[test]
     fn recovery_request_replaces_only_the_fixed_file_and_rejects_invalid_addresses() {

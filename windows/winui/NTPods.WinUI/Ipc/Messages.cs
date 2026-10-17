@@ -63,7 +63,7 @@ public sealed record HearingAidSettings
     [JsonRequired, JsonPropertyName("right_ambient_noise_reduction")] public float RightAmbientNoiseReduction { get; init; }
     [JsonRequired, JsonPropertyName("own_voice")] public float OwnVoice { get; init; }
     [JsonIgnore] public bool IsValid => ValidCurve(LeftEq) && ValidCurve(RightEq) &&
-        InRange(LeftAmplification, -1, 1) && InRange(RightAmplification, -1, 1) &&
+        InRange(LeftAmplification, -1.5f, 1.5f) && InRange(RightAmplification, -1.5f, 1.5f) &&
         InRange(LeftTone, -1, 1) && InRange(RightTone, -1, 1) &&
         InRange(LeftAmbientNoiseReduction, 0, 1) && InRange(RightAmbientNoiseReduction, 0, 1) &&
         InRange(OwnVoice, 0, 1);
@@ -129,6 +129,7 @@ public sealed class Snapshot
     [JsonPropertyName("playback_mode")] public string PlaybackMode { get; set; } = "windows";
     [JsonPropertyName("playback_preferred_mode")] public string? PlaybackPreferredMode { get; set; }
     [JsonPropertyName("playback_state")] public string PlaybackState { get; set; } = "windows";
+    [JsonPropertyName("audio_output_ready")] public bool AudioOutputReady { get; set; }
     [JsonPropertyName("playback_error")] public string? PlaybackError { get; set; }
     [JsonPropertyName("playback_available")] public bool PlaybackAvailable { get; set; }
     [JsonPropertyName("playback_native_driver")] public bool PlaybackNativeDriver { get; set; }
@@ -145,6 +146,10 @@ public sealed class Snapshot
     [JsonPropertyName("adaptive_volume")] public bool AdaptiveVolume { get; set; }
     [JsonPropertyName("hearing_aid_enabled")] public bool? HearingAidEnabled { get; set; }
     [JsonPropertyName("hearing_aid_revision")] public ulong HearingAidRevision { get; set; }
+    [JsonPropertyName("hearing_aid_enrolled")] public bool? HearingAidEnrolled { get; set; }
+    [JsonPropertyName("media_assist_enabled")] public bool? MediaAssistEnabled { get; set; }
+    [JsonPropertyName("media_assist_revision")] public ulong MediaAssistRevision { get; set; }
+    [JsonPropertyName("media_assist_available")] public bool MediaAssistAvailable { get; set; }
     [JsonPropertyName("hearing_aid_settings")] public HearingAidSettings? HearingAidSettings { get; set; }
     [JsonPropertyName("hearing_aid_editable")] public bool HearingAidEditable { get; set; }
     [JsonPropertyName("hearing_aid_pending")] public bool HearingAidPending { get; set; }
@@ -160,6 +165,7 @@ public sealed class Snapshot
     [JsonPropertyName("allow_off_requested")] public bool? AllowOffRequested { get; set; }
     [JsonPropertyName("device_controls")] public Dictionary<byte, uint> DeviceControls { get; set; } = new();
     [JsonPropertyName("device_controls_pending")] public Dictionary<byte, uint> DeviceControlsPending { get; set; } = new();
+    [JsonPropertyName("aacp_capabilities")] public Dictionary<byte, uint> AacpCapabilities { get; set; } = new();
     /// Successfully sent strength, awaiting an actual device report.
     [JsonPropertyName("adaptive_strength_requested")] public uint? AdaptiveStrengthRequested { get; set; }
     [JsonPropertyName("device_settings_error")] public string? DeviceSettingsError { get; set; }
@@ -429,9 +435,25 @@ public sealed class SetHearingAidCmd
     [JsonPropertyName("settings")] public HearingAidSettings? Settings { get; init; }
 }
 
+public sealed class SetHearingAidModeCmd
+{
+    [JsonPropertyName("cmd")] public string Cmd => "set_hearing_aid_mode";
+    [JsonPropertyName("request_id")] public ulong RequestId { get; init; }
+    [JsonPropertyName("on")] public bool On { get; init; }
+}
+
+public sealed class SetMediaAssistCmd
+{
+    [JsonPropertyName("cmd")] public string Cmd => "set_media_assist";
+    [JsonPropertyName("request_id")] public ulong RequestId { get; init; }
+    [JsonPropertyName("on")] public bool On { get; init; }
+}
+
 public sealed class ConnectCmd
 {
     [JsonPropertyName("cmd")] public string Cmd => "connect";
+    [JsonPropertyName("device_id"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DeviceId { get; init; }
 }
 
 public sealed class PairingCompletedCmd
@@ -483,6 +505,7 @@ public abstract record DaemonEvent
     /// BLE proximity notification; the UI checks connection state before offering Connect.
     public sealed record ConnectPrompt(string Name) : DaemonEvent;
     public sealed record PairingNearby(ushort Model, bool LidOpen) : DaemonEvent;
+    public sealed record PairedLid(string DeviceId, bool LidOpen, ulong Sequence) : DaemonEvent;
     public sealed record CommandResult(string Command, ulong RequestId, bool Ok, string Message) : DaemonEvent;
     public sealed record HeadTracking(ulong TimestampMs, short Horizontal, short Vertical) : DaemonEvent;
 }
@@ -519,7 +542,7 @@ public static class Wire
                     // Serde flattens Snapshot beside the event tag; deserialize the whole object.
                     var snap = root.Deserialize<Snapshot>(Json) ?? new Snapshot();
                     if (snap.Battery is null || snap.BatterySource is null || snap.BatteryFreshness is { IsValid: false } ||
-                        snap.DeviceControls is null || snap.DeviceControlsPending is null ||
+                        snap.DeviceControls is null || snap.DeviceControlsPending is null || snap.AacpCapabilities is null ||
                         snap.MicMode is not ("automatic" or "keep_active" or "manual") || snap.MicStopDelaySecs > 3600 ||
                         snap.PlaybackMode is not ("windows" or "aac" or "aac_eld") ||
                         snap.PlaybackPreferredMode is not (null or "windows" or "aac" or "aac_eld") ||
@@ -546,6 +569,16 @@ public static class Wire
                         !model.TryGetUInt16(out var modelId) || !root.TryGetProperty("lid_open", out var lidOpen) ||
                         lidOpen.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) return null;
                     return new DaemonEvent.PairingNearby(modelId, lidOpen.GetBoolean());
+
+                case "paired_lid":
+                    if (!root.TryGetProperty("device_id", out var deviceId) || deviceId.ValueKind != JsonValueKind.String ||
+                        deviceId.GetString() is not { Length: 12 } pairedId ||
+                        pairedId.Any(c => c is not (>= '0' and <= '9' or >= 'a' and <= 'f')) ||
+                        !root.TryGetProperty("lid_open", out var pairedLidOpen) ||
+                        pairedLidOpen.ValueKind is not (JsonValueKind.True or JsonValueKind.False) ||
+                        !root.TryGetProperty("sequence", out var sequence) || sequence.ValueKind != JsonValueKind.Number ||
+                        !sequence.TryGetUInt64(out var number) || number == 0) return null;
+                    return new DaemonEvent.PairedLid(pairedId, pairedLidOpen.GetBoolean(), number);
 
                 case "command_result":
                     if (!root.TryGetProperty("ok", out var ok) || ok.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) return null;

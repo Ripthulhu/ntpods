@@ -67,6 +67,7 @@ fn snapshots() -> Vec<Snapshot> {
             _ => "ready",
         }
         .into(),
+        audio_output_ready: matches!(phase, "idle" | "capturing"),
         playback_error: (phase == "error")
             .then(|| "The AirPods cannot use this AAC bitrate.".into()),
         playback_available: phase != "unavailable",
@@ -142,6 +143,7 @@ fn snapshots() -> Vec<Snapshot> {
         mic_error: (phase == "error")
             .then(|| "Output failed: \"device gone\"\nTry again — later.".into()),
         device_controls: [(1, 0), (31, 0x504B), (36, 0x0300), (40, 2)].into(),
+        aacp_capabilities: [(0x11, 1), (0xC0, 2), (0x30, u32::MAX)].into(),
         device_controls_pending: if phase == "starting" {
             [(35, 3), (40, 1)].into()
         } else {
@@ -178,6 +180,14 @@ fn snapshots() -> Vec<Snapshot> {
             _ => None,
         },
         hearing_aid_revision: 12,
+        hearing_aid_enrolled: (phase != "unavailable").then_some(true),
+        media_assist_enabled: match phase {
+            "idle" => Some(false),
+            "capturing" => Some(true),
+            _ => None,
+        },
+        media_assist_revision: 25,
+        media_assist_available: matches!(phase, "idle" | "capturing"),
         hearing_aid_settings: (phase != "unavailable").then_some(hearing_settings()),
         hearing_aid_editable: matches!(phase, "idle" | "capturing"),
         hearing_aid_pending: phase == "starting",
@@ -306,6 +316,7 @@ fn main() {
                 "conversational_awareness_pending",
                 "device_controls",
                 "device_controls_pending",
+                "aacp_capabilities",
                 "adaptive_strength_requested",
                 "allow_off_requested",
                 "device_settings_error",
@@ -333,6 +344,7 @@ fn main() {
                 "playback_mode",
                 "playback_preferred_mode",
                 "playback_state",
+                "audio_output_ready",
                 "playback_error",
                 "playback_available",
                 "playback_native_driver",
@@ -368,6 +380,7 @@ fn main() {
                     && old.loud_sound_reduction_error.is_none()
             );
             assert!(old.device_controls.is_empty() && old.device_controls_pending.is_empty());
+            assert!(old.aacp_capabilities.is_empty());
             assert!(
                 old.eq.is_none() && old.eq_pending.is_none() && old.device_settings_error.is_none()
             );
@@ -388,23 +401,38 @@ fn main() {
                     && old.battery_source.is_empty()
             );
             lines.push_str(&legacy_line);
-            lines.push_str(&to_line(&Event::PairingNearby { model: 0x2720, lid_open: true }));
+            lines.push_str(&to_line(&Event::PairingNearby {
+                model: 0x2720,
+                lid_open: true,
+            }));
+            lines.push_str(&to_line(&Event::PairedLid {
+                device_id: "001122334455".into(),
+                lid_open: false,
+                sequence: 2,
+            }));
             std::fs::write(&args[2], lines).unwrap();
-            println!("Rust: emitted eight lifecycle states, one legacy state and one nearby invitation");
+            println!("Rust: emitted eight lifecycle states, one legacy state and two lid events");
         }
         "check" => {
             let text = std::fs::read_to_string(&args[2]).unwrap();
             let lines: Vec<_> = text.lines().collect();
             assert_eq!(
                 lines.len(),
-                states.len() + 49,
-                "C# states, legacy state, forty-seven commands and nearby invitation expected"
+                states.len() + 56,
+                "C# states, legacy state, fifty-three commands and two lid events expected"
             );
             for (line, expected) in lines.iter().zip(&states) {
                 let Event::State(actual) = from_line::<Event>(line).expect("C# event must parse")
                 else {
                     panic!("wrong event");
                 };
+                assert_eq!(actual.hearing_aid_enrolled, expected.hearing_aid_enrolled);
+                assert_eq!(actual.media_assist_enabled, expected.media_assist_enabled);
+                assert_eq!(actual.media_assist_revision, expected.media_assist_revision);
+                assert_eq!(
+                    actual.media_assist_available,
+                    expected.media_assist_available
+                );
                 assert_eq!(
                     &actual, expected,
                     "C# roundtrip changed the production state"
@@ -417,10 +445,12 @@ fn main() {
             assert_eq!(legacy.mic_state, "unavailable");
             assert!(legacy.mic_error.is_none());
             assert!(!legacy.playback_delay_reporting);
+            assert!(!legacy.audio_output_ready);
             assert!(legacy.playback_delay_tenths_ms.is_none());
             assert!(legacy.playback_buffer_target_ms.is_none());
             assert!(legacy.playback_buffer_error.is_none());
             assert!(legacy.auto_pause && legacy.device_controls.is_empty() && legacy.eq.is_none());
+            assert!(legacy.aacp_capabilities.is_empty());
             assert!(!legacy.anc_unconfirmed);
             assert!(legacy.adaptive_strength_requested.is_none());
             assert!(legacy.allow_off_requested.is_none());
@@ -453,10 +483,18 @@ fn main() {
                     && legacy.battery_source.is_empty()
             );
             assert!(matches!(
-                from_line::<Event>(lines.last().unwrap()),
-                Some(Event::PairingNearby { model: 0x2720, lid_open: true })
+                from_line::<Event>(lines[lines.len() - 2]),
+                Some(Event::PairingNearby {
+                    model: 0x2720,
+                    lid_open: true
+                })
             ));
-            let commands = &lines[states.len() + 1..lines.len() - 1];
+            assert!(matches!(
+                from_line::<Event>(lines.last().unwrap()),
+                Some(Event::PairedLid { device_id, lid_open: false, sequence: 2 })
+                    if device_id == "001122334455"
+            ));
+            let commands = &lines[states.len() + 1..lines.len() - 2];
             for (line, expected_auto) in commands[..2].iter().zip([false, true]) {
                 let Command::SetMicMode { auto, manual } = from_line::<Command>(line).unwrap()
                 else {
@@ -620,6 +658,33 @@ fn main() {
             }
             assert!(matches!(from_line::<Command>(commands[46]),
                 Some(Command::PairingCompleted { address }) if address == "12:34:56:78:9a:bc"));
+            assert!(matches!(
+                from_line::<Command>(commands[47]),
+                Some(Command::Connect { device_id: None })
+            ));
+            assert!(matches!(from_line::<Command>(commands[48]),
+                Some(Command::Connect { device_id: Some(id) }) if id == "001122334455"));
+            let modes: Vec<_> = commands
+                .iter()
+                .filter_map(|line| match from_line::<Command>(line) {
+                    Some(Command::SetHearingAidMode { request_id, on }) => {
+                        Some((false, request_id, on))
+                    }
+                    Some(Command::SetMediaAssist { request_id, on }) => {
+                        Some((true, request_id, on))
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                modes,
+                [
+                    (false, 81, false),
+                    (true, 82, false),
+                    (false, 81, true),
+                    (true, 82, true)
+                ]
+            );
             for malformed in [
                 r#"{"cmd":"pairing_completed"}"#,
                 r#"{"cmd":"pairing_completed","address":42}"#,

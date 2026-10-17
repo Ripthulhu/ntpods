@@ -2,12 +2,15 @@ using NTPods.WinUI.Controls;
 using NTPods.WinUI.Ipc;
 using NTPods.WinUI.Services;
 
+if (AppSettingsChecks.RunInterruptedWriter(args)) return;
+
 static void Check(bool condition, string message)
 {
     if (!condition) throw new InvalidOperationException(message);
 }
 
 UiInteractionChecks.Run(Check);
+AppSettingsChecks.Run(Check);
 PairingChecks.Run(Check);
 HeadTrackingChecks.Run(Check);
 ModelCompatibilityChecks.Run(Check);
@@ -15,6 +18,7 @@ MicrophoneNotificationChecks.Run(Check);
 PlaybackModeChecks.Run(Check);
 TransparencyChecks.Run(Check);
 HearingAidChecks.Run(Check);
+IslandTakeoverChecks.Run(Check);
 
 Check(AppVersion.Read(typeof(AppVersion).Assembly) == "v0.2.18",
     "About must display the release file version, not the fixed 0.2.0 assembly version.");
@@ -238,12 +242,13 @@ Check(!BatteryPresentation.HasData(battery) && BatteryPresentation.FreshnessText
 Console.WriteLine("Battery freshness and nearby presentation checks passed.");
 
 var presence = new NTPods.WinUI.Popup.IslandPresence();
-var presenceState = new Snapshot { Connected = true };
+var presenceState = new Snapshot { Connected = true, AudioOutputReady = true };
 Check(presence.Update(presenceState), "A new audio connection shows its batteries.");
 Check(!presence.Update(presenceState), "Repeated audio snapshots must not restart island dismissal.");
 Check(!presence.Update(new Snapshot(), false), "IPC loss must not manufacture an AirPods transition.");
 Check(!presence.Update(presenceState), "Restoring IPC to the same AirPods must not reopen the island.");
 presenceState.Connected = false;
+presenceState.AudioOutputReady = false;
 presenceState.BatterySource = "ble";
 presenceState.BatteryLive = true;
 presenceState.Battery.Left = 0;
@@ -254,6 +259,22 @@ presenceState.BatteryLive = false;
 Check(!presence.Update(presenceState), "Going to sleep must not trigger a notification.");
 presenceState.BatteryLive = true;
 Check(presence.Update(presenceState), "A later nearby report can show again after expiry.");
+presence.OnPairedLidClose();
+Check(!presence.Update(presenceState, true, false), "Closed-case battery snapshots cannot consume the next opening edge.");
+Check(presence.Update(presenceState), "A newer authenticated case opening can show the nearby island again.");
+var switchedPresence = new NTPods.WinUI.Popup.IslandPresence();
+var switched = new Snapshot { DeviceId = "001122334455", BatteryLive = true, BatterySource = "ble",
+    Battery = new Battery { Left = 80 } };
+Check(switchedPresence.Update(switched), "The first pair shows nearby batteries.");
+switched.DeviceId = "aabbccddeeff";
+Check(switchedPresence.Update(switched), "Another nearby pair gets a fresh island with its own name and artwork.");
+Check(!switchedPresence.Update(switched), "Repeated snapshots for the new pair do not reopen it.");
+var closedReadyPresence = new NTPods.WinUI.Popup.IslandPresence();
+switched.AudioOutputReady = true;
+Check(closedReadyPresence.Update(switched), "An audio-ready pair shows its connection island.");
+closedReadyPresence.OnPairedLidClose();
+Check(!closedReadyPresence.Update(switched, true, false), "A closed case cannot consume the next connection edge.");
+Check(closedReadyPresence.Update(switched), "Opening the same case can show an audio-ready island again.");
 Console.WriteLine("Island presence checks passed.");
 
 namespace NTPods.WinUI.Services

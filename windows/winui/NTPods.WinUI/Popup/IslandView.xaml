@@ -14,6 +14,7 @@
                     <SolidColorBrush x:Key="IslandBattery" Color="#30D158" />
                     <SolidColorBrush x:Key="IslandBatteryTrack" Color="#333333" />
                     <SolidColorBrush x:Key="IslandLowBattery" Color="#FF6961" />
+                    <SolidColorBrush x:Key="IslandActionBackground" Color="#1FFFFFFF" />
                 </ResourceDictionary>
                 <ResourceDictionary x:Key="Light">
                     <SolidColorBrush x:Key="IslandBackground" Color="Black" />
@@ -22,6 +23,7 @@
                     <SolidColorBrush x:Key="IslandBattery" Color="#30D158" />
                     <SolidColorBrush x:Key="IslandBatteryTrack" Color="#333333" />
                     <SolidColorBrush x:Key="IslandLowBattery" Color="#FF6961" />
+                    <SolidColorBrush x:Key="IslandActionBackground" Color="#1FFFFFFF" />
                 </ResourceDictionary>
                 <ResourceDictionary x:Key="HighContrast">
                     <SolidColorBrush x:Key="IslandBackground" Color="{ThemeResource SystemColorWindowColor}" />
@@ -30,11 +32,12 @@
                     <SolidColorBrush x:Key="IslandBattery" Color="{ThemeResource SystemColorHighlightColor}" />
                     <SolidColorBrush x:Key="IslandBatteryTrack" Color="{ThemeResource SystemColorWindowColor}" />
                     <SolidColorBrush x:Key="IslandLowBattery" Color="{ThemeResource SystemColorHighlightColor}" />
+                    <SolidColorBrush x:Key="IslandActionBackground" Color="{ThemeResource SystemColorWindowColor}" />
                 </ResourceDictionary>
             </ResourceDictionary.ThemeDictionaries>
         </ResourceDictionary>
     </UserControl.Resources>
-    <Grid Background="{ThemeResource IslandBackground}" Padding="24,18,24,20" RowSpacing="14">
+    <Grid Background="{ThemeResource IslandBackground}">
         <VisualStateManager.VisualStateGroups>
             <VisualStateGroup x:Name="LeftBatteryColors">
                 <VisualState x:Name="LeftNormal" />
@@ -64,24 +67,27 @@
                 </VisualState>
             </VisualStateGroup>
         </VisualStateManager.VisualStateGroups>
-        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+        <Grid x:Name="Payload" Padding="24,18,24,20" RowSpacing="14" RenderTransformOrigin="0.5,0">
+            <Grid.RenderTransform><CompositeTransform x:Name="PayloadTransform" /></Grid.RenderTransform>
+            <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
         <Grid x:Name="HeaderGrid" ColumnSpacing="12" MinHeight="56">
-            <Grid.RenderTransform><TranslateTransform x:Name="HeaderOffset" /></Grid.RenderTransform>
-            <Grid.ColumnDefinitions><ColumnDefinition Width="60" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+            <Grid.ColumnDefinitions><ColumnDefinition Width="60" /><ColumnDefinition Width="*" /><ColumnDefinition Width="108" /></Grid.ColumnDefinitions>
             <Image x:Name="DeviceImage" Height="54" Stretch="Uniform" AutomationProperties.AccessibilityView="Raw" />
             <StackPanel Grid.Column="1" Spacing="4" VerticalAlignment="Center">
                 <TextBlock x:Name="DeviceName" FontSize="16" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
                            Foreground="{ThemeResource IslandForeground}" />
-                <Grid>
+                <Grid x:Name="StatusViewport" MinHeight="20" VerticalAlignment="Center" SizeChanged="StatusViewport_SizeChanged">
                     <TextBlock x:Name="PreviousMessage" FontSize="13" TextTrimming="CharacterEllipsis" Opacity="0"
-                               Foreground="{ThemeResource IslandSecondary}" AutomationProperties.AccessibilityView="Raw" />
+                               Foreground="{ThemeResource IslandSecondary}" AutomationProperties.AccessibilityView="Raw">
+                        <TextBlock.RenderTransform><TranslateTransform x:Name="PreviousMessageOffset" /></TextBlock.RenderTransform>
+                    </TextBlock>
                     <TextBlock x:Name="MessageBody" FontSize="13" TextTrimming="CharacterEllipsis"
                                Foreground="{ThemeResource IslandSecondary}">
                         <TextBlock.RenderTransform><TranslateTransform x:Name="MessageOffset" /></TextBlock.RenderTransform>
                     </TextBlock>
                 </Grid>
             </StackPanel>
-            <Grid x:Name="MessageIcons" Grid.Column="2" Width="28" Height="28" Visibility="Collapsed"
+            <Grid x:Name="MessageIcons" Grid.Column="2" Width="28" Height="28" HorizontalAlignment="Right" Visibility="Collapsed"
                   AutomationProperties.AccessibilityView="Raw">
                 <controls:ListeningModeIcon x:Name="TransparencyIcon" Width="28" Height="28" UriSource="ms-appx:///Assets/ic_transparency.png"
                                             Foreground="{ThemeResource IslandForeground}" />
@@ -95,9 +101,21 @@
                     <Path Data="M 3,3 L 25,25" StrokeThickness="2" Stroke="{ThemeResource IslandForeground}" />
                 </Grid>
             </Grid>
+            <Button x:Name="ConnectButton" Grid.Column="2" Width="108" Height="40" Padding="0"
+                    Background="{ThemeResource IslandActionBackground}" Foreground="{ThemeResource IslandForeground}"
+                    BorderThickness="0" CornerRadius="20" Visibility="Collapsed" IsEnabled="False"
+                    AutomationProperties.AccessibilityView="Raw" Click="ConnectButton_Click">
+                <Grid Width="100" Height="20">
+                    <TextBlock x:Name="ConnectLabel" Width="100" FontSize="13" FontWeight="SemiBold" TextAlignment="Center"
+                               TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Foreground="{ThemeResource IslandForeground}" />
+                    <TextBlock x:Name="RetryLabel" Width="100" FontSize="12" FontWeight="SemiBold" TextAlignment="Center"
+                               TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Foreground="{ThemeResource IslandForeground}" Opacity="0" />
+                    <ProgressRing x:Name="ConnectProgress" Width="18" Height="18" HorizontalAlignment="Center"
+                                  VerticalAlignment="Center" IsActive="False" Opacity="0" Foreground="{ThemeResource IslandForeground}" />
+                </Grid>
+            </Button>
         </Grid>
         <StackPanel x:Name="BatteryPanel" Grid.Row="1" Spacing="8">
-            <StackPanel.RenderTransform><TranslateTransform x:Name="BatteryOffset" /></StackPanel.RenderTransform>
             <Grid x:Name="BatteryRow" ColumnSpacing="12">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                 <Grid x:Name="LeftCell" Grid.Column="0" ColumnSpacing="7">
@@ -143,5 +161,6 @@
             <TextBlock x:Name="FreshnessText" FontSize="12" TextTrimming="CharacterEllipsis" Visibility="Collapsed"
                        Foreground="{ThemeResource IslandSecondary}" HorizontalAlignment="Center" />
         </StackPanel>
+        </Grid>
     </Grid>
 </UserControl>

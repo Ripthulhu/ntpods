@@ -107,11 +107,16 @@
   <!-- HearingAidCard -->
   <data name="HearingAid.TurnOff" xml:space="preserve"><value>Desativar a assistência auditiva</value></data>
   <data name="HearingAid.EnableUnconfirmed" xml:space="preserve"><value>A assistência auditiva pode ainda estar ativa. Tenta desativá-la.</value></data>
-  <data name="HearingAid.ReadOnly" xml:space="preserve"><value>Estas definições auditivas podem ser lidas, mas o seu formato não permite editá-las.</value></data>
-  <data name="HearingAid.ReadFirst" xml:space="preserve"><value>Lê as definições auditivas guardadas antes de ativar ou editar a assistência auditiva.</value></data>
+  <data name="HearingAid.ReadOnly" xml:space="preserve"><value>Estes ajustes são só de leitura. Podes ativar ou desativar o perfil auditivo guardado.</value></data>
+  <data name="HearingAid.ReadFirst" xml:space="preserve"><value>Lê as definições auditivas guardadas antes de as editares.</value></data>
+  <data name="HearingAid.SetupRequired" xml:space="preserve"><value>Configura primeiro o aparelho auditivo num iPhone ou iPad.</value></data>
+  <data name="MediaAssistSwitch.Header" xml:space="preserve"><value>Assistência multimédia</value></data>
+  <data name="MediaAssist.Help" xml:space="preserve"><value>Usa o perfil auditivo guardado para conteúdos multimédia.</value></data>
+  <data name="MediaAssist.TurnOff" xml:space="preserve"><value>Desativar a assistência multimédia</value></data>
+  <data name="MediaAssist.EnableUnconfirmed" xml:space="preserve"><value>A assistência multimédia pode ainda estar ativa. Tenta desativá-la.</value></data>
   <data name="HearingAid.InvalidAudiogram" xml:space="preserve"><value>Introduz um valor de 0 a 90 dB HL para cada frequência em ambos os ouvidos.</value></data>
   <data name="HearingAidTitle.Text" xml:space="preserve"><value>Assistência auditiva</value></data>
-  <data name="HearingAidSubtitle.Text" xml:space="preserve"><value>Amplifica o som à tua volta através dos AirPods (Pro 3).</value></data>
+  <data name="HearingAidSubtitle.Text" xml:space="preserve"><value>Usa o perfil auditivo guardado nos teus AirPods.</value></data>
   <data name="HearingAidWarning.Title" xml:space="preserve"><value>Experimental</value></data>
   <data name="HearingAidWarning.Message" xml:space="preserve"><value>Amplificação sem um audiograma adequado pode causar feedback — mantém num nível confortável.</value></data>
   <data name="HearingAidSwitch.Header" xml:space="preserve"><value>Aparelho auditivo</value></data>
@@ -162,6 +167,9 @@
   <data name="DeviceInfoSerial.Text" xml:space="preserve"><value>Nº de série</value></data>
   <data name="ConnectPrompt_Nearby" xml:space="preserve"><value>AirPods por perto</value></data>
   <data name="ConnectPrompt_Connect" xml:space="preserve"><value>Ligar</value></data>
+  <data name="ConnectPrompt_Continue" xml:space="preserve"><value>Continuar</value></data>
+  <data name="ConnectPrompt_Paired" xml:space="preserve"><value>Emparelhados</value></data>
+  <data name="ConnectPrompt_AirPods" xml:space="preserve"><value>AirPods</value></data>
   <data name="ConnectPrompt_Dismiss" xml:space="preserve"><value>Agora não</value></data>
   <data name="Overlay_CaseOpened" xml:space="preserve"><value>Estojo aberto</value></data>
   <data name="Overlay_CaseClosed" xml:space="preserve"><value>Estojo fechado</value></data>
@@ -188,6 +196,7 @@
   <data name="Status_Connected" xml:space="preserve"><value>Ligado</value></data>
   <data name="Status_Disconnected" xml:space="preserve"><value>Desligado</value></data>
   <data name="Status_Connecting" xml:space="preserve"><value>A ligar…</value></data>
+  <data name="Island_ConnectFailed" xml:space="preserve"><value>Falha na ligação</value></data>
   <data name="Status_WaitingForDaemon" xml:space="preserve"><value>A ligar ao NTPods…</value></data>
 
   <data name="Volume_Muted" xml:space="preserve"><value>silenciado</value></data>
@@ -457,7 +466,9 @@
   <data name="Pairing.Searching" xml:space="preserve"><value>A procurar…</value></data>
   <data name="Pairing.Pairing" xml:space="preserve"><value>A emparelhar…</value></data>
   <data name="Pairing.PrepareCase" xml:space="preserve"><value>Mantenha os AirPods na caixa aberta. Toque duas vezes na frente ou mantenha o botão traseiro premido até a luz piscar a branco.</value></data>
-  <data name="Pairing.DoubleTapCase" xml:space="preserve"><value>Mantenha os AirPods na caixa aberta e toque duas vezes na frente até a luz piscar a branco.</value></data>
+  <data name="Pairing.DoubleTapCase" xml:space="preserve"><value>Mantenha os AirPods na caixa aberta. Toque duas vezes na frente até a luz piscar a branco.</value></data>
+  <data name="Pairing.HoldSetupButton" xml:space="preserve"><value>Mantenha os AirPods na caixa aberta. Mantenha o botão de configuração premido até a luz piscar a branco.</value></data>
+  <data name="Pairing.ThenConnect" xml:space="preserve"><value>Depois, toque em Ligar.</value></data>
   <data name="Pairing.HoldNoiseControl" xml:space="preserve"><value>Mantenha o botão do modo de audição premido até a luz piscar a branco.</value></data>
   <data name="Pairing.Choose" xml:space="preserve"><value>Selecione os seus AirPods.</value></data>
   <data name="Pairing.NoneFound" xml:space="preserve"><value>Nenhum dispositivo encontrado.</value></data>
@@ -468,4 +479,8 @@
   <data name="Pairing.OpenFailed" xml:space="preserve"><value>Não foi possível abrir o emparelhamento. Feche qualquer outra caixa de diálogo e tente novamente.</value></data>
   <data name="Pairing.HandoffUnavailable" xml:space="preserve"><value>Emparelhados no Windows. Reinicie o NTPods para ligar.</value></data>
   <data name="Pairing.MultipleFound" xml:space="preserve"><value>Foram encontrados vários pares. Feche as outras caixas dos AirPods.</value></data>
+  <data name="Settings.SaveFailed" xml:space="preserve"><value>Não foi possível guardar as preferências da aplicação. As alterações aplicam-se a esta sessão. Tente alterar a definição novamente.</value></data>
+  <data name="Overlay_DriverRecovering" xml:space="preserve"><value>A recuperar o controlador dos AirPods…</value></data>
+  <data name="Overlay_DriverRestartRequired" xml:space="preserve"><value>Reinicie o Windows para concluir a recuperação do controlador dos AirPods.</value></data>
+  <data name="Overlay_DriverRecoveryFailed" xml:space="preserve"><value>Não foi possível recuperar o controlador dos AirPods. Experimente Reparar no NTPods.</value></data>
 </root>

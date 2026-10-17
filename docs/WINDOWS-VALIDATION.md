@@ -42,14 +42,23 @@ AAC-ELD. Recovery after stopping took 1.76 and 1.84 seconds respectively, with
 zero malformed microphone packets. These short checks do not establish long-run
 speech quality, clock drift or repeated interruption recovery.
 
-With the 0.2.31 app and unchanged 0.2.29 native drivers, Pro 3 music at 256 kbps
-stayed clean with AAC and AAC-ELD, including pause/resume and the codec change.
-AAC-ELD also passed a 20-second high-quality microphone check: first PCM arrived
-after 320 ms, capture had one initial discontinuity and none afterward, and
-stop recovery finished in 1.79 seconds. The listener confirmed clean stereo
-during capture and after recovery, with the selected volume preserved. This
-checks encoder-wake compatibility, not a latency reduction. AAC with the mic,
-long sessions and other models were not retested on this build.
+The installed 0.2.48 app, preserving the existing native drivers, passed Pro 3
+AAC-ELD checks at fixed 256 kbps, one frame per packet and a 20 ms source reserve.
+The listener confirmed the startup hitch was gone through two pause/resume cycles.
+A 20-second high-quality microphone check stayed clean in both ears during
+capture and after stopping, with unchanged loudness and Windows volume. First
+PCM arrived 376 ms after Start; capture had one initial discontinuity and none
+afterward. The microphone returned to Idle 1.64 seconds after capture ended;
+this is a lifecycle timing, not the duration of audible interruption. AAC with
+the mic, long sessions and other models were not retested on this build.
+The [1 kHz RTP comparison](WINDOWS-AUDIO-LATENCY.md#packet-and-source-reserve-overrides) failed;
+restoring the default 48 kHz timestamps restored clean playback.
+
+A 0.2.50 recovery preview passed two forced 250 ms backend stalls on Pro 3
+A3064 / 9A348 with AAC-ELD at 256 kbps. Both caused PCM overruns and recovered
+automatically; the listener confirmed clean stereo after each. The output's
+identity, default roles and 53% volume remained unchanged. This checks repeated
+overrun recovery, not sustained overload, deadline misses or other models.
 
 Release 0.2.18 (`55601cb`) was also checked on a laptop running Windows 11
 Enterprise build 26200, Intel Bluetooth driver 23.60.0.1 and Pro 3 A3064 firmware
@@ -108,7 +117,7 @@ runs playback recovery. A quiet uplink alone is insufficient to verify recovery.
 | Pro 3 head tracking | Turns and nods moved the graph; Pause and client exit stopped published samples (0.1.21). The later descriptor-based path delivered 311 updates over 9.813 seconds (0.2.21 preview) | Raw movement, not calibrated angles; prolonged microphone coexistence untested |
 | Pro 1 head tracking | No accepted movement samples on firmware 6F21 (0.1.24) | Compatibility unresolved |
 | Custom Transparency | Pro 3 / 9A348 with AX200 and Apple host identity: reads, enable, an audible noise-reduction adjustment and restoration passed (0.2.25 preview with the unenrolled-status fix); installed 0.2.26 read the restored values | Other models, reconnect persistence, extended use and nonzero EQ preservation remain unverified; Windows SDP response not captured |
-| Hearing assistance | Pro 3 / 9A348 with Apple host identity: settings matched before and after the Transparency test; installed 0.2.26 read them and correctly reported inactive | Captured format remains read-only; nonzero audiograms, hardware writes and acoustic effects remain unverified |
+| Hearing assistance | Development preview, Pro 3 / 9A348, AX200 and Apple host identity: read an iPhone-fitted profile; confirmed independent Hearing Aid and Media Assist changes through a control refresh; listener reported changes to surrounding sound and music; fitting bytes stayed unchanged | The fitted layout remains read-only; fitting writes, other models, long sessions and reconnect persistence remain unverified |
 | Loud Sound Reduction | Pro 3 A3064 / 9A348 returned enabled on Windows with 0.2.25, before the identity override | No toggle or acoustic check |
 
 The 0.2.18 battery check initially found scanning disabled in the running process

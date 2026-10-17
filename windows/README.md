@@ -36,6 +36,11 @@ recovery took about two seconds in those checks. Longer capture, repeated
 interruptions and other adapters remain unverified. See the
 [hardware results](../docs/WINDOWS-VALIDATION.md).
 
+If Windows leaves the AirPods control driver in Code 38 after an update or
+reconnect, NTPods attempts a targeted restart and checks the device afterward.
+Follow the app's restart message if Windows cannot unload the old driver;
+reopening NTPods cannot complete that recovery.
+
 See [build and installation instructions](../docs/BUILD-WINDOWS.md) for the pinned
 toolchain and `windows/build.ps1`. The build produces an experimental MSI and
 manifest from current source; committed driver prebuilts are not used. Only the

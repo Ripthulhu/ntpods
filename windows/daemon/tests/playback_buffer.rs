@@ -100,6 +100,10 @@ impl Ctx {
 
 fn log(_: &str) {}
 
+fn persist_preference(_: &str, _: &[u8]) -> io::Result<()> {
+    panic!("Playback buffer tests must inject persistence instead of writing user preferences")
+}
+
 mod bt {
     pub fn audio_request_is_current(intent: u64) -> bool {
         intent == 7

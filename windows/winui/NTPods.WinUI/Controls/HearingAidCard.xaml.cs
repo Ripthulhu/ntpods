@@ -9,7 +9,6 @@ using Microsoft.UI.Xaml.Controls.Primitives;
 
 namespace NTPods.WinUI.Controls;
 
-/// Experimental hearing assistance with an eight-band audiogram in dB HL for each ear.
 public sealed partial class HearingAidCard : UserControl
 {
     private DaemonClient? _client;
@@ -32,7 +31,8 @@ public sealed partial class HearingAidCard : UserControl
             }
         }
     }
-    private readonly HearingAidRequest _request = new();
+    private readonly HearingAidRequest _request = new("set_hearing_aid_mode");
+    private readonly HearingAidRequest _media = new("set_media_assist");
     private readonly HearingAidEditState _edit = new();
     private Snapshot _snapshot = new();
     private bool _reading;
@@ -60,7 +60,7 @@ public sealed partial class HearingAidCard : UserControl
         _debounce.Tick += (_, _) => { _debounce.Stop(); if (_request.TakeEdit()) Apply(); };
         _timeout.Tick += (_, _) =>
         {
-            _timeout.Stop(); _request.Cancel(); _reading = false;
+            _timeout.Stop(); _request.Cancel(); _media.Cancel(); _reading = false;
             _edit.Reset();
             RenderValues();
             ShowError(Localize.Get("HearingAid.Unconfirmed"));
@@ -135,21 +135,38 @@ public sealed partial class HearingAidCard : UserControl
     {
         if (_applying) return;
         _debounce.Stop();
-        Apply();
+        ApplyMode(_request, EnableSwitch.IsOn);
     }
+
+    private void Media_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (_applying) return;
+        _debounce.Stop();
+        _request.CancelEdit();
+        ApplyMode(_media, MediaSwitch.IsOn);
+    }
+
+    private bool Busy => _reading || _snapshot.HearingAidPending || _request.Pending is not null || _media.Pending is not null;
 
     private void RenderRequest()
     {
         _applying = true;
         EnableSwitch.IsOn = _request.Pending is not null ? _request.Requested : _request.Enabled == true;
+        MediaSwitch.IsOn = _media.Pending is not null ? _media.Requested : _media.Enabled == true;
         _applying = false;
-        bool busy = _reading || _snapshot.HearingAidPending || _request.Pending is not null;
+        bool busy = Busy;
         bool canDisable = _request.CanDisable && (_request.Pending is null || _request.Requested);
         EnableSwitch.IsEnabled = _supported && (canDisable && EnableSwitch.IsOn ||
-            !busy && !_request.EnableUnconfirmed && _edit.CanSetEnabled(true, _request.Enabled));
+            !busy && _request.CanEnable(_snapshot.HearingAidEnrolled));
+        bool canDisableMedia = _media.CanDisable && (_media.Pending is null || _media.Requested);
+        MediaSwitch.IsEnabled = _supported && (canDisableMedia && MediaSwitch.IsOn ||
+            !busy && _snapshot.MediaAssistAvailable && _media.CanEnable(_snapshot.HearingAidEnrolled));
         DisableButton.Visibility = _request.EnableUnconfirmed && (_request.Pending is null || !_request.Requested)
             ? Visibility.Visible : Visibility.Collapsed;
         DisableButton.IsEnabled = _supported && canDisable;
+        MediaDisableButton.Visibility = _media.EnableUnconfirmed && (_media.Pending is null || !_media.Requested)
+            ? Visibility.Visible : Visibility.Collapsed;
+        MediaDisableButton.IsEnabled = _supported && canDisableMedia;
         ReadButton.IsEnabled = _supported && !busy;
         bool on = _supported && _request.Enabled == true && !busy && _edit.Editable && _edit.Draft is not null;
         AmpSlider.IsEnabled = on && !_edit.InvalidCurve;
@@ -160,14 +177,27 @@ public sealed partial class HearingAidCard : UserControl
         foreach (var b in _rightEq) b.IsEnabled = on;
         string help = busy ? Localize.Get("DeviceSetting.Pending") :
             _request.EnableUnconfirmed ? Localize.Get("HearingAid.EnableUnconfirmed") :
-            _edit.Draft is null ? Localize.Get("HearingAid.ReadFirst") :
-            !_edit.Editable ? Localize.Get("HearingAid.ReadOnly") :
+            _snapshot.HearingAidEnrolled == false ? Localize.Get("HearingAid.SetupRequired") :
+            _snapshot.HearingAidEnrolled is null ? Localize.Get("DeviceSetting.Unknown") :
             _request.Enabled is null ? Localize.Get("DeviceSetting.Unknown") : "";
         ToolTipService.SetToolTip(EnableSwitch, string.IsNullOrEmpty(help) ? null : help);
         AutomationProperties.SetHelpText(EnableSwitch, help);
         ToolTipService.SetToolTip(HearingExpander, string.IsNullOrEmpty(help) ? null : help);
         AutomationProperties.SetHelpText(HearingExpander, help);
         AutomationProperties.SetHelpText(DisableButton, Localize.Get("HearingAid.EnableUnconfirmed"));
+        string mediaHelp = busy ? Localize.Get("DeviceSetting.Pending") :
+            _media.EnableUnconfirmed ? Localize.Get("MediaAssist.EnableUnconfirmed") :
+            _snapshot.HearingAidEnrolled == false ? Localize.Get("HearingAid.SetupRequired") :
+            _snapshot.HearingAidEnrolled is null ? Localize.Get("DeviceSetting.Unknown") :
+            !_snapshot.MediaAssistAvailable || _media.Enabled is null ? Localize.Get("DeviceSetting.Unknown") :
+            Localize.Get("MediaAssist.Help");
+        ToolTipService.SetToolTip(MediaSwitch, mediaHelp);
+        AutomationProperties.SetHelpText(MediaSwitch, mediaHelp);
+        AutomationProperties.SetHelpText(MediaDisableButton, Localize.Get("MediaAssist.EnableUnconfirmed"));
+        string editHelp = _edit.Draft is null ? Localize.Get("HearingAid.ReadFirst") :
+            !_edit.Editable ? Localize.Get("HearingAid.ReadOnly") : "";
+        ToolTipService.SetToolTip(AudiogramGrid, string.IsNullOrEmpty(editHelp) ? null : editHelp);
+        AutomationProperties.SetHelpText(AudiogramGrid, editHelp);
         RenderError();
     }
 
@@ -193,6 +223,7 @@ public sealed partial class HearingAidCard : UserControl
         _debounce.Stop();
         _timeout.Stop();
         _request.Reset();
+        _media.Reset();
         _edit.Reset();
         ShowError(null);
         RenderValues();
@@ -207,7 +238,9 @@ public sealed partial class HearingAidCard : UserControl
     public void Update(Snapshot snapshot)
     {
         bool supported = Client?.IsReady == true && snapshot.Connected && !snapshot.LinkStale && DeviceModels.Find(snapshot.Model).HearingAid;
-        if (_deviceId != snapshot.DeviceId || !supported)
+        bool refreshing = Client?.IsReady == true &&
+            HearingAidRequest.RetainWhileRefreshing(snapshot, _deviceId, _request, _media);
+        if (_deviceId != snapshot.DeviceId || !supported && !refreshing)
         {
             _deviceId = snapshot.DeviceId;
             ResetSession();
@@ -215,8 +248,12 @@ public sealed partial class HearingAidCard : UserControl
         string? previousError = _snapshot.HearingAidError;
         _snapshot = snapshot;
         _supported = supported;
-        if (_supported) _request.Update(snapshot.HearingAidEnabled, snapshot.HearingAidRevision);
-        if (_edit.Update(snapshot, _supported))
+        if (_supported)
+        {
+            _request.Update(snapshot.HearingAidEnabled, snapshot.HearingAidRevision, refreshing);
+            _media.Update(snapshot.MediaAssistEnabled, snapshot.MediaAssistRevision, refreshing);
+        }
+        if (!refreshing && _edit.Update(snapshot, _supported))
         {
             _request.CancelEdit();
             RenderValues();
@@ -228,7 +265,7 @@ public sealed partial class HearingAidCard : UserControl
             if (!snapshot.HearingAidPending && (_readPendingSeen || snapshot.HearingAidError is not null)) _reading = false;
         }
         if (!_request.EditQueued) _debounce.Stop();
-        if (_request.Pending is null && !_reading) _timeout.Stop();
+        if (_request.Pending is null && _media.Pending is null && !_reading) _timeout.Stop();
         if (snapshot.HearingAidError != previousError) ShowError(snapshot.HearingAidError);
         RenderRequest();
     }
@@ -236,9 +273,9 @@ public sealed partial class HearingAidCard : UserControl
     private void Settings_Changed(object sender, RangeBaseValueChangedEventArgs e)
     {
         if (_applying || !CanEdit) return;
-        bool changed = sender == AmpSlider ? _edit.EditAmplification((float)(e.NewValue / 100)) :
-            sender == BalanceSlider ? _edit.EditBalance((float)(e.NewValue / 100)) :
-            sender == ToneSlider && _edit.EditTone((float)(e.NewValue / 100));
+        bool changed = ReferenceEquals(sender, AmpSlider) ? _edit.EditAmplification((float)(e.NewValue / 100)) :
+            ReferenceEquals(sender, BalanceSlider) ? _edit.EditBalance((float)(e.NewValue / 100)) :
+            ReferenceEquals(sender, ToneSlider) && _edit.EditTone((float)(e.NewValue / 100));
         if (changed) QueueEdit();
     }
 
@@ -247,8 +284,7 @@ public sealed partial class HearingAidCard : UserControl
         if (!_applying && CanEdit && _edit.EditConversationBoost(ConvBoostSwitch.IsOn)) QueueEdit();
     }
 
-    private bool CanEdit => _supported && _edit.Editable && _request.Enabled == true && _request.Pending is null &&
-        !_reading && !_snapshot.HearingAidPending && _edit.Draft is not null;
+    private bool CanEdit => _supported && _edit.Editable && _request.Enabled == true && !Busy && _edit.Draft is not null;
 
     private void CurveChanged()
     {
@@ -297,13 +333,43 @@ public sealed partial class HearingAidCard : UserControl
 
     private void Disable_Click(object sender, RoutedEventArgs e)
     {
-        if (DisableButton.IsEnabled) Apply(false);
+        if (DisableButton.IsEnabled) ApplyMode(_request, false);
     }
 
-    private void Apply(bool? requested = null)
+    private void MediaDisable_Click(object sender, RoutedEventArgs e)
     {
-        bool on = requested ?? EnableSwitch.IsOn;
-        if (on && _edit.Draft is not null && CurveValues(_leftEq).Concat(CurveValues(_rightEq))
+        if (MediaDisableButton.IsEnabled) ApplyMode(_media, false);
+    }
+
+    private void ApplyMode(HearingAidRequest request, bool on)
+    {
+        bool allowed = on ? !Busy && request.CanEnable(_snapshot.HearingAidEnrolled) &&
+            (request != _media || _snapshot.MediaAssistAvailable) : request.CanDisable;
+        if (!_supported || !allowed)
+        {
+            RenderRequest();
+            return;
+        }
+        _debounce.Stop();
+        _request.CancelEdit();
+        _edit.Reset();
+        _edit.Update(_snapshot, _supported);
+        RenderValues();
+        if (!on) _reading = _readPendingSeen = false;
+        ulong id = request.Begin(on);
+        ShowError(null);
+        bool sent = request == _media
+            ? Client?.Send(new SetMediaAssistCmd { RequestId = id, On = on }) == true
+            : Client?.Send(new SetHearingAidModeCmd { RequestId = id, On = on }) == true;
+        _timeout.Stop();
+        if (sent) _timeout.Start();
+        else { request.Cancel(); ShowError(Localize.Get("HearingAid.Unconfirmed")); }
+        RenderRequest();
+    }
+
+    private void Apply()
+    {
+        if (_edit.Draft is not null && CurveValues(_leftEq).Concat(CurveValues(_rightEq))
             .Any(value => !double.IsFinite(value) || value is < 0 or > 90))
         {
             _edit.EditCurve(CurveValues(_leftEq), CurveValues(_rightEq));
@@ -312,26 +378,19 @@ public sealed partial class HearingAidCard : UserControl
             RenderRequest();
             return;
         }
-        bool allowed = on ? !_request.EnableUnconfirmed && _edit.CanSetEnabled(true, _request.Enabled) : _request.CanDisable;
-        if (!_supported || on && (_reading || _snapshot.HearingAidPending || _request.Pending is not null) ||
-            !allowed)
+        if (!CanEdit || !_edit.CanApply)
         {
             RenderRequest();
             return;
         }
-        if (!on)
-        {
-            _debounce.Stop();
-            _reading = _readPendingSeen = false;
-        }
-        ulong id = _request.Begin(on);
+        ulong id = _request.Begin(true, "set_hearing_aid");
         ShowError(null);
         bool sent = Client?.Send(new SetHearingAidCmd
         {
             RequestId = id,
-            On = on,
-            Expected = on ? _edit.Baseline : null,
-            Settings = on ? _edit.Draft : null,
+            On = true,
+            Expected = _edit.Baseline,
+            Settings = _edit.Draft,
         }) == true;
         _timeout.Stop();
         if (sent) _timeout.Start();
@@ -341,8 +400,9 @@ public sealed partial class HearingAidCard : UserControl
 
     private void ApplyResult(DaemonEvent.CommandResult result) => DispatcherQueue.TryEnqueue(() =>
     {
-        if (!_request.Complete(result)) return;
+        if (!_request.Complete(result) && !_media.Complete(result)) return;
         _timeout.Stop();
+        if (_request.Pending is not null || _media.Pending is not null || _reading) _timeout.Start();
         ShowError(result.Ok ? null : result.Message);
         RenderRequest();
     });
@@ -359,6 +419,11 @@ public sealed partial class HearingAidCard : UserControl
         if (_request.EnableUnconfirmed && _request.Pending is null)
         {
             string recovery = Localize.Get("HearingAid.EnableUnconfirmed");
+            message = message.Length == 0 ? recovery : $"{message} {recovery}";
+        }
+        if (_media.EnableUnconfirmed && _media.Pending is null)
+        {
+            string recovery = Localize.Get("MediaAssist.EnableUnconfirmed");
             message = message.Length == 0 ? recovery : $"{message} {recovery}";
         }
         ErrorText.Text = message;

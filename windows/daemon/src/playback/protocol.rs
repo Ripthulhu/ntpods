@@ -324,18 +324,24 @@ pub fn peer_response(
 pub struct Packetizer {
     sequence: u16,
     au_sequence: u16,
+    ssrc: u32,
 }
 
 impl Default for Packetizer {
     fn default() -> Self {
-        Self {
-            sequence: 0,
-            au_sequence: 1,
-        }
+        Self::new(0)
     }
 }
 
 impl Packetizer {
+    pub fn new(ssrc: u32) -> Self {
+        Self {
+            sequence: 0,
+            au_sequence: 1,
+            ssrc,
+        }
+    }
+
     pub fn reset_audio(&mut self) {
         self.au_sequence = 1;
     }
@@ -353,8 +359,7 @@ impl Packetizer {
         packet.extend_from_slice(&[0x80, 0x60]);
         packet.extend_from_slice(&self.sequence.to_be_bytes());
         packet.extend_from_slice(&timestamp.to_be_bytes());
-        // Match the Pro 3-tested USBPods fork's fixed source identifier.
-        packet.extend_from_slice(&0x11223344u32.to_be_bytes());
+        packet.extend_from_slice(&self.ssrc.to_be_bytes());
         for au in units {
             packet.extend_from_slice(&[
                 0xb0 | ((self.au_sequence >> 8) as u8 & 15),
@@ -667,6 +672,7 @@ mod tests {
             let mut writer = Packetizer {
                 sequence: u16::MAX,
                 au_sequence: 4095,
+                ssrc: 0x11223344,
             };
             assert!(writer.packet(&[], 1234, 1023).is_err());
             assert!(writer.packet(&vec![vec![0; 1]; 3], 1234, 1023).is_err());

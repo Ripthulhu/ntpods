@@ -9,6 +9,8 @@ pub const SET_FEATURES: [u8; 14] = [
     0x04, 0x00, 0x04, 0x00, 0x4D, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 pub const REQUEST_NOTIFS: [u8; 10] = [0x04, 0x00, 0x04, 0x00, 0x0F, 0x00, 0xFF, 0xFF, 0xFF, 0xFF];
+// Tahoe identifies the source as Mac separately from the Bluetooth DID record.
+pub const SOURCE_TYPE_MAC: [u8; 11] = [4, 0, 4, 0, 0x24, 0, 2, 0, 1, 0, 0x10];
 
 /// Enable the hi-res (AAC-ELD) microphone stream — the AirPods start pushing
 /// 0x58 uplink audio packets. Taken from LibrePods PR #655.
@@ -183,30 +185,26 @@ pub fn request_all_descriptors(seq: u16, log_type: bool) -> Vec<u8> {
 ///
 /// Addresses are big-endian and compare directly with `BLUETOOTH_ADDRESS.ullLong`.
 pub fn parse_connected_devices(data: &[u8]) -> Option<Vec<(u64, [u8; 2])>> {
-    if data.len() < 9 || data[..4] != HEADER || data[4] != 0x2E {
+    if data.len() < 9 || data[..6] != [0x04, 0x00, 0x04, 0x00, 0x2E, 0x00] {
         return None;
     }
     let count = data[8] as usize;
+    if data.len() != 9 + count * 8 {
+        return None;
+    }
     let mut out = Vec::with_capacity(count);
     for i in 0..count {
         let base = 9 + i * 8;
-        if base + 8 > data.len() {
-            break;
-        }
         let mut addr = 0u64;
         for b in &data[base..base + 6] {
             addr = (addr << 8) | *b as u64; // big-endian, matching BLUETOOTH_ADDRESS
         }
+        if out.iter().any(|(seen, _)| *seen == addr) {
+            return None;
+        }
         out.push((addr, [data[base + 6], data[base + 7]]));
     }
     Some(out)
-}
-
-/// Format 0x2E flags for diagnostics; they do not identify a device class.
-/// The same PC has reported `02 06`, `01 06` and `02 04`.
-/// Their meaning remains unknown, so they must not determine the UI device type.
-pub fn flags_hex(flags: [u8; 2]) -> String {
-    format!("{:02x} {:02x}", flags[0], flags[1])
 }
 
 /// Audio-route diagnostics: the opcodes `AAP Definitions.md` names as carrying
@@ -217,22 +215,23 @@ pub fn flags_hex(flags: [u8; 2]) -> String {
 ///   0x2B Stream State Info · 0x44 Send Smart Routing 2.0 Info
 ///   0x52 Source Context    · 0x2E Connected Devices (carries BT addresses)
 ///
-/// Return the opcode and a bounded hex dump for protocol research.
+/// Return only details safe for routine logs; route payloads can contain identities.
 pub fn route_diag(data: &[u8]) -> Option<(u8, String)> {
-    if data.len() < 6 || data[..4] != HEADER {
+    if data.len() < 6 || data[..4] != HEADER || data[5] != 0 {
         return None;
     }
     let op = data[4];
     if !matches!(op, 0x2B | 0x2E | 0x44 | 0x52) {
         return None;
     }
-    let dump = data
-        .iter()
-        .take(64)
-        .map(|b| format!("{b:02x}"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    Some((op, dump))
+    let detail = if op == 0x2E {
+        parse_connected_devices(data)
+            .map(|hosts| format!("hosts={}", hosts.len()))
+            .unwrap_or_else(|| "invalid host list".into())
+    } else {
+        "payload redacted".into()
+    };
+    Some((op, detail))
 }
 
 /// Human-readable name for the opcodes `route_diag` reports.
@@ -662,6 +661,65 @@ pub fn parse_anc_mode(data: &[u8]) -> Option<u8> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn connected_hosts_require_a_complete_unique_list_before_replacing_state() {
+        let report = [
+            4, 0, 4, 0, 0x2e, 0, 1, 0, 2, 1, 2, 3, 4, 5, 6, 1, 0, 7, 8, 9, 10, 11, 12, 2, 0,
+        ];
+        let expected = vec![(0x010203040506, [1, 0]), (0x0708090a0b0c, [2, 0])];
+        let mut previous = parse_connected_devices(&report).unwrap();
+        assert_eq!(previous, expected);
+
+        let mut malformed = Vec::new();
+        malformed.extend((0..report.len()).map(|len| report[..len].to_vec()));
+        for offset in 0..6 {
+            let mut wrong_header = report;
+            wrong_header[offset] ^= 0x80;
+            malformed.push(wrong_header.to_vec());
+        }
+        for count in [0x80, 0xff] {
+            let mut oversized = report;
+            oversized[8] = count;
+            malformed.push(oversized.to_vec());
+        }
+        for count in [0, 1] {
+            let mut underreported = report;
+            underreported[8] = count;
+            malformed.push(underreported.to_vec());
+        }
+        let mut trailing = report.to_vec();
+        trailing.push(0);
+        malformed.push(trailing);
+        let mut duplicate = report;
+        duplicate[17..23].copy_from_slice(&report[9..15]);
+        malformed.push(duplicate.to_vec());
+
+        for packet in malformed {
+            if let Some(hosts) = parse_connected_devices(&packet) {
+                previous = hosts;
+            }
+            assert_eq!(previous, expected, "packet={packet:02x?}");
+        }
+
+        let empty = [4, 0, 4, 0, 0x2e, 0, 1, 0, 0];
+        previous = parse_connected_devices(&empty).unwrap();
+        assert!(previous.is_empty());
+    }
+
+    #[test]
+    fn mac_source_identity_matches_tahoe_capture() {
+        assert_eq!(&SOURCE_TYPE_MAC[..6], &[4, 0, 4, 0, 0x24, 0]);
+        assert_eq!(
+            u16::from_le_bytes(SOURCE_TYPE_MAC[6..8].try_into().unwrap()),
+            2
+        );
+        assert_eq!(
+            u16::from_le_bytes(SOURCE_TYPE_MAC[8..10].try_into().unwrap()) as usize,
+            SOURCE_TYPE_MAC.len() - 10
+        );
+        assert_eq!(SOURCE_TYPE_MAC[10], 0x10);
+    }
+
     // Pro 3/9A348 capture, before primary-bud handoff; no device identifiers.
     const CAPTURED_BATTERY: &[u8] = &[
         4, 0, 4, 0, 4, 0, 3, 4, 1, 93, 2, 1, 2, 1, 95, 1, 1, 8, 1, 99, 1, 1,
@@ -1010,6 +1068,26 @@ mod tests {
         assert!(route_diag(&p).is_none());
         for n in 0..6 {
             assert!(!is_microphone_message(&p[..n]));
+        }
+    }
+    #[test]
+    fn routine_route_diagnostics_never_include_host_identity_or_payload() {
+        let host = [
+            4, 0, 4, 0, 0x2e, 0, 1, 0, 1, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 2, 6,
+        ];
+        assert_eq!(route_diag(&host), Some((0x2e, "hosts=1".into())));
+        for opcode in [0x2b, 0x44, 0x52] {
+            let mut packet = vec![4, 0, 4, 0, opcode, 0];
+            packet.extend_from_slice(b"Private Phone 11:22:33:44:55:66");
+            assert_eq!(
+                route_diag(&packet),
+                Some((opcode, "payload redacted".into()))
+            );
+        }
+        for opcode in [0x2b, 0x2e, 0x44, 0x52] {
+            for high_byte in [1, 0xff] {
+                assert!(route_diag(&[4, 0, 4, 0, opcode, high_byte]).is_none());
+            }
         }
     }
     #[test]

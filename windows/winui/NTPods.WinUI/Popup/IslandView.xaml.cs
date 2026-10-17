@@ -2,7 +2,9 @@ using NTPods.WinUI.Ipc;
 using NTPods.WinUI.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
+using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 
 namespace NTPods.WinUI.Popup;
 
@@ -14,26 +16,40 @@ public sealed partial class IslandView : UserControl
     private readonly DeviceArtworkState _artwork = new();
     private bool _connectionMessage = true;
     private readonly IslandMessageMotion _message = new();
+    private readonly IslandActionMotion _action = new();
+    private bool _nearby;
+    private string _status = "";
     private string _description = "";
-    public bool Animating => _message.Animating || _gauges.Any(g => g.Animating);
+    public bool Animating => _message.Animating || _action.Animating || _gauges.Any(g => g.Animating);
+    public bool IsConnectionPayload => _connectionMessage;
+    public bool IsNearbyConnection => _connectionMessage && _nearby;
+    public bool IsConnecting => IsNearbyConnection && _action.State == IslandConnectState.Connecting;
+    public IslandConnectState ConnectState => _action.State;
+    public bool CanConnect => IsNearbyConnection && _action.CanConnect;
+    public event Action? ConnectRequested;
 
     public IslandView()
     {
         InitializeComponent();
         _ = new ArtworkTransitions(this, DeviceImage);
+        ConnectLabel.Text = Localize.Get("Action_Connect");
+        RetryLabel.Text = Localize.Get("Playback.Retry");
     }
 
     public void Apply(Snapshot s, double now, bool animate)
     {
         _connectionMessage = true;
+        _action.Set(IslandConnectState.Hidden, now, false);
         DeviceName.Text = DeviceModels.DisplayName(s, Localize.Get("Device_DefaultName"));
-        SetMessage(Localize.Get(BatteryPresentation.StatusKey(s)), now, animate);
         UpdateSnapshot(s, now, animate);
     }
 
     public void ApplyMessage(string title, string body, Snapshot? snapshot, string? model, double now, bool animate)
     {
         _connectionMessage = false;
+        _nearby = false;
+        _action.Set(IslandConnectState.Hidden, now, animate);
+        RenderAction();
         DeviceName.Text = string.IsNullOrWhiteSpace(title) ? DeviceModels.DisplayName(snapshot ?? new Snapshot { Model = model ?? "" }, Localize.Get("Device_DefaultName")) : title;
         string? modeKey = body == "Transparency" || body == Localize.Get("Anc_Transparency") ? "Anc_Transparency" :
             body == "Adaptive" || body == Localize.Get("Anc_Adaptive") ? "Anc_Adaptive" :
@@ -59,7 +75,17 @@ public sealed partial class IslandView : UserControl
     public void UpdateSnapshot(Snapshot s, double now, bool animate)
     {
         SetImage(s);
-        if (_connectionMessage) SetMessage(Localize.Get(BatteryPresentation.StatusKey(s)), now, animate);
+        if (_connectionMessage)
+        {
+            _nearby = !s.AudioOutputReady && BatteryPresentation.IsLive(s) && BatteryPresentation.HasData(s);
+            _status = Localize.Get(s.AudioOutputReady
+                ? s.LinkStale ? "Status_ControlUnavailable" : "Status_Connected"
+                : _nearby ? BatteryPresentation.IsCharging(s) ? "Battery.NearbyCharging" : "Battery.Nearby"
+                : "Status_Disconnected");
+            if (!_nearby) _action.Set(IslandConnectState.Hidden, now, animate);
+            SetMessage(ConnectionStatus(), now, animate);
+            RenderAction();
+        }
         bool live = BatteryPresentation.IsLive(s);
         bool headphone = DeviceModels.Find(_model).Headphone || DeviceModels.Headphone(s);
         LeftLabel.Text = headphone ? DeviceModels.DisplayName(s, Localize.Get("Device_DefaultName")) : Localize.Get("BatteryLeftLabel_Text");
@@ -75,6 +101,28 @@ public sealed partial class IslandView : UserControl
         string freshness = BatteryPresentation.FreshnessText(s);
         FreshnessText.Text = freshness;
         FreshnessText.Visibility = !live && BatteryPresentation.HasData(s) ? Visibility.Visible : Visibility.Collapsed;
+        RefreshDescription();
+    }
+
+    public void SetConnectState(IslandConnectState state, double now, bool animate)
+    {
+        _action.Set(IsNearbyConnection ? state : IslandConnectState.Hidden, now, animate);
+        if (_connectionMessage) SetMessage(ConnectionStatus(), now, animate);
+        RenderAction();
+        RefreshDescription();
+    }
+
+    private string ConnectionStatus() => _action.State switch
+    {
+        IslandConnectState.Connecting => Localize.Get("Status_Connecting"),
+        IslandConnectState.Failed => Localize.Get("Island_ConnectFailed"),
+        _ => _status,
+    };
+
+    private void RefreshDescription()
+    {
+        bool headphone = RightCell.Visibility == Visibility.Collapsed;
+        string freshness = FreshnessText.Text;
         string detail = string.Join(", ", new[] { $"{LeftLabel.Text} {LeftText.Text}",
             headphone ? "" : $"{RightLabel.Text} {RightText.Text}", headphone ? "" : $"{CaseLabel.Text} {CaseText.Text}", freshness }
             .Where(x => !string.IsNullOrWhiteSpace(x)));
@@ -118,7 +166,8 @@ public sealed partial class IslandView : UserControl
         MessageBody.Text = _message.Current.Text;
         PreviousMessage.Opacity = 1 - _message.Opacity;
         MessageBody.Opacity = _message.Opacity;
-        MessageOffset.X = 7 * (1 - _message.Opacity);
+        PreviousMessageOffset.Y = -8 * _message.Opacity;
+        MessageOffset.Y = 8 * (1 - _message.Opacity);
         double IconOpacity(IslandMessageIcon icon) =>
             (_message.Previous.Icon == icon ? 1 - _message.Opacity : 0) +
             (_message.Current.Icon == icon ? _message.Opacity : 0);
@@ -131,14 +180,40 @@ public sealed partial class IslandView : UserControl
             _message.Animating && _message.Previous.Icon != IslandMessageIcon.None ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    public void RenderFrame(double now, double headerOpacity, double batteryOpacity)
+    private void StatusViewport_SizeChanged(object sender, SizeChangedEventArgs e) =>
+        StatusViewport.Clip = new RectangleGeometry { Rect = new Windows.Foundation.Rect(0, 0, e.NewSize.Width, e.NewSize.Height) };
+
+    private void RenderAction()
     {
-        HeaderGrid.Opacity = headerOpacity;
-        HeaderOffset.Y = 5 * (1 - headerOpacity);
-        BatteryPanel.Opacity = batteryOpacity;
-        BatteryOffset.Y = 7 * (1 - batteryOpacity);
+        double opacity = 1 - _action.Opacity(IslandConnectState.Hidden);
+        ConnectButton.Visibility = opacity > 0 ? Visibility.Visible : Visibility.Collapsed;
+        ConnectButton.Opacity = opacity;
+        MessageIcons.Opacity = 1 - opacity;
+        ConnectButton.IsEnabled = ConnectButton.IsHitTestVisible = CanConnect;
+        AutomationProperties.SetAccessibilityView(ConnectButton, CanConnect ? AccessibilityView.Content : AccessibilityView.Raw);
+        AutomationProperties.SetName(ConnectButton, Localize.Get(_action.State == IslandConnectState.Failed
+            ? "Playback.Retry" : _action.State == IslandConnectState.Connecting ? "Status_Connecting" : "Action_Connect"));
+        ConnectLabel.Opacity = _action.Opacity(IslandConnectState.Ready);
+        ConnectProgress.Opacity = _action.Opacity(IslandConnectState.Connecting);
+        ConnectProgress.IsActive = ConnectProgress.Opacity > 0;
+        RetryLabel.Opacity = _action.Opacity(IslandConnectState.Failed);
+    }
+
+    private void ConnectButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (CanConnect) ConnectRequested?.Invoke();
+    }
+
+    internal void RenderFrame(double now, IslandMotion motion)
+    {
+        PayloadTransform.ScaleX = PayloadTransform.ScaleY = motion.PayloadScale;
+        PayloadTransform.TranslateY = motion.PayloadOffset;
+        HeaderGrid.Opacity = motion.HeaderOpacity;
+        BatteryPanel.Opacity = motion.BatteryOpacity;
         _message.Advance(now);
         RenderMessage();
+        _action.Advance(now);
+        RenderAction();
         foreach (var gauge in _gauges) gauge.Advance(now);
         LeftRing.Value = _gauges[0].Value;
         RightRing.Value = _gauges[1].Value;
@@ -149,7 +224,9 @@ public sealed partial class IslandView : UserControl
     {
         foreach (var gauge in _gauges) gauge.Finish();
         _message.Finish();
+        _action.Finish();
         RenderMessage();
+        RenderAction();
     }
 
     private void SetImage(Snapshot snapshot)

@@ -52,6 +52,7 @@ https://github.com/user-attachments/assets/44b47894-22f6-49f1-a891-99ce0b7346bc
 - A 48 kHz mono microphone on supported models, with stereo playback and a
   keyboard shortcut.
 - Custom Transparency adjustments on supported models, under experimental settings.
+- Hearing Aid and Media Assist switches for a profile already set up on an iPhone, under experimental settings.
 - A live head-movement graph and heart-rate monitoring on supported models.
 - A Dynamic Island popup and Start with Windows.
 

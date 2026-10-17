@@ -36,10 +36,25 @@
                               Toggled="Enable_Toggled" />
             </Grid>
 
+            <Grid ColumnSpacing="24">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="{Binding [MediaAssistSwitch_Header], Source={StaticResource Loc}}"
+                           FontSize="16" TextWrapping="Wrap" VerticalAlignment="Center" />
+                <ToggleSwitch x:Name="MediaSwitch" Grid.Column="1" Style="{StaticResource SettingToggle}"
+                              AutomationProperties.Name="{Binding [MediaAssistSwitch_Header], Source={StaticResource Loc}}"
+                              Toggled="Media_Toggled" />
+            </Grid>
+
             <TextBlock x:Name="ErrorText" FontSize="13" TextWrapping="Wrap" Visibility="Collapsed"
                        Foreground="{ThemeResource SystemFillColorCriticalBrush}" AutomationProperties.LiveSetting="Polite" />
             <Button x:Name="DisableButton" HorizontalAlignment="Stretch" Visibility="Collapsed" Click="Disable_Click">
                 <TextBlock Text="{Binding [HearingAid_TurnOff], Source={StaticResource Loc}}" TextWrapping="Wrap" />
+            </Button>
+            <Button x:Name="MediaDisableButton" HorizontalAlignment="Stretch" Visibility="Collapsed" Click="MediaDisable_Click">
+                <TextBlock Text="{Binding [MediaAssist_TurnOff], Source={StaticResource Loc}}" TextWrapping="Wrap" />
             </Button>
 
             <!-- Per-person audiogram (hearing loss, dB HL). Rows built in code-behind. -->

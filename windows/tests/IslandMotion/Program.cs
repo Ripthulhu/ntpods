@@ -20,8 +20,11 @@ motion.Advance(7000);
 motion.Advance(7100);
 double closing = motion.Expansion;
 Check(closing > 0 && closing < 1, "The capsule must retract before hiding.");
+Check(motion.Closing && motion.PayloadScale < 1 && motion.PayloadOffset < 0,
+    "The outgoing payload must fold together during exit.");
 motion.Show(7100, true);
 Check(motion.Expansion == closing, "A new event must reverse dismissal from its current size.");
+Check(!motion.Closing, "Reopening must cancel the old exit before preparing new content.");
 motion.Advance(7500);
 Check(motion.Expansion == 1, "Interrupted dismissal must reopen fully.");
 motion.Advance(11500);
@@ -30,6 +33,7 @@ Check(!motion.Visible && motion.Expansion == 0, "Dismissal must finish and relea
 
 motion.Show(12000, false);
 Check(motion.Visible && motion.Expansion == 1 && !motion.Animating, "Reduced motion must show all content immediately.");
+Check(motion.PayloadScale == 1 && motion.PayloadOffset == 0, "Reduced motion must leave the payload at its final layout.");
 motion.Advance(16000);
 Check(!motion.Visible, "Reduced motion must dismiss without a spatial animation.");
 motion.Show(17000, true);
@@ -164,6 +168,39 @@ resizing.SetHeight(200, 750, true);
 resizing.SetAnimationsEnabled(780, false);
 Check(resizing.Height == 200 && !resizing.Resizing, "Disabling animations must finish a content resize.");
 resizing.Hide();
-resizing.SetHeight(160, 800, true);
-Check(resizing.Height == 160 && !resizing.Resizing, "A hidden island must prepare the next size without background frames.");
+resizing.SetHeight(240, 800, true);
+resizing.Show(800, true);
+resizing.Advance(860);
+Check(resizing.Height == 240 && !resizing.Resizing,
+    "A taller new island must open at its final height without clipping the battery row.");
 Console.WriteLine("Content height motion checks passed.");
+
+var action = new IslandActionMotion();
+action.Set(IslandConnectState.Ready, 0, true);
+action.Advance(50);
+double readyOpacity = action.Opacity(IslandConnectState.Ready);
+action.Set(IslandConnectState.Connecting, 50, true);
+Check(action.Opacity(IslandConnectState.Ready) == readyOpacity && !action.CanConnect,
+    "Progress must disable Connect immediately without jumping the current blend.");
+action.Advance(100);
+action.Set(IslandConnectState.Failed, 100, true);
+action.Advance(240);
+Check(action.Opacity(IslandConnectState.Failed) == 1 && action.CanConnect && !action.Animating,
+    "An interrupted progress change must settle on Retry.");
+action.Set(IslandConnectState.Hidden, 250, true);
+Check(!action.CanConnect, "A fading action must stop accepting input immediately.");
+action.Set(IslandConnectState.Ready, 260, false);
+Check(action.Opacity(IslandConnectState.Ready) == 1 && !action.Animating,
+    "Reduced motion must render the final action directly.");
+
+var pinned = new IslandMotion();
+pinned.Show(0, false);
+pinned.Pin(true, 10);
+pinned.Advance(10000);
+Check(pinned.Visible && pinned.Pinned, "Connection progress must hold the island open.");
+pinned.Pin(false, 10000);
+pinned.Advance(13999);
+Check(pinned.Visible, "Completing the request must start a fresh reading interval.");
+pinned.Advance(14000);
+Check(!pinned.Visible, "Reduced motion must dismiss after the fresh interval.");
+Console.WriteLine("Connect action and hold checks passed.");

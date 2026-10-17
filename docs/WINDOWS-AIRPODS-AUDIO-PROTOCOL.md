@@ -141,8 +141,8 @@ it does not assign meanings to all their reserved bits.
 | Encoder | FDK AOT 39 / ER AAC ELD, 48 kHz stereo, 480 samples/channel per AU |
 | AudioSpecificConfig | `F8 E6 50 00`, no SBR |
 | Bitrate | CBR 128–256 kbps in 1 kbps steps; optional experimental VBR up to 256 kbps |
-| RTP header | `80 60`, big-endian sequence and timestamp, SSRC `11 22 33 44` |
-| RTP clock | 48 kHz sample count by default; diagnostic 1 kHz mode advances 10 per AU |
+| RTP header | `80 60`, big-endian sequence and timestamp, SSRC `0x11223344` by default |
+| RTP clock | 48 kHz sample counter; advances 480 per AU |
 | AU geometry | 480 samples = 10 ms; one AU per packet by default, two with the diagnostic override |
 | Bounds | One or two AUs; each nonempty and at most 321 bytes; complete packet must fit media MTU |
 
@@ -165,13 +165,21 @@ Each AU immediately follows this four-byte header:
 
 The AU sequence starts at 1 and wraps at 12 bits. RTP sequence starts at 0 and
 wraps at 16 bits. There is no LATM wrapper or AAC fragmentation on this path.
-The `B` and `1` high nibbles follow USBPods. NTPods retains a fixed SSRC;
-whether the earbuds require those exact values remains unverified.
+The `B` and `1` high nibbles follow USBPods. SSRC zero matches the captured macOS
+sender, but NTPods retains the tested `0x11223344` default.
 
 The [timestamp override](WINDOWS-AUDIO-LATENCY.md#packet-and-source-reserve-overrides)
-changes only AAC-ELD timestamp units. Both clocks count encoded samples, so the
-override preserves packet cadence, codec settings and the Windows render clock.
-The 1 kHz option has not been validated on hardware.
+provides a 1 kHz sample counter and monotonic milliseconds with SSRC zero.
+Both failed on Pro 3 / 9A348, with NTPods 0.2.48 and 0.2.49 respectively.
+They remain diagnostic options; neither changes the Windows render clock,
+codec settings or packet deadlines. The cause remains unresolved.
+
+A [controlled Tahoe comparison](MACOS-AUDIO-CAPTURE-2026-10-12.md#connection-setup-and-rtp-clock)
+retains audible millisecond-clock AAC-ELD with ordinary AVDTP and the host's
+advertised Dynamic Latency bit cleared. FastConnect is not a prerequisite in
+that Mac setup. Changing only its advertised DID version to the Windows value
+`0A00` also retained five minutes of clean playback. These controls do not
+establish which remaining difference causes the Windows failure.
 
 The maximum bitrate allowed by the MTU is
 `min(floor((MTU - 12 - 4 * n) / n) - 1, 320) * 800` bits/s for `n` AUs,
@@ -181,7 +189,10 @@ lower rate after opening media, NTPods sends `RECONFIGURE` before Start.
 Manual settings that do not fit fail.
 
 On Suspend/restart, the ELD packetizer discards pending AUs and resets its
-AU sequence and timestamp; RTP packet sequence continues within that session.
+AU sequence and timestamp counter; RTP packet sequence continues within that session.
+With the monotonic override, its epoch begins immediately before Start, so the
+first media packet includes negotiation and priming time. Pauses do not carry
+into a new epoch.
 The encoder is recreated. NTPods clears queued PCM and primes playback with a
 20 ms scheduling lead for AAC-ELD and 30 ms for AAC. Diagnostic overrides allow
 30 or 50 ms reserves. Its frame clock counts samples from one origin, avoiding
@@ -261,6 +272,8 @@ same capture request remains active.
 
 Stop waits for 500 ms without uplink, allowing a two-second drain window. If
 audio continues, NTPods retries Stop once with one further two-second window.
+Receiver timeouts are capped by those deadlines. Cancelling before Start reaches
+Bluetooth returns directly to Idle when no uplink or playback cleanup is pending.
 After an attempted start, even quiet uplink requires one playback recovery.
 With NTPods native playback, recovery suspends AVDTP, recreates the encoder,
 clears queued PCM and restarts the stream if playback was active. The request

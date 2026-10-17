@@ -61,6 +61,12 @@ pub struct Shared(Mutex<Vec<(u64, Weak<WinHandle>)>>);
 impl Shared {
     pub fn open(&self, address: u64) -> io::Result<Driver> {
         let mut handles = self.0.lock().unwrap();
+        if crate::devnode::recovering() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "The AirPods driver is recovering",
+            ));
+        }
         handles.retain(|(_, handle)| handle.strong_count() != 0);
         if let Some(handle) = handles
             .iter()
@@ -69,9 +75,26 @@ impl Shared {
             return Ok(Driver { handle });
         }
         let driver = Driver::open(address)?;
+        crate::devnode::opened(address);
         // The exclusive AAP handle outlives individual control-channel reconnects.
         handles.push((address, Arc::downgrade(&driver.handle)));
         Ok(driver)
+    }
+
+    pub fn request_recovery(
+        &self,
+        address: u64,
+        finished: impl FnOnce(crate::devnode::RecoveryResult) + Send + 'static,
+    ) -> bool {
+        // Serialize recovery with both control and playback opens; an owner must close first.
+        let handles = self.0.lock().unwrap();
+        if handles
+            .iter()
+            .any(|(peer, handle)| *peer == address && handle.strong_count() != 0)
+        {
+            return false;
+        }
+        crate::devnode::request_recovery(address, finished)
     }
 }
 
@@ -393,7 +416,7 @@ impl Driver {
     }
 }
 
-fn device_instance_address(instance: &str) -> Option<u64> {
+pub(crate) fn device_instance_address(instance: &str) -> Option<u64> {
     let id = instance.to_ascii_lowercase();
     let mut parts = id.splitn(3, '\\');
     if parts.next()? != "bthenum" {
@@ -613,6 +636,7 @@ mod tests {
         };
         let weak = Arc::downgrade(&original.handle);
         shared.0.lock().unwrap().push((42, weak.clone()));
+        assert!(!shared.request_recovery(42, |_| panic!("Recovery ran with a live handle")));
         let playback = shared.open(42).unwrap();
         drop(original);
         let replacement = shared.open(42).unwrap();

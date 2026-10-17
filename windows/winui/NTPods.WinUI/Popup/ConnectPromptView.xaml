@@ -4,34 +4,89 @@
     <ScrollViewer x:Name="CardScroll" Background="{ThemeResource AppleGroupBrush}"
                   HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled"
                   VerticalScrollBarVisibility="Auto">
-        <StackPanel x:Name="CardContent" Padding="24,20,24,24" Spacing="16">
-            <Grid MinHeight="40" ColumnSpacing="8">
+        <StackPanel Padding="24,20,24,24" Spacing="12">
+            <Grid MinHeight="56">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="36"/><ColumnDefinition Width="*"/><ColumnDefinition Width="36"/>
+                    <ColumnDefinition Width="40"/><ColumnDefinition Width="*"/><ColumnDefinition Width="40"/>
                 </Grid.ColumnDefinitions>
                 <TextBlock x:Name="DeviceName" Grid.Column="1" FontSize="24" FontWeight="SemiBold"
                            TextAlignment="Center" VerticalAlignment="Center" TextWrapping="Wrap"
-                           MaxLines="2" TextTrimming="CharacterEllipsis" />
-                <Button Grid.Column="2" Width="36" Height="36" Padding="0"
+                           MaxLines="2" TextTrimming="CharacterEllipsis"
+                           AutomationProperties.LiveSetting="Polite" />
+                <Button Grid.Column="2" Width="40" Height="40" Padding="0"
                         Style="{StaticResource QuietButton}" VerticalAlignment="Top" Click="Close_Click"
                         AutomationProperties.Name="{Binding [Action_Close], Source={StaticResource Loc}}">
                     <FontIcon Glyph="&#xE711;" FontSize="14" />
                 </Button>
             </Grid>
-            <Image x:Name="DeviceImage" Height="180" Stretch="Uniform"
+            <Image x:Name="DeviceImage" Height="160" Stretch="Uniform"
                    AutomationProperties.AccessibilityView="Raw" />
-            <Grid MinHeight="64">
-                <TextBlock x:Name="StatusText" FontSize="13" TextAlignment="Center" TextWrapping="Wrap"
-                           VerticalAlignment="Center"
-                           Foreground="{ThemeResource AppleSecondaryBrush}"
+            <Grid MinHeight="96">
+                <TextBlock x:Name="StatusText" FontSize="14" TextAlignment="Center" TextWrapping="Wrap"
+                           VerticalAlignment="Center" Foreground="{ThemeResource AppleSecondaryBrush}"
                            AutomationProperties.LiveSetting="Polite" />
+                <StackPanel x:Name="CompletedContent" Visibility="Collapsed" Spacing="8"
+                            VerticalAlignment="Center">
+                    <TextBlock Text="{Binding [ConnectPrompt_Paired], Source={StaticResource Loc}}"
+                               FontSize="14" FontWeight="SemiBold" TextAlignment="Center"
+                               AutomationProperties.LiveSetting="Polite" />
+                    <Grid x:Name="BatteryRow" ColumnSpacing="12" AutomationProperties.LiveSetting="Polite">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                        <StackPanel x:Name="BudsCell" Grid.Column="0" Spacing="4"
+                                    HorizontalAlignment="Center" VerticalAlignment="Center">
+                            <TextBlock x:Name="BudsLabel" FontSize="12" TextAlignment="Center"
+                                       Foreground="{ThemeResource AppleSecondaryBrush}"
+                                       AutomationProperties.AccessibilityView="Raw" />
+                            <StackPanel Orientation="Horizontal" Spacing="6" HorizontalAlignment="Center">
+                                <Grid Width="24" Height="24">
+                                    <ProgressRing x:Name="BudsRing" Width="24" Height="24" IsIndeterminate="False"
+                                                  IsActive="True" Minimum="0" Maximum="100" Value="0"
+                                                  Foreground="{ThemeResource AppleGreenBrush}"
+                                                  Background="{ThemeResource AppleDividerBrush}"
+                                                  AutomationProperties.AccessibilityView="Raw" />
+                                    <Path x:Name="BudsCharging" Width="8" Height="12" Stretch="Uniform"
+                                          Fill="{ThemeResource AppleGreenBrush}" Visibility="Collapsed"
+                                          Data="M 8,0 L 0,9 L 4,9 L 2,16 L 10,7 L 6,7 Z" />
+                                </Grid>
+                                <TextBlock x:Name="BudsValue" FontSize="18" VerticalAlignment="Center" />
+                            </StackPanel>
+                            <StackPanel x:Name="RightRow" Orientation="Horizontal" Spacing="4"
+                                        HorizontalAlignment="Center" Visibility="Collapsed">
+                                <TextBlock x:Name="RightValue" FontSize="14" TextAlignment="Center" />
+                                <Path x:Name="RightCharging" Width="6" Height="10" Stretch="Uniform"
+                                      Fill="{ThemeResource AppleGreenBrush}" Visibility="Collapsed"
+                                      Data="M 8,0 L 0,9 L 4,9 L 2,16 L 10,7 L 6,7 Z" />
+                            </StackPanel>
+                        </StackPanel>
+                        <StackPanel x:Name="CaseCell" Grid.Column="1" Spacing="4"
+                                    HorizontalAlignment="Center" VerticalAlignment="Center">
+                            <TextBlock x:Name="CaseLabel" FontSize="12" TextAlignment="Center"
+                                       Foreground="{ThemeResource AppleSecondaryBrush}"
+                                       Text="{Binding [BatteryCaseLabel_Text], Source={StaticResource Loc}}"
+                                       AutomationProperties.AccessibilityView="Raw" />
+                            <StackPanel Orientation="Horizontal" Spacing="6" HorizontalAlignment="Center">
+                                <Grid Width="24" Height="24">
+                                    <ProgressRing x:Name="CaseRing" Width="24" Height="24" IsIndeterminate="False"
+                                                  IsActive="True" Minimum="0" Maximum="100" Value="0"
+                                                  Foreground="{ThemeResource AppleGreenBrush}"
+                                                  Background="{ThemeResource AppleDividerBrush}"
+                                                  AutomationProperties.AccessibilityView="Raw" />
+                                    <Path x:Name="CaseCharging" Width="8" Height="12" Stretch="Uniform"
+                                          Fill="{ThemeResource AppleGreenBrush}" Visibility="Collapsed"
+                                          Data="M 8,0 L 0,9 L 4,9 L 2,16 L 10,7 L 6,7 Z" />
+                                </Grid>
+                                <TextBlock x:Name="CaseValue" FontSize="18" VerticalAlignment="Center" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Grid>
+                </StackPanel>
             </Grid>
             <Button x:Name="ConnectButton" Height="48" HorizontalAlignment="Stretch" CornerRadius="24"
                     Style="{StaticResource AccentButtonStyle}" Click="Connect_Click"
                     AutomationProperties.Name="{Binding [ConnectPrompt_Connect], Source={StaticResource Loc}}">
                 <Grid>
                     <TextBlock x:Name="ConnectLabel" Text="{Binding [ConnectPrompt_Connect], Source={StaticResource Loc}}"
-                               FontSize="16" HorizontalAlignment="Center" />
+                               FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center" />
                     <ProgressRing x:Name="Progress" Width="24" Height="24" IsActive="False" Visibility="Collapsed" />
                 </Grid>
             </Button>

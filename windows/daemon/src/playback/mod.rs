@@ -19,7 +19,7 @@ pub use buffer::{
     begin_automatic_pause, set as set_buffer, stop as stop_buffer, Active as BufferActive,
     AutomaticPause,
 };
-use codec::{AudioEncoder, MediaPackets, Mode};
+use codec::{AudioEncoder, EldRtpClock, MediaPackets, Mode};
 use ntpods_ipc::{PlaybackBitrate, PlaybackMode};
 use pcm::{FrameAssembler, FrameClock, MAX_READ_BYTES};
 use render::Render;
@@ -407,14 +407,12 @@ fn manage(ctx: &Ctx) {
             )
         })();
         ctx.playback_selection.lock().unwrap().cancel = None;
-        if result.as_ref().is_err_and(|error| {
-            matches!(
-                error.kind(),
-                io::ErrorKind::NotConnected | io::ErrorKind::ConnectionReset
-            )
-        }) {
-            render.take();
-            NATIVE_ADDRESS.store(0, Ordering::Release);
+        let recovery = result.as_ref().err().and_then(playback_recovery);
+        if let Some(recovery) = recovery {
+            if recovery == PlaybackRecovery::Endpoint {
+                render.take();
+                NATIVE_ADDRESS.store(0, Ordering::Release);
+            }
             attempted = None;
             connected = false;
             next_poll = Instant::now() + Duration::from_secs(1);
@@ -430,6 +428,46 @@ fn manage(ctx: &Ctx) {
     }
     render.take();
     NATIVE_ADDRESS.store(0, Ordering::Release);
+}
+
+#[derive(Debug)]
+enum PlaybackStall {
+    PcmOverrun,
+    DeadlineMiss,
+}
+
+impl std::fmt::Display for PlaybackStall {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::PcmOverrun => "Playback reader fell behind the Windows audio clock",
+            Self::DeadlineMiss => "Playback processing missed its audio deadline",
+        })
+    }
+}
+
+impl std::error::Error for PlaybackStall {}
+
+#[derive(Debug, PartialEq, Eq)]
+enum PlaybackRecovery {
+    Session,
+    Endpoint,
+}
+
+fn playback_recovery(error: &io::Error) -> Option<PlaybackRecovery> {
+    if error
+        .get_ref()
+        .is_some_and(|error| error.is::<PlaybackStall>())
+    {
+        // Restart after the retry delay without invalidating existing WASAPI clients.
+        Some(PlaybackRecovery::Session)
+    } else if matches!(
+        error.kind(),
+        io::ErrorKind::NotConnected | io::ErrorKind::ConnectionReset
+    ) {
+        Some(PlaybackRecovery::Endpoint)
+    } else {
+        None
+    }
 }
 
 struct Registration;
@@ -541,8 +579,8 @@ fn run(
     ));
     if mode == Mode::Eld {
         crate::log(&format!(
-            "playback: AAC-ELD RTP clock={} Hz",
-            settings.eld_rtp_clock
+            "playback: AAC-ELD RTP clock={}, SSRC={:#010x}",
+            settings.eld_rtp_clock, settings.eld_rtp_ssrc
         ));
     }
     session.suspend()?;
@@ -578,6 +616,7 @@ fn run(
         mode,
         reserve,
         settings.eld_rtp_clock,
+        settings.eld_rtp_ssrc,
         &mut timing,
         &report_delay,
         || {
@@ -602,7 +641,13 @@ fn run(
     if let Some(summary) = timing.summary() {
         crate::log(&format!("playback timing {}: {summary}", mode.name()));
     }
-    result.and(restored).and(muted)
+    finish_stream(result, restored.and(muted))
+}
+
+fn finish_stream(result: io::Result<()>, cleanup: io::Result<()>) -> io::Result<()> {
+    // A failed restore must not be hidden by a recoverable stream error.
+    cleanup.map_err(|error| io::Error::other(format!("Playback cleanup failed: {error}")))?;
+    result
 }
 
 #[link(name = "winmm")]
@@ -688,14 +733,15 @@ fn stream(
     requests: &Receiver<Reset>,
     mode: Mode,
     reserve: Duration,
-    eld_rtp_clock: u32,
+    eld_rtp_clock: EldRtpClock,
+    eld_rtp_ssrc: u32,
     timing: &mut timing::Timing,
     report_delay: impl Fn(bool, Option<u16>),
     mut disconnected: impl FnMut() -> bool,
 ) -> io::Result<()> {
     let _timer = TimerResolution::acquire()?;
     let _scheduling = scheduling::AudioScheduling::acquire();
-    let mut packets = MediaPackets::new(encoder, session.eld_aus, eld_rtp_clock)?;
+    let mut packets = MediaPackets::new(encoder, session.eld_aus, eld_rtp_clock, eld_rtp_ssrc)?;
     let samples = mode.frame_samples();
     let mut pcm = FrameAssembler::new(samples)?;
     let mut active = false;
@@ -723,19 +769,20 @@ fn stream(
             let result = buffer.cleanup_before(render, || {
                 session.restore_media_timeout()?;
                 session.suspend()?;
+                packets.clear();
                 clock = prime_output(
                     samples,
                     reserve,
                     || {
                         *encoder = AudioEncoder::new(mode, session.bitrate, session.variable)?;
                         if active {
+                            packets.start(Instant::now());
                             session.start()?;
                         }
                         Ok(())
                     },
                     || render.read(MAX_READ_BYTES),
                 )?;
-                packets.clear();
                 pcm.reset();
                 outstanding = 0;
                 let status = primed_status(render, &mut clock, driver_clock, reserve)?;
@@ -797,6 +844,7 @@ fn stream(
                 reserve,
                 || {
                     *encoder = AudioEncoder::new(mode, session.bitrate, session.variable)?;
+                    packets.start(Instant::now());
                     session.start()
                 },
                 || render.read(MAX_READ_BYTES),
@@ -807,9 +855,7 @@ fn stream(
             buffer.started();
             active = true;
         } else if active && status[2] != dropped {
-            return Err(io::Error::other(
-                "Playback reader fell behind the Windows audio clock",
-            ));
+            return Err(io::Error::other(PlaybackStall::PcmOverrun));
         }
         if buffer.poll(session, render)? {
             if !active {
@@ -823,11 +869,11 @@ fn stream(
                 reserve,
                 || {
                     *encoder = AudioEncoder::new(mode, session.bitrate, session.variable)?;
+                    packets.start(Instant::now());
                     session.start()
                 },
                 || render.read(MAX_READ_BYTES),
             )?;
-            packets.clear();
             pcm.reset();
             outstanding = 0;
             let primed = primed_status(render, &mut clock, driver_clock, reserve)?;
@@ -855,9 +901,7 @@ fn stream(
             None
         } {
             if lateness > Duration::from_millis(100) || outstanding * samples >= 4800 {
-                return Err(io::Error::other(
-                    "Playback processing missed its audio deadline",
-                ));
+                return Err(io::Error::other(PlaybackStall::DeadlineMiss));
             }
             let mut replaced = false;
             let frame = pcm.read_available(
@@ -884,7 +928,8 @@ fn stream(
                 break;
             };
             outstanding = outstanding.saturating_sub(1);
-            for packet in packets.push(unit, session.mtu)? {
+            for mut packet in packets.push(unit, session.mtu)? {
+                packets.stamp(&mut packet, Instant::now())?;
                 let started = Instant::now();
                 let sent = session.media(&packet);
                 timing.send(started.elapsed());
@@ -915,6 +960,59 @@ fn stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_playback_stalls_select_session_recovery_after_successful_cleanup() {
+        for stall in [PlaybackStall::PcmOverrun, PlaybackStall::DeadlineMiss] {
+            let error = finish_stream(Err(io::Error::other(stall)), Ok(())).unwrap_err();
+            assert_eq!(playback_recovery(&error), Some(PlaybackRecovery::Session));
+            let same_text = io::Error::other(error.to_string());
+            assert_eq!(playback_recovery(&same_text), None);
+        }
+        for kind in [io::ErrorKind::NotConnected, io::ErrorKind::ConnectionReset] {
+            assert_eq!(
+                playback_recovery(&io::Error::from(kind)),
+                Some(PlaybackRecovery::Endpoint)
+            );
+        }
+    }
+
+    #[test]
+    fn failed_cleanup_blocks_stall_and_transport_retries() {
+        for stream_error in [
+            io::Error::other(PlaybackStall::PcmOverrun),
+            io::Error::other(PlaybackStall::DeadlineMiss),
+            io::Error::from(io::ErrorKind::ConnectionReset),
+        ] {
+            let error = finish_stream(
+                Err(stream_error),
+                Err(io::Error::new(
+                    io::ErrorKind::ConnectionReset,
+                    "restore failed",
+                )),
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("restore failed"));
+            assert_eq!(playback_recovery(&error), None);
+        }
+    }
+
+    #[test]
+    fn stream_failures_keep_their_error_when_cleanup_succeeds() {
+        for kind in [
+            io::ErrorKind::InvalidData,
+            io::ErrorKind::Unsupported,
+            io::ErrorKind::Other,
+            io::ErrorKind::ConnectionAborted,
+            io::ErrorKind::Interrupted,
+        ] {
+            let error = finish_stream(Err(io::Error::from(kind)), Ok(())).unwrap_err();
+            assert_eq!(error.kind(), kind);
+            assert_eq!(playback_recovery(&error), None);
+        }
+        assert!(finish_stream(Ok(()), Ok(())).is_ok());
+        assert!(finish_stream(Ok(()), Err(io::Error::other("gate failed"))).is_err());
+    }
 
     #[test]
     fn notification_waits_preserve_frame_and_control_deadlines_and_polling_fallback() {

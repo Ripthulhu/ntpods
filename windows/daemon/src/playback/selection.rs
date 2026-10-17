@@ -180,14 +180,11 @@ pub fn load_bitrates() -> [PlaybackBitrate; 2] {
 }
 
 pub fn save_bitrates(values: [PlaybackBitrate; 2]) -> io::Result<()> {
-    std::fs::write(
-        path()?.with_file_name("playback-bitrates.json"),
-        serde_json::to_vec(&values)?,
-    )
+    crate::persist_preference("playback-bitrates.json", &serde_json::to_vec(&values)?)
 }
 
 pub fn save(mode: PlaybackMode) -> io::Result<()> {
-    std::fs::write(path()?, serde_json::to_vec(&mode)?)
+    crate::persist_preference("playback-mode.json", &serde_json::to_vec(&mode)?)
 }
 
 #[cfg(test)]
@@ -242,7 +239,10 @@ mod tests {
 
     #[test]
     fn legacy_and_missing_selections_use_eld_without_driver_rebinding() {
-        assert_eq!(normalize_mode(PlaybackMode::default()), PlaybackMode::AacEld);
+        assert_eq!(
+            normalize_mode(PlaybackMode::default()),
+            PlaybackMode::AacEld
+        );
         assert_eq!(normalize_mode(PlaybackMode::Windows), PlaybackMode::AacEld);
     }
 
@@ -252,7 +252,10 @@ mod tests {
             (r#""aac""#, PlaybackMode::Aac),
             (r#""aac_eld""#, PlaybackMode::AacEld),
         ] {
-            assert_eq!(normalize_mode(serde_json::from_str(saved).unwrap()), expected);
+            assert_eq!(
+                normalize_mode(serde_json::from_str(saved).unwrap()),
+                expected
+            );
         }
     }
 

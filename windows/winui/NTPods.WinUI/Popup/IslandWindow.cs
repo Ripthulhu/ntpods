@@ -24,10 +24,15 @@ public sealed class IslandWindow : Window
     private double _scale = 1;
     private DisplayArea? _display;
     private bool _closed;
+    private bool _frozen;
+    private bool _holdConnect;
+
+    public event Action? ConnectRequested;
 
     public IslandWindow()
     {
         Content = _view;
+        _view.ConnectRequested += OnConnectRequested;
         Title = "NTPods";
         PopupWindowNative.Configure(this, interactive: false);
 
@@ -54,21 +59,79 @@ public sealed class IslandWindow : Window
     public void ShowConnected(Snapshot snapshot)
     {
         if (_closed) return;
-        try { _view.Apply(snapshot, _clock.Elapsed.TotalMilliseconds, _uiSettings.AnimationsEnabled); Show(); } catch { Hide(); }
+        try
+        {
+            _frozen = false;
+            _holdConnect = false;
+            double now = _clock.Elapsed.TotalMilliseconds;
+            _view.Apply(snapshot, now, _uiSettings.AnimationsEnabled);
+            _motion.Pin(false, now);
+            Show();
+        }
+        catch { Hide(); }
     }
 
     public void ShowMessage(string title, string body, Snapshot? snapshot = null, string? model = null)
     {
         if (_closed) return;
-        try { _view.ApplyMessage(title, body, snapshot, model, _clock.Elapsed.TotalMilliseconds, _uiSettings.AnimationsEnabled); Show(); } catch { Hide(); }
+        try
+        {
+            _frozen = false;
+            _holdConnect = false;
+            _motion.Pin(false, _clock.Elapsed.TotalMilliseconds);
+            _view.ApplyMessage(title, body, snapshot, model, _clock.Elapsed.TotalMilliseconds, _uiSettings.AnimationsEnabled);
+            Show();
+        }
+        catch { Hide(); }
+    }
+
+    public void SetConnectState(IslandConnectState state, bool hold = false)
+    {
+        if (_closed || _frozen || _motion.Closing) return;
+        state = _view.IsNearbyConnection ? state : IslandConnectState.Hidden;
+        hold &= _view.IsNearbyConnection;
+        if (_view.ConnectState == state && _holdConnect == hold) return;
+        try
+        {
+            double now = _clock.Elapsed.TotalMilliseconds;
+            _view.SetConnectState(state, now, _uiSettings.AnimationsEnabled);
+            _holdConnect = hold;
+            _motion.Pin(_view.IsConnecting || _holdConnect, now);
+            if (_motion.Visible) AdvanceFrame();
+        }
+        catch { Hide(); }
+    }
+
+    public bool DismissNearby() => DismissConnection(nearbyOnly: true);
+
+    public bool DismissConnection() => DismissConnection(nearbyOnly: false);
+
+    private bool DismissConnection(bool nearbyOnly)
+    {
+        if (_closed || !_motion.Visible || _motion.Closing || !_view.IsConnectionPayload ||
+            nearbyOnly && !_view.IsNearbyConnection) return false;
+        try
+        {
+            _frozen = true;
+            _holdConnect = false;
+            double now = _clock.Elapsed.TotalMilliseconds;
+            _motion.Pin(false, now);
+            _motion.Dismiss(now, _uiSettings.AnimationsEnabled);
+            if (_motion.Visible) AdvanceFrame();
+            else Hide();
+            return true;
+        }
+        catch { Hide(); return false; }
     }
 
     public void UpdateSnapshot(Snapshot snapshot)
     {
-        if (_closed || !_motion.Visible) return;
+        if (_closed || !_motion.Visible || _frozen || _motion.Closing) return;
         try
         {
-            _view.UpdateSnapshot(snapshot, _clock.Elapsed.TotalMilliseconds, _uiSettings.AnimationsEnabled);
+            double now = _clock.Elapsed.TotalMilliseconds;
+            _view.UpdateSnapshot(snapshot, now, _uiSettings.AnimationsEnabled);
+            _motion.Pin(_view.IsConnecting || _holdConnect && _view.IsNearbyConnection, now);
             Prepare();
             AdvanceFrame();
         }
@@ -88,8 +151,11 @@ public sealed class IslandWindow : Window
             var work = display.WorkArea;
             AppWindow.Move(new PointInt32(work.X + work.Width / 2, work.Y));
         }
-        Prepare();
+        // Snap a hidden popup to its final size; reverse dismissal before measuring a visible one.
+        bool wasVisible = _motion.Visible;
+        if (!wasVisible) Prepare();
         _motion.Show(_clock.Elapsed.TotalMilliseconds, _uiSettings.AnimationsEnabled);
+        if (wasVisible) Prepare();
         Render(_clock.Elapsed.TotalMilliseconds);
         AppWindow.Show(false);
         ScheduleFrame(_clock.Elapsed.TotalMilliseconds);
@@ -99,7 +165,8 @@ public sealed class IslandWindow : Window
     {
         _scale = PopupWindowNative.Scale(this);
         var work = (_display ?? DisplayArea.Primary).WorkArea;
-        _view.Width = Math.Max(80, Math.Min(400, work.Width / _scale - 32));
+        if (!_motion.Closing)
+            _view.Width = Math.Max(80, Math.Min(400, work.Width / _scale - 32));
         _view.Measure(new Windows.Foundation.Size(_view.Width, double.PositiveInfinity));
         _width = (int)Math.Ceiling(_view.Width * _scale);
         _height = (int)Math.Ceiling(Math.Max(_view.MinHeight, _view.DesiredSize.Height) * _scale);
@@ -138,6 +205,7 @@ public sealed class IslandWindow : Window
         {
             StopRendering();
             _dismissTimer.Stop();
+            if (_motion.Pinned) return;
             _dismissTimer.Interval = TimeSpan.FromMilliseconds(_motion.DismissDelay(now));
             _dismissTimer.Start();
         }
@@ -178,7 +246,7 @@ public sealed class IslandWindow : Window
             // SetWindowRgn transfers ownership to Windows and needlessly invalidates unchanged edges.
             _lastRegion = bounds;
         }
-        _view.RenderFrame(now, _motion.HeaderOpacity, _motion.BatteryOpacity);
+        _view.RenderFrame(now, _motion);
     }
 
     private void ResizeSurface()
@@ -196,6 +264,15 @@ public sealed class IslandWindow : Window
         _motion.Hide();
         // Reuse the window: closing themed WinUI content here has crashed XAML teardown.
         if (!_closed) try { AppWindow.Hide(); } catch { }
+    }
+
+    private void OnConnectRequested()
+    {
+        var callback = ConnectRequested;
+        if (_closed || _frozen || !_view.CanConnect || callback is null) return;
+        if (_motion.Closing) _motion.Show(_clock.Elapsed.TotalMilliseconds, _uiSettings.AnimationsEnabled);
+        SetConnectState(IslandConnectState.Connecting);
+        callback();
     }
 
 }

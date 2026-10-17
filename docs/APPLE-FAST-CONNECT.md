@@ -6,14 +6,14 @@ connection/configuration requests. NTPods currently uses Windows' ordinary
 L2CAP channels; the [decoder](../windows/docs/pfc_decode.py) described here is
 an offline analysis tool.
 
-Evidence: three saved AirPods Pro 3 connections on firmware 9A348 and Tahoe
-26.7.1 (25G241), plus that guest's `bluetoothd`. The captures contain profile
-setup but no audio stream. The [Tahoe audio reference](MACOS-AUDIO-CAPTURE-2026-10-12.md)
+Evidence includes AirPods Pro 3 connections on firmware 9A348 and Tahoe
+26.7.1 (25G241), plus that guest's `bluetoothd`. Captures cover both setup and
+audible AAC-ELD playback. The [Tahoe audio reference](MACOS-AUDIO-CAPTURE-2026-10-12.md)
 records the executable hash and audio findings.
 
 ## Exchange
 
-Each captured session follows this sequence:
+The three bud-initiated setup captures follow this sequence:
 
 | Transport | Direction | PFC message |
 | --- | --- | --- |
@@ -30,6 +30,12 @@ connection requests. All three sessions report zero profile status values.
 Discovery to setup completion took 237, 280 and 446 ms at the captured USB/HCI
 boundary. These are setup durations, not acoustic latency or a comparison
 against Windows.
+
+Host initiation is also observed: the host sends Discovery in an Echo request
+and the buds return Discovery response. The descriptor and configuration
+directions remain as shown above. A controlled Tahoe comparison also plays
+AAC-ELD with millisecond RTP timestamps through ordinary AVDTP, with PFC
+disabled. PFC is therefore not required for that sender's timestamp format.
 
 The representative case capture has discovery at frames 878/882, descriptors
 at 914/927, configuration at 929 and completion at 941. The temporary PFC

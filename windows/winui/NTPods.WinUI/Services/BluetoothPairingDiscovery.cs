@@ -106,7 +106,8 @@ internal sealed class BluetoothPairingDiscovery(DispatcherQueue dispatcher) : ID
         Changed?.Invoke();
     }
 
-    public async Task<string> WaitForAirPodsAsync(CancellationToken cancellation, Action<bool> ambiguityChanged)
+    public async Task<string> WaitForAirPodsAsync(CancellationToken cancellation, Action<bool> ambiguityChanged,
+        ushort? model = null)
     {
         int generation = _state.Generation;
         bool ambiguous = false;
@@ -115,7 +116,7 @@ internal sealed class BluetoothPairingDiscovery(DispatcherQueue dispatcher) : ID
             cancellation.ThrowIfCancellationRequested();
             if (_disposed || !_state.Accepts(generation))
                 throw new InvalidOperationException(ErrorKey ?? "Pairing.ScanFailed");
-            string? id = _state.AutomaticCandidate(Environment.TickCount64, out bool multiple);
+            string? id = _state.AutomaticCandidate(Environment.TickCount64, out bool multiple, model);
             if (multiple != ambiguous)
             {
                 ambiguous = multiple;
@@ -145,7 +146,8 @@ internal sealed class BluetoothPairingDiscovery(DispatcherQueue dispatcher) : ID
         Changed?.Invoke();
     }
 
-    public async Task<DevicePairingResultStatus> PairAsync(string id, CancellationToken cancellation)
+    public async Task<DevicePairingResultStatus> PairAsync(string id, CancellationToken cancellation,
+        bool requireAirPods = false, ushort? model = null)
     {
         if (_disposed || _state.Find(id) is null || !_devices.ContainsKey(id))
             return DevicePairingResultStatus.NotReadyToPair;
@@ -155,11 +157,17 @@ internal sealed class BluetoothPairingDiscovery(DispatcherQueue dispatcher) : ID
         {
             // Discovery can see the case before its pairing gesture has been completed.
             var info = await DeviceInformation.CreateFromIdAsync(id,
-                new[] { "System.Devices.Aep.DeviceAddress" }, DeviceInformationKind.AssociationEndpoint).AsTask(token);
+                new[] { "System.Devices.Aep.DeviceAddress", "System.Devices.Aep.Bluetooth.Cod.Major",
+                    "System.Devices.Aep.Bluetooth.Cod.Minor" }, DeviceInformationKind.AssociationEndpoint).AsTask(token);
             token.ThrowIfCancellationRequested();
             if (_disposed) throw new OperationCanceledException(token);
             if (info is null) return false;
             _devices[id] = info;
+            if (requireAirPods && !new PairingCandidate(id, info.Name,
+                    info.Properties.TryGetValue("System.Devices.Aep.Bluetooth.Cod.Major", out var major) ? major as ushort? : null,
+                    info.Properties.TryGetValue("System.Devices.Aep.Bluetooth.Cod.Minor", out var minor) ? minor as ushort? : null)
+                    .MatchesModel(model))
+                return false;
             if (info.Pairing.IsPaired) status = DevicePairingResultStatus.AlreadyPaired;
             else if (!info.Pairing.CanPair) status = DevicePairingResultStatus.NotReadyToPair;
             else status = await PairOnceAsync(id, info, token);

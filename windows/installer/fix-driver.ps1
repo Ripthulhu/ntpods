@@ -33,28 +33,50 @@ function Get-RecoveryTarget([string]$Address) {
         $_.InstanceId -match $pattern -and
         (Get-PnpDeviceProperty -InstanceId $_.InstanceId -KeyName 'DEVPKEY_Device_Service' -ErrorAction Stop).Data -eq 'NTPodsAAP'
     })
-    if ($devices.Count -eq 1 -and $devices[0].Status -ne 'OK') { $devices[0] }
+    if ($devices.Count -eq 1) {
+        $problem = (Get-PnpDeviceProperty -InstanceId $devices[0].InstanceId -KeyName 'DEVPKEY_Device_ProblemCode' -ErrorAction Stop).Data
+        if ($null -eq $problem) { throw 'The AAP device problem code is unavailable.' }
+        [pscustomobject]@{ InstanceId = $devices[0].InstanceId; ProblemCode = [uint32]$problem; Status = $devices[0].Status }
+    }
 }
 
 function Restart-RecoveryTarget([string]$InstanceId) {
     $systemRoot = (Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -Name SystemRoot -ErrorAction Stop).SystemRoot
-    & (Join-Path $systemRoot 'System32\pnputil.exe') /restart-device $InstanceId
+    & (Join-Path $systemRoot 'System32\pnputil.exe') /restart-device $InstanceId | Out-Null
     if ($LASTEXITCODE -notin 0, 3010) { throw "NTPods AAP restart failed ($LASTEXITCODE)." }
-    if ($LASTEXITCODE -eq 3010) { Write-Host 'Windows requires a restart to recover the AAP device.' }
+    $LASTEXITCODE
+}
+
+function Get-RecoveryResult($Device) {
+    if (-not $Device) { return 1 }
+    if ($Device.ProblemCode -in 14, 38) { return 3010 }
+    if ($Device.ProblemCode -eq 0 -and $Device.Status -eq 'OK') { return 0 }
+    1
 }
 
 function Invoke-NTPodsDriverRecovery {
     $directory = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'NTPods'
     $request = Join-Path $directory 'driver-recovery.txt'
     $address = Read-RecoveryAddress $request ([DateTimeOffset]::UtcNow)
-    if (-not $address) { return }
+    if (-not $address) { return 1 }
     $device = Get-RecoveryTarget $address
-    if (-not $device) { return }
+    if (-not $device -or $device.ProblemCode -ne 38) { return (Get-RecoveryResult $device) }
     # Recheck after enumeration so a delayed task cannot restart a recovered pair.
-    if ((Read-RecoveryAddress $request ([DateTimeOffset]::UtcNow)) -cne $address) { return }
+    if ((Read-RecoveryAddress $request ([DateTimeOffset]::UtcNow)) -cne $address) { return 1 }
     $current = Get-RecoveryTarget $address
-    if (-not $current -or $current.InstanceId -cne $device.InstanceId) { return }
-    Restart-RecoveryTarget $current.InstanceId
+    if (-not $current -or $current.InstanceId -cne $device.InstanceId) { return 1 }
+    if ($current.ProblemCode -ne 38) { return (Get-RecoveryResult $current) }
+    if ((Restart-RecoveryTarget $current.InstanceId) -eq 3010) { return 3010 }
+    # PnPUtil success only confirms the request; wait for this exact device to start.
+    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+        Start-Sleep -Milliseconds 250
+        $current = Get-RecoveryTarget $address
+        if ($current -and $current.InstanceId -cne $device.InstanceId) { return 1 }
+        if ((Get-RecoveryResult $current) -eq 0) { return 0 }
+    }
+    Get-RecoveryResult $current
 }
 
-if ($MyInvocation.InvocationName -ne '.') { Invoke-NTPodsDriverRecovery }
+if ($MyInvocation.InvocationName -ne '.') {
+    try { exit (Invoke-NTPodsDriverRecovery) } catch { Write-Error $_; exit 1 }
+}

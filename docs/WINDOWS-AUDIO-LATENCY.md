@@ -145,7 +145,8 @@ Process environment values allow controlled playback comparisons:
 | --- | --- | --- | --- |
 | `NTPODS_ELD_AUS_PER_PACKET` | `1` | `2` | Group two 10 ms AAC-ELD frames instead of sending each frame immediately |
 | `NTPODS_PLAYBACK_RESERVE_MS` | AAC-ELD: `20`; AAC: `30` | `20`, `30`, `50` | `20` requires AAC-ELD; `30` and `50` work with either codec |
-| `NTPODS_ELD_RTP_CLOCK` | `48000` | `1000` | Use millisecond units for AAC-ELD RTP timestamps |
+| `NTPODS_ELD_RTP_CLOCK` | `48000` | `monotonic`, `1000` | Sample-count clock, or elapsed host milliseconds with `monotonic` |
+| `NTPODS_ELD_RTP_SSRC` | `0x11223344`; `0` with an explicit `monotonic` clock | `0`, `0x11223344` | Isolate the RTP source identifier |
 
 Invalid values reject playback. Values are read when the backend opens a playback
 session; they are not saved in app settings. Codec parameters, bitrate preferences
@@ -172,9 +173,15 @@ Start-Process -FilePath $app -Environment @{
     NTPODS_PLAYBACK_RESERVE_MS = '50'
 }
 
-# After quitting, compare AAC-ELD timestamp units with the default packet/reserve settings.
+# Diagnostic only: this monotonic format failed the Pro 3 check below.
 Start-Process -FilePath $app -Environment @{
-    NTPODS_ELD_RTP_CLOCK = '1000'
+    NTPODS_ELD_RTP_CLOCK = 'monotonic'
+}
+
+# After quitting again, isolate SSRC zero with the same sample-count clock.
+Start-Process -FilePath $app -Environment @{
+    NTPODS_ELD_RTP_CLOCK = '48000'
+    NTPODS_ELD_RTP_SSRC = '0'
 }
 ```
 
@@ -186,23 +193,70 @@ rejects an AAC fallback; omit it to use the codec's default.
 Completing an earbud-buffer trial does not clear these process values; its
 restoration covers only the earbud target, clock adjustment and Bluetooth flush.
 
-At `1000`, each 480-sample AAC-ELD frame advances the RTP timestamp by 10 instead
-of 480. Both choices derive timestamps from encoded sample counts, wrap at 32 bits
-and preserve the same audio, packet cadence and reset behavior. The selection
-survives media reopens and microphone recovery. AAC retains its 90 kHz clock,
-including when selected as a fallback.
+The default advances the AAC-ELD timestamp by 480 per 480-sample frame and uses
+SSRC `0x11223344`. The `1000` override advances by 10 per frame. The explicit
+`monotonic` override uses SSRC zero and stamps elapsed host milliseconds immediately
+before media submission. Its epoch begins before Start and resets with the encoder
+on pause/resume, microphone recovery and media reopens. It does not count
+wall-clock adjustments or time spent paused. Timestamps wrap at 32 bits; RTP
+packet sequence continues within the session.
+
+The SSRC can be overridden independently. These choices preserve audio payloads,
+packet deadlines and the Windows render clock. AAC retains its 90 kHz sample
+clock, including when selected as a fallback.
 
 The [macOS capture](MACOS-AUDIO-CAPTURE-2026-10-12.md#aac-eld-playback-comparison)
 and [USBPods analysis](https://github.com/wasdwasd0105/USBPods-Pico2W/blob/6286ab1618ec1143d828b1fc377d8e22c449e567/aac-eld-apple.md#rtp-timestamp-is-millisecond-based-not-sample-based)
-show approximately millisecond-based AAC-ELD timestamps. This comparison changes
-the units only; it does not reproduce macOS's varying wall-clock increments.
-The 48 kHz default has passed playback checks; the 1 kHz setting remains
-unverified on hardware, including its effect on latency.
+show approximately millisecond-based AAC-ELD timestamps. The 48 kHz default passed
+a listening check without the startup hitch on NTPods 0.2.48, Pro 3 A3063 / 9A348,
+native Windows playback, fixed 256 kbps AAC-ELD, one AU per packet, a 20 ms source
+reserve and the automatic 60 ms receiver target.
 
-Keep music, codec, bitrate and volume consistent between comparisons. Check
-sustained playback, pause/resume, volume and microphone stop/recovery; repeat
-under system load and on Pro 1 and Pro 3 where supported. Single-frame packets
-double the packet rate relative to two-frame packets and may affect radio scheduling.
+On 0.2.48–0.2.50 previews, both millisecond formats caused peer Suspend after
+about three seconds. SSRC zero, two-AU packets, VBR, explicit Mac source identity
+and an isolated Mac capability bit did not resolve it. USB captures confirm
+that Windows sends the timestamps unchanged, with valid framing and successful
+60 ms controller flush settings.
+
+A 0.2.50 preview also replayed identical captured macOS audio frames on Pro 3
+A3064 / 9A348, with SSRC zero, one AU per packet and the same buffer settings.
+The 48 kHz clock played clearly for 5472 packets. Changing only the clock to
+host milliseconds caused peer Suspend after 273 packets (2.964 seconds), with
+reported delay rising to 2698 ms. This rules out different encoder output as
+the sole cause under those conditions; connection setup and receiver behavior
+remain unresolved. Delay reports are not acoustic latency measurements.
+Both millisecond formats remain diagnostic overrides; other models are untested.
+
+The working [macOS gaming capture](MACOS-AUDIO-CAPTURE-2026-10-12.md#working-gaming-transition)
+differs in more than timestamp units:
+
+| Sender | Timestamp progression | RTP source identifier (SSRC) |
+| --- | --- | --- |
+| NTPods default | 480 ticks per 10 ms AU | `0x11223344` |
+| NTPods monotonic override | Elapsed monotonic milliseconds at media submission | `0` |
+| NTPods 1 kHz override | 10 ticks per AU | `0x11223344` |
+| Captured macOS | Tracks elapsed host time; usually 20/40 ms for three-AU packets | `0` |
+| USBPods revision `6286ab1` | Run-loop milliseconds, stored after sending for the next packet | `0` |
+
+The [USBPods patch](https://github.com/wasdwasd0105/USBPods-Pico2W/blob/6286ab1618ec1143d828b1fc377d8e22c449e567/sdk-patches/btstack-usbpods.patch#L28-L39)
+changes SSRC independently of the codec configuration. Its
+[send path](https://github.com/wasdwasd0105/USBPods-Pico2W/blob/6286ab1618ec1143d828b1fc377d8e22c449e567/src/btstack/btstack_avdtp_source.c#L491-L641)
+also differs from both NTPods' sample counter and macOS's observed timing.
+SSRC zero worked with the 48 kHz sample counter. Two-AU packets did not fix the
+millisecond failure. No clock-selection field has been identified in codec
+negotiation; neither comparison establishes lower latency.
+
+Keep the same track, codec, bitrate and volume. With one AU per packet, the numeric
+clocks produce initial timestamps `0, 480, 960` or `0, 10, 20` (RTP bytes 4–7,
+big-endian). The monotonic clock includes Start and priming time, so its initial
+value varies. Stop if the AirPods suspend playback or report rising delay, then
+use `48000` without an SSRC override to restore the tested format. Check
+pause/resume and microphone recovery separately; clean playback alone cannot
+establish a latency reduction.
+
+Also check sustained playback, volume and system load on Pro 1 and Pro 3 where
+supported. Single-frame packets double the packet rate relative to two-frame
+packets and may affect radio scheduling.
 
 ## Earbud delay and buffer control
 

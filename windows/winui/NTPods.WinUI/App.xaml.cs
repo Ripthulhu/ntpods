@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using NTPods.WinUI.Ipc;
 using NTPods.WinUI.Popup;
 using NTPods.WinUI.Services;
@@ -20,6 +21,9 @@ public partial class App : Application
     // Reuse the island window to avoid WinUI theme teardown on dismissal.
     private IslandWindow? _island;
     private readonly IslandPresence _islandPresence = new();
+    private readonly IslandTakeover _islandTakeover = new();
+    private readonly Stopwatch _islandClock = Stopwatch.StartNew();
+    private DispatcherQueueTimer? _islandTimer;
     private readonly MicrophoneNotifications _micNotifications = new();
     internal GlobalHotkey? MicHotkey { get; private set; }
     internal int MicHotkeyError { get; private set; }
@@ -48,6 +52,15 @@ public partial class App : Application
 
         // The main window is created hidden; closing it hides back to the tray.
         _window = new MainWindow(Daemon);
+        _window.NearbyPairingSucceeded += deviceId =>
+        {
+            _islandTakeover.PairingSucceeded(deviceId);
+            _island?.DismissNearby();
+            RefreshIslandAction();
+        };
+        _islandTimer = dispatcher.CreateTimer();
+        _islandTimer.Interval = TimeSpan.FromMilliseconds(250);
+        _islandTimer.Tick += (_, _) => RefreshIslandAction();
         try
         {
             MicHotkey = new GlobalHotkey(WinRT.Interop.WindowNative.GetWindowHandle(_window));
@@ -66,19 +79,50 @@ public partial class App : Application
         _tray.Show();
 
         Daemon.OverlayReceived += (title, body) =>
-            _window.DispatcherQueue.TryEnqueue(() => ShowIslandMessage(title, body));
+        {
+            ulong epoch = Daemon.SessionEpoch;
+            _window.DispatcherQueue.TryEnqueue(() =>
+            {
+                if (epoch == Daemon.SessionEpoch && Daemon.IsReady) ShowIslandMessage(title, body);
+            });
+        };
+        Daemon.PairedLidReceived += lid =>
+        {
+            ulong epoch = Daemon.SessionEpoch;
+            _window.DispatcherQueue.TryEnqueue(() =>
+            {
+                if (epoch != Daemon.SessionEpoch || !Daemon.IsReady) return;
+                bool? dismiss = _islandTakeover.ObserveLid(lid, _latestSnapshot, _islandClock.ElapsedMilliseconds);
+                if (!lid.LidOpen && dismiss is not null)
+                {
+                    _islandPresence.OnPairedLidClose();
+                    if (dismiss == true) _island?.DismissConnection();
+                }
+                RefreshIslandAction();
+            });
+        };
 
         // Daemon callbacks arrive on a background thread; tray updates require the UI thread.
         Daemon.SnapshotReceived += s =>
-            _window.DispatcherQueue.TryEnqueue(() => _tray?.UpdateSnapshot(s));
+        {
+            ulong epoch = Daemon.SessionEpoch;
+            _window.DispatcherQueue.TryEnqueue(() =>
+            {
+                if (epoch == Daemon.SessionEpoch && Daemon.IsReady) _tray?.UpdateSnapshot(s);
+            });
+        };
         Daemon.ConnectionChanged += connected =>
         {
+            ulong epoch = Daemon.SessionEpoch;
             if (!connected) _window.DispatcherQueue.TryEnqueue(() =>
             {
+                if (epoch != Daemon.SessionEpoch) return;
                 _latestSnapshot = null;
+                _islandTakeover.SessionLost();
+                _islandTimer?.Stop();
                 _micNotifications.Reset();
                 _tray?.UpdateSnapshot(new Snapshot());
-                _island?.UpdateSnapshot(new Snapshot());
+                _island?.DismissConnection();
             });
         };
 
@@ -86,20 +130,27 @@ public partial class App : Application
         // not repeat the connection popup.
         Daemon.SnapshotReceived += s =>
         {
+            ulong epoch = Daemon.SessionEpoch;
             bool sessionReady = Daemon.IsReady;
             _window.DispatcherQueue.TryEnqueue(() =>
             {
+                if (!sessionReady || !Daemon.IsReady || epoch != Daemon.SessionEpoch) return;
+                bool changedDevice = _latestSnapshot is { DeviceId: { Length: > 0 } previousId } &&
+                    !string.Equals(previousId, s.DeviceId, StringComparison.OrdinalIgnoreCase);
+                if (changedDevice) _island?.DismissConnection();
                 _latestSnapshot = s;
+                _islandTakeover.ObserveSnapshot(s, _islandClock.ElapsedMilliseconds);
                 if (!string.IsNullOrEmpty(s.Model))
                 {
                     _lastModel = s.Model;
                     AppSettings.SetLastModel(s.Model, s.DeviceId); // survive restarts for this device's connect island
                 }
-                bool connectionMessage = _islandPresence.Update(s, sessionReady);
+                bool connectionMessage = _islandPresence.Update(s, sessionReady, _islandTakeover.MayShow(s));
                 string? micMessage = _micNotifications.Update(s, sessionReady);
                 if (micMessage is not null) ShowIslandMessage(s.DevName, Localize.Get(micMessage));
-                else if (connectionMessage) ShowIsland(s);
+                else if (connectionMessage && _islandTakeover.MayShow(s)) ShowIsland(s);
                 else _island?.UpdateSnapshot(s);
+                RefreshIslandAction();
             });
         };
 
@@ -118,7 +169,8 @@ public partial class App : Application
         if (MicHotkey is null) { MicHotkeyError = -1; return false; }
         bool registered = MicHotkey.TrySet(gesture, out int error);
         MicHotkeyError = error;
-        if (registered) AppSettings.SetMicHotkey(gesture);
+        if (registered && !AppSettings.SetMicHotkey(gesture))
+            ShowIslandMessage("", Localize.Get("Settings.SaveFailed"));
         return registered;
     }
 
@@ -137,10 +189,13 @@ public partial class App : Application
             if (_island is null)
             {
                 _island = new IslandWindow();
+                _island.ConnectRequested += ConnectFromIsland;
                 // Dismissal hides the island; Closed is only a shutdown fallback.
                 _island.Closed += (_, _) => _island = null;
             }
             _island.ShowConnected(snapshot);
+            _islandTakeover.Shown(snapshot);
+            RefreshIslandAction();
         }
         catch
         {
@@ -159,9 +214,12 @@ public partial class App : Application
         }
         try
         {
+            _islandTakeover.MessageReplaced();
+            _islandTimer?.Stop();
             if (_island is null)
             {
                 _island = new IslandWindow();
+                _island.ConnectRequested += ConnectFromIsland;
                 _island.Closed += (_, _) => _island = null;
             }
             _island.ShowMessage(title, body, _latestSnapshot, _lastModel);
@@ -170,6 +228,34 @@ public partial class App : Application
         {
             _island = null;
         }
+    }
+
+    private void ConnectFromIsland()
+    {
+        if (_latestSnapshot is not { } snapshot || !Daemon.IsReady ||
+            !_islandTakeover.BeginConnect(snapshot, _islandClock.ElapsedMilliseconds))
+        {
+            RefreshIslandAction();
+            return;
+        }
+        if (!Daemon.Send(new ConnectCmd { DeviceId = snapshot.DeviceId })) _islandTakeover.ConnectSendFailed();
+        RefreshIslandAction();
+    }
+
+    private void RefreshIslandAction()
+    {
+        if (_latestSnapshot is not { } snapshot || _island is null)
+        {
+            _islandTimer?.Stop();
+            return;
+        }
+        long now = _islandClock.ElapsedMilliseconds;
+        _island.SetConnectState(_islandTakeover.State(snapshot, now), _islandTakeover.InGrace(now));
+        if (_islandTakeover.NeedsTimer(now))
+        {
+            if (_islandTimer is { IsRunning: false }) _islandTimer.Start();
+        }
+        else _islandTimer?.Stop();
     }
 
     /// Quit waits for daemon shutdown; closing the main window only hides it to the tray.

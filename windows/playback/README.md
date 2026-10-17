@@ -79,7 +79,10 @@ The ACX playback driver binds Apple's model-qualified AudioSink IDs and exposes
 a per-device PCM bridge. The backend checks the bridge's Bluetooth address before
 opening AVDTP. The AAP driver's shared handle keeps playback alive across AAP
 control-channel retries. Each bridge accepts one reader and holds at most 100 ms
-of PCM; it clears queued audio when that reader closes.
+of PCM; it clears queued audio when that reader closes. PCM overruns and missed
+processing deadlines retry the stream after one second while keeping existing
+Windows audio clients connected. Failed cleanup stops playback until an explicit
+retry or reconnection.
 
 AAC uses 1024-sample blocks with LATM framing and the 90 kHz RTP clock specified
 by [RFC 6416](https://www.rfc-editor.org/rfc/rfc6416.html). AAC-ELD uses 480-sample
@@ -88,8 +91,11 @@ and Apple vendor codec `004C/8001`. AAC-ELD uses a 20 ms PCM source reserve;
 AAC uses 30 ms, including when selected as a fallback.
 The AAC-ELD encoder and transport follow the
 [USBPods fork tested on Pro 3](https://github.com/han-um/USBPods-Pico2W-2-way-audio-implement/blob/d18d083bc52de3143d8d922c4abaae865cc0dc28/src/btstack/btstack_avdtp_source.c),
-with bitrate capped at 256 kbps. The fixed RTP source identifier `0x11223344`
-matches that implementation; it is not known to be required by the earbuds.
+with bitrate capped at 256 kbps. RTP uses the tested source identifier `0x11223344`.
+Millisecond timestamps remain
+[diagnostic overrides](../../docs/WINDOWS-AUDIO-LATENCY.md#packet-and-source-reserve-overrides):
+both a 1 kHz sample counter and monotonic milliseconds with SSRC zero caused
+Pro 3 playback to stop after about three seconds.
 Signaling, media, AAP and ATT use separate channels. Audio payloads are not logged.
 
 Microphone recovery restarts the AVDTP stream while this driver owns playback.
@@ -105,14 +111,15 @@ The [automatic receiver-buffer policy](../../docs/WINDOWS-AUDIO-LATENCY.md#autom
 requests 60 ms for gaming-capable AAC-ELD devices and Pro 3, with a coordinated host-clock adjustment
 and media flush timeout. It restores a chosen 150 ms target for microphone use,
 pause and playback changes. Other models without capability evidence retain their receiver settings.
-Pro 3 listening checks with 0.2.40 confirmed clean AAC-ELD playback and unchanged
-volume with the automatic 60 ms request. See the policy reference above for the
-hardware setup and limits: microphone transitions under this policy and other
-models remain unchecked, and no new acoustic latency measurement was made.
+Pro 3 listening checks with 0.2.48 and the default 48 kHz timestamp format
+confirmed clean AAC-ELD playback through pause/resume and microphone
+capture/recovery, with unchanged volume. See
+[validation](../../docs/WINDOWS-VALIDATION.md#playback-latency-investigation)
+for conditions and limits; other models and acoustic latency were not retested.
 The [packet and source-reserve overrides](../../docs/WINDOWS-AUDIO-LATENCY.md#packet-and-source-reserve-overrides)
 allow comparison with two-frame packets and a 50 ms reserve for a test session.
-They also provide a 1 kHz AAC-ELD timestamp comparison; the tested 48 kHz clock
-remains the default.
+They also provide timestamp and source-identifier comparisons without changing
+codec selection or volume.
 
 Automated checks cover packet validation, cancellation, per-device PCM isolation,
 buffer limits, bitrate settings, and encoder pitch/stereo output. AAC round trips

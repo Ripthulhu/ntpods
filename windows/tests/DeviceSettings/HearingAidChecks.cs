@@ -7,6 +7,9 @@ internal static class HearingAidChecks
     {
         CheckDraft(check);
         CheckEnableRecovery(check);
+        CheckMediaRequest(check);
+        CheckModeRequest(check);
+        CheckRefreshOwnership(check);
         var request = new HearingAidRequest();
         request.Update(false, 1);
         ulong id = request.Begin(true);
@@ -60,6 +63,86 @@ internal static class HearingAidChecks
         Console.WriteLine("Hearing assistance request checks passed.");
     }
 
+    private static void CheckMediaRequest(Action<bool, string> check)
+    {
+        var request = new HearingAidRequest("set_media_assist");
+        request.Update(false, 1);
+        ulong id = request.Begin(true);
+        check(!request.Complete(new("set_hearing_aid", id, true, "")) && request.Pending == id,
+            "A hearing-aid result must not complete a media-assist request with the same identifier.");
+        check(request.Complete(new("set_media_assist", id, true, "")) && request.Enabled == false && request.EnableUnconfirmed,
+            "Media-assist acknowledgment must not manufacture an On report or clear its recovery action.");
+        request.Update(true, 2);
+        check(request.Enabled == true && !request.EnableUnconfirmed,
+            "A fresh media-assist report confirms the switch.");
+        request.Begin(false);
+        request.Reset();
+        check(!request.CanDisable && request.Pending is null && request.Enabled is null,
+            "Media state and pending ownership must not survive a device or daemon-session reset.");
+    }
+
+    private static void CheckModeRequest(Action<bool, string> check)
+    {
+        var request = new HearingAidRequest("set_hearing_aid_mode");
+        check(!request.CanEnable(true), "Enrollment alone must not enable an unknown hearing mode.");
+        request.Update(false, 1);
+        check(!request.CanEnable(null) && !request.CanEnable(false) && request.CanEnable(true),
+            "A confirmed fitted profile and known mode may enable without an editable audiogram.");
+        ulong id = request.Begin(true);
+        check(!request.CanEnable(true) && request.CanDisable,
+            "An unconfirmed mode enable must keep Off available and block another enable.");
+        check(!request.Complete(new("set_hearing_aid", id, true, "")) && request.Pending == id,
+            "A tuning result must not complete a mode request.");
+        request.Update(null, 2, verifying: true);
+        check(request.Pending == id && request.Enabled is null && request.EnableMayHaveApplied,
+            "A missing mode report during the backend refresh must retain request ownership and recovery.");
+        request.Update(false, 3, verifying: true);
+        check(request.Pending == id && request.EnableMayHaveApplied,
+            "A temporary Off report during verification must not cancel the pending mode request.");
+        request.Complete(new("set_hearing_aid_mode", id, true, ""));
+        request.Update(true, 4);
+        id = request.Begin(true, "set_hearing_aid");
+        check(!request.Complete(new("set_hearing_aid_mode", id, true, "")) &&
+            request.Complete(new("set_hearing_aid", id, true, "")),
+            "A tuning request must retain its own command-result ownership.");
+        id = request.Begin(false);
+        request.Update(false, 5, verifying: true);
+        check(request.Pending == id && request.EnableUnconfirmed &&
+              !request.Complete(new("set_media_assist", id, true, "")),
+            "An interim Off report or unrelated result must not finish the mode request.");
+        check(request.Complete(new("set_hearing_aid_mode", id, true, "")),
+            "The next mode request must not inherit the preceding tuning command.");
+        request.Update(false, 5);
+        check(!request.EnableMayHaveApplied && !request.EnableUnconfirmed && request.Pending is null,
+            "Verified Off must clear recovery even when its final report repeats the interim revision.");
+    }
+
+    private static void CheckRefreshOwnership(Action<bool, string> check)
+    {
+        var mode = new HearingAidRequest("set_hearing_aid_mode");
+        var media = new HearingAidRequest("set_media_assist");
+        var snapshot = new Snapshot { DeviceId = "pair", Connected = false, HearingAidPending = true };
+        mode.Begin(true);
+        check(HearingAidRequest.RetainWhileRefreshing(snapshot, "pair", mode, media),
+            "A same-device soft refresh must keep the mode request while the link is briefly down.");
+        snapshot.DeviceId = "other";
+        check(!HearingAidRequest.RetainWhileRefreshing(snapshot, "pair", mode, media),
+            "Selecting another pair must release the old pending request.");
+        snapshot.DeviceId = "pair";
+        snapshot.HearingAidPending = false;
+        check(!HearingAidRequest.RetainWhileRefreshing(snapshot, "pair", mode, media),
+            "A real disconnect without backend verification must not retain the request.");
+        mode.Cancel();
+        media.Begin(true);
+        snapshot.HearingAidPending = true;
+        check(HearingAidRequest.RetainWhileRefreshing(snapshot, "pair", mode, media) &&
+              !HearingAidRequest.RetainWhileRefreshing(snapshot, "", mode, media),
+            "Media-assist verification follows the same selected-pair rule without claiming an empty identity.");
+        media.Cancel();
+        check(!HearingAidRequest.RetainWhileRefreshing(snapshot, "pair", mode, media),
+            "A completed or timed-out local request must not prolong the refresh state.");
+    }
+
     private static void CheckEnableRecovery(Action<bool, string> check)
     {
         var request = new HearingAidRequest();
@@ -100,19 +183,34 @@ internal static class HearingAidChecks
     private static void CheckDraft(Action<bool, string> check)
     {
         var edit = new HearingAidEditState();
-        check(!edit.CanApply && !edit.CanSetEnabled(true, false) && !edit.EditTone(0),
-            "Unknown settings must not manufacture an audiogram or permit enabling.");
-        check(edit.CanSetEnabled(false, true), "Known enabled hearing assistance may be disabled without an audiogram.");
+        check(!edit.CanApply && !edit.EditTone(0), "Unknown settings must not manufacture an editable audiogram.");
         var original = new HearingAidSettings {
             LeftEq = [5, 10, 15, 20, 25, 30, 35, 40], RightEq = [10, 15, 20, 25, 30, 35, 40, 45],
             LeftAmplification = -0.25f, RightAmplification = 0.5f, LeftTone = -0.5f, RightTone = 0.25f,
             LeftConversationBoost = true, RightConversationBoost = false,
             LeftAmbientNoiseReduction = 0.25f, RightAmbientNoiseReduction = 0.75f, OwnVoice = 0.5f
         };
+        foreach (float amplification in new[] { -1.5f, -1.25f, 1.25f, 1.5f })
+            check((original with { LeftAmplification = amplification, RightAmplification = -amplification }).IsValid,
+                "Stored Apple amplification, including balanced values beyond one, must remain readable.");
+        foreach (float amplification in new[] { float.NaN, float.PositiveInfinity, float.NegativeInfinity, -1.5001f, 1.5001f })
+        {
+            check(!(original with { LeftAmplification = amplification }).IsValid &&
+                !(original with { RightAmplification = amplification }).IsValid,
+                "Amplification outside the supported range must fail validation for either ear.");
+        }
+        foreach (float tone in new[] { -1.0001f, 1.0001f })
+            check(!(original with { LeftTone = tone }).IsValid && !(original with { RightTone = tone }).IsValid,
+                "The wider amplification range must not widen tone validation.");
+        var balancedRead = original with { LeftAmplification = 0.75f, RightAmplification = 1.25f };
+        edit.Update(new Snapshot { DeviceId = "balanced", HearingAidSettings = balancedRead,
+            HearingAidEditable = true }, true);
+        check(edit.Draft!.SameValues(balancedRead) && !edit.Editable && !edit.Dirty &&
+              !edit.EditBalance(0) && !edit.EditTone(0) && edit.Draft.SameValues(balancedRead),
+            "An out-of-range editor fitting stays readable but cannot clip or rewrite its saved levels.");
         var snapshot = new Snapshot { DeviceId = "first", HearingAidSettings = original, HearingAidEditable = true };
         check(edit.Update(snapshot, true) && edit.Draft!.SameValues(original) && !edit.Dirty,
             "Reading settings populates the draft without queuing a write.");
-        check(!edit.CanSetEnabled(true, null), "Even a complete audiogram must not enable an unknown hearing mode.");
         check(!ReferenceEquals(edit.Draft!.LeftEq, original.LeftEq), "Draft curves must not mutate device readback.");
         check(edit.Amplification == 0.5625f && edit.Balance == 0.375f,
             "The combined controls must be derived from the actual per-ear amplification.");
@@ -131,9 +229,12 @@ internal static class HearingAidChecks
         check(edit.Draft!.SameValues(original) && !edit.Dirty && !edit.CanApply && !request.TakeEdit(),
             "Losing editability must discard the queued draft but retain the actual read-only values.");
         check(!edit.EditTone(1) && !edit.EditAmplification(1) && !edit.EditBalance(1) &&
-            !edit.EditConversationBoost(false) && !edit.EditCurve(new double[8], new double[8]) &&
-            !edit.CanSetEnabled(true, false) && edit.CanSetEnabled(false, true) && request.CanDisable,
-            "Read-only settings must block every edit and enable while preserving the Off action.");
+            !edit.EditConversationBoost(false) && !edit.EditCurve(new double[8], new double[8]) && request.CanDisable,
+            "Read-only settings must block every profile edit while preserving the Off action.");
+        var mode = new HearingAidRequest("set_hearing_aid_mode");
+        mode.Update(false, 1);
+        check(mode.CanEnable(true) && !edit.CanApply && edit.Draft!.SameValues(original),
+            "A fitted read-only profile can switch on without making its audiogram editable or changing any values.");
         check(!edit.Update(snapshot, true) && edit.Draft!.SameValues(original),
             "Repeated read-only snapshots must not recreate a discarded edit.");
         snapshot.HearingAidEditable = true;
@@ -170,8 +271,7 @@ internal static class HearingAidChecks
         {
             double[] left = original.LeftEq.Select(v => (double)v).ToArray();
             left[3] = invalid;
-            check(!edit.EditCurve(left, original.RightEq.Select(v => (double)v).ToArray()) && !edit.CanApply &&
-                !edit.CanSetEnabled(true, false) && !edit.EditTone(0),
+            check(!edit.EditCurve(left, original.RightEq.Select(v => (double)v).ToArray()) && !edit.CanApply && !edit.EditTone(0),
                 "Empty, nonfinite or out-of-range thresholds must block writes, including subsequent scalar edits.");
         }
         check(!edit.EditCurve([1, 2], new double[8]) && !edit.CanApply, "A partial audiogram must not be padded with zeroes.");

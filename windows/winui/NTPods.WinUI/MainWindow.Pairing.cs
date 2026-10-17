@@ -1,6 +1,7 @@
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using NTPods.WinUI.Controls;
+using NTPods.WinUI.Ipc;
 using NTPods.WinUI.Popup;
 using NTPods.WinUI.Services;
 using Windows.Devices.Enumeration;
@@ -13,10 +14,15 @@ public sealed partial class MainWindow
     private readonly PairingInvitationPolicy _pairingInvitations = new();
     private readonly PairingLidState _pairingLid = new();
     private readonly DispatcherTimer _pairingRetry = new() { Interval = TimeSpan.FromSeconds(45) };
+    private readonly DispatcherTimer _pairingBatteryExpiry = new();
     private PairAirPodsDialog? _pairingDialog;
+    private string? _pairedPromptAddress;
+    private ulong _pairedPromptAtMs;
+    private bool _pairedPromptHeadphone;
     private bool _pairingPromptActive;
     private bool _pairingEligible;
     private bool _pairingShuttingDown;
+    internal event Action<string>? NearbyPairingSucceeded;
 
     private bool PairingWindowVisible => !_closed && !_pairingShuttingDown && RootGrid.IsLoaded && AppWindow.IsVisible &&
         AppWindow.Presenter is not OverlappedPresenter { State: OverlappedPresenterState.Minimized };
@@ -30,6 +36,11 @@ public sealed partial class MainWindow
         _pairingDiscovery = new BluetoothPairingDiscovery(DispatcherQueue);
         _pairingDiscovery.Changed += RefreshPairingInvitation;
         _client.PairingNearbyReceived += OnPairingNearby;
+        _pairingBatteryExpiry.Tick += (_, _) =>
+        {
+            _pairingBatteryExpiry.Stop();
+            if (_lastSnapshot is { } snapshot) UpdatePairingSnapshot(snapshot);
+        };
         _pairingRetry.Tick += (_, _) =>
         {
             _pairingRetry.Stop();
@@ -61,6 +72,9 @@ public sealed partial class MainWindow
         _connectPrompt.Dismissed += () =>
         {
             _pairingPromptActive = false;
+            _pairedPromptAddress = null;
+            _pairedPromptHeadphone = false;
+            _pairingBatteryExpiry.Stop();
             if (_pairingLid.Dismissed() is { } model) ShowLidInvitation(model);
             UpdatePairingAvailability();
         };
@@ -68,6 +82,9 @@ public sealed partial class MainWindow
         {
             _connectPrompt = null;
             _pairingPromptActive = false;
+            _pairedPromptAddress = null;
+            _pairedPromptHeadphone = false;
+            _pairingBatteryExpiry.Stop();
             _pairingLid.Clear();
             UpdatePairingAvailability();
         };
@@ -79,7 +96,7 @@ public sealed partial class MainWindow
         if (_pairingDiscovery is null) return;
         bool blocked = _pairingShuttingDown || _closed || _pairingDialog is not null ||
             _lastSnapshot is { MicCaptureActive: true } || _lastSnapshot is { MicUplinkActive: true };
-        if (blocked)
+        if (blocked && (_pairedPromptAddress is null || _pairingShuttingDown || _closed || _pairingDialog is not null))
         {
             _pairingLid.Clear();
             _connectPrompt?.HidePrompt();
@@ -113,7 +130,7 @@ public sealed partial class MainWindow
             _pairingLid.Clear();
             _pairingPromptActive = true;
             var prompt = GetConnectPrompt();
-            prompt.ShowPrompt(candidate.Name, token => PairDiscoveredDevice(discovery, candidate.Id, token),
+            prompt.ShowPrompt(candidate.Name, token => PairDiscoveredDevice(discovery, candidate.Id, prompt, token),
                 busyStatusKey: PairingInstructions.ForName(candidate.Name));
             UpdatePairingAvailability();
         }
@@ -129,19 +146,23 @@ public sealed partial class MainWindow
         }
         if (PairingInvitationPolicy.NearbyName(model) is null) return;
         if (CanDiscoverPairing) ShowLidInvitation(model);
+        else if (_pairingPromptActive && _pairedPromptAddress is null && !_pairingLid.Showing &&
+            _connectPrompt is { PromptVisible: true, Busy: false })
+            ShowLidInvitation(model, replaceClassic: true);
         else _pairingLid.QueueOpen(model);
     });
 
-    private void ShowLidInvitation(ushort model)
+    private void ShowLidInvitation(ushort model, bool replaceClassic = false)
     {
-        if (!CanDiscoverPairing || PairingInvitationPolicy.NearbyName(model) is not { } name) return;
+        if (!CanDiscoverPairing && !replaceClassic || PairingInvitationPolicy.NearbyName(model) is not { } name) return;
         try
         {
             _pairingLid.Show(model);
             _pairingPromptActive = true;
             var prompt = GetConnectPrompt();
-            prompt.ShowPrompt(name, token => PairNearbyDevice(prompt, PairingInstructions.ForName(name), token),
-                busyStatusKey: PairingInstructions.ForName(name));
+            string instructions = PairingInstructions.ForModel(model);
+            prompt.ShowPrompt(name, token => PairNearbyDevice(prompt, model, instructions, token),
+                busyStatusKey: instructions, model: model);
             UpdatePairingAvailability();
         }
         catch (Exception)
@@ -151,7 +172,7 @@ public sealed partial class MainWindow
         }
     }
 
-    private async Task<string?> PairNearbyDevice(ConnectPromptWindow prompt, string instructions, CancellationToken token)
+    private async Task<string?> PairNearbyDevice(ConnectPromptWindow prompt, ushort model, string instructions, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
         using var discovery = new BluetoothPairingDiscovery(DispatcherQueue);
@@ -165,24 +186,55 @@ public sealed partial class MainWindow
             {
                 token.ThrowIfCancellationRequested();
                 prompt.SetPairingStatus(multiple ? "Pairing.MultipleFound" : instructions);
-            });
+            }, model);
         }
         catch (InvalidOperationException) when (discovery.ErrorKey is not null)
         {
             return discovery.ErrorKey;
         }
         token.ThrowIfCancellationRequested();
-        return await PairDiscoveredDevice(discovery, id, token);
+        return await PairDiscoveredDevice(discovery, id, prompt, token, model);
     }
 
-    private async Task<string?> PairDiscoveredDevice(BluetoothPairingDiscovery discovery, string id, CancellationToken token)
+    private async Task<string?> PairDiscoveredDevice(BluetoothPairingDiscovery discovery, string id,
+        ConnectPromptWindow prompt, CancellationToken token, ushort? model = null)
     {
-        var status = await discovery.PairAsync(id, token);
+        bool headphone = discovery.Candidates.FirstOrDefault(candidate => candidate.Id == id)?.Name
+            .Contains("AirPods Max", StringComparison.OrdinalIgnoreCase) == true;
+        var status = await discovery.PairAsync(id, token, requireAirPods: true, model: model);
         token.ThrowIfCancellationRequested();
         if (status is not (DevicePairingResultStatus.Paired or DevicePairingResultStatus.AlreadyPaired))
             return "Pairing.Failed";
-        return discovery.AddressFor(id) is { } address && _client.PairingCompleted(address)
-            ? null : "Pairing.HandoffUnavailable";
+        ulong pairedAtMs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (discovery.AddressFor(id) is not { } address || PairingBatteryState.DeviceId(address) is not { } deviceId ||
+            !_client.PairingCompleted(address))
+            return "Pairing.HandoffUnavailable";
+        token.ThrowIfCancellationRequested();
+        _pairedPromptAddress = address;
+        _pairedPromptAtMs = pairedAtMs;
+        _pairedPromptHeadphone = headphone;
+        NearbyPairingSucceeded?.Invoke(deviceId);
+        prompt.MarkPaired();
+        if (_lastSnapshot is { } snapshot) UpdatePairingSnapshot(snapshot);
+        return null;
+    }
+
+    private void UpdatePairingSnapshot(Snapshot snapshot)
+    {
+        if (_pairedPromptAddress is not { } address || _connectPrompt is not { PromptVisible: true } prompt)
+            return;
+        ulong now = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var levels = PairingBatteryState.Read(snapshot, address, _pairedPromptAtMs, now);
+        if (levels is not null) _pairedPromptHeadphone |= DeviceModels.Headphone(snapshot);
+        _pairingBatteryExpiry.Stop();
+        prompt.UpdatePairedBattery(levels?.Left, levels?.Right, levels?.Case,
+            levels?.LeftCharging ?? false, levels?.RightCharging ?? false, levels?.CaseCharging ?? false,
+            _pairedPromptHeadphone, levels?.Headphone, levels?.HeadphoneCharging ?? false);
+        if (levels?.NextExpiryMs is { } expiry && expiry > now)
+        {
+            _pairingBatteryExpiry.Interval = TimeSpan.FromMilliseconds(expiry - now + 1);
+            _pairingBatteryExpiry.Start();
+        }
     }
 
     private async void ShowPairingDialog()
@@ -215,6 +267,9 @@ public sealed partial class MainWindow
         _pairingLid.Clear();
         _pairingEligible = false;
         _pairingRetry.Stop();
+        _pairingBatteryExpiry.Stop();
+        _pairedPromptAddress = null;
+        _pairedPromptHeadphone = false;
         _pairingDialog?.Cancel();
         _pairingDiscovery?.Stop();
         _connectPrompt?.HidePrompt();

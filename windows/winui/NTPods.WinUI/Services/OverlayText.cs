@@ -23,7 +23,12 @@ public static class OverlayText
         ["Connect AirPods to start the microphone"] = "Mic_ConnectFirst",
         ["Microphone is recovering"] = "Mic_RecoveringShort",
         ["Microphone needs attention"] = "Mic_NeedsAttention",
+        ["Could not save the microphone setting for the next start."] = "Settings.SaveFailed",
+        ["Could not save microphone behavior for the next start."] = "Settings.SaveFailed",
         ["Stereo restored"] = "Overlay_StereoRestored",
+        ["Recovering the AirPods driver…"] = "Overlay_DriverRecovering",
+        ["Restart Windows to finish recovering the AirPods driver."] = "Overlay_DriverRestartRequired",
+        ["Could not recover the AirPods driver. Try Repair in NTPods."] = "Overlay_DriverRecoveryFailed",
     };
 
     /// Localize a daemon overlay body, falling back to the original text.

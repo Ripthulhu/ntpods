@@ -67,9 +67,12 @@ var name = "ntpods-test-" + Guid.NewGuid().ToString("N");
 await using (var client = new DaemonClient(name + "-events", name + "-cmds", () => null))
 {
     int disconnected = 0;
+    ulong firstEpoch = 0, secondEpoch = 0;
     Snapshot? last = null;
+    DaemonEvent.PairedLid? lastLid = null;
     client.ConnectionChanged += connected => { if (!connected) Interlocked.Increment(ref disconnected); };
     client.SnapshotReceived += snapshot => Volatile.Write(ref last, snapshot);
+    client.PairedLidReceived += lid => Volatile.Write(ref lastLid, lid);
     Check(!client.Send(new SetVolumeCmd { Percent = 99 }), "Offline commands must be rejected.");
     using (var first = new Fixture(name))
     {
@@ -79,6 +82,12 @@ await using (var client = new DaemonClient(name + "-events", name + "-cmds", () 
         Check(!client.IsReady && !client.Send(new SetVolumeCmd { Percent = 98 }), "Two connected pipes are not ready before a fresh snapshot.");
         await first.State();
         await Until(() => client.IsReady);
+        firstEpoch = client.SessionEpoch;
+        Check(firstEpoch > 0, "The first pipe session needs an identity for queued UI callbacks.");
+        await first.Event("{\"event\":\"paired_lid\",\"device_id\":\"001122334455\",\"lid_open\":false,\"sequence\":2}");
+        await Until(() => Volatile.Read(ref lastLid) is not null);
+        Check(Volatile.Read(ref lastLid) is DaemonEvent.PairedLid("001122334455", false, 2),
+            "A paired lid edge must reach the client with its exact owner and order.");
         Check(client.Send(new SetVolumeCmd { Percent = 30 }), "A ready connection accepts commands.");
         Check((await first.Read())!.Contains("\"percent\":30"), "The connected writer must deliver the requested command.");
         int before = Volatile.Read(ref disconnected);
@@ -95,6 +104,8 @@ await using (var client = new DaemonClient(name + "-events", name + "-cmds", () 
         Check(!client.IsReady, "Reconnecting must wait for new authoritative state.");
         await second.State();
         await Until(() => client.IsReady);
+        secondEpoch = client.SessionEpoch;
+        Check(secondEpoch > firstEpoch, "A replacement pipe session must retire queued callbacks from the previous one.");
         client.Send(new SetVolumeCmd { Percent = 55 });
         Check((await second.Read())!.Contains("\"percent\":55"), "Queued commands from the old session must not replay.");
         int before = Volatile.Read(ref disconnected);
@@ -109,6 +120,7 @@ await using (var client = new DaemonClient(name + "-events", name + "-cmds", () 
         await third.ReadHandshake();
         await third.State();
         await Until(() => client.IsReady);
+        Check(client.SessionEpoch > secondEpoch, "Each replacement pipe session needs a newer identity.");
         client.Send(new SetVolumeCmd { Percent = 56 });
         Check((await third.Read())!.Contains("\"percent\":56"), "A burst queued before events loss must not cross into a new session.");
     }
@@ -274,6 +286,7 @@ sealed class Fixture : IDisposable
             throw new Exception("Each new pipe session must begin with its own handshake.");
     }
     public Task State() => _writer.WriteLineAsync("{\"event\":\"state\",\"connected\":true,\"mic_available\":true}");
+    public Task Event(string line) => _writer.WriteLineAsync(line);
     public async Task<string?> Read() => await _reader.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(10));
     public void Dispose()
     {

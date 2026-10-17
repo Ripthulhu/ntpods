@@ -4,6 +4,7 @@ using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using NTPods.WinUI.Services;
 using Windows.Graphics;
 using Windows.UI.ViewManagement;
 
@@ -20,7 +21,7 @@ public sealed class ConnectPromptWindow : Window
     private Func<CancellationToken, Task<string?>>? _connect;
     private string _busyStatusKey = "Pairing.Pairing";
     private CancellationTokenSource? _request;
-    private bool _closed, _rendering, _hovered, _active, _shown, _hiding;
+    private bool _closed, _rendering, _hovered, _active, _shown, _hiding, _paired, _interacted;
     private int _generation, _width, _height;
     private double _scale = 1;
     private (int Left, int Top, int Width, int Height, int Diameter)? _region;
@@ -72,16 +73,19 @@ public sealed class ConnectPromptWindow : Window
     }
 
     public void ShowPrompt(string name, Func<CancellationToken, Task<string?>> connect,
-        string statusKey = "Pairing.Nearby", string busyStatusKey = "Pairing.Pairing")
+        string statusKey = "Pairing.Nearby", string busyStatusKey = "Pairing.Pairing", ushort? model = null)
     {
         if (_closed || Busy) return;
         ++_generation;
         _hiding = false;
+        _paired = false;
+        _interacted = false;
         _shown = true;
         _connect = connect;
         _busyStatusKey = busyStatusKey;
-        _view.SetName(name);
-        _view.SetState(false, statusKey);
+        _view.SetName(name, model);
+        string? gesture = PairingInstructions.InitialGesture(statusKey, busyStatusKey);
+        _view.SetState(false, gesture ?? statusKey, beforeConnect: gesture is not null);
         var work = DisplayArea.Primary.WorkArea;
         AppWindow.Move(new PointInt32(work.X + work.Width / 2, work.Y + work.Height / 2));
         Prepare();
@@ -95,7 +99,9 @@ public sealed class ConnectPromptWindow : Window
     private async void Connect()
     {
         if (!PromptVisible || _closed || _request?.IsCancellationRequested == true) return;
+        if (_paired) { HidePrompt(); return; }
         if (Busy || _connect is null) return;
+        _interacted = true;
         using var request = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         _request = request;
         int generation = _generation;
@@ -108,10 +114,13 @@ public sealed class ConnectPromptWindow : Window
         catch (Exception) { error = "Pairing.Failed"; }
         if (_closed || generation != _generation) return;
         _request = null;
-        if (error is null) HidePrompt();
+        if (error is null)
+        {
+            if (!_paired) HidePrompt();
+        }
         else
         {
-            _view.SetState(false, error);
+            _view.SetState(false, error, retry: true);
             RefreshLayout();
             ArmExpiry();
         }
@@ -120,9 +129,27 @@ public sealed class ConnectPromptWindow : Window
 
     public void SetPairingStatus(string key)
     {
-        if (_closed || _hiding || !Busy || _request?.IsCancellationRequested == true) return;
+        if (_closed || _hiding || _paired || !Busy || _request?.IsCancellationRequested == true) return;
         _view.SetState(true, key);
         RefreshLayout();
+    }
+
+    public void MarkPaired()
+    {
+        if (_closed || _hiding || !PromptVisible || _request?.IsCancellationRequested == true) return;
+        _paired = true;
+        _expiry.Stop();
+        _view.SetPaired();
+        RefreshLayout();
+    }
+
+    public void UpdatePairedBattery(byte? left, byte? right, byte? caseLevel,
+        bool leftCharging, bool rightCharging, bool caseCharging,
+        bool headphone, byte? headphoneLevel, bool headphoneCharging)
+    {
+        if (_closed || _hiding || !_paired) return;
+        if (_view.SetBattery(left, right, caseLevel, leftCharging, rightCharging, caseCharging,
+            headphone, headphoneLevel, headphoneCharging)) RefreshLayout();
     }
 
     public void HidePrompt()
@@ -147,7 +174,7 @@ public sealed class ConnectPromptWindow : Window
 
     private void ArmExpiry()
     {
-        if (_closed || _hiding || !PromptVisible || Busy) return;
+        if (_closed || _hiding || !PromptVisible || Busy || _paired || _interacted) return;
         _expiry.Stop();
         _expiry.Interval = TimeSpan.FromSeconds(20);
         _expiry.Start();
@@ -212,16 +239,15 @@ public sealed class ConnectPromptWindow : Window
             }
             return;
         }
-        int width = (int)Math.Round((96 * _scale) + (_width - 96 * _scale) * _motion.Expansion);
-        int height = (int)Math.Round(34 * _scale + (_motion.Height - 34 * _scale) * _motion.Expansion);
-        int diameter = (int)Math.Round((34 + 22 * _motion.Expansion) * _scale);
-        var region = ((_width - width) / 2, _height - height, width, height, diameter);
+        _view.Render(_motion.Expansion, _height / _scale);
+        int height = Math.Max(1, (int)Math.Round(_motion.Height * _motion.Expansion));
+        int diameter = Math.Min(height, (int)Math.Round(56 * _scale));
+        var region = (0, _height - height, _width, height, diameter);
         if (_region != region)
         {
-            PopupWindowNative.SetRegion(this, region.Item1, region.Item2, width, height, diameter);
+            PopupWindowNative.SetRegion(this, region.Item1, region.Item2, _width, height, diameter);
             _region = region;
         }
-        _view.Render(_motion.BatteryOpacity);
         if (_motion.Animating && !_rendering)
         {
             CompositionTarget.Rendering += OnRendering;

@@ -10,7 +10,9 @@ related_targets: ["windows/winui/NTPods.WinUI/Popup/IslandWindow.cs", "windows/w
 Mode: Operate. Native WinUI popup with LibrePods' Apple appearance,
 shown on the primary monitor.
 
-The black capsule reveals the device and event first, then battery readings.
+The black capsule folds its final-layout content as one layer. It reveals the
+device and event first, then battery readings. Measure the final height before
+opening a hidden popup so new content is not clipped by the previous size.
 Earbuds show Left, Right and Case; headphones show one centered readout. These
 remain visible during listening-mode messages. A charging bolt requires a live
 reading. Missing values use an em dash; cached values dim and expose their age
@@ -30,8 +32,18 @@ timer only for dismissal while idle, and update the native window region only
 when its rounded pixel bounds change.
 Finish a message blend before showing the latest queued event. New notifications
 can reverse dismissal; resizing for content continues from the current height.
+Reserve a fixed 108 DIP action slot beside the device name. A paired nearby
+device shows Connect there, then progress or Retry without moving the artwork,
+name or battery row. Use audio output readiness for Connected; a control-only
+connection still shows Nearby. Clip the short vertical status blend. A hidden
+action loses input and accessibility immediately. Keep the island open during
+connection progress or automatic-return grace and reset its four-second
+dismissal interval when either finishes.
+A matching case close freezes nearby or connected battery content through the
+fold; listening-mode and other notices stay independent. With reduced
+motion, render each status and action state directly.
 
-Reference: LibrePods rewrite 34076c85, IslandContent.kt and IslandWindow.kt.
+Reference: LibrePods rewrite 62ef3358, IslandContent.kt and IslandWindow.kt.
 Run visual tests separately from the app, without connecting to the daemon.
 
 ## Checks

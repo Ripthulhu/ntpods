@@ -26,4 +26,4 @@ Users open the app to check their earbuds or change a setting, then return to li
 
 ## Reference
 
-The LibrePods rewrite reference is commit `34076c85f0fc2eaf32ad1d5cad1bb7315df9c89c`. Device state and commands use the shared Rust/C# IPC contract. Visual tests must not send settings changes to the earbuds.
+The LibrePods rewrite reference is commit `62ef33582c1d11fd25458fb686730bcd9e41e31a`. Device state and commands use the shared Rust/C# IPC contract. Visual tests must not send settings changes to the earbuds.

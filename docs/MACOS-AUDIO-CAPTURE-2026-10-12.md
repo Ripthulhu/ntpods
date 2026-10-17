@@ -109,11 +109,58 @@ Gaming packets averaged 19.968 ms apart; the maximum interval was 21.808 ms.
 The host requested 22 ms of clock adjustment entering gaming and 60 ms leaving
 it, matching the [audio adjustment calculation](#coordinated-audio-adjustment).
 
+All 2,632 packets use RTP `80 60` and SSRC zero. Timestamps advance 68,737
+ticks over 68,739 ms of captured traffic. Before gaming, each packet carries
+30 ms of audio, but timestamp steps alternate mostly between 20 and 40,
+following the same packet's transmission interval rather than its audio length.
+This supports an elapsed-host-time clock in this sender. The first timestamp
+is 274; the exact clock source and epoch are not established. SSRC zero is an
+observed field, not a proven clock selector. See the
+[Windows comparison](WINDOWS-AUDIO-LATENCY.md#packet-and-source-reserve-overrides).
+
 The AX200 lacked Apple's vendor priority helpers; no vendor HCI commands were
 transmitted. Standard timeout control sufficed for this run. Capture began after
 connection setup, so PFC use is unknown. Requested buffer, reported delay and HAL
 target are distinct, and none measures acoustic latency. Restoration while idle
 or suspended remains unverified.
+
+### Connection setup and RTP clock
+
+A controlled comparison on the same Pro 3 / 9A348, Tahoe 25G241 and AX200
+completed ordinary AVDTP SetConfiguration, Open and Start with PFC disabled.
+Playback stayed clean for 60.359 seconds: 2,013 packets, three AUs per packet,
+SSRC zero and 999.984 RTP ticks/second, with continuous sequence numbers.
+Fresh host SDP advertised A000 `00A006C4` (Dynamic Latency bit `0x2000`
+clear), A001 `00000000005D040D` and AFFF `1`. The receiver reported 150 ms;
+the controller accepted a 200 ms flush timeout. Neither PFC nor that host
+A000 bit is required for millisecond timestamps in this setup. The remaining
+Apple identity, AACP messages and sender timing have not been fully isolated.
+
+The host DID version (`0203`) is derived from macOS's system product version:
+this guest's `26.7` encodes `1A70`. The Windows host advertised `0A00`.
+Overriding only the Mac's outgoing version with `0A00` retained clean
+millisecond-clock playback for five minutes, including a media suspend/start.
+Fresh SDP confirmed `004C:0000:0A00`, vendor source `1`, with the original
+Apple feature values. Version `1A70` is not required for this Mac path;
+the DID product and other setup differences remain untested.
+
+Zeroing all three SDP values preserved millisecond RTP but suppressed incoming
+AACP capability/settings reports. Three connections ended remotely after
+31.1–31.4 seconds. Restoring the values restored those reports and 72.7 seconds
+of clean, uninterrupted playback. Zeroing only A000 reproduced one initial
+31.3-second reconnect, but a later AAC-ELD stream ran for 340.5 seconds with
+millisecond RTP, three AUs per packet and no sequence gaps or disconnection.
+A000 zero therefore does not consistently prevent sustained millisecond audio.
+
+With A000 zero, the buds also requested a 30 ms signaling/media channel flush
+timeout, as seen with Windows; that option was absent with the working values.
+These fields affect receiver behavior, but no clock-selection bit or reconnect
+timer has been identified. Zero-valued attributes differ from absent ones;
+the longer stream's initial setup fell in a capture gap.
+
+Host timing stalls can leave gaps in the Mac's RTP sequence counter while its
+encoded AU sequences remain continuous. Check AU continuity before interpreting
+an RTP counter gap as missing encoded audio.
 
 For NTPods packet grouping, source reserve and the Windows requirement to reopen
 media when changing flush timeout, see the

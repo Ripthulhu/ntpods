@@ -15,6 +15,7 @@ public sealed class DaemonClient : IDisposable
     public event Action<string, string>? OverlayReceived;
     public event Action<string>? ConnectPromptReceived;
     public event Action<ushort, bool>? PairingNearbyReceived;
+    public event Action<DaemonEvent.PairedLid>? PairedLidReceived;
     public event Action<DaemonEvent.CommandResult>? CommandResultReceived;
     public event Action<DaemonEvent.HeadTracking>? HeadTrackingReceived;
     public event Action<bool>? ConnectionChanged;
@@ -40,6 +41,7 @@ public sealed class DaemonClient : IDisposable
     private Process? _spawnedDaemon;
     private Process? _connectedDaemon;
     private Session? _session;
+    private ulong _sessionEpoch;
     private TaskCompletionSource<Session> _nextReady = NewReady();
     private Task? _run;
     private bool _stopping;
@@ -56,6 +58,7 @@ public sealed class DaemonClient : IDisposable
 
     private static TaskCompletionSource<Session> NewReady() => new(TaskCreationOptions.RunContinuationsAsynchronously);
     public bool IsReady { get { lock (_gate) return !_stopping && _session is { Ready: true }; } }
+    public ulong SessionEpoch { get { lock (_gate) return _sessionEpoch; } }
 
     public void Start()
     {
@@ -89,7 +92,7 @@ public sealed class DaemonClient : IDisposable
     public void StepVolume(int delta) => Send(new StepVolumeCmd { Delta = delta });
     public void ToggleMute() => Send(new ToggleMuteCmd());
     public void SetHeartRate(bool on) => Send(new SetHeartRateCmd { On = on });
-    public void Connect() => Send(new ConnectCmd());
+    public void Connect(string? deviceId = null) => Send(new ConnectCmd { DeviceId = deviceId });
     public bool PairingCompleted(string address) => Send(new PairingCompletedCmd { Address = address });
     public void Disconnect() => Send(new DisconnectCmd());
     public void RepairConnection() => Send(new RepairConnectionCmd());
@@ -161,6 +164,7 @@ public sealed class DaemonClient : IDisposable
                     _connectedDaemon?.Dispose();
                     _connectedDaemon = process;
                     _session = session;
+                    _sessionEpoch++;
                 }
                 reader = ReadSessionAsync(session);
                 writer = WriteSessionAsync(session);
@@ -230,6 +234,9 @@ public sealed class DaemonClient : IDisposable
                     break;
                 case DaemonEvent.PairingNearby nearby:
                     PairingNearbyReceived?.Invoke(nearby.Model, nearby.LidOpen);
+                    break;
+                case DaemonEvent.PairedLid lid:
+                    PairedLidReceived?.Invoke(lid);
                     break;
                 case DaemonEvent.CommandResult result:
                     CommandResultReceived?.Invoke(result);

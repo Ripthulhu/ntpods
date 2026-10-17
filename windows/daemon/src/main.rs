@@ -7,9 +7,11 @@
 
 mod a2dp;
 mod aap;
+mod atomic_file;
 mod att_settings;
 mod battery_ble;
 mod bt;
+mod capabilities;
 mod connection_request;
 mod device_models;
 mod device_settings;
@@ -22,6 +24,7 @@ mod head_tracking;
 mod hearing;
 mod helper_launch;
 mod hfp_endpoints;
+mod host_clock;
 mod hr;
 mod hrdb;
 mod ipc_server;
@@ -114,6 +117,31 @@ fn battery_text(b: &ntpods_ipc::Battery, connected: bool) -> String {
     )
 }
 
+fn selected_audio_output_ready(
+    mode: ipc::PlaybackMode,
+    playback_state: &str,
+    selected: u64,
+    windows_ready: bool,
+    native_address: Option<u64>,
+) -> bool {
+    selected != 0
+        && if mode == ipc::PlaybackMode::Windows {
+            windows_ready
+        } else {
+            playback_state == "ready" && native_address == Some(selected)
+        }
+}
+
+fn should_publish_ble(
+    restored: bool,
+    changed: bool,
+    lid_edge: bool,
+    now_ms: u64,
+    last_ms: u64,
+) -> bool {
+    lid_edge || restored && (changed || now_ms.saturating_sub(last_ms) >= 1000)
+}
+
 /// Each client has its own writer thread so a slow client cannot block the session.
 type ClientTx = std::sync::mpsc::SyncSender<Vec<u8>>;
 
@@ -167,6 +195,7 @@ struct Ctx {
     wants_reconnect: Arc<AtomicBool>,
     /// Consumed by the receiver; unlike repair, this must never stop a capture.
     wants_settings_refresh: Arc<AtomicBool>,
+    hearing_confirmation: Arc<Mutex<Option<HearingConfirmation>>>,
     pipe: Arc<micpipe::MicPipeCell>,
     /// Shared so disabling Conversation Awareness can restore volume without an end event.
     conv_duck: Arc<Mutex<volume::ConvDuck>>,
@@ -222,6 +251,17 @@ impl Ctx {
         };
         let snap = {
             let mut s = self.state.lock().unwrap();
+            #[cfg(feature = "experimental-playback")]
+            let native_address = playback::active_address();
+            #[cfg(not(feature = "experimental-playback"))]
+            let native_address = None;
+            s.audio_output_ready = selected_audio_output_ready(
+                s.playback_mode,
+                &s.playback_state,
+                self.mac(),
+                s.audio_output_ready,
+                native_address,
+            );
             s.mic_recording = s.mic_state == "capturing"
                 && self.mic_on.load(Ordering::Acquire)
                 && self.capture_active.load(Ordering::Acquire);
@@ -236,6 +276,20 @@ impl Ctx {
                 None
             };
             s.hearing_aid_revision = hearing_revision;
+            let hearing_modes = hearing::mode_state();
+            let live = s.connected && !s.link_stale;
+            s.hearing_aid_enrolled = if live {
+                hearing_modes.hearing_enrolled
+            } else {
+                None
+            };
+            s.media_assist_enabled = if live {
+                hearing_modes.media_enabled
+            } else {
+                None
+            };
+            s.media_assist_revision = hearing_modes.revision;
+            s.media_assist_available = live && hearing::cached_pme_packet().is_some();
             if !s.connected || s.link_stale || !hearing::has_current_read() {
                 s.hearing_aid_settings = None;
             }
@@ -274,11 +328,28 @@ impl Ctx {
     fn sync_volume(&self) {
         let vol = volume::get().unwrap_or(0);
         let muted = volume::is_muted();
+        let mac = self.mac();
+        let (mode, playback_state) = {
+            let s = self.state.lock().unwrap();
+            (s.playback_mode, s.playback_state.clone())
+        };
+        let windows_ready =
+            mode == ipc::PlaybackMode::Windows && volume::selected_output_ready(mac);
+        #[cfg(feature = "experimental-playback")]
+        let native_address = playback::active_address();
+        #[cfg(not(feature = "experimental-playback"))]
+        let native_address = None;
+        let output_ready =
+            selected_audio_output_ready(mode, &playback_state, mac, windows_ready, native_address);
         let changed = {
             let mut s = self.state.lock().unwrap();
-            let c = s.volume != vol || s.muted != muted;
+            let mut c = s.volume != vol || s.muted != muted;
             s.volume = vol;
             s.muted = muted;
+            if self.mac() == mac && s.playback_mode == mode && s.playback_state == playback_state {
+                c |= s.audio_output_ready != output_ready;
+                s.audio_output_ready = output_ready;
+            }
             c
         };
         if changed {
@@ -325,7 +396,7 @@ fn recently_cased(report: Option<(u64, aap::Battery)>, now_ms: u64) -> bool {
 
 /// Identify an AAP 0x2E host from local radios, then Windows pairing metadata.
 /// Unpaired hosts remain "Other device" with their address; flags do not identify a model.
-fn describe_device(addr: u64, flags: [u8; 2], local_radios: &[u64]) -> ipc::ConnectedDevice {
+fn describe_device(addr: u64, local_radios: &[u64]) -> ipc::ConnectedDevice {
     let b = addr.to_be_bytes();
     let address = format!(
         "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
@@ -349,14 +420,20 @@ fn describe_device(addr: u64, flags: [u8; 2], local_radios: &[u64]) -> ipc::Conn
             };
         }
     }
-    // The 0x2E flags do not identify a device class; see aap::flags_hex.
-    let _ = flags;
     ipc::ConnectedDevice {
         address,
         is_this_pc: false,
         name: "Other device".into(),
         kind: "unknown".into(),
     }
+}
+
+fn multipoint_log(devices: &[ipc::ConnectedDevice]) -> String {
+    let local = devices.iter().filter(|device| device.is_this_pc).count();
+    format!(
+        "multipoint: {} device(s) on the AirPods, {local} this PC",
+        devices.len()
+    )
 }
 
 /// What this host currently holds the audio route for. `media::is_playing()`
@@ -423,7 +500,7 @@ fn finish_audio_disconnect(ctx: &Ctx) -> bool {
                 || bt::audio_request_is_current(intent),
                 || {
                     apply_microphone_enabled(ctx, false);
-                    persist_microphone_enabled(false);
+                    persist_microphone_enabled(ctx, false);
                     ctx.user_disconnected.store(true, Ordering::Release);
                     ctx.connect_requested.store(false, Ordering::Release);
                     ctx.wants_reconnect.store(false, Ordering::Release);
@@ -534,6 +611,33 @@ const RECLAIM_COOLDOWN: Duration = Duration::from_secs(60);
 /// Recheck host activity between attempts and stop when it no longer needs audio.
 const RECLAIM_BACKOFF_MS: [u64; 8] = [1_000, 2_000, 3_000, 4_000, 5_000, 6_000, 8_000, 10_000];
 
+#[derive(Debug, PartialEq, Eq)]
+enum ReclaimOutcome {
+    Superseded,
+    Connected,
+    ReceiverOwned,
+    Released,
+}
+
+fn finish_reclaim(
+    requested: &ConnectionRequest,
+    request: u64,
+    connected: bool,
+    receiver_owns_connection: bool,
+) -> ReclaimOutcome {
+    if !requested.is_current(request) {
+        ReclaimOutcome::Superseded
+    } else if connected {
+        ReclaimOutcome::Connected
+    } else if receiver_owns_connection {
+        ReclaimOutcome::ReceiverOwned
+    } else if requested.release(request) {
+        ReclaimOutcome::Released
+    } else {
+        ReclaimOutcome::Superseded
+    }
+}
+
 /// Full-target recovery for an explicit request or the final microphone fallback.
 /// Never use it for an ordinary connection or AAP timeout.
 fn force_audio_rebuild(mac: u64, cleanup: bool) {
@@ -573,16 +677,16 @@ fn spawn_reclaim(ctx: &Ctx, tier: Tier, request: u64) {
                 log("reclaim: no longer requested — standing down");
                 break;
             }
-            // Stop waiting if this PC no longer needs the audio route.
-            if !host_tier(&ctx).defends_audio() {
-                log("reclaim: host dropped to tier 3/background — standing down");
-                break;
-            }
             if bt::is_connected(ctx.mac()) {
                 // A returning control link does not justify removing the
                 // Windows audio services. Let the normal profile reconnect.
                 log("reclaim: link back — leaving the Windows audio route in place");
                 won = true;
+                break;
+            }
+            // Windows may move playback away while the link is returning.
+            if !host_tier(&ctx).defends_audio() {
+                log("reclaim: host dropped to tier 3/background — standing down");
                 break;
             }
             // BluetoothSetServiceState can return error 87 while disconnected; wait for Windows.
@@ -591,19 +695,30 @@ fn spawn_reclaim(ctx: &Ctx, tier: Tier, request: u64) {
                 i + 1
             ));
         }
-        let _state = ctx.state.lock().unwrap();
-        let current = ctx.connect_requested.is_current(request);
-        if !current {
-            log("reclaim: superseded by a newer connection request");
-        } else if won {
-            log("reclaim: AirPods connected again");
-            ctx.overlay("AirPods connected again");
-        } else {
-            // A new BLE visit or Windows connection can request another session.
-            log("reclaim: gave up — the other device keeps the AirPods");
-            ctx.connect_requested.release(request);
+        let state = ctx.state.lock().unwrap();
+        // Driver publication uses the same lock; only the receiver may abandon its connect.
+        let outcome = finish_reclaim(
+            &ctx.connect_requested,
+            request,
+            won || state.connected,
+            ctx.driver_cell.lock().unwrap().is_some(),
+        );
+        match outcome {
+            ReclaimOutcome::Superseded => {
+                log("reclaim: superseded by a newer connection request");
+            }
+            ReclaimOutcome::Connected => {
+                log("reclaim: AirPods connected again");
+                ctx.overlay("AirPods connected again");
+            }
+            ReclaimOutcome::ReceiverOwned => {
+                log("reclaim: control connection in progress — leaving it to the receiver");
+            }
+            ReclaimOutcome::Released => {
+                log("reclaim: no link or audio demand — standing down");
+            }
         }
-        if current {
+        if outcome != ReclaimOutcome::Superseded {
             *ctx.last_reclaim.lock().unwrap() = Some(Instant::now());
         }
         ctx.reclaiming.store(false, Ordering::SeqCst);
@@ -704,7 +819,10 @@ fn set_microphone_enabled(
         |enabled| apply_microphone_enabled(ctx, enabled),
         |enabled| {
             if persist {
-                persist_microphone_enabled(enabled && !ctx.shutting_down.load(Ordering::Acquire));
+                persist_microphone_enabled(
+                    ctx,
+                    enabled && !ctx.shutting_down.load(Ordering::Acquire),
+                );
             }
         },
     );
@@ -722,16 +840,28 @@ fn apply_microphone_enabled(ctx: &Ctx, enabled: bool) {
     }
 }
 
-fn persist_microphone_enabled(enabled: bool) {
-    if let Ok(base) = std::env::var("LOCALAPPDATA") {
-        if std::fs::write(
-            format!("{base}\\NTPods\\microphone-enabled"),
-            enabled.to_string(),
+fn persist_preference(name: &str, contents: &[u8]) -> io::Result<()> {
+    let result = (|| {
+        let base = std::env::var_os("LOCALAPPDATA")
+            .ok_or_else(|| io::Error::other("Local app data is unavailable"))?;
+        atomic_file::write(
+            &std::path::Path::new(&base).join("NTPods").join(name),
+            contents,
         )
-        .is_err()
-        {
-            log("mic: could not persist enable preference");
-        }
+    })();
+    if let Err(error) = &result {
+        log(&format!(
+            "Could not save {name}: {:?} (OS {:?})",
+            error.kind(),
+            error.raw_os_error()
+        ));
+    }
+    result
+}
+
+fn persist_microphone_enabled(ctx: &Ctx, enabled: bool) {
+    if persist_preference("microphone-enabled", enabled.to_string().as_bytes()).is_err() {
+        ctx.overlay("Could not save the microphone setting for the next start.");
     }
 }
 
@@ -764,19 +894,12 @@ fn set_microphone_policy(
         ctx.mic_on.store(false, Ordering::Release);
         ctx.pipe.revoke_stream();
     }
-    persist_microphone_policy(preferences);
+    persist_microphone_policy(ctx, preferences);
 }
 
-fn persist_microphone_policy(preferences: String) {
-    if let Ok(base) = std::env::var("LOCALAPPDATA") {
-        if std::fs::write(
-            format!("{base}\\NTPods\\microphone-policy.json"),
-            preferences,
-        )
-        .is_err()
-        {
-            log("mic: could not persist microphone policy");
-        }
+fn persist_microphone_policy(ctx: &Ctx, preferences: String) {
+    if persist_preference("microphone-policy.json", preferences.as_bytes()).is_err() {
+        ctx.overlay("Could not save microphone behavior for the next start.");
     }
 }
 
@@ -878,9 +1001,9 @@ fn toggle_microphone_manual(
         (active, demand.preferences_json())
     };
     if active {
-        persist_microphone_enabled(true);
+        persist_microphone_enabled(ctx, true);
     }
-    persist_microphone_policy(preferences);
+    persist_microphone_policy(ctx, preferences);
     Ok(active)
 }
 
@@ -1773,11 +1896,120 @@ fn loud_sound_request(ctx: &Ctx, requested: Option<bool>) {
 struct HearingRequest {
     request_id: u64,
     on: bool,
+    mode: Option<hearing::Mode>,
     expected: Option<ipc::HearingAidSettings>,
     settings: Option<ipc::HearingAidSettings>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct HearingConfirmation {
+    generation: u64,
+    address: u64,
+    connection: u64,
+}
+
+impl HearingConfirmation {
+    fn matches(self, pending: Option<Self>, address: u64, connection: u64) -> bool {
+        pending == Some(self) && address == self.address && connection == self.connection
+    }
+}
+
+fn hearing_confirmation_current(ctx: &Ctx, token: HearingConfirmation) -> bool {
+    token.matches(
+        *ctx.hearing_confirmation.lock().unwrap(),
+        ctx.mac(),
+        ctx.connect_requested.snapshot(),
+    ) && !ctx.user_disconnected.load(Ordering::Acquire)
+        && !ctx.shutting_down.load(Ordering::Acquire)
+}
+
+fn confirm_hearing_mode(
+    ctx: &Ctx,
+    token: HearingConfirmation,
+    verification: &hearing::ModeVerification,
+) -> Result<Option<hearing::Applied>, String> {
+    {
+        let _write = ctx.settings_write.lock().unwrap();
+        if !hearing::is_current(token.generation)
+            || ctx.mac() != token.address
+            || !ctx.connect_requested.is_current(token.connection)
+        {
+            return Ok(None);
+        }
+        *ctx.hearing_confirmation.lock().unwrap() = Some(token);
+    }
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut queued = false;
+    loop {
+        let _write = ctx.settings_write.lock().unwrap();
+        if !hearing_confirmation_current(ctx, token) {
+            return Ok(None);
+        }
+        if Instant::now() >= deadline {
+            ctx.wants_settings_refresh.store(false, Ordering::Release);
+            return Err("The mode change was sent, but the AirPods did not report its result. Refresh device settings to confirm it.".into());
+        }
+        let _preference = ctx.mic_preference.lock().unwrap();
+        let mut state = ctx.state.lock().unwrap();
+        if ctx.capture_active.load(Ordering::Acquire)
+            || ctx.mic_on.load(Ordering::Acquire)
+            || !matches!(state.mic_state.as_str(), "idle" | "unavailable")
+            || ctx.pipe.status() != Some(0)
+        {
+            ctx.wants_settings_refresh.store(false, Ordering::Release);
+            return Err("The mode change was sent. Finish recording and refresh device settings to confirm it.".into());
+        }
+        if !queued {
+            if ctx
+                .last_repair
+                .lock()
+                .unwrap()
+                .is_none_or(|last| last.elapsed() >= Duration::from_secs(5))
+            {
+                queue_settings_refresh(&ctx.wants_settings_refresh, &mut state, Some(0), false);
+                if let Some(error) = &state.device_settings_error {
+                    return Err(error.clone());
+                }
+                queued = true;
+            }
+        } else if state.connected
+            && hearing::session() != verification.session
+            && hearing::mode_reports_complete()
+        {
+            drop(state);
+            let driver =
+                ctx.driver_cell.lock().unwrap().clone().ok_or(
+                    "The AirPods disconnected before the hearing modes could be confirmed.",
+                )?;
+            let generation = hearing::next_gen();
+            let result = hearing::verify_mode(&driver, generation, verification);
+            drop(_preference);
+            drop(_write);
+            match result {
+                Ok(None) => continue,
+                other => return other,
+            }
+        } else if !ctx.wants_settings_refresh.load(Ordering::Acquire)
+            && hearing::session() == verification.session
+            && state.device_settings_error.is_some()
+        {
+            return Err(state.device_settings_error.clone().unwrap());
+        }
+        drop(state);
+        drop(_preference);
+        drop(_write);
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
 impl HearingRequest {
+    fn command(&self) -> &'static str {
+        match self.mode {
+            Some(hearing::Mode::HearingAid) => "set_hearing_aid_mode",
+            Some(hearing::Mode::MediaAssist) => "set_media_assist",
+            None => "set_hearing_aid",
+        }
+    }
     fn matches_baseline(&self, current: Option<ipc::HearingAidSettings>) -> bool {
         self.expected.is_some() && self.expected == current
     }
@@ -1810,22 +2042,27 @@ fn hearing_request(ctx: &Ctx, requested: Option<HearingRequest>) {
         {
             Some("Stop recording and wait for microphone recovery before reading or changing hearing settings.")
         } else if requested.is_some_and(|request| {
-            request.on
+            request.mode.is_none()
+                && request.on
                 && (request.settings.is_none_or(|s| !s.is_valid())
                     || request.expected.is_none_or(|s| !s.is_valid()))
         }) {
             Some("Complete, valid audiograms and hearing settings are required.")
-        } else if requested.is_some_and(|request| request.on)
+        } else if requested.is_some_and(|request| request.on && request.mode.is_none())
             && (state.hearing_aid_settings.is_none() || !hearing::has_current_read())
         {
             Some("Read the existing audiograms before enabling or editing hearing assistance.")
-        } else if requested.is_some_and(|request| request.on) && !hearing::can_edit_current_read() {
+        } else if requested.is_some_and(|request| request.on && request.mode.is_none())
+            && !hearing::can_edit_current_read()
+        {
             Some("These hearing settings are read-only in NTPods.")
         } else if requested.is_some_and(|request| {
-            request.on && !request.matches_baseline(state.hearing_aid_settings)
+            request.mode.is_none()
+                && request.on
+                && !request.matches_baseline(state.hearing_aid_settings)
         }) {
             Some("Hearing settings changed since this edit began. Read them again before editing.")
-        } else if requested.is_some_and(|request| request.on)
+        } else if requested.is_some_and(|request| request.on && request.mode.is_none())
             && hearing::reported_state().0.is_none()
         {
             Some("Reconnect to confirm whether hearing assistance is enabled before changing it.")
@@ -1839,7 +2076,7 @@ fn hearing_request(ctx: &Ctx, requested: Option<HearingRequest>) {
             }
             if let Some(request) = requested {
                 ctx.send_event(&Event::CommandResult {
-                    command: "set_hearing_aid".into(),
+                    command: request.command().into(),
                     request_id: request.request_id,
                     ok: false,
                     message: error.into(),
@@ -1851,14 +2088,26 @@ fn hearing_request(ctx: &Ctx, requested: Option<HearingRequest>) {
                 state.hearing_aid_settings = None;
             }
             state.hearing_aid_pending = true;
-            Some((driver.unwrap(), hearing::next_gen(), authorized))
+            if ctx.hearing_confirmation.lock().unwrap().take().is_some() {
+                ctx.wants_settings_refresh.store(false, Ordering::Release);
+            }
+            Some((
+                driver.unwrap(),
+                hearing::next_gen(),
+                authorized,
+                ctx.mac(),
+                ctx.connect_requested.snapshot(),
+            ))
         }
     };
     ctx.push_state();
-    if let Some((driver, gen, authorized)) = work {
+    if let Some((driver, gen, authorized, address, connection)) = work {
         let ctx = ctx.clone();
         thread::spawn(move || {
             let result = match requested {
+                Some(request) if request.mode.is_some() => {
+                    hearing::set_mode(&driver, gen, request.mode.unwrap(), request.on, authorized)
+                }
                 Some(request) => hearing::apply(
                     &driver,
                     gen,
@@ -1871,9 +2120,28 @@ fn hearing_request(ctx: &Ctx, requested: Option<HearingRequest>) {
                     hearing::read(&driver, gen).map(|value| value.map(hearing::Applied::Settings))
                 }
             };
+            let token = HearingConfirmation {
+                generation: gen,
+                address,
+                connection,
+            };
+            let confirming = matches!(&result, Ok(Some(hearing::Applied::Requested(_))));
+            let result = match result {
+                Ok(Some(hearing::Applied::Requested(verification))) => {
+                    confirm_hearing_mode(&ctx, token, &verification)
+                }
+                other => other,
+            };
             let _write = ctx.settings_write.lock().unwrap();
-            if !hearing::is_current(gen) {
+            if if confirming {
+                !hearing_confirmation_current(&ctx, token)
+            } else {
+                !hearing::is_current(gen)
+            } {
                 return;
+            }
+            if confirming {
+                *ctx.hearing_confirmation.lock().unwrap() = None;
             }
             let mut state = ctx.state.lock().unwrap();
             state.hearing_aid_pending = false;
@@ -1887,6 +2155,7 @@ fn hearing_request(ctx: &Ctx, requested: Option<HearingRequest>) {
                     state.hearing_aid_error = None;
                     Ok(())
                 }
+                Ok(Some(hearing::Applied::Requested(_))) => unreachable!(),
                 Err(error) => {
                     log(&format!("Hearing settings: {error}"));
                     state.hearing_aid_settings = None;
@@ -1898,7 +2167,7 @@ fn hearing_request(ctx: &Ctx, requested: Option<HearingRequest>) {
             drop(state);
             if let Some(request) = requested {
                 ctx.send_event(&Event::CommandResult {
-                    command: "set_hearing_aid".into(),
+                    command: request.command().into(),
                     request_id: request.request_id,
                     ok: outcome.is_ok(),
                     message: outcome.err().unwrap_or_default(),
@@ -1982,7 +2251,16 @@ fn reset_device_settings(ctx: &Ctx) {
     ctx.hr_generation.fetch_add(1, Ordering::AcqRel);
     let mut pending = ctx.settings_pending.lock().unwrap();
     let mut state = ctx.state.lock().unwrap();
+    let confirming = ctx
+        .hearing_confirmation
+        .lock()
+        .unwrap()
+        .is_some_and(|token| {
+            ctx.mac() == token.address && ctx.connect_requested.is_current(token.connection)
+        });
     pending.reset(&mut state);
+    state.aacp_capabilities.clear();
+    state.hearing_aid_pending = confirming;
     if device_settings::supports_silent_allow_off(&state.model) {
         state.allow_off_requested = device_settings::load_allow_off_choice(ctx.mac());
     }
@@ -2229,7 +2507,7 @@ fn microphone_toggle_starts(
 #[cfg(feature = "experimental-playback")]
 fn buffer_pause_for(cmd: &Command, capture: bool, toggle_starts: bool) -> Option<BufferPauseFor> {
     match cmd {
-        Command::Connect
+        Command::Connect { .. }
         | Command::RebuildAudio
         | Command::RepairConnection
         | Command::SetPlaybackMode { .. }
@@ -2304,6 +2582,11 @@ fn apply_command(ctx: &Ctx, cmd: Command) {
     }
     if let Command::PairingCompleted { address } = &cmd {
         begin_pairing_handoff(ctx, address);
+        return;
+    }
+    if matches!(&cmd, Command::Connect { device_id: Some(id) }
+        if id != &ctx.state.lock().unwrap().device_id)
+    {
         return;
     }
     #[cfg(feature = "experimental-playback")]
@@ -2436,10 +2719,15 @@ fn apply_prepared_command(
     // Reserve the check through intent creation; microphone START uses this lock too.
     let mut reconnect_guard = if matches!(
         &cmd,
-        Command::Connect | Command::RebuildAudio | Command::RepairConnection
+        Command::Connect { .. } | Command::RebuildAudio | Command::RepairConnection
     ) {
         let guard = ctx.mic_preference.lock().unwrap();
         let mut state = ctx.state.lock().unwrap();
+        // Pair selection also holds mic_preference. Keep this guard until the
+        // connect intent is reserved so a queued island action cannot retarget.
+        if matches!(&cmd, Command::Connect { device_id: Some(id) } if id != &state.device_id) {
+            return;
+        }
         #[cfg(feature = "experimental-playback")]
         if microphone_request.is_some_and(|request| !request.current(ctx))
             || playback_request.is_some_and(|request| bt::playback_intent() != request.0)
@@ -2599,8 +2887,7 @@ fn apply_prepared_command(
         }
         Command::SetAutoPause { on } => {
             let saved = update_auto_pause(&ctx.auto_pause, &ctx.state, on, || {
-                let base = std::env::var("LOCALAPPDATA").map_err(std::io::Error::other)?;
-                std::fs::write(format!("{base}\\NTPods\\auto-pause"), on.to_string())
+                persist_preference("auto-pause", on.to_string().as_bytes())
             });
             if saved.is_err() {
                 ctx.overlay("Could not save automatic pause for the next start.");
@@ -2611,14 +2898,10 @@ fn apply_prepared_command(
             let saved = {
                 let mut state = ctx.state.lock().unwrap();
                 state.ble_scan_while_connected = enabled;
-                std::env::var("LOCALAPPDATA")
-                    .map_err(std::io::Error::other)
-                    .and_then(|base| {
-                        std::fs::write(
-                            format!("{base}\\NTPods\\battery-scan-while-connected"),
-                            enabled.to_string(),
-                        )
-                    })
+                persist_preference(
+                    "battery-scan-while-connected",
+                    enabled.to_string().as_bytes(),
+                )
             };
             if saved.is_err() {
                 ctx.overlay("Could not save nearby battery updates for the next start.");
@@ -2627,11 +2910,7 @@ fn apply_prepared_command(
         }
         Command::SetConversationVolume { percent } => {
             let saved = update_conversation_volume(&ctx.conv_duck, &ctx.state, percent, || {
-                let base = std::env::var("LOCALAPPDATA").map_err(std::io::Error::other)?;
-                std::fs::write(
-                    format!("{base}\\NTPods\\conversation-volume"),
-                    percent.to_string(),
-                )
+                persist_preference("conversation-volume", percent.to_string().as_bytes())
             });
             if saved.is_err() {
                 ctx.overlay("Could not save conversation volume for the next start.");
@@ -2664,6 +2943,26 @@ fn apply_prepared_command(
             set_head_tracking(ctx, on);
         }
         Command::GetHearingAid => hearing_request(ctx, None),
+        Command::SetHearingAidMode { request_id, on } => hearing_request(
+            ctx,
+            Some(HearingRequest {
+                request_id,
+                on,
+                mode: Some(hearing::Mode::HearingAid),
+                expected: None,
+                settings: None,
+            }),
+        ),
+        Command::SetMediaAssist { request_id, on } => hearing_request(
+            ctx,
+            Some(HearingRequest {
+                request_id,
+                on,
+                mode: Some(hearing::Mode::MediaAssist),
+                expected: None,
+                settings: None,
+            }),
+        ),
         Command::SetHearingAid {
             request_id,
             on,
@@ -2675,6 +2974,7 @@ fn apply_prepared_command(
                 Some(HearingRequest {
                     request_id,
                     on,
+                    mode: None,
                     expected,
                     settings,
                 }),
@@ -2683,7 +2983,7 @@ fn apply_prepared_command(
         Command::PairingCompleted { address } => {
             begin_pairing_handoff(ctx, &address);
         }
-        Command::Connect => {
+        Command::Connect { .. } => {
             {
                 let mut state = ctx.state.lock().unwrap();
                 #[cfg(feature = "experimental-playback")]
@@ -3251,12 +3551,18 @@ fn select_paired_device(ctx: &Ctx, mac: u64, name: &str, request: Option<u64>) -
     true
 }
 
-fn receiver_idle_wait(mic_on: bool, head_tracking_enabled: bool) -> Duration {
-    Duration::from_millis(if mic_on || head_tracking_enabled {
+fn receiver_idle_wait(
+    mic_on: bool,
+    head_tracking_enabled: bool,
+    mic: &mic_lifecycle::Lifecycle,
+    now: u64,
+) -> Duration {
+    let maximum = if mic_on || head_tracking_enabled {
         4
     } else {
         150
-    })
+    };
+    Duration::from_millis(u64::from(mic.wait_ms(now, maximum)))
 }
 
 fn run_receiver(ctx: Ctx) {
@@ -3301,14 +3607,7 @@ fn run_receiver(ctx: Ctx) {
     // Match local radios against AAP 0x2E reports to identify this PC.
     let mut last_devices: Vec<(u64, [u8; 2])> = Vec::new();
     let local_radios = bt::local_radio_addresses();
-    log(&format!(
-        "bt: local radio(s): {}",
-        local_radios
-            .iter()
-            .map(|a| format!("{a:012x}"))
-            .collect::<Vec<_>>()
-            .join(", ")
-    ));
+    log(&format!("bt: local radio count={}", local_radios.len()));
     // Bound connection retries, then require a fresh request or an existing Windows link.
     let mut reach_fails = 0u32;
     // Throttle checks for a restored Windows connection.
@@ -3392,6 +3691,7 @@ fn run_receiver(ctx: Ctx) {
         // Explicit Disconnect blocks this until Connect or Repair.
         if !ctx.connect_requested.load(Ordering::Relaxed) {
             if !ctx.user_disconnected.load(Ordering::Relaxed)
+                && !devnode::restart_required(mac)
                 && cooldown_elapsed(resume_poll, Instant::now(), Duration::from_secs(5))
             {
                 resume_poll = Some(Instant::now());
@@ -3445,6 +3745,14 @@ fn run_receiver(ctx: Ctx) {
         if previous_request != Some(connection_request) {
             reach_fails = 0;
             previous_request = Some(connection_request);
+            if devnode::restart_required(mac) {
+                ctx.overlay("Restart Windows to finish recovering the AirPods driver.");
+            }
+        }
+        // Opening a new handle during PnP restart can keep the old driver loaded.
+        if devnode::recovering() {
+            thread::sleep(Duration::from_millis(250));
+            continue;
         }
         let driver = match ctx.shared_driver.open(mac) {
             Ok(d) => {
@@ -3460,9 +3768,34 @@ fn run_receiver(ctx: Ctx) {
                 // A disconnected device may have no devnode. With a Windows link,
                 // request a rate-limited Code 38 check; the task leaves healthy nodes alone.
                 open_fails += 1;
-                if open_fails >= 4 && bt::is_connected(mac) && devnode::request_recovery(mac) {
-                    log("run_receiver: driver wedged while the OS still has the AirPods — requested an elevated devnode restart");
-                    ctx.overlay("Recovering the AirPods driver…");
+                if open_fails >= 4 && bt::is_connected(mac) {
+                    let recovery_ctx = ctx.clone();
+                    if ctx.shared_driver.request_recovery(mac, move |result| {
+                        log(&format!("AAP driver recovery completed: {result:?}"));
+                        if recovery_ctx.mac() != mac
+                            || recovery_ctx.shutting_down.load(Ordering::Acquire)
+                            || recovery_ctx.user_disconnected.load(Ordering::Acquire)
+                            || recovery_ctx.state.lock().unwrap().connected
+                        {
+                            return;
+                        }
+                        match result {
+                            devnode::RecoveryResult::RestartRequired => {
+                                if devnode::restart_required(mac) {
+                                    recovery_ctx.overlay(
+                                        "Restart Windows to finish recovering the AirPods driver.",
+                                    );
+                                }
+                            }
+                            devnode::RecoveryResult::Failed => recovery_ctx.overlay(
+                                "Could not recover the AirPods driver. Try Repair in NTPods.",
+                            ),
+                            devnode::RecoveryResult::Ready => {}
+                        }
+                    }) {
+                        log("run_receiver: requested a targeted AAP problem-code check and recovery");
+                        ctx.overlay("Recovering the AirPods driver…");
+                    }
                 }
                 give_up(&ctx, &mut reach_fails, connection_request);
                 thread::sleep(Duration::from_millis(1500));
@@ -3470,7 +3803,16 @@ fn run_receiver(ctx: Ctx) {
             }
         };
         reset_device_settings(&ctx);
-        *ctx.driver_cell.lock().unwrap() = Some(driver.clone());
+        {
+            let _state = ctx.state.lock().unwrap();
+            if !ctx.connect_requested.is_current(connection_request)
+                || ctx.user_disconnected.load(Ordering::Acquire)
+                || ctx.shutting_down.load(Ordering::Acquire)
+            {
+                continue;
+            }
+            *ctx.driver_cell.lock().unwrap() = Some(driver.clone());
+        }
         let connected = driver.connect(mac, aap::PSM_AACP).unwrap_or(false);
         log(&format!("run_receiver: connect({mac:#x}) = {connected}"));
         if !connected {
@@ -3488,6 +3830,12 @@ fn run_receiver(ctx: Ctx) {
         let _ = driver.send(&aap::SET_FEATURES);
         thread::sleep(Duration::from_millis(300));
         let _ = driver.send(&aap::REQUEST_NOTIFS);
+        if let Err(error) = driver.send(&capabilities::REQUEST) {
+            log(&format!("aap: capability request failed: {error}"));
+        }
+        if let Err(error) = driver.send(&aap::SOURCE_TYPE_MAC) {
+            log(&format!("aap: source identity failed: {error}"));
+        }
         let _ = driver.send_sensor(&aap::request_all_descriptors(next_hr_seq(), false));
         let _ = driver.send(&battery_ble::REQUEST_KEYS);
         {
@@ -3519,8 +3867,9 @@ fn run_receiver(ctx: Ctx) {
             }
         }
         let mut sensors = rtbuddy::Discovery::default();
-        hr_decoder.set_report_service(None); // Device mappings belong to this connection.
-                                             // Reuse bounded retries when heart-rate monitoring survives a reconnect.
+        let mut host_clock_sent = false;
+        hr_decoder.reset(); // Device mappings belong to this connection.
+                            // Reuse bounded retries when heart-rate monitoring survives a reconnect.
         if ctx.hr_on.load(Ordering::Relaxed) {
             spawn_hr_retry(&ctx);
         }
@@ -3615,7 +3964,9 @@ fn run_receiver(ctx: Ctx) {
                 break;
             }
             let mut got_data = false;
-            if let Ok(n) = driver.recv(100, &mut buf) {
+            // Zero asks the driver for its default timeout, so keep a 1 ms floor.
+            let receive_wait = mic.wait_ms(clock.elapsed().as_millis() as u64, 100).max(1);
+            if let Ok(n) = driver.recv(receive_wait, &mut buf) {
                 if n > 0 {
                     got_data = true;
                     last_data = Instant::now();
@@ -3832,36 +4183,35 @@ fn run_receiver(ctx: Ctx) {
                             if devs != last_devices {
                                 let list: Vec<ipc::ConnectedDevice> = devs
                                     .iter()
-                                    .map(|(a, flags)| describe_device(*a, *flags, &local_radios))
+                                    .map(|(a, _)| describe_device(*a, &local_radios))
                                     .collect();
-                                log(&format!(
-                                    "multipoint: {} device(s) on the AirPods: {}",
-                                    list.len(),
-                                    list.iter()
-                                        .zip(devs.iter())
-                                        .map(|(d, (_, f))| {
-                                            format!(
-                                                "{} [{}] {} flags={}",
-                                                d.address,
-                                                d.kind,
-                                                d.name,
-                                                aap::flags_hex(*f)
-                                            )
-                                        })
-                                        .collect::<Vec<_>>()
-                                        .join(", ")
-                                ));
+                                log(&multipoint_log(&list));
                                 ctx.state.lock().unwrap().multipoint = list;
                                 ctx.push_state();
                                 last_devices = devs;
                             }
                         }
-                        if let Some((op, dump)) = aap::route_diag(data) {
+                        if let Some((op, detail)) = aap::route_diag(data) {
                             log(&format!(
-                                "route: 0x{op:02X} {} ({} bytes): {dump}",
+                                "route: 0x{op:02X} {} ({} bytes): {detail}",
                                 aap::route_opcode_name(op),
                                 data.len()
                             ));
+                        }
+                        if let Some(values) = capabilities::parse(data) {
+                            let changed = {
+                                let mut state = ctx.state.lock().unwrap();
+                                let values = values.into_iter().collect();
+                                if state.aacp_capabilities == values {
+                                    false
+                                } else {
+                                    state.aacp_capabilities = values;
+                                    true
+                                }
+                            };
+                            if changed {
+                                ctx.push_state();
+                            }
                         }
                         if let Some(b) = aap::parse_battery(data) {
                             last_battery_report = Some((clock.elapsed().as_millis() as u64, b));
@@ -3957,7 +4307,7 @@ fn run_receiver(ctx: Ctx) {
                             {
                                 ctx.conv_duck.lock().unwrap().restore();
                             } else {
-                                ctx.conv_duck.lock().unwrap().on_status(status);
+                                ctx.conv_duck.lock().unwrap().on_status(status, ctx.mac());
                             }
                         }
                         if let Some((model, firmware, serial)) = aap::parse_metadata(data) {
@@ -3994,6 +4344,19 @@ fn run_receiver(ctx: Ctx) {
                                 }
                                 c
                             };
+                            if !host_clock_sent
+                                && device_models::hearing_aid(&ctx.state.lock().unwrap())
+                            {
+                                host_clock_sent = true;
+                                match host_clock::packet(std::time::SystemTime::now()) {
+                                    Ok(packet) => {
+                                        if let Err(error) = driver.send(&packet) {
+                                            log(&format!("Host clock submission failed: {error}"));
+                                        }
+                                    }
+                                    Err(error) => log(error),
+                                }
+                            }
                             if changed {
                                 log(&format!("device metadata: model={model}"));
                                 ctx.push_state();
@@ -4074,8 +4437,13 @@ fn run_receiver(ctx: Ctx) {
                 let mic_on = ctx.mic_on.load(Ordering::Relaxed);
                 let head_tracking_enabled =
                     !mic_on && ctx.state.lock().unwrap().head_tracking_enabled;
-                // Capture changes wake this wait without shortening recovery.
-                thread::park_timeout(receiver_idle_wait(mic_on, head_tracking_enabled));
+                // Capture changes wake this wait; recovery keeps its existing deadlines.
+                thread::park_timeout(receiver_idle_wait(
+                    mic_on,
+                    head_tracking_enabled,
+                    &mic,
+                    clock.elapsed().as_millis() as u64,
+                ));
             }
             // Reset decoder history without STOP/START, which can reconnect weak links.
             // Normal capture stop still uses service_mic.
@@ -4187,7 +4555,8 @@ fn run_receiver(ctx: Ctx) {
                 ) {
                     break;
                 }
-                match driver.recv(100, &mut buf) {
+                let receive_wait = mic.wait_ms(clock.elapsed().as_millis() as u64, 100).max(1);
+                match driver.recv(receive_wait, &mut buf) {
                     Ok(n) if aap::is_audio_packet(&buf[..n]) => {
                         mic.audio_packet(clock.elapsed().as_millis() as u64)
                     }
@@ -4460,6 +4829,7 @@ fn main() {
         paired_target: Arc::new(Mutex::new(None)),
         wants_reconnect: Arc::new(AtomicBool::new(false)),
         wants_settings_refresh: Arc::new(AtomicBool::new(false)),
+        hearing_confirmation: Arc::new(Mutex::new(None)),
         pipe,
         conv_duck: Arc::new(Mutex::new(volume::ConvDuck::new(conversation_volume))),
         reclaiming: Arc::new(AtomicBool::new(false)),
@@ -4493,6 +4863,7 @@ fn main() {
         let prox = Arc::new(Mutex::new((mac, battery_ble::Visit::default())));
         thread::spawn(move || {
             let last_published = Mutex::new(0u64);
+            let lid_transitions = Mutex::new(battery_ble::PairedLidTransitions::default());
             let invitations = Mutex::new(battery_ble::Invitations::default());
             le::watch_nearby(
                 move |address, data| {
@@ -4520,7 +4891,9 @@ fn main() {
                     };
                     let now_ms = unix_millis();
                     let mut published = last_published.lock().unwrap();
-                    let (connected, restored, changed) = {
+                    let bonded =
+                        report.lid_closed.is_some() && bt::paired_aap_name(paired_mac).is_some();
+                    let (connected, restored, changed, lid_edge) = {
                         let mut state = c.state.lock().unwrap();
                         if c.mac() != paired_mac
                             || !battery_ble::scan_allowed(
@@ -4532,6 +4905,22 @@ fn main() {
                             )
                         {
                             return;
+                        }
+                        let mut lid_edge = false;
+                        if report.lid_closed.is_some() {
+                            if let Some((lid_open, sequence)) = lid_transitions
+                                .lock()
+                                .unwrap()
+                                .observe(paired_mac, report.lid_closed, bonded)
+                            {
+                                // Queue a close before its battery snapshot replaces the island payload.
+                                c.send_event(&Event::PairedLid {
+                                    device_id: format!("{paired_mac:012x}"),
+                                    lid_open,
+                                    sequence,
+                                });
+                                lid_edge = true;
+                            }
                         }
                         let visible_battery = |s: &ipc::Snapshot| {
                             (
@@ -4548,9 +4937,9 @@ fn main() {
                         cache.observe(report.battery, now_ms);
                         let restored = cache.restore(&mut state, now_ms);
                         let changed = before != visible_battery(&state);
-                        (state.connected, restored, changed)
+                        (state.connected, restored, changed, lid_edge)
                     };
-                    if restored && (changed || now_ms.saturating_sub(*published) >= 1000) {
+                    if should_publish_ble(restored, changed, lid_edge, now_ms, *published) {
                         *published = now_ms;
                         c.push_state();
                     }
@@ -4644,6 +5033,86 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rapid_lid_edges_publish_even_when_battery_is_unchanged() {
+        let publish = super::should_publish_ble;
+        assert!(!publish(true, false, false, 100, 99));
+        assert!(publish(true, false, true, 100, 99));
+        assert!(publish(false, false, true, 101, 100));
+        assert!(publish(true, true, false, 102, 101));
+    }
+
+    #[test]
+    fn audio_output_readiness_requires_the_selected_route() {
+        use ntpods_ipc::PlaybackMode;
+        let selected = 0xaabbccddeeff;
+        let ready = super::selected_audio_output_ready;
+        assert!(!ready(PlaybackMode::Windows, "windows", 0, true, None));
+        assert!(ready(
+            PlaybackMode::Windows,
+            "windows",
+            selected,
+            true,
+            None
+        ));
+        assert!(!ready(
+            PlaybackMode::Windows,
+            "windows",
+            selected,
+            false,
+            Some(selected)
+        ));
+        assert!(ready(
+            PlaybackMode::Aac,
+            "ready",
+            selected,
+            false,
+            Some(selected)
+        ));
+        assert!(!ready(
+            PlaybackMode::Aac,
+            "starting",
+            selected,
+            false,
+            Some(selected)
+        ));
+        assert!(!ready(
+            PlaybackMode::AacEld,
+            "ready",
+            selected,
+            true,
+            Some(0x112233445566)
+        ));
+    }
+
+    #[test]
+    fn routine_multipoint_log_omits_host_identities() {
+        let devices = [
+            ntpods_ipc::ConnectedDevice {
+                address: "aa:bb:cc:dd:ee:ff".into(),
+                is_this_pc: true,
+                name: "Private PC".into(),
+                kind: "pc".into(),
+            },
+            ntpods_ipc::ConnectedDevice {
+                address: "11:22:33:44:55:66".into(),
+                is_this_pc: false,
+                name: "Private iPhone".into(),
+                kind: "phone".into(),
+            },
+        ];
+        let message = super::multipoint_log(&devices);
+        assert_eq!(message, "multipoint: 2 device(s) on the AirPods, 1 this PC");
+        for private in [
+            "aa:bb:cc:dd:ee:ff",
+            "11:22:33:44:55:66",
+            "Private PC",
+            "Private iPhone",
+        ] {
+            assert!(!message.contains(private));
+        }
+    }
+
     #[cfg(feature = "experimental-playback")]
     #[test]
     fn deferred_restore_keeps_reader_available_and_cancels_stale_start() {
@@ -4711,7 +5180,7 @@ mod tests {
         use ntpods_ipc::{MicMode, PlaybackMode};
 
         for command in [
-            Command::Connect,
+            Command::Connect { device_id: None },
             Command::RebuildAudio,
             Command::RepairConnection,
             Command::SetPlaybackMode {
@@ -4924,6 +5393,7 @@ mod tests {
         let request = super::HearingRequest {
             request_id: 1,
             on: true,
+            mode: None,
             expected: Some(baseline),
             settings: Some(draft),
         };
@@ -4968,10 +5438,33 @@ mod tests {
             (true, true, 4),
         ] {
             assert_eq!(
-                super::receiver_idle_wait(mic_on, head_tracking_enabled),
+                super::receiver_idle_wait(
+                    mic_on,
+                    head_tracking_enabled,
+                    &super::mic_lifecycle::Lifecycle::default(),
+                    0,
+                ),
                 super::Duration::from_millis(expected_ms)
             );
         }
+    }
+
+    #[test]
+    fn receiver_idle_wait_does_not_overshoot_microphone_recovery() {
+        let mut mic = super::mic_lifecycle::Lifecycle::default();
+        mic.tick(0, true, true);
+        mic.start_attempted();
+        mic.request_stop(100);
+        for (now, expected_ms) in [(450, 150), (575, 25), (600, 0)] {
+            assert_eq!(
+                super::receiver_idle_wait(false, false, &mic, now),
+                super::Duration::from_millis(expected_ms)
+            );
+        }
+        assert_eq!(
+            super::receiver_idle_wait(false, true, &mic, 599),
+            super::Duration::from_millis(1)
+        );
     }
 
     #[test]
@@ -5316,6 +5809,74 @@ mod tests {
         assert!(!super::recently_cased(Some((1_000, single)), 1_001));
         let partial = super::aap::parse_battery(&[4, 0, 4, 0, 4, 0, 1, 4, 1, 63, 5, 1]).unwrap();
         assert!(!super::recently_cased(Some((1_000, partial)), 1_001));
+    }
+
+    #[test]
+    fn reclaim_does_not_cancel_a_receiver_connect_before_it_finishes() {
+        use super::{finish_reclaim, ConnectionRequest, ReclaimOutcome};
+        use std::sync::atomic::Ordering;
+        let requested = ConnectionRequest::new(true);
+        let request = requested.snapshot();
+        assert_eq!(
+            finish_reclaim(&requested, request, false, true),
+            ReclaimOutcome::ReceiverOwned
+        );
+        assert!(requested.is_current(request));
+        assert!(requested.load(Ordering::Acquire));
+        assert_eq!(
+            finish_reclaim(&requested, request, true, true),
+            ReclaimOutcome::Connected
+        );
+        assert!(requested.is_current(request));
+    }
+
+    #[test]
+    fn reclaim_preserves_a_returned_windows_link_before_aap_opens() {
+        use super::{finish_reclaim, ConnectionRequest, ReclaimOutcome};
+        let requested = ConnectionRequest::new(true);
+        let request = requested.snapshot();
+        assert_eq!(
+            finish_reclaim(&requested, request, true, false),
+            ReclaimOutcome::Connected
+        );
+        assert!(requested.is_current(request));
+    }
+
+    #[test]
+    fn reclaim_releases_an_abandoned_request_without_a_receiver() {
+        use super::{finish_reclaim, ConnectionRequest, ReclaimOutcome};
+        use std::sync::atomic::Ordering;
+        let requested = ConnectionRequest::new(true);
+        let request = requested.snapshot();
+        assert_eq!(
+            finish_reclaim(&requested, request, false, false),
+            ReclaimOutcome::Released
+        );
+        assert!(!requested.load(Ordering::Acquire));
+        assert!(!requested.is_current(request));
+    }
+
+    #[test]
+    fn late_reclaim_respects_disconnect_and_newer_connect_requests() {
+        use super::{finish_reclaim, ConnectionRequest, ReclaimOutcome};
+        use std::sync::atomic::Ordering;
+        for reconnect in [false, true] {
+            for (connected, receiver_owned) in [(false, false), (false, true), (true, true)] {
+                let requested = ConnectionRequest::new(true);
+                let old = requested.snapshot();
+                requested.store(false, Ordering::Release);
+                if reconnect {
+                    requested.store(true, Ordering::Release);
+                }
+                let current = requested.snapshot();
+                assert_eq!(
+                    finish_reclaim(&requested, old, connected, receiver_owned),
+                    ReclaimOutcome::Superseded
+                );
+                assert_eq!(requested.snapshot(), current);
+                assert_eq!(requested.load(Ordering::Acquire), reconnect);
+            }
+        }
     }
 
     #[test]
@@ -5948,6 +6509,28 @@ mod tests {
             assert!(!settings_refresh_allowed(&mic, streams, false));
         }
         assert!(!settings_refresh_allowed(&mic, Some(0), true));
+    }
+
+    #[test]
+    fn hearing_confirmation_survives_only_its_own_same_pair_refresh() {
+        let token = super::HearingConfirmation {
+            generation: 7,
+            address: 11,
+            connection: 3,
+        };
+        assert!(token.matches(Some(token), 11, 3));
+        assert!(!token.matches(None, 11, 3));
+        assert!(!token.matches(
+            Some(super::HearingConfirmation {
+                generation: 8,
+                ..token
+            }),
+            11,
+            3
+        ));
+        assert!(!token.matches(Some(token), 12, 3));
+        assert!(!token.matches(Some(token), 11, 5));
+        assert!(!token.matches(Some(token), 11, 2));
     }
 
     #[test]

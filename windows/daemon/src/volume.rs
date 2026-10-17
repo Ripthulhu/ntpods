@@ -78,6 +78,43 @@ fn adapter_instance(
     }
 }
 
+fn selected_adapter(instance: &str, address: u64) -> bool {
+    const AUDIO_SINK: &str = r"BTHENUM\{0000110b-0000-1000-8000-00805f9b34fb}";
+    instance
+        .get(..AUDIO_SINK.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(AUDIO_SINK))
+        && crate::driver::device_instance_address(instance) == Some(address)
+}
+
+/// An active render endpoint whose connected Bluetooth adapter belongs to this pair.
+pub fn selected_output_ready(address: u64) -> bool {
+    if address == 0 || address > 0xffff_ffff_ffff {
+        return false;
+    }
+    unsafe {
+        let Ok(enumerator): windows::core::Result<IMMDeviceEnumerator> =
+            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+        else {
+            return false;
+        };
+        let Ok(devices) = enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE) else {
+            return false;
+        };
+        for index in 0..devices.GetCount().unwrap_or(0) {
+            let Ok(device) = devices.Item(index) else {
+                continue;
+            };
+            if adapter_instance(&enumerator, &device)
+                .ok()
+                .is_some_and(|instance| selected_adapter(&instance, address))
+            {
+                return true;
+            }
+        }
+        false
+    }
+}
+
 fn resolve_output<T>(
     experimental: bool,
     default: impl FnOnce() -> windows::core::Result<T>,
@@ -226,8 +263,13 @@ impl ConvDuck {
 
     /// 1/3 cap playback at the chosen volume; 2 reduces it further to 60% of
     /// that cap. Ending statuses restore only volume that we still own.
-    pub fn on_status(&mut self, status: u8) {
-        update_duck(&mut self.active, status, self.limit, DuckEndpoint::current);
+    pub fn on_status(&mut self, status: u8, address: u64) {
+        if matches!(status, 1 | 2 | 3) {
+            let current = DuckEndpoint::current(address);
+            update_duck_for_route(&mut self.active, status, self.limit, current);
+        } else {
+            update_duck(&mut self.active, status, self.limit, || None);
+        }
     }
 
     /// Disabling Conversation Awareness may omit the end event; restore any owned duck.
@@ -258,25 +300,34 @@ struct DuckEndpoint {
 }
 
 impl DuckEndpoint {
-    fn current() -> Option<Self> {
+    fn current(address: u64) -> Option<Self> {
+        if address == 0 {
+            return None;
+        }
         unsafe {
             let device = output_device().ok()?;
             let id = endpoint_id(&device)?;
-            let volume: IAudioEndpointVolume = device.Activate(CLSCTX_ALL, None).ok()?;
             #[cfg(feature = "experimental-playback")]
-            let address = crate::playback::active_address();
+            let native_address = crate::playback::active_address();
             #[cfg(not(feature = "experimental-playback"))]
-            let address: Option<u64> = None;
-            let remote_volume = address.is_some_and(|address| {
-                let Ok(enumerator) = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) else {
-                    return false;
-                };
-                volume.QueryHardwareSupport().unwrap_or(0)
+            let native_address: Option<u64> = None;
+            let enumerator: IMMDeviceEnumerator =
+                CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).ok()?;
+            let instance = adapter_instance(&enumerator, &device).ok()?;
+            let owned = if native_address.is_some() {
+                native_address == Some(address)
+                    && crate::driver::native_endpoint_owner(&instance, address)
+            } else {
+                crate::driver::device_instance_address(&instance) == Some(address)
+            };
+            if !owned {
+                return None;
+            }
+            let volume: IAudioEndpointVolume = device.Activate(CLSCTX_ALL, None).ok()?;
+            let remote_volume = native_address.is_some()
+                && volume.QueryHardwareSupport().unwrap_or(0)
                     & windows::Win32::Media::Audio::ENDPOINT_HARDWARE_SUPPORT_VOLUME
-                    != 0
-                    && adapter_instance(&enumerator, &device)
-                        .is_ok_and(|id| crate::driver::native_endpoint_owner(&id, address))
-            });
+                    != 0;
             Some(Self {
                 id,
                 endpoint: AgileReference::new(&volume).ok()?,
@@ -440,6 +491,21 @@ fn update_duck<E: DuckVolume>(
     }
 }
 
+fn update_duck_for_route<E: DuckVolume>(
+    active: &mut Option<DuckedEndpoint<E>>,
+    status: u8,
+    limit: u8,
+    current: Option<E>,
+) {
+    if active
+        .as_ref()
+        .is_some_and(|duck| current.as_ref().map(DuckVolume::id) != Some(duck.endpoint.id()))
+    {
+        restore_duck(active);
+    }
+    update_duck(active, status, limit, || current);
+}
+
 fn restore_duck<E: DuckVolume>(active: &mut Option<DuckedEndpoint<E>>) {
     if let Some(mut duck) = active.take() {
         duck.set_if_owned(duck.original);
@@ -463,6 +529,19 @@ mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
+
+    #[test]
+    fn selected_render_adapter_rejects_other_pairs_and_non_audio_services() {
+        let address = 0xaabbccddeeff;
+        let sink = r"BTHENUM\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004c_PID&2027\7&1&2&AABBCCDDEEFF_C00000000";
+        let other = r"BTHENUM\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004c_PID&2027\7&1&2&112233445566_C00000000";
+        let handsfree = r"BTHENUM\{0000111e-0000-1000-8000-00805f9b34fb}_VID&0001004c_PID&2027\7&1&2&AABBCCDDEEFF_C00000000";
+        let native = r"BTHENUM\{74ec2172-0bad-4d01-8f77-997b2be0722a}_VID&0001004c_PID&2027\7&1&2&AABBCCDDEEFF_C00000000";
+        assert!(selected_adapter(sink, address));
+        assert!(!selected_adapter(other, address));
+        assert!(!selected_adapter(handsfree, address));
+        assert!(!selected_adapter(native, address));
+    }
 
     #[test]
     #[cfg(feature = "experimental-playback")]
@@ -669,6 +748,60 @@ mod tests {
         assert_eq!(native.level.get(), 0.8);
         assert_eq!(*default.writes.borrow(), [0.25, 0.7]);
         assert_eq!(*native.writes.borrow(), [0.25, 0.8]);
+    }
+
+    #[test]
+    fn conversation_duck_only_uses_the_selected_airpods_route() {
+        let selected = 0xaabbccddeeff;
+        let buds = Endpoint::new(0.6);
+        let mut speakers = Endpoint::new(0.8);
+        speakers.id = "speakers";
+        let buds_instance = r"BTHENUM\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004c_PID&2027\7&1&2&AABBCCDDEEFF_C00000000";
+        let speakers_instance = r"HDAUDIO\FUNC_01&VEN_10EC\4&123";
+        let selected_endpoint = |endpoint, instance| {
+            (crate::driver::device_instance_address(instance) == Some(selected)).then_some(endpoint)
+        };
+        let mut active = None;
+        update_duck_for_route(
+            &mut active,
+            1,
+            25,
+            selected_endpoint(speakers.clone(), speakers_instance),
+        );
+        assert!(active.is_none());
+        assert!(speakers.writes.borrow().is_empty());
+
+        update_duck_for_route(
+            &mut active,
+            1,
+            25,
+            selected_endpoint(buds.clone(), buds_instance),
+        );
+        assert_eq!(*buds.writes.borrow(), [0.25]);
+
+        update_duck_for_route(
+            &mut active,
+            2,
+            25,
+            selected_endpoint(speakers.clone(), speakers_instance),
+        );
+        assert!(active.is_none());
+        assert_eq!(*buds.writes.borrow(), [0.25, 0.6]);
+        assert!(speakers.writes.borrow().is_empty());
+    }
+
+    #[test]
+    fn switching_between_paired_outputs_restores_the_old_duck_before_starting_the_new_one() {
+        let first = Endpoint::new(0.6);
+        let mut second = Endpoint::new(0.8);
+        second.id = "other buds";
+        let mut active = None;
+        update_duck_for_route(&mut active, 1, 25, Some(first.clone()));
+        update_duck_for_route(&mut active, 1, 25, Some(second.clone()));
+        assert_eq!(*first.writes.borrow(), [0.25, 0.6]);
+        assert_eq!(*second.writes.borrow(), [0.25]);
+        restore_duck(&mut active);
+        assert_eq!(*second.writes.borrow(), [0.25, 0.8]);
     }
 
     #[test]

@@ -268,6 +268,7 @@ impl Discovery {
                 return;
             }
             let mut announcements = Vec::new();
+            let mut has_descriptors = false;
             for (id, value) in &top {
                 if *id != 5 {
                     continue;
@@ -286,6 +287,7 @@ impl Discovery {
                 let Ok(service @ 1..=127) = u8::try_from(service) else {
                     return;
                 };
+                has_descriptors = true;
                 if let Some(sensor) = description(dictionary) {
                     if announcements
                         .iter()
@@ -296,7 +298,7 @@ impl Discovery {
                     announcements.push((service, sensor));
                 }
             }
-            if announcements.is_empty() {
+            if !has_descriptors {
                 return;
             }
             let Some(Value::Number(sequence)) = unique(&top, 1) else {
@@ -460,6 +462,44 @@ mod tests {
         assert_eq!(discovery.heart_rate, None);
         assert!(discovery.feed(&announcement(3, 16, &hr)));
         assert_eq!(discovery.heart_rate, Some(16));
+    }
+
+    #[test]
+    fn unsupported_restart_retires_known_services_without_accepting_the_unknown_layout() {
+        let motion = dictionary(b"devmotion6\0", MOTION_DESCRIPTOR, 191);
+        let hr = dictionary(b"HeartRate\0", HR_DESCRIPTOR, 601);
+        let unknown = dictionary(b"SPL0\0", &[0], 57);
+        let mut discovery = Discovery::default();
+        assert!(discovery.feed(&announcement(3, 16, &motion)));
+        assert!(discovery.feed(&announcement(4, 20, &hr)));
+        assert!(!discovery.feed(&announcement(5, 18, &unknown)));
+        assert_eq!(discovery.motion, Some(MotionService { id: 16 }));
+        assert_eq!(discovery.heart_rate, Some(20));
+        assert!(!discovery.feed(&announcement(1, 0, &unknown)));
+        let mut not_a_descriptor = announcement(1, 18, &unknown);
+        not_a_descriptor[16] = 0x32;
+        assert!(!discovery.feed(&not_a_descriptor));
+        assert_eq!(discovery.motion, Some(MotionService { id: 16 }));
+        assert_eq!(discovery.heart_rate, Some(20));
+
+        let restart = announcement(1, 18, &unknown);
+        assert!(discovery.feed(&restart));
+        assert_eq!(discovery.generation, 1);
+        assert_eq!(discovery.motion, None);
+        assert_eq!(discovery.heart_rate, None);
+        assert!(!discovery.feed(&restart));
+        assert_eq!(discovery.generation, 1);
+
+        assert!(discovery.feed(&announcement(2, 27, &motion)));
+        assert_eq!(discovery.motion, Some(MotionService { id: 27 }));
+        assert_eq!(discovery.heart_rate, None);
+
+        let mut discovery = Discovery::default();
+        assert!(discovery.feed(&announcement(1, 16, &motion)));
+        assert!(!discovery.feed(&announcement(2, 18, &unknown)));
+        assert!(discovery.feed(&restart));
+        assert_eq!(discovery.motion, None);
+        assert_eq!(discovery.generation, 1);
     }
 
     #[test]

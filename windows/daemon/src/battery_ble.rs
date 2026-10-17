@@ -234,6 +234,34 @@ impl Report {
 }
 
 #[derive(Default)]
+pub struct PairedLidTransitions {
+    mac: u64,
+    lid_open: Option<bool>,
+    sequence: u64,
+}
+
+impl PairedLidTransitions {
+    pub fn observe(
+        &mut self,
+        mac: u64,
+        lid_closed: Option<bool>,
+        bonded: bool,
+    ) -> Option<(bool, u64)> {
+        if self.mac != mac || !bonded {
+            self.mac = mac;
+            self.lid_open = None;
+        }
+        let lid_open = !lid_closed?;
+        if !bonded || self.lid_open == Some(lid_open) {
+            return None;
+        }
+        self.lid_open = Some(lid_open);
+        self.sequence += 1;
+        Some((lid_open, self.sequence))
+    }
+}
+
+#[derive(Default)]
 pub struct Visit {
     acted: bool,
     last_seen_ms: Option<u64>,
@@ -787,6 +815,21 @@ mod tests {
         assert!(!visit.observe(&outside, 90_000));
         visit.observe_connected(&closed, 91_000);
         assert!(visit.observe(&outside, 92_000));
+    }
+
+    #[test]
+    fn paired_lid_edges_require_current_bond_and_keep_session_order_across_pairs() {
+        let mut lid = PairedLidTransitions::default();
+        assert_eq!(lid.observe(1, Some(false), false), None);
+        assert_eq!(lid.observe(1, None, true), None);
+        assert_eq!(lid.observe(1, Some(false), true), Some((true, 1)));
+        assert_eq!(lid.observe(1, Some(false), true), None);
+        assert_eq!(lid.observe(1, None, true), None);
+        assert_eq!(lid.observe(1, Some(true), true), Some((false, 2)));
+        assert_eq!(lid.observe(1, Some(true), false), None);
+        assert_eq!(lid.observe(1, Some(true), true), Some((false, 3)));
+        assert_eq!(lid.observe(2, Some(false), true), Some((true, 4)));
+        assert_eq!(lid.observe(1, Some(false), true), Some((true, 5)));
     }
 
     #[test]

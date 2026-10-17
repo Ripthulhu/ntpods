@@ -300,6 +300,7 @@ public sealed partial class MainWindow : Window
     private void RenderSnapshot(Snapshot s)
     {
             _connected = s.Connected;
+            UpdatePairingSnapshot(s);
             UpdatePairingAvailability();
 
             // A live connection dismisses any stale nearby connection prompt.
