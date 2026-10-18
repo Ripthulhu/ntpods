@@ -76,9 +76,16 @@ FDK's notice and complete pinned source archive.
 ## Transport
 
 The ACX playback driver binds Apple's model-qualified AudioSink IDs and exposes
-a per-device PCM bridge. The backend checks the bridge's Bluetooth address before
-opening AVDTP. The AAP driver's shared handle keeps playback alive across AAP
-control-channel retries. Each bridge accepts one reader and holds at most 100 ms
+a per-device PCM bridge. The backend checks the bridge's Bluetooth address and a
+current explicit Connect, Repair, audio rebuild or pairing request before opening
+AVDTP. A nearby advertisement or control-only Windows link cannot claim playback.
+After startup or a completed Bluetooth-link loss, use Connect to resume custom
+playback; the driver currently provides no verified peer-initiated audio-return
+signal. Windows' own profile reconnection is independent of this policy.
+Ear detection pauses or resumes local media only while the selected audio output
+is ready; passive control reports cannot pause or resume PC media.
+The AAP driver's shared handle keeps playback alive across AAP control-channel
+retries. Each bridge accepts one reader and holds at most 100 ms
 of PCM; it clears queued audio when that reader closes. PCM overruns and missed
 processing deadlines retry the stream after one second while keeping existing
 Windows audio clients connected. Failed cleanup stops playback until an explicit

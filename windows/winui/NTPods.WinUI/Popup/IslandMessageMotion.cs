@@ -5,13 +5,13 @@ internal readonly record struct IslandMessage(string Text, IslandMessageIcon Ico
 
 internal sealed class IslandMessageMotion
 {
-    private const double Duration = 180;
+    private const double Duration = 200;
     private double _started;
     private IslandMessage? _pending;
     public IslandMessage Current { get; private set; } = new("");
     public IslandMessage Previous { get; private set; } = new("");
     public IslandMessage Latest => _pending ?? Current;
-    public double Opacity { get; private set; } = 1;
+    public double Progress { get; private set; } = 1;
     public bool Animating { get; private set; }
 
     public void Set(IslandMessage message, double now, bool animate)
@@ -25,7 +25,7 @@ internal sealed class IslandMessageMotion
         }
         else if (Animating)
         {
-            // Finish the visible blend before fading to the latest event.
+            // Keep both visible rows until the push finishes, then show the latest event.
             _pending = message == Current ? null : message;
         }
         else Begin(message, now);
@@ -38,14 +38,14 @@ internal sealed class IslandMessageMotion
         Current = message;
         _started = now;
         Animating = Previous.Text.Length > 0;
-        Opacity = Animating ? 0 : 1;
+        Progress = Animating ? 0 : 1;
     }
 
     public void Advance(double now)
     {
         if (!Animating) return;
         double t = Math.Clamp((now - _started) / Duration, 0, 1);
-        Opacity = 1 - Math.Pow(1 - t, 3);
+        Progress = IslandMotion.Ease(t);
         if (t < 1) return;
         Animating = false;
         Previous = new("");
@@ -60,7 +60,7 @@ internal sealed class IslandMessageMotion
         Current = _pending ?? Current;
         _pending = null;
         Previous = new("");
-        Opacity = 1;
+        Progress = 1;
         Animating = false;
     }
 }

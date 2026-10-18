@@ -76,7 +76,81 @@ internal static class IslandTakeoverChecks
         policy.ObserveSnapshot(switched, 34_114);
         check(policy.State(switched, 34_114) == IslandConnectState.Ready,
             "A different pair and daemon session cannot inherit the previous request.");
+        CheckAutomaticReturn(check, first, second);
+        CheckCloseOwnership(check, first);
         Console.WriteLine("Island takeover checks passed.");
+    }
+
+    private static void CheckAutomaticReturn(Action<bool, string> check, string first, string second)
+    {
+        var snapshot = Nearby(first);
+        snapshot.PlaybackMode = "aac_eld";
+        snapshot.PlaybackState = "starting";
+        var policy = new IslandTakeover();
+        policy.ObserveSnapshot(snapshot, 0);
+        policy.Shown(snapshot);
+        check(policy.State(snapshot, 0) == IslandConnectState.Hidden && policy.InGrace(0),
+            "An automatic playback start does not flash Connect before its output is ready.");
+        check(!policy.BeginConnect(snapshot, 1), "Hidden automatic-start actions cannot send Connect.");
+        policy.ObserveSnapshot(snapshot, 17_999);
+        check(policy.State(snapshot, 18_000) == IslandConnectState.Ready && !policy.NeedsTimer(18_000),
+            "Repeated startup snapshots cannot keep Connect hidden indefinitely.");
+        check(policy.BeginConnect(snapshot, 18_001), "The bounded startup grace leaves a manual recovery action.");
+        check(!policy.PairingSucceeded(second) && policy.State(snapshot, 18_002) == IslandConnectState.Connecting,
+            "Another pair's success neither dismisses this island nor retires its connect request.");
+
+        snapshot.AudioOutputReady = true;
+        snapshot.PlaybackState = "ready";
+        policy.ObserveSnapshot(snapshot, 18_003);
+        check(policy.State(snapshot, 18_003) == IslandConnectState.Hidden && !policy.InGrace(18_003),
+            "A ready output immediately completes automatic-start presentation grace.");
+        check(policy.PairingSucceeded(first) && !policy.MayShow(snapshot),
+            "Pairing suppresses the matching visible island even after audio becomes ready.");
+        policy.ObserveLid(new DaemonEvent.PairedLid(first, true, 1), snapshot, 18_004);
+        check(!policy.MayShow(snapshot), "An open report alone cannot end pairing-card suppression.");
+        policy.ObserveLid(new DaemonEvent.PairedLid(first, false, 2), snapshot, 18_005);
+        policy.ObserveLid(new DaemonEvent.PairedLid(first, true, 3), snapshot, 18_006);
+        check(policy.MayShow(snapshot), "A real close and reopen ends suppression for the paired device.");
+
+        policy = new IslandTakeover();
+        snapshot.AudioOutputReady = false;
+        snapshot.PlaybackState = "starting";
+        policy.ObserveSnapshot(snapshot, 20_000);
+        snapshot.PlaybackState = "error";
+        policy.ObserveSnapshot(snapshot, 20_001);
+        check(policy.State(snapshot, 20_001) == IslandConnectState.Ready && !policy.InGrace(20_001),
+            "A failed automatic start restores Connect without a misleading Retry state.");
+        snapshot.PlaybackState = "starting";
+        policy.ObserveSnapshot(snapshot, 21_000);
+        policy.SessionLost();
+        snapshot.PlaybackState = "disconnected";
+        policy.ObserveSnapshot(snapshot, 21_001);
+        check(!policy.InGrace(21_001), "A daemon session cannot inherit old playback-start grace.");
+    }
+
+    private static void CheckCloseOwnership(Action<bool, string> check, string deviceId)
+    {
+        var snapshot = Nearby(deviceId);
+        snapshot.AudioOutputReady = true;
+        var policy = new IslandTakeover();
+        policy.ObserveSnapshot(snapshot, 0);
+        snapshot.AudioOutputReady = false;
+        policy.ObserveSnapshot(snapshot, 1_000);
+        policy.ObserveLid(new DaemonEvent.PairedLid(deviceId, false, 1), snapshot, 3_001);
+        policy.ObserveLid(new DaemonEvent.PairedLid(deviceId, true, 2), snapshot, 3_002);
+        check(policy.State(snapshot, 3_002) == IslandConnectState.Ready,
+            "An old local output does not claim a later case opening from another host.");
+
+        snapshot.AudioOutputReady = true;
+        policy.ObserveSnapshot(snapshot, 4_000);
+        policy.ObserveLid(new DaemonEvent.PairedLid(deviceId, false, 3), snapshot, 60_000);
+        policy.ObserveLid(new DaemonEvent.PairedLid(deviceId, true, 4), snapshot, 60_001);
+        check(policy.InGrace(60_001), "An unchanged local output remains owned until it disconnects or the case closes.");
+        policy.ObserveLid(new DaemonEvent.PairedLid(deviceId, false, 5), snapshot, 64_002);
+        policy.ObserveLid(new DaemonEvent.PairedLid(deviceId, true, 6), snapshot, 64_003);
+        snapshot.AudioOutputReady = false;
+        check(!policy.InGrace(64_003) && policy.State(snapshot, 64_003) == IslandConnectState.Ready,
+            "A stale ready snapshot cannot grant another grace period after its original deadline.");
     }
 
     private static Snapshot Nearby(string id) => new()

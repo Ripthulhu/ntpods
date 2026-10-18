@@ -60,8 +60,9 @@ impl Selection {
         state: &Snapshot,
         _capture_active: bool,
         mic_on: bool,
+        explicit_connection: bool,
     ) -> bool {
-        !stopped && attempted != Some(self.revision)
+        explicit_connection && !stopped && attempted != Some(self.revision)
             // A command reserves the transition before a new capture client can start.
             && (matches!(state.playback_state.as_str(), "starting" | "stopping")
                 || (!mic_on && !state.mic_uplink_active
@@ -428,6 +429,41 @@ mod tests {
     }
 
     #[test]
+    fn control_only_acl_cannot_start_avdtp_or_reuse_completed_audio_intent() {
+        use crate::connection_request::ConnectionRequest;
+        let selected = Selection::new(PlaybackMode::AacEld);
+        let requested = ConnectionRequest::new(false);
+        let state = Snapshot {
+            connected: true,
+            playback_native_driver: true,
+            playback_mode: PlaybackMode::AacEld,
+            playback_state: "disconnected".into(),
+            ..Default::default()
+        };
+        assert!(requested.claim());
+        for capture in [false, true] {
+            assert!(!selected.should_attempt(
+                None,
+                false,
+                &state,
+                capture,
+                false,
+                requested.explicit()
+            ));
+        }
+        requested.store(true, Ordering::Release);
+        let completed = requested.snapshot();
+        assert!(selected.should_attempt(None, false, &state, false, false, requested.explicit()));
+        assert!(requested.release(completed));
+        assert!(!selected.should_attempt(None, false, &state, true, false, requested.explicit()));
+        assert!(requested.claim());
+        assert!(!selected.should_attempt(None, false, &state, false, false, requested.explicit()));
+        requested.store(true, Ordering::Release);
+        assert!(!requested.release(completed));
+        assert!(selected.should_attempt(None, false, &state, false, false, requested.explicit()));
+    }
+
+    #[test]
     fn failure_waits_for_retry_and_saved_choices_wait_for_existing_capture() {
         let mut selected = Selection::new(PlaybackMode::Aac);
         let mut state = Snapshot {
@@ -435,20 +471,20 @@ mod tests {
             playback_state: "disconnected".into(),
             ..Default::default()
         };
-        assert!(selected.should_attempt(None, false, &state, true, false));
-        assert!(!selected.should_attempt(None, false, &state, false, true));
-        assert!(selected.should_attempt(None, false, &state, false, false));
+        assert!(selected.should_attempt(None, false, &state, true, false, true));
+        assert!(!selected.should_attempt(None, false, &state, false, true, true));
+        assert!(selected.should_attempt(None, false, &state, false, false, true));
         let attempted = Some(selected.revision);
         state.playback_state = "error".into();
-        assert!(!selected.should_attempt(attempted, false, &state, false, false));
+        assert!(!selected.should_attempt(attempted, false, &state, false, false, true));
         selected
             .change(PlaybackMode::Aac, true, false, |_| Ok(()))
             .unwrap();
         state.playback_state = "starting".into();
-        assert!(selected.should_attempt(attempted, false, &state, true, false));
+        assert!(selected.should_attempt(attempted, false, &state, true, false, true));
         state.playback_state = "stopping".into();
-        assert!(selected.should_attempt(attempted, false, &state, true, false));
-        assert!(!selected.should_attempt(attempted, true, &state, false, false));
+        assert!(selected.should_attempt(attempted, false, &state, true, false, true));
+        assert!(!selected.should_attempt(attempted, true, &state, false, false, true));
         assert!(selected
             .change(PlaybackMode::Windows, true, false, |_| panic!(
                 "no driver rebinding"

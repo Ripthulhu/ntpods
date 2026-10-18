@@ -97,7 +97,8 @@ public sealed partial class FeaturesCard : UserControl
                 row.Visibility = DeviceModels.SupportsControl(s, id) ? Visibility.Visible : Visibility.Collapsed;
                 toggle.IsOn = DeviceSettingStatus.DisplayValue(s, id) == 1;
                 toggle.IsEnabled = DeviceSettingStatus.CanChange(s, id);
-                string status = toggle.IsEnabled && DeviceSettingStatus.DisplayValue(s, id).HasValue ? "" : DeviceSettingStatus.Text(s, id);
+                bool retainedChoice = id == Feature.ConversationalAwareness && s.DeviceControlsRequested.ContainsKey(id);
+                string status = toggle.IsEnabled && DeviceSettingStatus.DisplayValue(s, id).HasValue && !retainedChoice ? "" : DeviceSettingStatus.Text(s, id);
                 AutomationProperties.SetHelpText(toggle, status);
                 ToolTipService.SetToolTip(row, string.IsNullOrEmpty(status) ? null : status);
             }

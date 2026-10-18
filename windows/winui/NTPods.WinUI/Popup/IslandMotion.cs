@@ -2,7 +2,7 @@ namespace NTPods.WinUI.Popup;
 
 public enum IslandConnectState { Hidden, Ready, Connecting, Failed }
 
-internal sealed class IslandMotion(double holdMilliseconds = 4000)
+internal sealed class IslandMotion(double holdMilliseconds = 4000, double openingMilliseconds = 320)
 {
     private enum Phase { Hidden, Opening, Holding, Closing }
     private Phase _phase;
@@ -20,9 +20,7 @@ internal sealed class IslandMotion(double holdMilliseconds = 4000)
     public bool Pinned => _pinned;
     public bool Animating => _phase is Phase.Opening or Phase.Closing || Resizing;
     public double PayloadScale => 0.96 + 0.04 * Expansion;
-    public double PayloadOffset => -8 * (1 - Expansion);
-    public double HeaderOpacity => Smooth(Math.Clamp((Expansion - 0.08) / 0.72, 0, 1));
-    public double BatteryOpacity => Smooth(Math.Clamp((Expansion - 0.32) / 0.68, 0, 1));
+    public double PayloadOffset => 34 * (1 - Expansion);
     public double DismissDelay(double now) => Math.Max(1, holdMilliseconds - (now - _started));
 
     public void Show(double now, bool animate)
@@ -50,12 +48,9 @@ internal sealed class IslandMotion(double holdMilliseconds = 4000)
         }
         if (_phase is not (Phase.Opening or Phase.Closing)) return;
         bool opening = _phase == Phase.Opening;
-        double duration = opening ? 420 * (1 - _from) : 220 * _from;
+        double duration = opening ? openingMilliseconds * (1 - _from) : 220 * _from;
         double t = Math.Clamp(elapsed / Math.Max(1, duration), 0, 1);
-        // Settle without overshoot at the screen edge.
-        double eased = opening ? (1 - (1 + 8 * t) * Math.Exp(-8 * t)) / (1 - 9 * Math.Exp(-8))
-                               : 1 - Math.Pow(1 - t, 3);
-        Expansion = _from + ((opening ? 1 : 0) - _from) * eased;
+        Expansion = _from + ((opening ? 1 : 0) - _from) * Ease(t);
         if (t < 1) return;
         _phase = opening ? Phase.Holding : Phase.Hidden;
         _started = now;
@@ -128,43 +123,93 @@ internal sealed class IslandMotion(double holdMilliseconds = 4000)
         Resizing = t < 1;
     }
 
-    private static double Smooth(double value) => value * value * (3 - 2 * value);
+    internal static double Ease(double progress)
+    {
+        if (progress <= 0) return 0;
+        if (progress >= 1) return 1;
+        double low = 0, high = 1;
+        // Invert the x coordinate of cubic-bezier(.2, 0, 0, 1).
+        for (int i = 0; i < 20; i++)
+        {
+            double t = (low + high) / 2;
+            double x = 0.6 * t * (1 - t) * (1 - t) + t * t * t;
+            if (x < progress) low = t;
+            else high = t;
+        }
+        double position = (low + high) / 2;
+        return position * position * (3 - 2 * position);
+    }
 }
 
 internal sealed class IslandActionMotion
 {
     private readonly double[] _from = new double[4];
-    private readonly double[] _opacity = [1, 0, 0, 0];
+    private readonly double[] _opacity = [0, 1, 0, 0];
     private double _started;
+    private double _visibilityFrom, _visibilityStarted;
+    private bool _visibilityAnimating, _labelAnimating;
+    private IslandConnectState _labelState = IslandConnectState.Ready;
     public IslandConnectState State { get; private set; }
-    public bool Animating { get; private set; }
-    public bool CanConnect => State is IslandConnectState.Ready or IslandConnectState.Failed;
-    public double Opacity(IslandConnectState state) => _opacity[(int)state];
+    public double Visibility { get; private set; }
+    public bool Animating => _visibilityAnimating || _labelAnimating;
+    public bool CanConnect => (State is IslandConnectState.Ready or IslandConnectState.Failed)
+        && Visibility > 0 && Opacity(State) > 0;
+    public double Opacity(IslandConnectState state) => state == IslandConnectState.Hidden
+        ? 1 - Visibility : _opacity[(int)state];
 
     public void Set(IslandConnectState state, double now, bool animate)
     {
         Advance(now);
         if (state == State) { if (!animate) Finish(); return; }
+        bool visibilityChanged = (state == IslandConnectState.Hidden) != (State == IslandConnectState.Hidden);
         State = state;
-        _started = now;
-        Array.Copy(_opacity, _from, _opacity.Length);
-        Animating = animate;
+        if (visibilityChanged)
+        {
+            _visibilityFrom = Visibility;
+            _visibilityStarted = now;
+            _visibilityAnimating = animate;
+        }
+        if (state == IslandConnectState.Hidden)
+            _labelAnimating = false;
+        else if (_labelState != state || Opacity(state) != 1 || Visibility == 0)
+        {
+            _labelState = state;
+            _started = now;
+            Array.Copy(_opacity, _from, _opacity.Length);
+            _labelAnimating = animate && Visibility > 0;
+            if (!_labelAnimating) FinishLabel();
+        }
         if (!animate) Finish();
     }
 
     public void Advance(double now)
     {
-        if (!Animating) return;
-        double t = Math.Clamp((now - _started) / 140, 0, 1);
-        double eased = 1 - Math.Pow(1 - t, 3);
-        for (int i = 0; i < _opacity.Length; i++)
-            _opacity[i] = _from[i] + ((i == (int)State ? 1 : 0) - _from[i]) * eased;
-        if (t == 1) Finish();
+        if (_visibilityAnimating)
+        {
+            bool showing = State != IslandConnectState.Hidden;
+            double t = Math.Clamp((now - _visibilityStarted) / (showing ? 140 : 100), 0, 1);
+            Visibility = _visibilityFrom + ((showing ? 1 : 0) - _visibilityFrom) * IslandMotion.Ease(t);
+            _visibilityAnimating = t < 1;
+        }
+        if (!_labelAnimating) return;
+        double elapsed = Math.Max(0, now - _started);
+        double outgoing = 1 - IslandMotion.Ease(Math.Clamp(elapsed / 80, 0, 1));
+        double incoming = IslandMotion.Ease(Math.Clamp((elapsed - 80) / 120, 0, 1));
+        for (int i = 1; i < _opacity.Length; i++)
+            _opacity[i] = _from[i] * outgoing + (i == (int)_labelState ? incoming : 0);
+        if (elapsed >= 200) FinishLabel();
     }
 
     public void Finish()
     {
-        for (int i = 0; i < _opacity.Length; i++) _opacity[i] = i == (int)State ? 1 : 0;
-        Animating = false;
+        Visibility = State == IslandConnectState.Hidden ? 0 : 1;
+        _visibilityAnimating = false;
+        FinishLabel();
+    }
+
+    private void FinishLabel()
+    {
+        for (int i = 1; i < _opacity.Length; i++) _opacity[i] = i == (int)_labelState ? 1 : 0;
+        _labelAnimating = false;
     }
 }

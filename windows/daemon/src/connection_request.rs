@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Keep the requested bit and its generation together so old workers cannot
-/// clear a newer request, including Disconnect followed by Connect.
+/// Keep control/audio intent and its generation together so stale cleanup cannot
+/// clear a newer Connect. A passive Windows link authorizes controls only.
 pub struct ConnectionRequest(AtomicU64);
 
 #[derive(Clone)]
@@ -52,17 +52,29 @@ pub fn pairing_allows_connect(
 
 impl ConnectionRequest {
     pub fn new(requested: bool) -> Self {
-        Self(AtomicU64::new(u64::from(requested)))
+        Self(AtomicU64::new(if requested { 3 } else { 0 }))
     }
 
     pub fn load(&self, ordering: Ordering) -> bool {
         self.0.load(ordering) & 1 != 0
     }
 
+    pub fn explicit(&self) -> bool {
+        self.snapshot() & 3 == 3
+    }
+
+    pub fn may_open_controls(&self, token: u64, windows_connected: bool) -> bool {
+        token & 1 != 0 && self.is_current(token) && (token & 2 != 0 || windows_connected)
+    }
+
     pub fn store(&self, requested: bool, ordering: Ordering) {
         let _ = self.0.fetch_update(ordering, Ordering::Relaxed, |token| {
-            Some((token.wrapping_add(2) & !1) | u64::from(requested))
+            Some((token.wrapping_add(4) & !3) | if requested { 3 } else { 0 })
         });
+    }
+
+    pub fn renew(&self) -> u64 {
+        self.0.fetch_add(4, Ordering::AcqRel).wrapping_add(4)
     }
 
     pub fn snapshot(&self) -> u64 {
@@ -76,7 +88,7 @@ impl ConnectionRequest {
     pub fn claim(&self) -> bool {
         self.0
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |token| {
-                (token & 1 == 0).then(|| token.wrapping_add(2) | 1)
+                (token & 1 == 0).then(|| (token.wrapping_add(4) & !3) | 1)
             })
             .is_ok()
     }
@@ -85,7 +97,7 @@ impl ConnectionRequest {
         self.0
             .compare_exchange(
                 token,
-                token.wrapping_add(2) & !1,
+                token.wrapping_add(4) & !3,
                 Ordering::AcqRel,
                 Ordering::Acquire,
             )
@@ -99,7 +111,7 @@ mod tests {
     use std::sync::{mpsc, Arc};
 
     #[test]
-    fn old_reclaim_completion_cannot_cancel_a_new_connect_or_repair() {
+    fn old_session_completion_cannot_cancel_a_new_connect_or_repair() {
         for disconnect_first in [false, true] {
             let request = Arc::new(ConnectionRequest::new(true));
             let old = request.snapshot();
@@ -121,8 +133,10 @@ mod tests {
             finish_tx.send(()).unwrap();
             assert!(!worker.join().unwrap());
             assert!(request.load(Ordering::Acquire));
+            assert!(request.explicit());
             assert!(request.release(request.snapshot()));
             assert!(!request.load(Ordering::Acquire));
+            assert!(!request.explicit());
         }
     }
 
@@ -132,9 +146,41 @@ mod tests {
         let old = request.snapshot();
         request.store(false, Ordering::Release);
         assert!(request.claim());
+        assert!(!request.explicit());
         assert!(!request.claim());
         assert!(!request.release(old));
         assert!(request.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn pairing_reservation_preserves_off_passive_and_explicit_audio_intent() {
+        for flags in [0, 1, 3] {
+            let request = ConnectionRequest(AtomicU64::new(flags));
+            let old = request.snapshot();
+            let renewed = request.renew();
+            assert!(!request.is_current(old));
+            assert!(request.is_current(renewed));
+            assert_eq!(renewed & 3, flags);
+            assert_eq!(request.load(Ordering::Acquire), flags & 1 != 0);
+            assert_eq!(request.explicit(), flags == 3);
+        }
+    }
+
+    #[test]
+    fn passive_controls_cannot_page_after_the_windows_link_disappears() {
+        let request = ConnectionRequest::new(false);
+        assert!(request.claim());
+        let passive = request.snapshot();
+        assert!(request.may_open_controls(passive, true));
+        assert!(!request.may_open_controls(passive, false));
+        request.store(true, Ordering::Release);
+        let explicit = request.snapshot();
+        assert!(!request.may_open_controls(passive, true));
+        assert!(request.may_open_controls(explicit, false));
+        assert!(!request.release(passive));
+        assert!(request.may_open_controls(explicit, false));
+        assert!(request.release(explicit));
+        assert!(!request.may_open_controls(explicit, true));
     }
 
     #[test]

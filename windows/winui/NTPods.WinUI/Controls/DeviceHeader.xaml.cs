@@ -75,7 +75,7 @@ public sealed partial class DeviceHeader : UserControl
         ConnectedDot.Visibility = s.Connected && !s.LinkStale ? Visibility.Visible : Visibility.Collapsed;
         StaleDot.Visibility = _linkStale ? Visibility.Visible : Visibility.Collapsed;
         ConnectButton.Content = Localize.Get(_linkStale ? "Action_Repair" : "HeaderConnectBtn.Content");
-        ConnectButton.Visibility = !s.Connected || _linkStale ? Visibility.Visible : Visibility.Collapsed;
+        ConnectButton.Visibility = !s.Connected || _linkStale || !s.AudioOutputReady ? Visibility.Visible : Visibility.Collapsed;
         // Repair must remain available when Windows is connected but the AAP link is stale.
         RenameBtn.Visibility = s.Connected ? Visibility.Visible : Visibility.Collapsed;
         DisconnectButton.Visibility = s.Connected ? Visibility.Visible : Visibility.Collapsed;

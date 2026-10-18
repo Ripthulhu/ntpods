@@ -27,6 +27,7 @@ internal static class DeviceSettingStatus
         s.DeviceControlsPending.TryGetValue(id, out var requested) ? requested :
         id == Feature.AllowOff && s.AllowOffRequested is bool allowOff ? (allowOff ? 1u : 2u) :
         id == ControlId.AdaptiveNoiseStrength && s.AdaptiveStrengthRequested is uint sent ? sent :
+        id == Feature.ConversationalAwareness && s.DeviceControlsRequested.TryGetValue(id, out var awareness) ? awareness :
         s.DeviceControls.TryGetValue(id, out var confirmed) ? confirmed :
         s.DeviceControlsRequested.TryGetValue(id, out var choice) ? choice : null;
 
@@ -36,6 +37,7 @@ internal static class DeviceSettingStatus
         s.DeviceControlsPending.ContainsKey(id) ? "DeviceSetting.Pending" :
         id == Feature.AllowOff && s.AllowOffRequested is not null ? "DeviceSetting.Sent" :
         id == ControlId.AdaptiveNoiseStrength && s.AdaptiveStrengthRequested is not null ? "DeviceSetting.Sent" :
+        id == Feature.ConversationalAwareness && s.DeviceControlsRequested.ContainsKey(id) ? "DeviceSetting.Sent" :
         s.DeviceControls.ContainsKey(id) ? "DeviceSetting.Confirmed" :
         s.DeviceControlsRequested.ContainsKey(id) ? "DeviceSetting.Sent" : "DeviceSetting.Unknown");
 }

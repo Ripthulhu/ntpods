@@ -106,4 +106,13 @@ internal static class BatteryPresentation
         string key = FreshnessKey(snapshot);
         return key.Length == 0 ? "" : Localize.Get(key);
     }
+
+    public static string SharedFreshnessText(Snapshot snapshot, bool headphone)
+    {
+        BatteryPart[] parts = headphone ? [BatteryPart.Headphone] : [BatteryPart.Left, BatteryPart.Right, BatteryPart.Case];
+        var known = parts.Where(part => Reading(snapshot, part).HasValue).ToArray();
+        if (known.Length == 0 || known.Any(part => IsLive(snapshot, part))) return "";
+        var labels = known.Select(part => FreshnessText(snapshot, part)).Distinct().ToArray();
+        return labels.Length == 1 ? labels[0] : "";
+    }
 }

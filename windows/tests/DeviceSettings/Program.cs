@@ -120,6 +120,46 @@ unreported.Connected = true;
 unreported.Model = "unknown";
 Check(!DeviceSettingStatus.CanChoose(unreported, 0x01), "An unknown model cannot use the no-report path.");
 
+const byte awarenessId = Feature.ConversationalAwareness;
+var awareness = new Snapshot
+{
+    Connected = true,
+    Model = "A3063",
+    DeviceControls = new() { [awarenessId] = 2 },
+    DeviceControlsRequested = new() { [awarenessId] = 1 },
+};
+Check(DeviceSettingStatus.DisplayValue(awareness, awarenessId) == 1 &&
+    DeviceSettingStatus.CanChange(awareness, awarenessId) &&
+    DeviceSettingStatus.Text(awareness, awarenessId) == Localize.Get("DeviceSetting.Sent"),
+    "Silently applied Conversation Awareness must remain on and editable over the older OFF report.");
+Check(awareness.DeviceControls[awarenessId] == 2 && !awareness.ConversationalAwareness,
+    "Displaying the sent choice must leave confirmed Conversation Awareness unchanged.");
+awareness.DeviceControlsPending[awarenessId] = 2;
+Check(DeviceSettingStatus.DisplayValue(awareness, awarenessId) == 2 &&
+    !DeviceSettingStatus.CanChange(awareness, awarenessId) &&
+    DeviceSettingStatus.Text(awareness, awarenessId) == Localize.Get("DeviceSetting.Pending"),
+    "A newer pending request takes precedence over the retained Conversation Awareness choice.");
+awareness.DeviceControlsPending.Clear();
+Check(DeviceSettingStatus.DisplayValue(awareness, awarenessId) == 1,
+    "Ending an unsuccessful pending request restores the previous sent choice.");
+awareness.DeviceControlsRequested.Clear();
+Check(DeviceSettingStatus.DisplayValue(awareness, awarenessId) == 2 &&
+    DeviceSettingStatus.Text(awareness, awarenessId) == Localize.Get("DeviceSetting.Confirmed"),
+    "A fresh OFF report takes over after the backend clears the retained choice.");
+awareness.DeviceControls[awarenessId] = 1;
+awareness.DeviceControlsRequested[awarenessId] = 2;
+Check(DeviceSettingStatus.DisplayValue(awareness, awarenessId) == 2,
+    "A successfully sent disable also takes precedence over an older ON report.");
+awareness.LinkStale = true;
+Check(!DeviceSettingStatus.CanChange(awareness, awarenessId) &&
+    DeviceSettingStatus.Text(awareness, awarenessId) == Localize.Get("DeviceSetting.Stale"),
+    "A retained Conversation Awareness choice must not enable stale-link writes.");
+awareness.LinkStale = false;
+awareness.Connected = false;
+Check(!DeviceSettingStatus.CanChange(awareness, awarenessId) &&
+    DeviceSettingStatus.Text(awareness, awarenessId) == Localize.Get("DeviceSetting.Disconnected"),
+    "A retained Conversation Awareness choice must not enable disconnected writes.");
+
 foreach (var model in new[] { "A3063", "A3064", "A3065" })
 {
     var pro3 = new Snapshot { Connected = true, Model = model };

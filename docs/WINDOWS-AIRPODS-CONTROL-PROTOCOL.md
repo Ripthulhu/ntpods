@@ -233,6 +233,11 @@ not currently parse this message; its pause and microphone policies work on
 both wear slots without assigning physical sides.
 
 Conversation event `0x4B` is separate from the enabled setting `0x09/0x28`.
+Conversation Awareness may apply without echoing the setting. NTPods retains a
+successfully sent choice for the current connection, separately from its last
+report, so the switch does not revert after ten seconds. A fresh setting report
+overrides that choice; a reconnect clears it. Speech events do not confirm the
+setting or change the switch.
 `parse_conversational_awareness` extracts byte 9; host ducking handles speech and
 recovery stages in [volume.rs](../windows/daemon/src/volume.rs). Status `1` starts
 ducking to the configured cap, `2` uses 60% of that cap, `3` uses the cap again,
@@ -310,10 +315,16 @@ not a request to wake the case.
 
 Scanning while connected is opt-in; capture or an active microphone uplink always
 stops scanning. Verified battery advertisements keep a closed case's battery
-visible without reconnecting audio. Automatic connection requires the report to
-indicate availability outside the closed case, with per-visit suppression;
-Max battery reports never trigger it. No advertisement can prove whether the
-case is currently charging if its case slot is absent.
+visible without reconnecting audio. Nearby and case-open reports never request
+an audio connection: availability does not establish which host the user wants.
+Connect, Repair, audio rebuild and pairing completion explicitly request audio;
+an existing Windows link may resume controls only. Custom AVDTP playback requires
+that explicit intent and stops when it is retired. A lost link releases the
+completed request even when PC playback or capture continues. After startup or a
+completed link loss, custom playback currently requires Connect because its
+driver exposes no verified peer-initiated audio-return signal. Windows itself
+can still reconnect its paired Bluetooth profiles. No advertisement can prove whether the case is currently
+charging if its case slot is absent.
 
 ## Sensors
 

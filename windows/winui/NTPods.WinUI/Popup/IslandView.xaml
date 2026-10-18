@@ -3,7 +3,7 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:controls="using:NTPods.WinUI.Controls"
-    Width="400" MinHeight="160" AutomationProperties.LiveSetting="Polite">
+    Width="420" MinHeight="176" AutomationProperties.LiveSetting="Polite">
     <UserControl.Resources>
         <ResourceDictionary>
             <ResourceDictionary.ThemeDictionaries>
@@ -41,6 +41,11 @@
         <VisualStateManager.VisualStateGroups>
             <VisualStateGroup x:Name="LeftBatteryColors">
                 <VisualState x:Name="LeftNormal" />
+                <VisualState x:Name="LeftCached">
+                    <VisualState.Setters>
+                        <Setter Target="LeftRing.Foreground" Value="{ThemeResource IslandSecondary}" />
+                    </VisualState.Setters>
+                </VisualState>
                 <VisualState x:Name="LeftLow">
                     <VisualState.Setters>
                         <Setter Target="LeftRing.Foreground" Value="{ThemeResource IslandLowBattery}" />
@@ -50,6 +55,11 @@
             </VisualStateGroup>
             <VisualStateGroup x:Name="RightBatteryColors">
                 <VisualState x:Name="RightNormal" />
+                <VisualState x:Name="RightCached">
+                    <VisualState.Setters>
+                        <Setter Target="RightRing.Foreground" Value="{ThemeResource IslandSecondary}" />
+                    </VisualState.Setters>
+                </VisualState>
                 <VisualState x:Name="RightLow">
                     <VisualState.Setters>
                         <Setter Target="RightRing.Foreground" Value="{ThemeResource IslandLowBattery}" />
@@ -59,6 +69,11 @@
             </VisualStateGroup>
             <VisualStateGroup x:Name="CaseBatteryColors">
                 <VisualState x:Name="CaseNormal" />
+                <VisualState x:Name="CaseCached">
+                    <VisualState.Setters>
+                        <Setter Target="CaseRing.Foreground" Value="{ThemeResource IslandSecondary}" />
+                    </VisualState.Setters>
+                </VisualState>
                 <VisualState x:Name="CaseLow">
                     <VisualState.Setters>
                         <Setter Target="CaseRing.Foreground" Value="{ThemeResource IslandLowBattery}" />
@@ -67,25 +82,25 @@
                 </VisualState>
             </VisualStateGroup>
         </VisualStateManager.VisualStateGroups>
-        <Grid x:Name="Payload" Padding="24,18,24,20" RowSpacing="14" RenderTransformOrigin="0.5,0">
+        <Grid x:Name="Payload" Padding="20,16,20,20" RowSpacing="16" RenderTransformOrigin="0.5,0">
             <Grid.RenderTransform><CompositeTransform x:Name="PayloadTransform" /></Grid.RenderTransform>
             <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
-        <Grid x:Name="HeaderGrid" ColumnSpacing="12" MinHeight="56">
-            <Grid.ColumnDefinitions><ColumnDefinition Width="60" /><ColumnDefinition Width="*" /><ColumnDefinition Width="108" /></Grid.ColumnDefinitions>
-            <Image x:Name="DeviceImage" Height="54" Stretch="Uniform" AutomationProperties.AccessibilityView="Raw" />
-            <StackPanel Grid.Column="1" Spacing="4" VerticalAlignment="Center">
-                <TextBlock x:Name="DeviceName" FontSize="16" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
-                           Foreground="{ThemeResource IslandForeground}" />
+        <Grid x:Name="HeaderGrid" ColumnSpacing="12" MinHeight="64">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="56" /><ColumnDefinition Width="*" /><ColumnDefinition x:Name="ActionColumn" Width="108" /></Grid.ColumnDefinitions>
+            <Image x:Name="DeviceImage" Height="56" Stretch="Uniform" AutomationProperties.AccessibilityView="Raw" />
+            <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
                 <Grid x:Name="StatusViewport" MinHeight="20" VerticalAlignment="Center" SizeChanged="StatusViewport_SizeChanged">
-                    <TextBlock x:Name="PreviousMessage" FontSize="13" TextTrimming="CharacterEllipsis" Opacity="0"
+                    <TextBlock x:Name="PreviousMessage" FontSize="13" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
                                Foreground="{ThemeResource IslandSecondary}" AutomationProperties.AccessibilityView="Raw">
                         <TextBlock.RenderTransform><TranslateTransform x:Name="PreviousMessageOffset" /></TextBlock.RenderTransform>
                     </TextBlock>
-                    <TextBlock x:Name="MessageBody" FontSize="13" TextTrimming="CharacterEllipsis"
+                    <TextBlock x:Name="MessageBody" FontSize="13" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
                                Foreground="{ThemeResource IslandSecondary}">
                         <TextBlock.RenderTransform><TranslateTransform x:Name="MessageOffset" /></TextBlock.RenderTransform>
                     </TextBlock>
                 </Grid>
+                <TextBlock x:Name="DeviceName" FontSize="20" TextTrimming="CharacterEllipsis"
+                           Foreground="{ThemeResource IslandForeground}" />
             </StackPanel>
             <Grid x:Name="MessageIcons" Grid.Column="2" Width="28" Height="28" HorizontalAlignment="Right" Visibility="Collapsed"
                   AutomationProperties.AccessibilityView="Raw">
@@ -101,62 +116,71 @@
                     <Path Data="M 3,3 L 25,25" StrokeThickness="2" Stroke="{ThemeResource IslandForeground}" />
                 </Grid>
             </Grid>
-            <Button x:Name="ConnectButton" Grid.Column="2" Width="108" Height="40" Padding="0"
+            <Button x:Name="ConnectButton" Grid.Column="2" Width="108" Height="48" Padding="8,0"
                     Background="{ThemeResource IslandActionBackground}" Foreground="{ThemeResource IslandForeground}"
-                    BorderThickness="0" CornerRadius="20" Visibility="Collapsed" IsEnabled="False"
+                    BorderThickness="0" CornerRadius="24" Visibility="Collapsed" IsEnabled="False"
                     AutomationProperties.AccessibilityView="Raw" Click="ConnectButton_Click">
-                <Grid Width="100" Height="20">
-                    <TextBlock x:Name="ConnectLabel" Width="100" FontSize="13" FontWeight="SemiBold" TextAlignment="Center"
+                <Grid MinHeight="24">
+                    <TextBlock x:Name="ConnectLabel" FontSize="14" FontWeight="SemiBold" TextAlignment="Center"
                                TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Foreground="{ThemeResource IslandForeground}" />
-                    <TextBlock x:Name="RetryLabel" Width="100" FontSize="12" FontWeight="SemiBold" TextAlignment="Center"
+                    <TextBlock x:Name="RetryLabel" FontSize="14" FontWeight="SemiBold" TextAlignment="Center"
                                TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Foreground="{ThemeResource IslandForeground}" Opacity="0" />
-                    <ProgressRing x:Name="ConnectProgress" Width="18" Height="18" HorizontalAlignment="Center"
-                                  VerticalAlignment="Center" IsActive="False" Opacity="0" Foreground="{ThemeResource IslandForeground}" />
+                    <FontIcon x:Name="ConnectIcon" Glyph="&#xE702;" FontSize="20" Opacity="0" Foreground="{ThemeResource IslandForeground}" />
+                    <FontIcon x:Name="RetryIcon" Glyph="&#xE72C;" FontSize="20" Opacity="0" Foreground="{ThemeResource IslandForeground}" />
+                    <Grid x:Name="ConnectProgress" Width="18" Height="18" HorizontalAlignment="Center"
+                          VerticalAlignment="Center" Opacity="0" RenderTransformOrigin="0.5,0.5">
+                        <Grid.RenderTransform><RotateTransform x:Name="ProgressRotation" /></Grid.RenderTransform>
+                        <Ellipse Stroke="{ThemeResource IslandForeground}" StrokeThickness="2" Opacity="0.25" />
+                        <Path Data="M 9,1 A 8,8 0 0 1 17,9" Stroke="{ThemeResource IslandForeground}" StrokeThickness="2" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
+                    </Grid>
                 </Grid>
             </Button>
         </Grid>
         <StackPanel x:Name="BatteryPanel" Grid.Row="1" Spacing="8">
             <Grid x:Name="BatteryRow" ColumnSpacing="12">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
-                <Grid x:Name="LeftCell" Grid.Column="0" ColumnSpacing="7">
-                    <Grid.ColumnDefinitions><ColumnDefinition Width="36" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
-                    <Grid Width="36" Height="36" VerticalAlignment="Center" AutomationProperties.AccessibilityView="Raw">
-                        <ProgressRing x:Name="LeftRing" IsIndeterminate="False" IsActive="True" Minimum="0" Maximum="100"
-                                      Foreground="{ThemeResource IslandBattery}" Background="{ThemeResource IslandBatteryTrack}" />
-                        <Path x:Name="LeftBolt" Width="10" Height="16" HorizontalAlignment="Center" VerticalAlignment="Center" Stretch="Uniform" Data="M 8,0 L 0,9 L 4,9 L 2,16 L 10,7 L 6,7 Z"
-                                  Fill="{ThemeResource IslandBattery}" Visibility="Collapsed" />
-                    </Grid>
-                    <StackPanel Grid.Column="1" Spacing="1" VerticalAlignment="Center">
-                        <TextBlock x:Name="LeftText" Text="—" FontSize="16" FontWeight="SemiBold" Foreground="{ThemeResource IslandForeground}" />
-                        <TextBlock x:Name="LeftLabel" FontSize="12" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource IslandSecondary}" />
+                <StackPanel x:Name="LeftCell" Grid.Column="0" Spacing="4" HorizontalAlignment="Stretch">
+                    <StackPanel x:Name="LeftReadout" Orientation="Horizontal" Spacing="6" HorizontalAlignment="Center">
+                        <Grid Width="28" Height="28" VerticalAlignment="Center" AutomationProperties.AccessibilityView="Raw">
+                            <ProgressRing x:Name="LeftRing" Width="28" Height="28" IsIndeterminate="False" IsActive="True" Minimum="0" Maximum="100"
+                                          Foreground="{ThemeResource IslandBattery}" Background="{ThemeResource IslandBatteryTrack}" />
+                            <Path x:Name="LeftBolt" Width="10" Height="16" HorizontalAlignment="Center" VerticalAlignment="Center" Stretch="Uniform"
+                                  Data="M 8,0 L 0,9 L 4,9 L 2,16 L 10,7 L 6,7 Z" Fill="{ThemeResource IslandBattery}" Visibility="Collapsed" />
+                        </Grid>
+                        <TextBlock x:Name="LeftText" Text="—" FontSize="17" VerticalAlignment="Center" Foreground="{ThemeResource IslandForeground}" />
                     </StackPanel>
-                </Grid>
-                <Grid x:Name="RightCell" Grid.Column="1" ColumnSpacing="7">
-                    <Grid.ColumnDefinitions><ColumnDefinition Width="36" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
-                    <Grid Width="36" Height="36" VerticalAlignment="Center" AutomationProperties.AccessibilityView="Raw">
-                        <ProgressRing x:Name="RightRing" IsIndeterminate="False" IsActive="True" Minimum="0" Maximum="100"
-                                      Foreground="{ThemeResource IslandBattery}" Background="{ThemeResource IslandBatteryTrack}" />
-                        <Path x:Name="RightBolt" Width="10" Height="16" HorizontalAlignment="Center" VerticalAlignment="Center" Stretch="Uniform" Data="M 8,0 L 0,9 L 4,9 L 2,16 L 10,7 L 6,7 Z"
-                                  Fill="{ThemeResource IslandBattery}" Visibility="Collapsed" />
-                    </Grid>
-                    <StackPanel Grid.Column="1" Spacing="1" VerticalAlignment="Center">
-                        <TextBlock x:Name="RightText" Text="—" FontSize="16" FontWeight="SemiBold" Foreground="{ThemeResource IslandForeground}" />
-                        <TextBlock x:Name="RightLabel" FontSize="12" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource IslandSecondary}" />
+                    <TextBlock x:Name="LeftLabel" FontSize="12" TextAlignment="Center" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource IslandSecondary}" />
+                    <TextBlock x:Name="LeftFreshness" FontSize="11" TextAlignment="Center" TextWrapping="Wrap" Visibility="Collapsed"
+                               Foreground="{ThemeResource IslandSecondary}" AutomationProperties.AccessibilityView="Raw" />
+                </StackPanel>
+                <StackPanel x:Name="RightCell" Grid.Column="1" Spacing="4" HorizontalAlignment="Stretch">
+                    <StackPanel x:Name="RightReadout" Orientation="Horizontal" Spacing="6" HorizontalAlignment="Center">
+                        <Grid Width="28" Height="28" VerticalAlignment="Center" AutomationProperties.AccessibilityView="Raw">
+                            <ProgressRing x:Name="RightRing" Width="28" Height="28" IsIndeterminate="False" IsActive="True" Minimum="0" Maximum="100"
+                                          Foreground="{ThemeResource IslandBattery}" Background="{ThemeResource IslandBatteryTrack}" />
+                            <Path x:Name="RightBolt" Width="10" Height="16" HorizontalAlignment="Center" VerticalAlignment="Center" Stretch="Uniform"
+                                  Data="M 8,0 L 0,9 L 4,9 L 2,16 L 10,7 L 6,7 Z" Fill="{ThemeResource IslandBattery}" Visibility="Collapsed" />
+                        </Grid>
+                        <TextBlock x:Name="RightText" Text="—" FontSize="17" VerticalAlignment="Center" Foreground="{ThemeResource IslandForeground}" />
                     </StackPanel>
-                </Grid>
-                <Grid x:Name="CaseCell" Grid.Column="2" ColumnSpacing="7">
-                    <Grid.ColumnDefinitions><ColumnDefinition Width="36" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
-                    <Grid Width="36" Height="36" VerticalAlignment="Center" AutomationProperties.AccessibilityView="Raw">
-                        <ProgressRing x:Name="CaseRing" IsIndeterminate="False" IsActive="True" Minimum="0" Maximum="100"
-                                      Foreground="{ThemeResource IslandBattery}" Background="{ThemeResource IslandBatteryTrack}" />
-                        <Path x:Name="CaseBolt" Width="10" Height="16" HorizontalAlignment="Center" VerticalAlignment="Center" Stretch="Uniform" Data="M 8,0 L 0,9 L 4,9 L 2,16 L 10,7 L 6,7 Z"
-                                  Fill="{ThemeResource IslandBattery}" Visibility="Collapsed" />
-                    </Grid>
-                    <StackPanel Grid.Column="1" Spacing="1" VerticalAlignment="Center">
-                        <TextBlock x:Name="CaseText" Text="—" FontSize="16" FontWeight="SemiBold" Foreground="{ThemeResource IslandForeground}" />
-                        <TextBlock x:Name="CaseLabel" FontSize="12" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource IslandSecondary}" />
+                    <TextBlock x:Name="RightLabel" FontSize="12" TextAlignment="Center" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource IslandSecondary}" />
+                    <TextBlock x:Name="RightFreshness" FontSize="11" TextAlignment="Center" TextWrapping="Wrap" Visibility="Collapsed"
+                               Foreground="{ThemeResource IslandSecondary}" AutomationProperties.AccessibilityView="Raw" />
+                </StackPanel>
+                <StackPanel x:Name="CaseCell" Grid.Column="2" Spacing="4" HorizontalAlignment="Stretch">
+                    <StackPanel x:Name="CaseReadout" Orientation="Horizontal" Spacing="6" HorizontalAlignment="Center">
+                        <Grid Width="28" Height="28" VerticalAlignment="Center" AutomationProperties.AccessibilityView="Raw">
+                            <ProgressRing x:Name="CaseRing" Width="28" Height="28" IsIndeterminate="False" IsActive="True" Minimum="0" Maximum="100"
+                                          Foreground="{ThemeResource IslandBattery}" Background="{ThemeResource IslandBatteryTrack}" />
+                            <Path x:Name="CaseBolt" Width="10" Height="16" HorizontalAlignment="Center" VerticalAlignment="Center" Stretch="Uniform"
+                                  Data="M 8,0 L 0,9 L 4,9 L 2,16 L 10,7 L 6,7 Z" Fill="{ThemeResource IslandBattery}" Visibility="Collapsed" />
+                        </Grid>
+                        <TextBlock x:Name="CaseText" Text="—" FontSize="17" VerticalAlignment="Center" Foreground="{ThemeResource IslandForeground}" />
                     </StackPanel>
-                </Grid>
+                    <TextBlock x:Name="CaseLabel" FontSize="12" TextAlignment="Center" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource IslandSecondary}" />
+                    <TextBlock x:Name="CaseFreshness" FontSize="11" TextAlignment="Center" TextWrapping="Wrap" Visibility="Collapsed"
+                               Foreground="{ThemeResource IslandSecondary}" AutomationProperties.AccessibilityView="Raw" />
+                </StackPanel>
             </Grid>
             <TextBlock x:Name="FreshnessText" FontSize="12" TextTrimming="CharacterEllipsis" Visibility="Collapsed"
                        Foreground="{ThemeResource IslandSecondary}" HorizontalAlignment="Center" />

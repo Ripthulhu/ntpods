@@ -125,12 +125,13 @@ fn selected_audio_output_ready(
     selected: u64,
     windows_ready: bool,
     native_address: Option<u64>,
+    audio_authorized: bool,
 ) -> bool {
     selected != 0
         && if mode == ipc::PlaybackMode::Windows {
             windows_ready
         } else {
-            playback_state == "ready" && native_address == Some(selected)
+            audio_authorized && playback_state == "ready" && native_address == Some(selected)
         }
 }
 
@@ -201,14 +202,10 @@ struct Ctx {
     pipe: Arc<micpipe::MicPipeCell>,
     /// Shared so disabling Conversation Awareness can restore volume without an end event.
     conv_duck: Arc<Mutex<volume::ConvDuck>>,
-    /// Prevents overlapping audio-reclaim attempts.
-    reclaiming: Arc<AtomicBool>,
     /// Explicit Disconnect blocks automatic resume. Connect or Repair clears it.
     user_disconnected: Arc<AtomicBool>,
     /// Reserved at Disconnect, applied only after the receiver closes its channel.
     pending_audio_disconnect: Arc<Mutex<PendingAudioDisconnect>>,
-    /// Cooldown after a reclaim attempt, to avoid repeated requests during a phone call.
-    last_reclaim: Arc<Mutex<Option<Instant>>>,
     /// Last repair request. Debounce prevents repeated handle reopens that can
     /// leave the devnode in Code 38.
     last_repair: Arc<Mutex<Option<Instant>>>,
@@ -267,6 +264,7 @@ impl Ctx {
                 self.mac(),
                 s.audio_output_ready,
                 native_address,
+                self.connect_requested.explicit(),
             );
             s.mic_recording = s.mic_state == "capturing"
                 && self.mic_on.load(Ordering::Acquire)
@@ -345,8 +343,14 @@ impl Ctx {
         let native_address = playback::active_address();
         #[cfg(not(feature = "experimental-playback"))]
         let native_address = None;
-        let output_ready =
-            selected_audio_output_ready(mode, &playback_state, mac, windows_ready, native_address);
+        let output_ready = selected_audio_output_ready(
+            mode,
+            &playback_state,
+            mac,
+            windows_ready,
+            native_address,
+            self.connect_requested.explicit(),
+        );
         let changed = {
             let mut s = self.state.lock().unwrap();
             if self.mac() != mac || s.playback_mode != mode {
@@ -363,42 +367,6 @@ impl Ctx {
             self.push_state();
         }
     }
-}
-
-/// Local audio priority for reclaiming a lost connection: capture, playback, then idle.
-/// The peer's priority is unknown, so retries are bounded to avoid repeated requests.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Tier {
-    /// An app is capturing through NTPods.
-    Call,
-    /// SMTC reports playback or a non-system Core Audio session is active.
-    Playback,
-    /// No active capture or playback; system sounds alone do not qualify.
-    Background,
-}
-
-impl Tier {
-    fn defends_audio(self) -> bool {
-        self != Tier::Background
-    }
-    fn label(self) -> &'static str {
-        match self {
-            Tier::Call => "1/call",
-            Tier::Playback => "2/playback",
-            Tier::Background => "3/background",
-        }
-    }
-}
-
-fn recently_cased(report: Option<(u64, aap::Battery)>, now_ms: u64) -> bool {
-    report.is_some_and(|(at, battery)| {
-        now_ms >= at
-            && now_ms - at <= 45_000
-            && battery.left.is_some()
-            && battery.right.is_some()
-            && battery.left_charging
-            && battery.right_charging
-    })
 }
 
 /// Identify an AAP 0x2E host from local radios, then Windows pairing metadata.
@@ -441,19 +409,6 @@ fn multipoint_log(devices: &[ipc::ConnectedDevice]) -> String {
         "multipoint: {} device(s) on the AirPods, {local} this PC",
         devices.len()
     )
-}
-
-/// What this host currently holds the audio route for. `media::is_playing()`
-/// needs COM on the calling thread (run_receiver already did `media::init()`).
-fn host_tier(ctx: &Ctx) -> Tier {
-    if ctx.mic_on.load(Ordering::Acquire) && ctx.capture_active.load(Ordering::Acquire) {
-        Tier::Call
-    } else if media::is_playing() || volume::any_render_active(ctx.volume_target()) {
-        // SMTC survives brief endpoint switches; Core Audio also covers calls and games.
-        Tier::Playback
-    } else {
-        Tier::Background
-    }
 }
 
 /// Ask the OS to connect/disconnect the audio, off-thread (the call blocks for
@@ -611,40 +566,6 @@ fn close_control_session(
     (stopped, closed, recovery_failed)
 }
 
-/// Avoid repeated reclaim attempts while another host may be using the AirPods.
-const RECLAIM_COOLDOWN: Duration = Duration::from_secs(60);
-
-/// Waits total 39 s; a captured Teams handoff took about 13 s to restore AAP.
-/// Recheck host activity between attempts and stop when it no longer needs audio.
-const RECLAIM_BACKOFF_MS: [u64; 8] = [1_000, 2_000, 3_000, 4_000, 5_000, 6_000, 8_000, 10_000];
-
-#[derive(Debug, PartialEq, Eq)]
-enum ReclaimOutcome {
-    Superseded,
-    Connected,
-    ReceiverOwned,
-    Released,
-}
-
-fn finish_reclaim(
-    requested: &ConnectionRequest,
-    request: u64,
-    connected: bool,
-    receiver_owns_connection: bool,
-) -> ReclaimOutcome {
-    if !requested.is_current(request) {
-        ReclaimOutcome::Superseded
-    } else if connected {
-        ReclaimOutcome::Connected
-    } else if receiver_owns_connection {
-        ReclaimOutcome::ReceiverOwned
-    } else if requested.release(request) {
-        ReclaimOutcome::Released
-    } else {
-        ReclaimOutcome::Superseded
-    }
-}
-
 /// Full-target recovery for an explicit request or the final microphone fallback.
 /// Never use it for an ordinary connection or AAP timeout.
 fn force_audio_rebuild(mac: u64, cleanup: bool) {
@@ -654,82 +575,8 @@ fn force_audio_rebuild(mac: u64, cleanup: bool) {
         bt::reset_audio_services(mac, false)
     };
     log(&format!(
-        "reclaim: audio recovery — disable={disabled} enable={enabled}"
+        "audio recovery: disable={disabled} enable={enabled}"
     ));
-}
-
-/// Wait for Windows to restore the link while local capture or playback remains active.
-/// Keep the connection request until the link returns or retries end.
-fn spawn_reclaim(ctx: &Ctx, tier: Tier, request: u64) {
-    if !ctx.connect_requested.is_current(request) {
-        return;
-    }
-    if ctx.reclaiming.swap(true, Ordering::SeqCst) {
-        return; // a campaign is already running
-    }
-    log(&format!(
-        "reclaim: host held tier {} — reclaiming the audio route",
-        tier.label()
-    ));
-    let ctx = ctx.clone();
-    thread::spawn(move || {
-        media::init(); // is_playing() needs COM on this thread too
-        let mut won = false;
-        for (i, wait) in RECLAIM_BACKOFF_MS.iter().enumerate() {
-            thread::sleep(Duration::from_millis(*wait));
-            // The user pressed Disconnect, or the connect loop gave up.
-            if !ctx.connect_requested.is_current(request)
-                || !ctx.connect_requested.load(Ordering::Relaxed)
-            {
-                log("reclaim: no longer requested — standing down");
-                break;
-            }
-            if bt::is_connected(ctx.mac()) {
-                // A returning control link does not justify removing the
-                // Windows audio services. Let the normal profile reconnect.
-                log("reclaim: link back — leaving the Windows audio route in place");
-                won = true;
-                break;
-            }
-            // Windows may move playback away while the link is returning.
-            if !host_tier(&ctx).defends_audio() {
-                log("reclaim: host dropped to tier 3/background — standing down");
-                break;
-            }
-            // BluetoothSetServiceState can return error 87 while disconnected; wait for Windows.
-            log(&format!(
-                "reclaim: attempt {} — AirPods still away, waiting for the link",
-                i + 1
-            ));
-        }
-        let state = ctx.state.lock().unwrap();
-        // Driver publication uses the same lock; only the receiver may abandon its connect.
-        let outcome = finish_reclaim(
-            &ctx.connect_requested,
-            request,
-            won || state.connected,
-            ctx.driver_cell.lock().unwrap().is_some(),
-        );
-        match outcome {
-            ReclaimOutcome::Superseded => {
-                log("reclaim: superseded by a newer connection request");
-            }
-            ReclaimOutcome::Connected => {
-                log("reclaim: AirPods connected again");
-                ctx.overlay("AirPods connected again");
-            }
-            ReclaimOutcome::ReceiverOwned => {
-                log("reclaim: control connection in progress — leaving it to the receiver");
-            }
-            ReclaimOutcome::Released => {
-                log("reclaim: no link or audio demand — standing down");
-            }
-        }
-        if outcome != ReclaimOutcome::Superseded {
-            *ctx.last_reclaim.lock().unwrap() = Some(Instant::now());
-        }
-        ctx.reclaiming.store(false, Ordering::SeqCst);
-    });
 }
 
 /// Disabling capture closes the PCM gate before any Bluetooth recovery work.
@@ -940,6 +787,12 @@ fn handsfree_target(ctx: &Ctx) -> Option<u64> {
     .then_some(address)
 }
 
+fn microphone_connection_allowed(state: &Snapshot, explicit: bool) -> bool {
+    state.connected
+        && (explicit
+            || (state.playback_mode == ipc::PlaybackMode::Windows && state.audio_output_ready))
+}
+
 fn manual_microphone_start_allowed(
     state: &Snapshot,
     available: bool,
@@ -976,10 +829,11 @@ fn toggle_microphone_manual(
     let available = ctx.pipe.is_open();
     let (allowed, stream_active) = {
         let state = ctx.state.lock().unwrap();
-        let connection_requested = ctx.connect_requested.load(Ordering::Acquire)
-            && !ctx.user_disconnected.load(Ordering::Acquire)
-            && !ctx.wants_reconnect.load(Ordering::Acquire)
-            && !ctx.shutting_down.load(Ordering::Acquire);
+        let connection_requested =
+            microphone_connection_allowed(&state, ctx.connect_requested.explicit())
+                && !ctx.user_disconnected.load(Ordering::Acquire)
+                && !ctx.wants_reconnect.load(Ordering::Acquire)
+                && !ctx.shutting_down.load(Ordering::Acquire);
         (
             manual_microphone_start_allowed(&state, available, connection_requested),
             ctx.mic_on.load(Ordering::Acquire)
@@ -1019,14 +873,15 @@ fn toggle_microphone_manual(
 fn set_microphone_manual(ctx: &Ctx, active: bool, expected: Option<MicrophoneRequest>) {
     let connected = {
         let state = ctx.state.lock().unwrap();
-        state.connected && device_models::microphone(&state) && playback_allows_microphone(&state)
+        microphone_connection_allowed(&state, ctx.connect_requested.explicit())
+            && device_models::microphone(&state)
+            && playback_allows_microphone(&state)
     };
     let _preference = ctx.mic_preference.lock().unwrap();
     if expected.is_some_and(|request| !request.current(ctx)) {
         return;
     }
     let permitted = ctx.auto_mode.load(Ordering::Acquire)
-        && ctx.connect_requested.load(Ordering::Acquire)
         && !ctx.user_disconnected.load(Ordering::Acquire)
         && !ctx.wants_reconnect.load(Ordering::Acquire)
         && !ctx.shutting_down.load(Ordering::Acquire)
@@ -1043,14 +898,16 @@ fn set_microphone_manual(ctx: &Ctx, active: bool, expected: Option<MicrophoneReq
 }
 
 // Call while holding ctx.state, which also serializes explicit disconnect and
-// recovery latches. A late BLE advertisement must not create a new request.
-fn claim_automatic_connection(
+// recovery latches. Presence alone never authorizes an outgoing connection.
+fn claim_windows_connection(
+    windows_connected: bool,
     requested: &ConnectionRequest,
     user_disconnected: &AtomicBool,
     shutting_down: &AtomicBool,
     paired_target: Option<&PairedTarget>,
 ) -> bool {
-    !user_disconnected.load(Ordering::Acquire)
+    windows_connected
+        && !user_disconnected.load(Ordering::Acquire)
         && !shutting_down.load(Ordering::Acquire)
         && pairing_allows_selection(paired_target, requested, None)
         && requested.claim()
@@ -1095,13 +952,12 @@ fn publish_mic(ctx: &Ctx, mic: &mic_lifecycle::Lifecycle, ear_allowed: bool) {
 fn microphone_permitted(ctx: &Ctx) -> bool {
     ctx.auto_mode.load(Ordering::Acquire)
         && ctx.pipe.is_open()
-        && ctx.connect_requested.load(Ordering::Acquire)
         && !ctx.user_disconnected.load(Ordering::Acquire)
         && !ctx.wants_reconnect.load(Ordering::Acquire)
         && !ctx.shutting_down.load(Ordering::Acquire)
         && {
             let state = ctx.state.lock().unwrap();
-            state.connected
+            microphone_connection_allowed(&state, ctx.connect_requested.explicit())
                 && device_models::microphone(&state)
                 && playback_allows_microphone(&state)
         }
@@ -3225,6 +3081,8 @@ fn apply_prepared_command(
                 let Some(intent) = bt::begin_audio_request(true) else {
                     return;
                 };
+                ctx.user_disconnected.store(false, Ordering::Release);
+                ctx.connect_requested.store(true, Ordering::Release);
                 reserve_native_playback_transition(&mut state);
                 (ctx.mac(), intent)
             };
@@ -3564,11 +3422,7 @@ fn begin_pairing_handoff(ctx: &Ctx, address: &str) {
     };
     let request = {
         let _state = ctx.state.lock().unwrap();
-        ctx.connect_requested.store(
-            ctx.connect_requested.load(Ordering::Acquire),
-            Ordering::Release,
-        );
-        let request = ctx.connect_requested.snapshot();
+        let request = ctx.connect_requested.renew();
         *ctx.paired_target.lock().unwrap() = Some(PairedTarget {
             address,
             request,
@@ -3702,13 +3556,16 @@ fn select_paired_device(ctx: &Ctx, mac: u64, name: &str, request: Option<u64>) -
     {
         return false;
     }
-    // Invalidate queued audio work; this does not connect or reset a Windows service.
-    let intent = bt::begin_audio_request(true);
+    // Passive pair selection only cancels old audio work; it never authorizes playback.
+    let intent = bt::begin_audio_request(request.is_some());
     if request.is_some() {
         ctx.user_disconnected.store(false, Ordering::Release);
     }
     ctx.connect_requested
-        .store(connected || request.is_some(), Ordering::Release);
+        .store(request.is_some(), Ordering::Release);
+    if request.is_none() && connected {
+        ctx.connect_requested.claim();
+    }
     let dispatch = if request.is_some() {
         let mut audio = ctx.pending_audio_disconnect.lock().unwrap();
         if mac != ctx.mac() {
@@ -3901,9 +3758,11 @@ fn run_receiver(ctx: Ctx) {
                 && cooldown_elapsed(resume_poll, Instant::now(), Duration::from_secs(5))
             {
                 resume_poll = Some(Instant::now());
-                if bt::is_connected(mac) {
+                let windows_connected = bt::is_connected(mac);
+                if windows_connected {
                     let _state = ctx.state.lock().unwrap();
-                    if claim_automatic_connection(
+                    if claim_windows_connection(
+                        windows_connected,
                         &ctx.connect_requested,
                         &ctx.user_disconnected,
                         &ctx.shutting_down,
@@ -3934,16 +3793,15 @@ fn run_receiver(ctx: Ctx) {
             let Some(repair) = pending.take_repair_if_ready(&ctx.wants_reconnect) else {
                 // A newer Connect/Repair arrived while the previous reset ran.
                 // Consume that rebuild before opening AAP or reserving another token.
-                if !pending.is_pending() {
-                    // An automatic audio request can supersede a reset too.
-                    // Preserve its connect intent while satisfying the saved repair.
+                if !pending.is_pending() && ctx.connect_requested.explicit() {
+                    // Preserve the newer explicit request while satisfying the saved repair.
                     if let Some(token) = bt::begin_audio_request(true) {
                         let _ = pending.queue_connect(token);
                     }
                 }
                 continue;
             };
-            if repair && !bt::is_connected(mac) {
+            if repair && ctx.connect_requested.explicit() && !bt::is_connected(mac) {
                 audio_request(ctx.mac(), true, "repair");
             }
             ctx.connect_requested.snapshot()
@@ -4018,6 +3876,15 @@ fn run_receiver(ctx: Ctx) {
                 continue;
             }
             *ctx.driver_cell.lock().unwrap() = Some(driver.clone());
+        }
+        // A passive native link may have vanished while the driver was opening.
+        if !ctx.connect_requested.may_open_controls(
+            connection_request,
+            ctx.connect_requested.explicit() || bt::is_connected(mac),
+        ) {
+            *ctx.driver_cell.lock().unwrap() = None;
+            ctx.connect_requested.release(connection_request);
+            continue;
         }
         let connected = driver.connect(mac, aap::PSM_AACP).unwrap_or(false);
         log(&format!("run_receiver: connect({mac:#x}) = {connected}"));
@@ -4094,9 +3961,9 @@ fn run_receiver(ctx: Ctx) {
         let mut prev_ear = [false; 2]; // last [primary, secondary] in-ear state
         let mut last_status = Instant::now();
         let mut heartbeat = Instant::now();
+        let mut established_request = connection_request;
         let mut control_link = ControlLinkStatus::default();
         let mut low_warned = false; // low-battery overlay fired (hysteresis)
-        let mut last_battery_report = None;
         let mut case_low_warned = false; // case low-battery overlay fired
                                          // Per-bud ear status, to notify on the transition into the case.
         let mut prev_status = [aap::EarStatus::Disconnected; 2];
@@ -4118,6 +3985,15 @@ fn run_receiver(ctx: Ctx) {
                 || ctx.pending_audio_disconnect.lock().unwrap().is_pending()
             {
                 break;
+            }
+            let local_media_route = {
+                let state = ctx.state.lock().unwrap();
+                state.audio_output_ready
+                    && (state.playback_mode == ipc::PlaybackMode::Windows
+                        || ctx.connect_requested.explicit())
+            };
+            if !local_media_route {
+                we_paused = None;
             }
             if take_settings_refresh(&ctx, &mic) {
                 log("run_receiver: refreshing settings with an idle microphone");
@@ -4421,7 +4297,6 @@ fn run_receiver(ctx: Ctx) {
                             }
                         }
                         if let Some(b) = aap::parse_battery(data) {
-                            last_battery_report = Some((clock.elapsed().as_millis() as u64, b));
                             let batt_text = {
                                 let mut s = ctx.state.lock().unwrap();
                                 b.apply_to_state(&mut s, unix_millis());
@@ -4623,7 +4498,7 @@ fn run_receiver(ctx: Ctx) {
                                 let was_wearing = prev_ear[0] || prev_ear[1];
                                 // Serialize with disabling, so no resume can run after it returns.
                                 let policy = ctx.auto_pause.lock().unwrap();
-                                if let Some(permission) = policy.permission() {
+                                if let Some(permission) = policy.permission(local_media_route) {
                                     if all_in {
                                         if let Some((recorded, paused)) = we_paused.take() {
                                             if recorded == permission {
@@ -4689,9 +4564,13 @@ fn run_receiver(ctx: Ctx) {
                 let was_stale = control_link.stale;
                 // Preserve the session through transient AAP failures while Windows
                 // still has the device; confirmed OS disconnects release it below.
+                let windows_connected = driver_connected || bt::is_connected(mac);
+                if windows_connected {
+                    established_request = ctx.connect_requested.snapshot();
+                }
                 let release = control_link.observe(
                     driver_connected,
-                    driver_connected || bt::is_connected(mac),
+                    windows_connected,
                     ctx.mic_on.load(Ordering::Relaxed),
                     last_data.elapsed(),
                 );
@@ -4705,20 +4584,7 @@ fn run_receiver(ctx: Ctx) {
                     });
                 }
                 if release {
-                    // Local capture or playback permits a bounded wait for the connection to return.
-                    let tier = host_tier(&ctx);
-                    let cased =
-                        recently_cased(last_battery_report, clock.elapsed().as_millis() as u64);
-                    let cooling = ctx
-                        .last_reclaim
-                        .lock()
-                        .unwrap()
-                        .is_some_and(|t| t.elapsed() < RECLAIM_COOLDOWN);
-                    log(&format!(
-                        "run_receiver: AirPods no longer connected (OS) — releasing (host tier {}{})",
-                        tier.label(),
-                        if cooling { ", reclaim cooling down" } else { "" }
-                    ));
+                    log("run_receiver: AirPods no longer connected (OS) — releasing");
                     ctx.overlay("Disconnected");
                     ctx.hr_db.end_session();
                     {
@@ -4729,14 +4595,8 @@ fn run_receiver(ctx: Ctx) {
                     *ctx.driver_cell.lock().unwrap() = None;
                     hr_decoder.reset(); // drop HR carry across the reconnect
                     last_anc = 0;
-                    if tier.defends_audio() && !cooling && !cased {
-                        // Keep AAP requested during recovery; the worker clears it on timeout.
-                        spawn_reclaim(&ctx, tier, connection_request);
-                    } else {
-                        // A charging case disconnect is deliberate, even if a
-                        // player keeps running on the PC. Leave the buds asleep.
-                        ctx.connect_requested.release(connection_request);
-                    }
+                    // Retire intent used on this link; a newer Connect after its loss must survive.
+                    ctx.connect_requested.release(established_request);
                     ctx.push_state();
                     break;
                 }
@@ -5044,10 +4904,8 @@ fn main() {
         hearing_confirmation: Arc::new(Mutex::new(None)),
         pipe,
         conv_duck: Arc::new(Mutex::new(volume::ConvDuck::new(conversation_volume))),
-        reclaiming: Arc::new(AtomicBool::new(false)),
         user_disconnected: Arc::new(AtomicBool::new(false)),
         pending_audio_disconnect: Arc::new(Mutex::new(PendingAudioDisconnect::default())),
-        last_reclaim: Arc::new(Mutex::new(None)),
         last_repair: Arc::new(Mutex::new(None)),
         dev_name: Arc::new(Mutex::new(dev_name.clone())),
         mac: Arc::new(AtomicU64::new(mac)),
@@ -5067,12 +4925,11 @@ fn main() {
         let c = ctx.clone();
         thread::spawn(move || unsafe { ipc_server::cmds_server(c) });
     }
-    // Public lid reports invite pairing; battery data and automatic connections
-    // still require the selected pair's identity key.
+    // Public lid reports invite pairing; battery data requires the selected pair's identity key.
+    // Nearby advertisements never acquire the audio route.
     {
         let c = ctx.clone();
         let c_scan = ctx.clone();
-        let prox = Arc::new(Mutex::new((mac, battery_ble::Visit::default())));
         thread::spawn(move || {
             let last_published = Mutex::new(0u64);
             let lid_transitions = Mutex::new(battery_ble::PairedLidTransitions::default());
@@ -5105,7 +4962,7 @@ fn main() {
                     let mut published = last_published.lock().unwrap();
                     let bonded =
                         report.lid_closed.is_some() && bt::paired_aap_name(paired_mac).is_some();
-                    let (connected, restored, changed, lid_edge) = {
+                    let (restored, changed, lid_edge) = {
                         let mut state = c.state.lock().unwrap();
                         if c.mac() != paired_mac
                             || !battery_ble::scan_allowed(
@@ -5149,49 +5006,12 @@ fn main() {
                         cache.observe(report.battery, now_ms);
                         let restored = cache.restore(&mut state, now_ms);
                         let changed = before != visible_battery(&state);
-                        (state.connected, restored, changed, lid_edge)
+                        (restored, changed, lid_edge)
                     };
                     if should_publish_ble(restored, changed, lid_edge, now_ms, *published) {
                         *published = now_ms;
                         c.push_state();
                     }
-                    // Battery advertisements alone never page a sleeping case.
-                    let mut visit_state = prox.lock().unwrap();
-                    if visit_state.0 != paired_mac {
-                        *visit_state = (paired_mac, battery_ble::Visit::default());
-                    }
-                    let visit = &mut visit_state.1;
-                    if connected {
-                        visit.observe_connected(&report, c.mic_clock.elapsed().as_millis() as u64);
-                        return;
-                    }
-                    if !visit.observe(&report, c.mic_clock.elapsed().as_millis() as u64) {
-                        return;
-                    }
-                    let state = c.state.lock().unwrap();
-                    if c.mac() != paired_mac
-                        || state.connected
-                        || !claim_automatic_connection(
-                            &c.connect_requested,
-                            &c.user_disconnected,
-                            &c.shutting_down,
-                            c.paired_target.lock().unwrap().as_ref(),
-                        )
-                    {
-                        return;
-                    }
-                    visit.mark_acted();
-                    drop(visit_state);
-                    let mut pending = c.pending_audio_disconnect.lock().unwrap();
-                    let Some(token) = bt::begin_audio_request(true) else {
-                        return;
-                    };
-                    if let Some(token) = pending.queue_connect(token) {
-                        dispatch_audio_request(paired_mac, token, "auto");
-                    }
-                    drop(pending);
-                    drop(state);
-                    log("ble: verified AirPods available outside the closed case; auto-connecting");
                 },
                 move || c_scan.nearby_scan_allowed(),
             );
@@ -5255,45 +5075,73 @@ mod tests {
     }
 
     #[test]
-    fn audio_output_readiness_requires_the_selected_route() {
+    fn audio_output_readiness_requires_the_selected_route_and_native_authorization() {
         use ntpods_ipc::PlaybackMode;
         let selected = 0xaabbccddeeff;
         let ready = super::selected_audio_output_ready;
-        assert!(!ready(PlaybackMode::Windows, "windows", 0, true, None));
+        assert!(!ready(
+            PlaybackMode::Windows,
+            "windows",
+            0,
+            true,
+            None,
+            true
+        ));
         assert!(ready(
             PlaybackMode::Windows,
             "windows",
             selected,
             true,
-            None
+            None,
+            false
         ));
         assert!(!ready(
             PlaybackMode::Windows,
             "windows",
             selected,
             false,
-            Some(selected)
+            Some(selected),
+            true
         ));
         assert!(ready(
             PlaybackMode::Aac,
             "ready",
             selected,
             false,
-            Some(selected)
+            Some(selected),
+            true
         ));
         assert!(!ready(
             PlaybackMode::Aac,
-            "starting",
+            "ready",
             selected,
-            false,
-            Some(selected)
+            true,
+            Some(selected),
+            false
         ));
         assert!(!ready(
             PlaybackMode::AacEld,
             "ready",
             selected,
             true,
-            Some(0x112233445566)
+            Some(selected),
+            false
+        ));
+        assert!(!ready(
+            PlaybackMode::Aac,
+            "starting",
+            selected,
+            false,
+            Some(selected),
+            true
+        ));
+        assert!(!ready(
+            PlaybackMode::AacEld,
+            "ready",
+            selected,
+            true,
+            Some(0x112233445566),
+            true
         ));
     }
 
@@ -6042,91 +5890,6 @@ mod tests {
     }
 
     #[test]
-    fn only_a_recent_complete_both_charging_report_suppresses_reclaim() {
-        let packet = [4, 0, 4, 0, 4, 0, 2, 2, 1, 61, 5, 1, 4, 1, 63, 5, 1];
-        let battery = super::aap::parse_battery(&packet).unwrap();
-        assert!(super::recently_cased(Some((1_000, battery)), 1_000));
-        assert!(super::recently_cased(Some((1_000, battery)), 21_000));
-        assert!(super::recently_cased(Some((1_000, battery)), 46_000));
-        assert!(!super::recently_cased(Some((1_000, battery)), 46_001));
-        assert!(!super::recently_cased(Some((1_000, battery)), 999));
-        assert!(!super::recently_cased(None, 1_000));
-        let mut single = battery;
-        single.right_charging = false;
-        assert!(!super::recently_cased(Some((1_000, single)), 1_001));
-        let partial = super::aap::parse_battery(&[4, 0, 4, 0, 4, 0, 1, 4, 1, 63, 5, 1]).unwrap();
-        assert!(!super::recently_cased(Some((1_000, partial)), 1_001));
-    }
-
-    #[test]
-    fn reclaim_does_not_cancel_a_receiver_connect_before_it_finishes() {
-        use super::{finish_reclaim, ConnectionRequest, ReclaimOutcome};
-        use std::sync::atomic::Ordering;
-        let requested = ConnectionRequest::new(true);
-        let request = requested.snapshot();
-        assert_eq!(
-            finish_reclaim(&requested, request, false, true),
-            ReclaimOutcome::ReceiverOwned
-        );
-        assert!(requested.is_current(request));
-        assert!(requested.load(Ordering::Acquire));
-        assert_eq!(
-            finish_reclaim(&requested, request, true, true),
-            ReclaimOutcome::Connected
-        );
-        assert!(requested.is_current(request));
-    }
-
-    #[test]
-    fn reclaim_preserves_a_returned_windows_link_before_aap_opens() {
-        use super::{finish_reclaim, ConnectionRequest, ReclaimOutcome};
-        let requested = ConnectionRequest::new(true);
-        let request = requested.snapshot();
-        assert_eq!(
-            finish_reclaim(&requested, request, true, false),
-            ReclaimOutcome::Connected
-        );
-        assert!(requested.is_current(request));
-    }
-
-    #[test]
-    fn reclaim_releases_an_abandoned_request_without_a_receiver() {
-        use super::{finish_reclaim, ConnectionRequest, ReclaimOutcome};
-        use std::sync::atomic::Ordering;
-        let requested = ConnectionRequest::new(true);
-        let request = requested.snapshot();
-        assert_eq!(
-            finish_reclaim(&requested, request, false, false),
-            ReclaimOutcome::Released
-        );
-        assert!(!requested.load(Ordering::Acquire));
-        assert!(!requested.is_current(request));
-    }
-
-    #[test]
-    fn late_reclaim_respects_disconnect_and_newer_connect_requests() {
-        use super::{finish_reclaim, ConnectionRequest, ReclaimOutcome};
-        use std::sync::atomic::Ordering;
-        for reconnect in [false, true] {
-            for (connected, receiver_owned) in [(false, false), (false, true), (true, true)] {
-                let requested = ConnectionRequest::new(true);
-                let old = requested.snapshot();
-                requested.store(false, Ordering::Release);
-                if reconnect {
-                    requested.store(true, Ordering::Release);
-                }
-                let current = requested.snapshot();
-                assert_eq!(
-                    finish_reclaim(&requested, old, connected, receiver_owned),
-                    ReclaimOutcome::Superseded
-                );
-                assert_eq!(requested.snapshot(), current);
-                assert_eq!(requested.load(Ordering::Acquire), reconnect);
-            }
-        }
-    }
-
-    #[test]
     fn stop_during_blocked_start_prevents_late_pcm_permission() {
         use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
         use std::sync::{mpsc, Arc, Mutex};
@@ -6491,7 +6254,7 @@ mod tests {
     }
 
     use super::{
-        claim_automatic_connection, cooldown_elapsed, media, mic_lifecycle, queue_settings_refresh,
+        claim_windows_connection, cooldown_elapsed, media, mic_lifecycle, queue_settings_refresh,
         settings_refresh_allowed, update_auto_pause, utc_timestamp, SettingsRefresh, Snapshot,
     };
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -6686,7 +6449,55 @@ mod tests {
     }
 
     #[test]
-    fn pairing_reservation_blocks_ble_and_windows_automatic_resume() {
+    fn microphone_cannot_acquire_from_passive_controls_but_accepts_owned_windows_audio() {
+        let mut state = Snapshot {
+            connected: true,
+            ..Default::default()
+        };
+        for mode in [
+            ntpods_ipc::PlaybackMode::Windows,
+            ntpods_ipc::PlaybackMode::Aac,
+            ntpods_ipc::PlaybackMode::AacEld,
+        ] {
+            state.playback_mode = mode;
+            state.audio_output_ready = false;
+            assert!(!super::microphone_connection_allowed(&state, false));
+            assert!(super::microphone_connection_allowed(&state, true));
+            state.audio_output_ready = true;
+            assert_eq!(
+                super::microphone_connection_allowed(&state, false),
+                mode == ntpods_ipc::PlaybackMode::Windows
+            );
+        }
+        state.connected = false;
+        assert!(!super::microphone_connection_allowed(&state, true));
+    }
+
+    #[test]
+    fn passive_presence_cannot_create_an_outgoing_connection_request() {
+        let requested = super::ConnectionRequest::new(false);
+        let latched = AtomicBool::new(false);
+        let shutdown = AtomicBool::new(false);
+        for _ in 0..100 {
+            assert!(!claim_windows_connection(
+                false, &requested, &latched, &shutdown, None
+            ));
+            assert!(!requested.load(Ordering::Acquire));
+        }
+        // Explicit Connect still authorizes paging when there is no Windows link.
+        requested.store(true, Ordering::Release);
+        let completed = requested.snapshot();
+        assert!(requested.release(completed));
+        assert!(!claim_windows_connection(
+            false, &requested, &latched, &shutdown, None
+        ));
+        requested.store(true, Ordering::Release);
+        assert!(!requested.release(completed));
+        assert!(requested.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn pairing_reservation_blocks_windows_automatic_resume() {
         let requested = super::ConnectionRequest::new(false);
         let latched = AtomicBool::new(false);
         let shutdown = AtomicBool::new(false);
@@ -6702,7 +6513,8 @@ mod tests {
         ] {
             target.stage = stage;
             for _ in 0..10 {
-                assert!(!claim_automatic_connection(
+                assert!(!claim_windows_connection(
+                    true,
                     &requested,
                     &latched,
                     &shutdown,
@@ -6712,7 +6524,8 @@ mod tests {
             }
         }
         requested.store(false, Ordering::Release);
-        assert!(claim_automatic_connection(
+        assert!(claim_windows_connection(
+            true,
             &requested,
             &latched,
             &shutdown,
@@ -6721,29 +6534,29 @@ mod tests {
     }
 
     #[test]
-    fn repeated_ble_or_windows_resume_cannot_override_an_explicit_retry_latch() {
+    fn repeated_windows_resume_cannot_override_an_explicit_retry_latch() {
         let requested = super::ConnectionRequest::new(false);
         let latched = AtomicBool::new(true);
         let shutdown = AtomicBool::new(false);
         for _ in 0..100 {
-            assert!(!claim_automatic_connection(
-                &requested, &latched, &shutdown, None
+            assert!(!claim_windows_connection(
+                true, &requested, &latched, &shutdown, None
             ));
             assert!(!requested.load(Ordering::Acquire));
         }
         // Only an explicit Connect/Repair clears the latch. One automatic
-        // request can then win; later advertisements cannot duplicate it.
+        // request can then win; later Windows checks cannot duplicate it.
         latched.store(false, Ordering::Release);
-        assert!(claim_automatic_connection(
-            &requested, &latched, &shutdown, None
+        assert!(claim_windows_connection(
+            true, &requested, &latched, &shutdown, None
         ));
-        assert!(!claim_automatic_connection(
-            &requested, &latched, &shutdown, None
+        assert!(!claim_windows_connection(
+            true, &requested, &latched, &shutdown, None
         ));
         requested.store(false, Ordering::Release);
         shutdown.store(true, Ordering::Release);
-        assert!(!claim_automatic_connection(
-            &requested, &latched, &shutdown, None
+        assert!(!claim_windows_connection(
+            true, &requested, &latched, &shutdown, None
         ));
         assert!(!requested.load(Ordering::Acquire));
     }
@@ -7017,7 +6830,7 @@ mod tests {
         release_tx.send(()).unwrap();
         first.join().unwrap();
         second.join().unwrap();
-        assert!(policy.lock().unwrap().permission().is_some());
+        assert!(policy.lock().unwrap().permission(true).is_some());
         assert!(state.lock().unwrap().auto_pause);
         assert!(*persisted.lock().unwrap());
     }

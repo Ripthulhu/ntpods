@@ -17,7 +17,8 @@ Follow with listening modes and grouped settings. Put less-used controls in
 native expanders and app settings in the device header's three-dot menu.
 The scroll area spans the window, including the side margins. Keep the scrollbar
 at the window edge. Symmetric header action columns and reserved name/status
-heights keep the device centered when Connect or Repair appears.
+heights keep the device centered when Connect or Repair appears. Keep Connect
+available for a control-only connection until its audio output is ready.
 
 Use LibrePods' Apple appearance: a black or light gray page, white device artwork,
 rounded charcoal or white groups, inset dividers, green switches and battery rings.

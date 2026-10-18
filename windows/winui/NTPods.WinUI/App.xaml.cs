@@ -54,8 +54,7 @@ public partial class App : Application
         _window = new MainWindow(Daemon);
         _window.NearbyPairingSucceeded += deviceId =>
         {
-            _islandTakeover.PairingSucceeded(deviceId);
-            _island?.DismissNearby();
+            if (_islandTakeover.PairingSucceeded(deviceId)) _island?.DismissConnection();
             RefreshIslandAction();
         };
         _islandTimer = dispatcher.CreateTimer();

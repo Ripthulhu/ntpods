@@ -35,8 +35,8 @@ impl AutoPausePolicy {
         self.enabled = enabled;
     }
 
-    pub fn permission(&self) -> Option<u64> {
-        self.enabled.then_some(self.revision)
+    pub fn permission(&self, local_audio_route: bool) -> Option<u64> {
+        (self.enabled && local_audio_route).then_some(self.revision)
     }
 }
 
@@ -183,15 +183,23 @@ mod tests {
     }
 
     #[test]
+    fn passive_ear_reports_cannot_pause_or_resume_local_media() {
+        let policy = AutoPausePolicy::new(true);
+        assert!(policy.permission(false).is_none());
+        assert!(policy.permission(true).is_some());
+        assert!(policy.permission(false).is_none());
+    }
+
+    #[test]
     fn disabling_auto_pause_revokes_a_previous_pause_even_after_reenabling() {
         let mut policy = AutoPausePolicy::new(true);
-        let paused_under = policy.permission().unwrap();
+        let paused_under = policy.permission(true).unwrap();
         policy.set_enabled(false);
-        assert!(policy.permission().is_none());
+        assert!(policy.permission(true).is_none());
         policy.set_enabled(true);
-        assert_ne!(policy.permission(), Some(paused_under));
-        let current = policy.permission();
+        assert_ne!(policy.permission(true), Some(paused_under));
+        let current = policy.permission(true);
         policy.set_enabled(true);
-        assert_eq!(policy.permission(), current);
+        assert_eq!(policy.permission(true), current);
     }
 }

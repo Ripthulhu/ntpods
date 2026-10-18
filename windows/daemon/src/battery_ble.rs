@@ -12,7 +12,6 @@ pub const REQUEST_KEYS: [u8; 8] = [4, 0, 4, 0, 0x30, 0, 5, 0];
 const KEYS_HEADER: [u8; 6] = [4, 0, 4, 0, 0x31, 0];
 // Closed-case reports on Pro 3 can arrive roughly a minute apart.
 pub const FRESH_MS: u64 = 90_000;
-const VISIT_ABSENCE_MS: u64 = 45_000;
 const INVITATION_ABSENCE_MS: u64 = 30_000;
 const EARBUD_MODELS: [u16; 11] = [
     0x0220, 0x0f20, 0x1320, 0x1920, 0x1b20, 0x0e20, 0x1420, 0x2420, 0x2720, 0x3020, 0x3620,
@@ -226,13 +225,6 @@ pub struct Report {
     headset: bool,
 }
 
-impl Report {
-    pub fn may_connect(&self) -> bool {
-        // shortcut: Max reports update battery only; verify wear/Smart Case flags before reconnecting.
-        !self.headset && !self.both_in_case && self.lid_closed != Some(true)
-    }
-}
-
 #[derive(Default)]
 pub struct PairedLidTransitions {
     mac: u64,
@@ -258,40 +250,6 @@ impl PairedLidTransitions {
         self.lid_open = Some(lid_open);
         self.sequence += 1;
         Some((lid_open, self.sequence))
-    }
-}
-
-#[derive(Default)]
-pub struct Visit {
-    acted: bool,
-    last_seen_ms: Option<u64>,
-}
-
-impl Visit {
-    pub fn observe(&mut self, report: &Report, now_ms: u64) -> bool {
-        if self
-            .last_seen_ms
-            .is_none_or(|last| now_ms.saturating_sub(last) > VISIT_ABSENCE_MS)
-        {
-            self.acted = false;
-        }
-        self.last_seen_ms = Some(now_ms);
-        // A closed case with one bud still outside is the same visit.
-        if report.both_in_case && report.lid_closed == Some(true) {
-            self.acted = false;
-        }
-        report.may_connect() && !self.acted
-    }
-
-    pub fn mark_acted(&mut self) {
-        self.acted = true;
-    }
-
-    pub fn observe_connected(&mut self, report: &Report, now_ms: u64) {
-        self.observe(report, now_ms);
-        if !(report.both_in_case && report.lid_closed == Some(true)) {
-            self.mark_acted();
-        }
     }
 }
 
@@ -795,29 +753,6 @@ mod tests {
     }
 
     #[test]
-    fn connected_advertisements_do_not_create_a_new_visit_on_handoff() {
-        let outside = Report {
-            battery: Battery::default(),
-            both_in_case: false,
-            lid_closed: None,
-            headset: false,
-        };
-        let closed = Report {
-            battery: Battery::default(),
-            both_in_case: true,
-            lid_closed: Some(true),
-            headset: false,
-        };
-        let mut visit = Visit::default();
-        for now in (0..90_000).step_by(10_000) {
-            visit.observe_connected(&outside, now);
-        }
-        assert!(!visit.observe(&outside, 90_000));
-        visit.observe_connected(&closed, 91_000);
-        assert!(visit.observe(&outside, 92_000));
-    }
-
-    #[test]
     fn paired_lid_edges_require_current_bond_and_keep_session_order_across_pairs() {
         let mut lid = PairedLidTransitions::default();
         assert_eq!(lid.observe(1, Some(false), false), None);
@@ -1091,7 +1026,6 @@ mod tests {
         );
         assert!(report.both_in_case);
         assert_eq!(report.lid_closed, Some(true));
-        assert!(!report.may_connect());
         assert!(k.decode(k.mac + 1, 0x5a162b91d1cd, &data).is_none());
         assert!(k.decode(k.mac, 0x5a162b91d1cc, &data).is_none());
         for model in [0x0000u16, 0xffff] {
@@ -1121,7 +1055,6 @@ mod tests {
         );
         assert!(!report.battery.case_charging);
         assert_eq!(report.lid_closed, None);
-        assert!(report.may_connect());
         assert!(k
             .decode(k.mac, 0x5a162b91d1cd, &advertisement(0x64, [101, 42, 42]))
             .is_none());
@@ -1172,7 +1105,6 @@ mod tests {
             assert_eq!(report.battery, expected);
             assert!(!report.headset && report.both_in_case);
             assert_eq!(report.lid_closed, Some(true));
-            assert!(!report.may_connect());
             assert!(k.decode(k.mac + 1, 0x5a162b91d1cd, &data).is_none());
             assert!(k.decode(k.mac, 0x5a162b91d1cc, &data).is_none());
             for length in 0..data.len() {
@@ -1187,29 +1119,7 @@ mod tests {
     }
 
     #[test]
-    fn closed_and_unknown_cased_reports_do_not_request_an_audio_connection() {
-        for (both_in_case, lid_closed, expected) in [
-            (true, Some(true), false),
-            (true, None, false),
-            (true, Some(false), false),
-            (false, Some(true), false),
-            (false, None, true),
-        ] {
-            assert_eq!(
-                Report {
-                    battery: Battery::default(),
-                    both_in_case,
-                    lid_closed,
-                    headset: false,
-                }
-                .may_connect(),
-                expected
-            );
-        }
-    }
-
-    #[test]
-    fn max_reports_use_one_headset_battery_without_earbud_reconnect_hints() {
+    fn max_reports_use_one_headset_battery_without_lid_hints() {
         let k = keys();
         for model in [0x0a20u16, 0x1f20] {
             for status in [0, 0x20, 0x64] {
@@ -1236,7 +1146,6 @@ mod tests {
                         }
                     );
                     assert!(report.headset);
-                    assert!(!report.may_connect());
                     assert_eq!(report.lid_closed, None);
                     assert!(k.decode(k.mac + 1, 0x5a162b91d1cd, &data).is_none());
                 }
@@ -1245,42 +1154,6 @@ mod tests {
             invalid[3..5].copy_from_slice(&model.to_be_bytes());
             assert!(k.decode(k.mac, 0x5a162b91d1cd, &invalid).is_none());
         }
-    }
-
-    #[test]
-    fn alternating_sibling_reports_do_not_rearm_an_already_attempted_visit() {
-        let outside = Report {
-            battery: Battery::default(),
-            both_in_case: false,
-            lid_closed: None,
-            headset: false,
-        };
-        let single_closed = Report {
-            battery: Battery::default(),
-            both_in_case: false,
-            lid_closed: Some(true),
-            headset: false,
-        };
-        let both_closed = Report {
-            battery: Battery::default(),
-            both_in_case: true,
-            lid_closed: Some(true),
-            headset: false,
-        };
-        let mut visit = Visit::default();
-        assert!(visit.observe(&outside, 0));
-        visit.mark_acted();
-        // Includes the daemon's failed-connection window and more than 45s of
-        // continued advertisements: neither sibling means the device went away.
-        for now in (1_000..=90_000).step_by(1_000) {
-            assert!(!visit.observe(&single_closed, now));
-            assert!(!visit.observe(&outside, now + 1));
-        }
-        assert!(!visit.observe(&both_closed, 91_000));
-        assert!(visit.observe(&outside, 92_000));
-        visit.mark_acted();
-        assert!(!visit.observe(&outside, 93_000));
-        assert!(visit.observe(&outside, 93_000 + VISIT_ABSENCE_MS + 1));
     }
 
     #[test]

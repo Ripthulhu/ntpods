@@ -71,6 +71,11 @@ internal sealed class ArtworkTransitions
         _ = LoadSourceAsync(image, state, request);
     }
 
+    public static void CancelPendingSource(Image image)
+    {
+        if (Sources.TryGetValue(image, out var state)) state.Pending = null;
+    }
+
     private static async Task LoadSourceAsync(Image image, SourceState state, SourceRequest request)
     {
         try

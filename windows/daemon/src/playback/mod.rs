@@ -110,8 +110,10 @@ pub fn set_bitrate(
                     state.playback_bitrate_kbps = None;
                     state.playback_state = if selected.cancel.is_some() {
                         "stopping"
-                    } else {
+                    } else if state.connected && ctx.connect_requested.explicit() {
                         "starting"
+                    } else {
+                        "disconnected"
                     }
                     .into();
                 }
@@ -160,7 +162,7 @@ pub fn set_mode(ctx: &Ctx, mode: Option<PlaybackMode>, expected: (u64, u64, [Pla
                 state.playback_error = None;
                 state.playback_state = if selected.cancel.is_some() {
                     "stopping"
-                } else if state.connected {
+                } else if state.connected && ctx.connect_requested.explicit() {
                     "starting"
                 } else {
                     "disconnected"
@@ -306,6 +308,7 @@ fn manage(ctx: &Ctx) {
             let bound = address != 0 && crate::driver::native_audio_bound(address);
             availability(ctx, address, bound);
             connected = bound
+                && ctx.connect_requested.explicit()
                 && !ctx.user_disconnected.load(Ordering::Acquire)
                 && bt::is_connected(address);
             if !connected {
@@ -327,7 +330,10 @@ fn manage(ctx: &Ctx) {
             }
             next_poll = Instant::now() + Duration::from_secs(1);
         }
-        if !connected || ctx.user_disconnected.load(Ordering::Acquire) {
+        if !connected
+            || !ctx.connect_requested.explicit()
+            || ctx.user_disconnected.load(Ordering::Acquire)
+        {
             thread::sleep(Duration::from_millis(50));
             continue;
         }
@@ -348,6 +354,7 @@ fn manage(ctx: &Ctx) {
                     &state,
                     ctx.capture_active.load(Ordering::Acquire),
                     ctx.mic_on.load(Ordering::Acquire),
+                    ctx.connect_requested.explicit(),
                 )
             {
                 None
@@ -406,6 +413,9 @@ fn manage(ctx: &Ctx) {
                 || publish(ctx, address, revision, intent, "stopping", None, None),
             )
         })();
+        // This single manager owns the publication; a closed stream is no longer an output.
+        NATIVE_ADDRESS.store(0, Ordering::Release);
+        ctx.push_state();
         ctx.playback_selection.lock().unwrap().cancel = None;
         let recovery = result.as_ref().err().and_then(playback_recovery);
         if let Some(recovery) = recovery {
@@ -563,7 +573,8 @@ fn run(
             shutdown_complete(
                 session_ctx.shutting_down.load(Ordering::Acquire),
                 session_ctx.receiver_done.load(Ordering::Acquire),
-            ) || session_ctx.user_disconnected.load(Ordering::Acquire)
+            ) || !session_ctx.connect_requested.explicit()
+                || session_ctx.user_disconnected.load(Ordering::Acquire)
                 || session_ctx.mac() != address
                 || !bt::audio_request_is_current(intent)
         },
@@ -623,7 +634,8 @@ fn run(
             if shutdown_complete(
                 ctx.shutting_down.load(Ordering::Acquire),
                 ctx.receiver_done.load(Ordering::Acquire),
-            ) || ctx.user_disconnected.load(Ordering::Acquire)
+            ) || !ctx.connect_requested.explicit()
+                || ctx.user_disconnected.load(Ordering::Acquire)
                 || ctx.mac() != address
             {
                 return true;
@@ -1173,8 +1185,9 @@ mod tests {
             &state,
             false,
             false,
+            true,
         ));
-        assert!(!selected.should_attempt(None, true, &state, false, false));
+        assert!(!selected.should_attempt(None, true, &state, false, false, true));
 
         pending.queue_disconnect(4);
         assert_eq!(pending.queue_connect(5), None);

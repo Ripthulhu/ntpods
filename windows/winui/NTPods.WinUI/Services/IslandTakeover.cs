@@ -7,6 +7,8 @@ namespace NTPods.WinUI.Services;
 internal sealed class IslandTakeover
 {
     private const long ReconnectGraceMs = 4_000;
+    private const long PlaybackStartGraceMs = 18_000;
+    private const long LocalCloseGraceMs = 2_000;
     private const long ConnectTimeoutMs = 30_000;
     private string _deviceId = "";
     private string _visibleDeviceId = "";
@@ -17,10 +19,13 @@ internal sealed class IslandTakeover
     private bool? _lidOpen;
     private bool _closedWhilePlaying;
     private long _graceUntil;
+    private long _playbackStartUntil;
     private long _connectUntil;
     private long _lastAudioReadyAt = -1;
+    private bool _audioReady;
     private bool _connecting;
     private bool _failed;
+    private bool _playbackStarting;
 
     public void ObserveSnapshot(Snapshot snapshot, long now)
     {
@@ -32,16 +37,30 @@ internal sealed class IslandTakeover
             _lidOpen = null;
             _closedWhilePlaying = false;
             _graceUntil = 0;
+            _playbackStartUntil = 0;
+            _playbackStarting = false;
             _lastAudioReadyAt = -1;
+            _audioReady = false;
             _connecting = false;
             _failed = false;
         }
+        bool starting = _lidOpen != false && !snapshot.AudioOutputReady &&
+            snapshot.PlaybackMode is "aac" or "aac_eld" && snapshot.PlaybackState == "starting";
+        if (starting && !_playbackStarting) _playbackStartUntil = now + PlaybackStartGraceMs;
+        if (!starting) _playbackStartUntil = 0;
+        _playbackStarting = starting;
         if (snapshot.AudioOutputReady && _lidOpen != false)
         {
+            _audioReady = true;
             _lastAudioReadyAt = now;
             _connecting = false;
             _failed = false;
             _graceUntil = 0;
+        }
+        else if (_audioReady)
+        {
+            _audioReady = false;
+            _lastAudioReadyAt = now;
         }
         if (snapshot.MicCaptureActive)
         {
@@ -66,9 +85,12 @@ internal sealed class IslandTakeover
 
         bool dismiss = Same(_visibleDeviceId, lid.DeviceId) && lid.Sequence > _visibleLidSequence;
         _lidOpen = false;
-        _closedWhilePlaying = snapshot.AudioOutputReady ||
-            (_lastAudioReadyAt >= 0 && now - _lastAudioReadyAt <= 15_000);
+        _closedWhilePlaying = _audioReady ||
+            (_lastAudioReadyAt >= 0 && now - _lastAudioReadyAt <= LocalCloseGraceMs);
+        _audioReady = false;
         _lastAudioReadyAt = -1;
+        _playbackStartUntil = 0;
+        _playbackStarting = false;
         _connecting = false;
         _failed = false;
         _visibleDeviceId = "";
@@ -77,12 +99,16 @@ internal sealed class IslandTakeover
         return dismiss;
     }
 
-    public void PairingSucceeded(string deviceId)
+    public bool PairingSucceeded(string deviceId)
     {
         _suppressedDeviceId = deviceId;
         _suppressedAtSequence = _lastLidSequence;
-        _connecting = false;
-        _failed = false;
+        if (Same(_deviceId, deviceId))
+        {
+            _connecting = false;
+            _failed = false;
+        }
+        return Same(_visibleDeviceId, deviceId);
     }
 
     public bool MayShow(Snapshot snapshot) =>
@@ -107,7 +133,7 @@ internal sealed class IslandTakeover
             _connecting = false;
             _failed = true;
         }
-        if (now < _graceUntil) return IslandConnectState.Hidden;
+        if (InGrace(now)) return IslandConnectState.Hidden;
         return _failed ? IslandConnectState.Failed : IslandConnectState.Ready;
     }
 
@@ -127,8 +153,8 @@ internal sealed class IslandTakeover
         _failed = true;
     }
 
-    public bool NeedsTimer(long now) => _connecting || _graceUntil > now;
-    public bool InGrace(long now) => _graceUntil > now;
+    public bool NeedsTimer(long now) => _connecting || InGrace(now);
+    public bool InGrace(long now) => _graceUntil > now || _playbackStartUntil > now;
 
     public void MessageReplaced()
     {
@@ -147,7 +173,10 @@ internal sealed class IslandTakeover
         _lidOpen = null;
         _closedWhilePlaying = false;
         _graceUntil = 0;
+        _playbackStartUntil = 0;
+        _playbackStarting = false;
         _lastAudioReadyAt = -1;
+        _audioReady = false;
         _connecting = false;
         _failed = false;
     }

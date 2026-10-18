@@ -262,6 +262,7 @@ impl PendingSettings {
         token.unreported_choice = unreported_choice;
         self.in_flight.insert(id);
         if unreported_choice
+            || id == 0x28
             || id == 0x2E
             || (id == 0x34 && supports_silent_allow_off(&state.model))
         {
@@ -293,7 +294,8 @@ impl PendingSettings {
             }
             state.device_settings_error =
                 Some("Could not send the setting. Check the AirPods connection.".into());
-        } else if token.unreported_choice {
+        } else if token.unreported_choice || id == 0x28 {
+            // Conversation Awareness can apply silently; retain the choice, not a confirmation.
             if token.report == self.token(id).report {
                 state.device_controls_requested.insert(id, value);
                 state.device_settings_error = None;
@@ -508,6 +510,55 @@ mod tests {
     }
 
     #[test]
+    fn silent_conversation_choice_survives_timeout_but_not_a_report_or_reconnect() {
+        let mut pending = PendingSettings::default();
+        let mut state = pro_three();
+        pending.confirm_control(&mut state, 0x28, 2);
+        let token = pending.begin_control(&mut state, 0x28, 1, false);
+        assert!(pending.finish_control(&mut state, 0x28, 1, token, true));
+        assert!(!pending.expire(&mut state, Instant::now() + CONFIRM_TIMEOUT));
+        assert_eq!(state.device_controls_requested.get(&0x28), Some(&1));
+        assert_eq!(state.device_controls.get(&0x28), Some(&2));
+        assert!(!state.conversational_awareness);
+        assert!(state.conversational_awareness_pending.is_none());
+        assert!(state.device_controls_pending.is_empty());
+        assert!(state.device_settings_error.is_none());
+
+        let failed_off = pending.begin_control(&mut state, 0x28, 2, false);
+        pending.finish_control(&mut state, 0x28, 2, failed_off, false);
+        assert_eq!(state.device_controls_requested.get(&0x28), Some(&1));
+        assert!(state.device_settings_error.is_some());
+        let off = pending.begin_control(&mut state, 0x28, 2, false);
+        pending.finish_control(&mut state, 0x28, 2, off, true);
+        assert_eq!(state.device_controls_requested.get(&0x28), Some(&2));
+        assert!(state.device_settings_error.is_none());
+        assert!(pending.confirm_control(&mut state, 0x28, 2));
+        assert!(!state.device_controls_requested.contains_key(&0x28));
+
+        let token = pending.begin_control(&mut state, 0x28, 1, false);
+        pending.finish_control(&mut state, 0x28, 1, token, true);
+        pending.reset(&mut state);
+        assert!(state.device_controls_requested.is_empty());
+        assert!(!pending.finish_control(&mut state, 0x28, 1, token, true));
+    }
+
+    #[test]
+    fn conversation_reports_during_a_write_override_the_sent_choice() {
+        for value in [1, 2] {
+            let mut pending = PendingSettings::default();
+            let mut state = pro_three();
+            pending.confirm_control(&mut state, 0x28, 2);
+            let token = pending.begin_control(&mut state, 0x28, 1, false);
+            pending.confirm_control(&mut state, 0x28, value);
+            pending.finish_control(&mut state, 0x28, 1, token, true);
+            assert!(state.device_controls_requested.is_empty());
+            assert_eq!(state.device_controls.get(&0x28), Some(&value));
+            assert_eq!(state.conversational_awareness, value == 1);
+            assert!(!pending.expire(&mut state, Instant::now() + CONFIRM_TIMEOUT));
+        }
+    }
+
+    #[test]
     fn only_a_fresh_opposing_report_vetoes_remembering_a_successful_choice() {
         let mut pending = PendingSettings::default();
         let mut state = pro_three();
@@ -625,9 +676,9 @@ mod tests {
         let mut pending = PendingSettings::default();
         let mut state = Snapshot::default();
         let start = Instant::now();
-        let token = pending.begin_control(&mut state, 0x28, 1, false);
+        let token = pending.begin_control(&mut state, 0x26, 1, false);
         assert!(!pending.expire(&mut state, start + Duration::from_secs(30)));
-        pending.finish_control(&mut state, 0x28, 1, token, true);
+        pending.finish_control(&mut state, 0x26, 1, token, true);
         assert!(!pending.expire(&mut state, Instant::now()));
         assert!(pending.expire(&mut state, Instant::now() + CONFIRM_TIMEOUT));
         let eq = Equalizer {
@@ -908,27 +959,26 @@ mod tests {
         let mut pending = PendingSettings::default();
         let mut state = Snapshot::default();
         let start = Instant::now();
-        assert!(pending.confirm_control(&mut state, 0x28, 2));
-        pending.control_sent(&mut state, 0x28, 1, start);
-        assert!(!pending.confirm_control(&mut state, 0x28, 2));
-        assert_eq!(state.conversational_awareness_pending, Some(true));
+        assert!(pending.confirm_control(&mut state, 0x26, 2));
+        pending.control_sent(&mut state, 0x26, 1, start);
+        assert!(!pending.confirm_control(&mut state, 0x26, 2));
+        assert_eq!(state.device_controls_pending.get(&0x26), Some(&1));
         assert!(!pending.expire(
             &mut state,
             start + CONFIRM_TIMEOUT - Duration::from_millis(1)
         ));
         assert!(pending.expire(&mut state, start + CONFIRM_TIMEOUT));
-        assert_eq!(state.device_controls.get(&0x28), Some(&2));
-        assert!(!state.conversational_awareness);
+        assert_eq!(state.device_controls.get(&0x26), Some(&2));
+        assert!(!state.adaptive_volume);
         assert!(state.device_controls_pending.is_empty());
-        assert!(state.conversational_awareness_pending.is_none());
         assert!(state.device_settings_error.is_some());
-        assert!(pending.confirm_control(&mut state, 0x28, 1));
-        assert!(state.conversational_awareness);
+        assert!(pending.confirm_control(&mut state, 0x26, 1));
+        assert!(state.adaptive_volume);
         assert_eq!(
             state.device_settings_error.as_deref(),
             Some("AirPods did not confirm the last request within 10 seconds.")
         );
-        pending.control_sent(&mut state, 0x28, 2, start + CONFIRM_TIMEOUT);
+        pending.control_sent(&mut state, 0x26, 2, start + CONFIRM_TIMEOUT);
         assert!(state.device_settings_error.is_none());
     }
 

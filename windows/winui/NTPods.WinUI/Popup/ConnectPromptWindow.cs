@@ -14,7 +14,7 @@ namespace NTPods.WinUI.Popup;
 public sealed class ConnectPromptWindow : Window
 {
     private readonly ConnectPromptView _view = new();
-    private readonly IslandMotion _motion = new(double.PositiveInfinity);
+    private readonly IslandMotion _motion = new(double.PositiveInfinity, openingMilliseconds: 420);
     private readonly UISettings _settings = new();
     private readonly Stopwatch _clock = Stopwatch.StartNew();
     private readonly DispatcherQueueTimer _expiry;

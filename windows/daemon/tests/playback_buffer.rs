@@ -10,6 +10,8 @@ use std::time::Duration;
 
 #[path = "../src/playback/buffer.rs"]
 mod buffer;
+#[path = "../src/connection_request.rs"]
+mod connection_request;
 #[path = "../src/mic_lifecycle.rs"]
 mod mic_lifecycle;
 #[path = "../src/playback/selection.rs"]
@@ -905,17 +907,29 @@ fn automatic_setup_reopens_before_start_and_does_not_restart_audible_playback() 
             stream.prepare(&mut session, &render).unwrap();
             assert_eq!(session.flush_ms, 60);
             assert!(hardware.lock().unwrap().events.contains(&Event::Reopen(60)));
-            assert!(!hardware.lock().unwrap().events.contains(&Event::Control(60)));
+            assert!(!hardware
+                .lock()
+                .unwrap()
+                .events
+                .contains(&Event::Control(60)));
             assert!(!mic_lifecycle::playback_allows_microphone(
                 &ctx.state.lock().unwrap()
             ));
             session.start().unwrap();
             stream.started();
             assert!(!stream.poll(&mut session, &render).unwrap());
-            assert!(!hardware.lock().unwrap().events.contains(&Event::Control(60)));
+            assert!(!hardware
+                .lock()
+                .unwrap()
+                .events
+                .contains(&Event::Control(60)));
             std::thread::sleep(Duration::from_millis(501));
             assert!(!stream.poll(&mut session, &render).unwrap());
-            assert!(hardware.lock().unwrap().events.contains(&Event::Control(60)));
+            assert!(hardware
+                .lock()
+                .unwrap()
+                .events
+                .contains(&Event::Control(60)));
             session.delay_serial += 1;
             session.delay_report = Some(1400);
             assert!(!stream.poll(&mut session, &render).unwrap());

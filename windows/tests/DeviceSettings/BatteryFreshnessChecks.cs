@@ -6,6 +6,7 @@ internal static class BatteryFreshnessChecks
     public static void Run()
     {
         CheckArtworkAvailability();
+        CheckSharedAge();
         var state = new Snapshot
         {
             Connected = true, BatterySource = "aap", BatteryLive = true,
@@ -45,6 +46,40 @@ internal static class BatteryFreshnessChecks
         state.BatteryFreshness = null;
         Check(BatteryPresentation.IsLive(state, BatteryPart.Left), "Legacy snapshots remain compatible.");
         Console.WriteLine("Per-component battery freshness checks passed.");
+    }
+
+    private static void CheckSharedAge()
+    {
+        var state = new Snapshot
+        {
+            BatterySource = "ble", BatteryLive = true,
+            BatteryTimestampMs = 1_792_000_100_000,
+            Battery = new Battery { Left = 70, Right = 72, Case = 90 },
+            BatteryFreshness = new BatteryFreshness
+            {
+                Left = new BatteryObservation { TimestampMs = 1_792_000_000_000 },
+                Right = new BatteryObservation { TimestampMs = 1_792_000_000_000 },
+                Case = new BatteryObservation { TimestampMs = 1_792_000_000_000 },
+            },
+        };
+        Check(BatteryPresentation.SharedFreshnessText(state, false) == BatteryPresentation.FreshnessText(state, BatteryPart.Case),
+            "A shared age must come from the part readings, not a newer overall timestamp.");
+        state.BatteryFreshness.Left.Live = true;
+        Check(BatteryPresentation.SharedFreshnessText(state, false) == "",
+            "One live part must leave stale ages on the individual cells.");
+        state.BatteryFreshness.Left.Live = false;
+        state.BatteryFreshness.Case.TimestampMs = 1_792_000_100_000;
+        Check(BatteryPresentation.SharedFreshnessText(state, false) == "",
+            "Different cached ages must not be combined into a newer shared age.");
+        state.Battery.Case = null;
+        Check(BatteryPresentation.SharedFreshnessText(state, false).Length > 0,
+            "A missing part must not erase the shared age of known readings.");
+        Check(BatteryPresentation.SharedFreshnessText(new Snapshot(), false) == "",
+            "Missing readings must not produce a last-seen line.");
+        state.Battery.Headphone = 80;
+        state.BatteryFreshness.Headphone.TimestampMs = 1_792_000_000_000;
+        Check(BatteryPresentation.SharedFreshnessText(state, true) == BatteryPresentation.FreshnessText(state, BatteryPart.Headphone),
+            "Headphone age must not depend on earbud readings.");
     }
 
     private static void CheckArtworkAvailability()

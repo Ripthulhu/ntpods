@@ -64,7 +64,7 @@ public sealed class IslandWindow : Window
             _frozen = false;
             _holdConnect = false;
             double now = _clock.Elapsed.TotalMilliseconds;
-            _view.Apply(snapshot, now, _uiSettings.AnimationsEnabled);
+            _view.Apply(snapshot, now, _motion.Visible && !_motion.Closing && _uiSettings.AnimationsEnabled);
             _motion.Pin(false, now);
             Show();
         }
@@ -79,7 +79,8 @@ public sealed class IslandWindow : Window
             _frozen = false;
             _holdConnect = false;
             _motion.Pin(false, _clock.Elapsed.TotalMilliseconds);
-            _view.ApplyMessage(title, body, snapshot, model, _clock.Elapsed.TotalMilliseconds, _uiSettings.AnimationsEnabled);
+            _view.ApplyMessage(title, body, snapshot, model, _clock.Elapsed.TotalMilliseconds,
+                _motion.Visible && !_motion.Closing && _uiSettings.AnimationsEnabled);
             Show();
         }
         catch { Hide(); }
@@ -166,7 +167,7 @@ public sealed class IslandWindow : Window
         _scale = PopupWindowNative.Scale(this);
         var work = (_display ?? DisplayArea.Primary).WorkArea;
         if (!_motion.Closing)
-            _view.Width = Math.Max(80, Math.Min(400, work.Width / _scale - 32));
+            _view.Width = Math.Max(80, Math.Min(420, work.Width / _scale - 32));
         _view.Measure(new Windows.Foundation.Size(_view.Width, double.PositiveInfinity));
         _width = (int)Math.Ceiling(_view.Width * _scale);
         _height = (int)Math.Ceiling(Math.Max(_view.MinHeight, _view.DesiredSize.Height) * _scale);
