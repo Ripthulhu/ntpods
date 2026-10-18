@@ -10,6 +10,7 @@ internal static class HearingAidChecks
         CheckMediaRequest(check);
         CheckModeRequest(check);
         CheckRefreshOwnership(check);
+        CheckDraftOrdering(check);
         var request = new HearingAidRequest();
         request.Update(false, 1);
         ulong id = request.Begin(true);
@@ -79,6 +80,66 @@ internal static class HearingAidChecks
         request.Reset();
         check(!request.CanDisable && request.Pending is null && request.Enabled is null,
             "Media state and pending ownership must not survive a device or daemon-session reset.");
+    }
+
+    private static void CheckDraftOrdering(Action<bool, string> check)
+    {
+        var request = new HearingAidRequest("set_hearing_aid_mode");
+        request.Update(true, 1);
+        check(request.QueueEdit(requireApply: true) && request.ManualEditQueued && !request.TakeEdit() && request.EditQueued,
+            "An audiogram edit must remain queued until Apply, even after the tuning debounce expires.");
+        check(request.QueueEdit() && request.ManualEditQueued && !request.TakeEdit(),
+            "A later slider gesture must not automatically send an uncommitted audiogram.");
+        check(request.TakeEdit(explicitApply: true) && !request.ManualEditQueued && !request.EditQueued,
+            "Apply must take a complete audiogram draft once and clear its manual queue.");
+        check(request.QueueEdit() && request.TakeEdit(),
+            "A tuning-only gesture retains automatic debouncing after a manual draft has finished.");
+        request.QueueEdit(requireApply: true);
+        check(!request.Update(false, 1) && request.EditQueued,
+            "An old mode report must not discard a newer audiogram draft.");
+        check(request.Update(false, 2) && !request.EditQueued && !request.ManualEditQueued,
+            "A fresh Off report must invalidate the card draft and its queued Apply.");
+        request.Update(true, 3);
+        check(!request.TakeEdit(explicitApply: true),
+            "Re-enabling the mode must not revive edits discarded by Off.");
+        request.QueueEdit(requireApply: true);
+        check(request.Update(null, 4) && !request.EditQueued,
+            "A fresh unknown mode must invalidate an unsent personal draft.");
+
+        var original = new HearingAidSettings { LeftEq = new float[8], RightEq = new float[8] };
+        var snapshot = new Snapshot { DeviceId = "pair", HearingAidEditable = true, HearingAidSettings = original };
+        var edit = new HearingAidEditState();
+        edit.Update(snapshot, true);
+        edit.EditTone(0.75f);
+        request.Update(true, 5);
+        request.QueueEdit();
+        if (request.Update(false, 6)) edit.Reset();
+        edit.Update(snapshot, true);
+        request.Update(true, 7);
+        check(!edit.Dirty && edit.Draft!.SameValues(original) && !request.TakeEdit(),
+            "Turning the mode off and on must restore actual settings instead of resurrecting an unsent tone draft.");
+        request.QueueEdit(requireApply: true);
+        check(!request.Update(false, 8, verifying: true) && !request.EditQueued,
+            "Temporary verification state cancels scheduling without discarding the preserved readback.");
+
+        var media = new HearingAidRequest("set_media_assist");
+        media.Update(false, 1);
+        ulong old = media.Begin(true);
+        ulong off = request.Begin(false);
+        check(request.Complete(new("set_hearing_aid_mode", off, false, "Wait for the other mode.")) &&
+            media.Pending == old && media.Complete(new("set_media_assist", old, true, "")),
+            "A rejected cross-mode Off must retain the original enable's confirmation ownership.");
+        old = media.Begin(true);
+        off = request.Begin(false);
+        check(media.Complete(new("set_media_assist", old, false, "")) && media.Pending is null &&
+            media.EnableUnconfirmed && media.CanDisable && request.Pending == off,
+            "A superseded enable completes only its matching wait while retaining the newer Off and recovery action.");
+        request.Complete(new("set_hearing_aid_mode", off, true, ""));
+        old = media.Begin(true);
+        off = media.Begin(false);
+        check(!media.Complete(new("set_media_assist", old, false, "")) && media.Pending == off &&
+            media.Complete(new("set_media_assist", off, true, "")),
+            "Emergency Off must supersede its own pending enable without accepting its late result.");
     }
 
     private static void CheckModeRequest(Action<bool, string> check)
@@ -205,14 +266,28 @@ internal static class HearingAidChecks
         var balancedRead = original with { LeftAmplification = 0.75f, RightAmplification = 1.25f };
         edit.Update(new Snapshot { DeviceId = "balanced", HearingAidSettings = balancedRead,
             HearingAidEditable = true }, true);
-        check(edit.Draft!.SameValues(balancedRead) && !edit.Editable && !edit.Dirty &&
-              !edit.EditBalance(0) && !edit.EditTone(0) && edit.Draft.SameValues(balancedRead),
-            "An out-of-range editor fitting stays readable but cannot clip or rewrite its saved levels.");
+        check(edit.Draft!.SameValues(balancedRead) && edit.Editable && !edit.Dirty &&
+              edit.Amplification == 1 && edit.Balance == 0.5f && edit.EditTone(0) &&
+              edit.Draft.SameValues(balancedRead with { LeftTone = 0, RightTone = 0 }),
+            "Apple's balanced gains above one must remain editable without changing their levels.");
+        foreach (var gains in new[] { (1.5f, 1.5f), (-1.5f, 1.5f), (-1.5f, -1.5f) })
+        {
+            var uncommon = original with { LeftAmplification = gains.Item1, RightAmplification = gains.Item2 };
+            edit.Update(new Snapshot { DeviceId = "uncommon", HearingAidSettings = uncommon,
+                HearingAidEditable = true }, true);
+            check(edit.Editable && !edit.Dirty && edit.Draft!.SameValues(uncommon) &&
+                edit.Amplification is >= 0 and <= 1 && edit.Balance is >= -1 and <= 1 &&
+                edit.EditTone(0) && edit.Draft.SameValues(uncommon with { LeftTone = 0, RightTone = 0 }),
+                "Combined slider limits must not change stored gains on read or an unrelated tone edit.");
+            check(edit.EditAmplification(0.5f) && edit.Draft!.LeftAmplification == -edit.Balance * 0.5f &&
+                edit.Draft.RightAmplification == edit.Balance * 0.5f && edit.Baseline!.SameValues(uncommon),
+                "An explicit gain edit uses the displayed balance and preserves the original expected baseline.");
+        }
         var snapshot = new Snapshot { DeviceId = "first", HearingAidSettings = original, HearingAidEditable = true };
         check(edit.Update(snapshot, true) && edit.Draft!.SameValues(original) && !edit.Dirty,
             "Reading settings populates the draft without queuing a write.");
         check(!ReferenceEquals(edit.Draft!.LeftEq, original.LeftEq), "Draft curves must not mutate device readback.");
-        check(edit.Amplification == 0.5625f && edit.Balance == 0.375f,
+        check(edit.Amplification == 0.5625f && edit.Balance == 0.75f,
             "The combined controls must be derived from the actual per-ear amplification.");
         check(edit.EditTone(0.75f) && edit.Draft!.SameValues(original with { LeftTone = 0.75f, RightTone = 0.75f }),
             "Changing tone must preserve asymmetric amplification, boosts, noise reduction, own voice and both curves.");
@@ -248,24 +323,27 @@ internal static class HearingAidChecks
         edit.Update(snapshot, true);
         check(edit.EditAmplification(0.5f) && edit.Draft!.SameValues(original with { LeftAmplification = -0.375f, RightAmplification = 0.375f }),
             "Amplification edits must preserve balance and the complete audiogram and tuning data.");
-        check(edit.EditBalance(0.25f) && edit.Draft!.LeftAmplification == -0.25f && edit.Draft.RightAmplification == 0.25f,
-            "Balance edits must preserve mean amplification.");
+        check(edit.EditBalance(0.25f) && edit.Draft!.LeftAmplification == -0.125f && edit.Draft.RightAmplification == 0.125f,
+            "Balance adds and subtracts half its value while preserving mean amplification.");
         var balanced = original with { LeftAmplification = -0.5f, RightAmplification = 0.5f };
         edit.Update(new Snapshot { DeviceId = snapshot.DeviceId, HearingAidSettings = balanced, HearingAidEditable = true }, true);
-        check(edit.EditAmplification(1) && edit.Amplification == 1 && edit.Balance == 0.5f &&
-            edit.Draft!.LeftAmplification == 0.5f && edit.Draft.RightAmplification == 1,
-            "Clipped amplification must retain the requested balance for the rest of the drag.");
+        check(edit.EditAmplification(1) && edit.Amplification == 1 && edit.Balance == 1 &&
+            edit.Draft!.LeftAmplification == 0.5f && edit.Draft.RightAmplification == 1.5f,
+            "Maximum amplification must retain balance and allow Apple's full per-ear gain range.");
         check(edit.EditAmplification(0.5f) && edit.Draft!.SameValues(balanced),
-            "Returning amplification to its original position must restore both ear levels after clipping.");
+            "Returning amplification to its original position must restore both ear levels.");
+        check(edit.EditAmplification(0) && edit.Draft!.LeftAmplification == -1.5f &&
+            edit.Draft.RightAmplification == -0.5f && edit.Balance == 1,
+            "Minimum amplification must retain balance at Apple's negative gain boundary.");
         var amplified = original with { LeftAmplification = 0.5f, RightAmplification = 0.5f };
         edit.Update(new Snapshot { DeviceId = snapshot.DeviceId, HearingAidSettings = amplified, HearingAidEditable = true }, true);
         check(edit.EditBalance(1) && edit.Amplification == 0.75f && edit.Balance == 1 &&
-            edit.Draft!.LeftAmplification == -0.5f && edit.Draft.RightAmplification == 1,
-            "Clipped balance must retain the requested amplification for the rest of the drag.");
+            edit.Draft!.LeftAmplification == 0 && edit.Draft.RightAmplification == 1,
+            "Maximum balance must retain the requested amplification for the rest of the drag.");
         check(edit.EditBalance(0) && edit.Draft!.SameValues(amplified),
-            "Returning balance to center must restore both ear levels after clipping.");
+            "Returning balance to center must restore both ear levels.");
         edit.Update(snapshot, true);
-        check(edit.Amplification == 0.5625f && edit.Balance == 0.375f,
+        check(edit.Amplification == 0.5625f && edit.Balance == 0.75f,
             "A fresh device read must replace the requested slider values with its actual ear levels.");
         foreach (double invalid in new[] { double.NaN, double.PositiveInfinity, -1d, 91d })
         {

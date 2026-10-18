@@ -24,15 +24,15 @@ internal sealed class HearingAidEditState
             _deviceId = snapshot.DeviceId;
         }
         if (!available || !validRead || snapshot.HearingAidSettings is not { } settings) return true;
-        bool editable = snapshot.HearingAidEditable &&
-            settings.LeftAmplification is >= -1 and <= 1 && settings.RightAmplification is >= -1 and <= 1;
+        bool editable = snapshot.HearingAidEditable;
         bool editabilityChanged = Editable != editable;
         Editable = editable;
         if (_baseline?.SameValues(settings) == true && !editabilityChanged) return false;
         _baseline = Copy(settings);
         Draft = Copy(settings);
-        Amplification = (settings.LeftAmplification + settings.RightAmplification + 2) / 4;
-        Balance = (settings.RightAmplification - settings.LeftAmplification) / 2;
+        // Keep stored gains exact until a gain slider is edited, even outside its combined range.
+        Amplification = Math.Clamp((settings.LeftAmplification + settings.RightAmplification + 2) / 4, 0, 1);
+        Balance = Math.Clamp(settings.RightAmplification - settings.LeftAmplification, -1, 1);
         Dirty = InvalidCurve = false;
         return true;
     }
@@ -55,10 +55,9 @@ internal sealed class HearingAidEditState
     private bool EditAmplificationAndBalance(float amplification, float balance)
     {
         if (Draft is not { } value || !Edit(value with {
-            LeftAmplification = Math.Clamp(amplification * 2 - 1 - balance, -1, 1),
-            RightAmplification = Math.Clamp(amplification * 2 - 1 + balance, -1, 1)
+            LeftAmplification = Math.Clamp(amplification * 2 - 1 - balance * 0.5f, -1.5f, 1.5f),
+            RightAmplification = Math.Clamp(amplification * 2 - 1 + balance * 0.5f, -1.5f, 1.5f)
         })) return false;
-        // Clipping one ear must not change the other slider's requested value.
         Amplification = amplification;
         Balance = balance;
         return true;

@@ -20,7 +20,7 @@ settings or paired state fields.
 | `0x01` | Mic Mode | `0x00` = Automatic, `0x01` = Right, `0x02` = Left. |
 | `0x05` | Button Send Mode | One byte; logged as "Set Button Send Mode: %d", meaning unverified. |
 | `0x06` | Owns connection | `0x01` = own, `0x00` = doesn't own. |
-| `0x0A` | Ear Detection | `0x01` = enabled, `0x02` = disabled. |
+| `0x0A` | Ear Detection | `0x02` = enabled, `0x01` = disabled; unlike the other boolean controls. |
 | `0x12` | VoiceTrigger for Siri | `0x01` = enabled, `0x02` = disabled. |
 | `0x14` | SingleClickMode | One byte; values unverified. |
 | `0x15` | DoubleClickMode | One byte; values unverified. |
@@ -34,7 +34,7 @@ settings or paired state fields.
 | `0x1E` | AutoAnswerMode | One byte; values unverified. |
 | `0x1F` | Chime Volume | First byte 0–100, second byte `0x50` in LibrePods' Android rewrite writer. |
 | `0x20` | Connect Automatically | `0x01` = enabled, `0x02` = disabled. |
-| `0x23` | VolumeSwipeInterval | `0x01` = Default, `0x02` = Longer, `0x03` = Longest in LibrePods' Android rewrite UI. |
+| `0x23` | VolumeSwipeInterval | `0x00` = Default, `0x01` = Longer, `0x02` = Longest. |
 | `0x24` | Call Management Config | `[0x00, 0x03]` = usual single/double-press layout; `[0x00, 0x02]` = flipped. This device setting alone does not integrate call gestures with Windows apps. |
 | `0x25` | VolumeSwipeMode | `0x01` = enabled, `0x02` = disabled |
 | `0x26` | Adaptive Volume Config | `0x01` = enabled, `0x02` = disabled |

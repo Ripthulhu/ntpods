@@ -34,6 +34,7 @@ public sealed partial class DevicePage : UserControl
             HeadTrackingCard.Client = value;
             HearingAidCard.Client = value;
             TransparencyCard.Client = value;
+            HardwareDiagnosticsCard.Client = value;
         }
     }
 
@@ -63,6 +64,7 @@ public sealed partial class DevicePage : UserControl
     {
         var vis = AppSettings.EnableExperimental && DeviceModels.Find(_snapshot.Model).HearingAid ? Visibility.Visible : Visibility.Collapsed;
         HearingAidCard.Visibility = vis;
+        HardwareDiagnosticsCard.Visibility = vis;
         TransparencyCard.Visibility = AppSettings.EnableExperimental && DeviceModels.Find(_snapshot.Model).CustomTransparency
             ? Visibility.Visible : Visibility.Collapsed;
     }
@@ -97,6 +99,7 @@ public sealed partial class DevicePage : UserControl
         HeadTrackingCard.Update(s);
         HearingAidCard.Update(s);
         TransparencyCard.Update(s);
+        HardwareDiagnosticsCard.Update(s);
 
         bool on = s.Connected;
         VolumeCard.IsEnabled = on;

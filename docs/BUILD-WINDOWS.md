@@ -139,6 +139,10 @@ ZIP removal also restores drivers if driver removal fails, before deleting app
 files. A failed restoration leaves the backup in place and reports its location.
 Recovery that requires a Windows restart cannot finish until that restart occurs.
 
+ZIP upgrades stage the application before changing drivers and retain the previous
+files until setup succeeds. A failed upgrade restores them; if that restoration
+fails, the backup remains under `%ProgramFiles%\NTPods.setup\previous`.
+
 Normal deployment must use Microsoft-signed driver packages verified on a clean
 Secure Boot/Memory Integrity system. This installer uses test signing and is
 for development only.

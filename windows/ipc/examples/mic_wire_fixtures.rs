@@ -143,6 +143,11 @@ fn snapshots() -> Vec<Snapshot> {
         mic_error: (phase == "error")
             .then(|| "Output failed: \"device gone\"\nTry again — later.".into()),
         device_controls: [(1, 0), (31, 0x504B), (36, 0x0300), (40, 2)].into(),
+        device_controls_requested: if phase == "starting" {
+            [(0x23, 2)].into()
+        } else {
+            Default::default()
+        },
         aacp_capabilities: [(0x11, 1), (0xC0, 2), (0x30, u32::MAX)].into(),
         device_controls_pending: if phase == "starting" {
             [(35, 3), (40, 1)].into()
@@ -193,6 +198,19 @@ fn snapshots() -> Vec<Snapshot> {
         hearing_aid_pending: phase == "starting",
         hearing_aid_error: (phase == "error")
             .then(|| "Existing audiograms could not be read.".into()),
+        hardware_diagnostics: (phase != "unavailable").then_some(ntpods_ipc::HardwareDiagnostics {
+            read_at_unix_seconds: 1_700_000_100,
+            left: ntpods_ipc::HardwareDiagnosticEar {
+                measured_at_unix_seconds: u64::MAX, general: 1, measurement: 0,
+                component_failures: Some(1), unknown_bits: 0x10000,
+            },
+            right: ntpods_ipc::HardwareDiagnosticEar {
+                measured_at_unix_seconds: 0, general: 0, measurement: 0,
+                component_failures: None, unknown_bits: 0,
+            },
+        }),
+        hardware_diagnostics_pending: phase == "starting",
+        hardware_diagnostics_error: (phase == "error").then(|| "Read failed.".into()),
         loud_sound_reduction: match phase {
             "idle" => Some(true),
             "starting" | "error" => Some(false),
@@ -252,6 +270,7 @@ fn main() {
         assert!(from_line::<Command>(&malformed).is_none());
     }
     let valid = serde_json::to_value(Command::SetTransparency {
+        expected: Some(transparency(false)),
         settings: transparency(true),
     })
     .unwrap();
@@ -272,7 +291,7 @@ fn main() {
         let mut value = valid.clone();
         value["settings"][key] = serde_json::json!(bad);
         assert!(matches!(from_line::<Command>(&to_line(&value)),
-            Some(Command::SetTransparency { settings }) if !settings.is_valid()));
+            Some(Command::SetTransparency { settings, .. }) if !settings.is_valid()));
     }
     match args[1].as_str() {
         "emit" => {
@@ -315,6 +334,7 @@ fn main() {
                 "mic_manual_active",
                 "conversational_awareness_pending",
                 "device_controls",
+                "device_controls_requested",
                 "device_controls_pending",
                 "aacp_capabilities",
                 "adaptive_strength_requested",
@@ -334,6 +354,9 @@ fn main() {
                 "transparency",
                 "transparency_pending",
                 "transparency_error",
+                "hardware_diagnostics",
+                "hardware_diagnostics_pending",
+                "hardware_diagnostics_error",
                 "auto_pause",
                 "conversation_volume",
                 "heart_rate_enabled",
@@ -369,6 +392,7 @@ fn main() {
             assert!(old.allow_off_requested.is_none());
             assert!(old.hearing_aid_enabled.is_none() && old.hearing_aid_revision == 0);
             assert!(!old.hearing_aid_editable);
+            assert!(old.hardware_diagnostics.is_none() && !old.hardware_diagnostics_pending && old.hardware_diagnostics_error.is_none());
             assert!(
                 old.transparency.is_none()
                     && !old.transparency_pending
@@ -379,7 +403,7 @@ fn main() {
                     && !old.loud_sound_reduction_pending
                     && old.loud_sound_reduction_error.is_none()
             );
-            assert!(old.device_controls.is_empty() && old.device_controls_pending.is_empty());
+            assert!(old.device_controls.is_empty() && old.device_controls_requested.is_empty() && old.device_controls_pending.is_empty());
             assert!(old.aacp_capabilities.is_empty());
             assert!(
                 old.eq.is_none() && old.eq_pending.is_none() && old.device_settings_error.is_none()
@@ -418,8 +442,8 @@ fn main() {
             let lines: Vec<_> = text.lines().collect();
             assert_eq!(
                 lines.len(),
-                states.len() + 56,
-                "C# states, legacy state, fifty-three commands and two lid events expected"
+                states.len() + 57,
+                "C# states, legacy state, fifty-four commands and two lid events expected"
             );
             for (line, expected) in lines.iter().zip(&states) {
                 let Event::State(actual) = from_line::<Event>(line).expect("C# event must parse")
@@ -449,13 +473,14 @@ fn main() {
             assert!(legacy.playback_delay_tenths_ms.is_none());
             assert!(legacy.playback_buffer_target_ms.is_none());
             assert!(legacy.playback_buffer_error.is_none());
-            assert!(legacy.auto_pause && legacy.device_controls.is_empty() && legacy.eq.is_none());
+            assert!(legacy.auto_pause && legacy.device_controls.is_empty() && legacy.device_controls_requested.is_empty() && legacy.eq.is_none());
             assert!(legacy.aacp_capabilities.is_empty());
             assert!(!legacy.anc_unconfirmed);
             assert!(legacy.adaptive_strength_requested.is_none());
             assert!(legacy.allow_off_requested.is_none());
             assert!(legacy.hearing_aid_enabled.is_none() && legacy.hearing_aid_revision == 0);
             assert!(!legacy.hearing_aid_editable);
+            assert!(legacy.hardware_diagnostics.is_none() && !legacy.hardware_diagnostics_pending && legacy.hardware_diagnostics_error.is_none());
             assert!(
                 legacy.transparency.is_none()
                     && !legacy.transparency_pending
@@ -614,8 +639,8 @@ fn main() {
             ));
             for (line, enabled) in commands[34..36].iter().zip([false, true]) {
                 assert!(
-                    matches!(from_line::<Command>(line), Some(Command::SetTransparency { settings })
-                    if settings == transparency(enabled) && settings.is_valid())
+                    matches!(from_line::<Command>(line), Some(Command::SetTransparency { settings, expected })
+                    if settings == transparency(enabled) && settings.is_valid() && expected == Some(transparency(false)))
                 );
             }
             assert!(matches!(
@@ -676,6 +701,7 @@ fn main() {
                     _ => None,
                 })
                 .collect();
+            assert!(matches!(from_line::<Command>(commands.last().unwrap()), Some(Command::GetHardwareDiagnostics)));
             assert_eq!(
                 modes,
                 [

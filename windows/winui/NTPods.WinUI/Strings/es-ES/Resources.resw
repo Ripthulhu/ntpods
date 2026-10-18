@@ -319,7 +319,7 @@
   <data name="DeviceSetting.Pending" xml:space="preserve"><value>Actualizando…</value></data>
   <data name="NoiseControl.Pending" xml:space="preserve"><value>Cambiando a {0}…</value></data>
   <data name="DeviceSetting.Confirmed" xml:space="preserve"><value>Confirmado por los AirPods.</value></data>
-  <data name="DeviceSetting.Sent" xml:space="preserve"><value>Enviado a los AirPods.</value></data>
+  <data name="DeviceSetting.Sent" xml:space="preserve"><value>Enviado a los AirPods, aún sin confirmar.</value></data>
   <data name="DeviceSetting.Unsent" xml:space="preserve"><value>Cambios listos para aplicar.</value></data>
   <data name="Equalizer.Title" xml:space="preserve"><value>Ecualizador</value></data>
   <data name="Equalizer.Description" xml:space="preserve"><value>Ajusta graves, medios y agudos. El nivel neutro de cada banda es 50.</value></data>
@@ -334,7 +334,7 @@
   <data name="Equalizer.CustomActive" xml:space="preserve"><value>Ecualización personalizada</value></data>
   <data name="Equalizer.Values" xml:space="preserve"><value>Graves {0} · Medios {1} · Agudos {2}</value></data>
   <data name="DeviceControls.Title" xml:space="preserve"><value>Ajustes de los AirPods</value></data>
-  <data name="DeviceControls.Description" xml:space="preserve"><value>Los controles estarán disponibles cuando los AirPods comuniquen sus valores actuales.</value></data>
+  <data name="DeviceControls.Description" xml:space="preserve"><value>Actualiza los ajustes cuando ninguna aplicación esté usando el micrófono.</value></data>
   <data name="DeviceControls.Refresh" xml:space="preserve"><value>Actualizar ajustes del dispositivo</value></data>
   <data name="DeviceControls.RefreshHint" xml:space="preserve"><value>Lee los ajustes actuales de los AirPods. Detén la grabación primero.</value></data>
   <data name="DeviceControls.ErrorTitle" xml:space="preserve"><value>Ajuste no confirmado</value></data>
@@ -379,8 +379,10 @@
   <data name="AdaptiveNoise.SelectAdaptive" xml:space="preserve"><value>Selecciona Adaptativo en Modo de escucha para cambiar la intensidad.</value></data>
   <data name="AdaptiveNoise.RefreshMode" xml:space="preserve"><value>El modo no está confirmado. Actualiza los ajustes del dispositivo antes de cambiar la intensidad.</value></data>
   <data name="DeviceControls.ApplyNoiseCycle" xml:space="preserve"><value>Aplicar ciclo de modos de escucha</value></data>
+  <data name="DeviceControls.ApplyHoldActions" xml:space="preserve"><value>Aplicar acciones de mantener pulsado</value></data>
   <data name="DeviceControls.ApplyToneVolume" xml:space="preserve"><value>Aplicar volumen de los tonos</value></data>
   <data name="DeviceControls.ApplyCaseVolume" xml:space="preserve"><value>Aplicar volumen del estuche</value></data>
+  <data name="DeviceControls.ChooseVolume" xml:space="preserve"><value>Volumen actual desconocido. Aplicar elige {0:0} / 100.</value></data>
   <data name="SettingsRevealSerial.Content" xml:space="preserve"><value>Mostrar número de serie</value></data>
   <data name="DeviceName.Label" xml:space="preserve"><value>Nombre de los AirPods</value></data>
   <data name="DeviceActions.Label" xml:space="preserve"><value>Acciones del dispositivo</value></data>
@@ -483,4 +485,35 @@
   <data name="Overlay_DriverRecovering" xml:space="preserve"><value>Recuperando el controlador de los AirPods…</value></data>
   <data name="Overlay_DriverRestartRequired" xml:space="preserve"><value>Reinicia Windows para terminar de recuperar el controlador de los AirPods.</value></data>
   <data name="Overlay_DriverRecoveryFailed" xml:space="preserve"><value>No se pudo recuperar el controlador de los AirPods. Prueba Reparar en NTPods.</value></data>
+  <data name="HardwareChecks.Title" xml:space="preserve"><value>Comprobaciones del hardware</value></data>
+  <data name="HardwareChecks.Description" xml:space="preserve"><value>Lee las comprobaciones guardadas por tus AirPods. Esto no ejecuta ninguna prueba.</value></data>
+  <data name="HardwareChecks.Refresh" xml:space="preserve"><value>Actualizar</value></data>
+  <data name="HardwareChecks.NotRead" xml:space="preserve"><value>Aún no se han leído comprobaciones.</value></data>
+  <data name="HardwareChecks.Left" xml:space="preserve"><value>Izquierdo</value></data>
+  <data name="HardwareChecks.Right" xml:space="preserve"><value>Derecho</value></data>
+  <data name="HardwareChecks.NoSavedResult" xml:space="preserve"><value>No hay resultados guardados</value></data>
+  <data name="HardwareChecks.LidOpen" xml:space="preserve"><value>Detenida: tapa abierta</value></data>
+  <data name="HardwareChecks.Motion" xml:space="preserve"><value>Detenida: movimiento</value></data>
+  <data name="HardwareChecks.Temperature" xml:space="preserve"><value>Detenida: temperatura</value></data>
+  <data name="HardwareChecks.Noise" xml:space="preserve"><value>Detenida: ruido de fondo</value></data>
+  <data name="HardwareChecks.Interrupted" xml:space="preserve"><value>Comprobación interrumpida</value></data>
+  <data name="HardwareChecks.Unavailable" xml:space="preserve"><value>Comprobación no disponible</value></data>
+  <data name="HardwareChecks.UnknownResult" xml:space="preserve"><value>Resultado no reconocido</value></data>
+  <data name="HardwareChecks.FlagsReported" xml:space="preserve"><value>Señales notificadas</value></data>
+  <data name="HardwareChecks.NoFlags" xml:space="preserve"><value>Sin señales notificadas</value></data>
+  <data name="HardwareChecks.Completed" xml:space="preserve"><value>Comprobación finalizada</value></data>
+  <data name="HardwareChecks.Distortion" xml:space="preserve"><value>distorsión</value></data>
+  <data name="HardwareChecks.Frequency" xml:space="preserve"><value>precisión de frecuencia</value></data>
+  <data name="HardwareChecks.Speaker" xml:space="preserve"><value>altavoz</value></data>
+  <data name="HardwareChecks.RearVent" xml:space="preserve"><value>respiradero trasero</value></data>
+  <data name="HardwareChecks.FrontVent" xml:space="preserve"><value>respiradero delantero</value></data>
+  <data name="HardwareChecks.BottomMic" xml:space="preserve"><value>micrófono inferior</value></data>
+  <data name="HardwareChecks.TopMic" xml:space="preserve"><value>micrófono superior</value></data>
+  <data name="HardwareChecks.InnerMic" xml:space="preserve"><value>micrófono interior</value></data>
+  <data name="HardwareChecks.ReadAt" xml:space="preserve"><value>Leído: {0}</value></data>
+  <data name="HardwareChecks.DeviceTime" xml:space="preserve"><value>Hora del dispositivo: {0}</value></data>
+  <data name="HardwareChecks.Reported" xml:space="preserve"><value>Notificado: {0}</value></data>
+  <data name="HardwareChecks.ResultHelp" xml:space="preserve"><value>Las comprobaciones guardadas no son un diagnóstico actual. La hora del dispositivo puede diferir de la de este PC.</value></data>
+  <data name="HardwareChecks.TimedOut" xml:space="preserve"><value>Se agotó el tiempo de lectura. Pulsa Actualizar de nuevo.</value></data>
+  <data name="HardwareChecks.PauseMic" xml:space="preserve"><value>Detén la captura del micrófono antes de actualizar.</value></data>
 </root>

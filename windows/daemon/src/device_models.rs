@@ -163,7 +163,18 @@ pub fn control(s: &Snapshot, id: u8, value: u32) -> bool {
         return false;
     }
     s.device_controls.contains_key(&id)
+        || explicit_choice(s, id, value)
         || (id == 0x34 && crate::device_settings::supports_silent_allow_off(&s.model))
+}
+
+pub fn explicit_choice(s: &Snapshot, id: u8, value: u32) -> bool {
+    crate::device_settings::explicit_choice_id(id)
+        && find(&s.model).is_some_and(|p| p.controls.contains(&id))
+        && crate::device_settings::valid_control(id, value)
+}
+
+pub fn unreported_choice(s: &Snapshot, id: u8, value: u32) -> bool {
+    !s.device_controls.contains_key(&id) && explicit_choice(s, id, value) && control(s, id, value)
 }
 
 #[cfg(test)]
@@ -258,9 +269,38 @@ mod tests {
         assert!(control(&s, 0x34, 1));
         s.allow_off_requested = Some(true);
         assert!(control(&s, 0x0D, 1));
-        assert!(!control(&s, 0x31, 1));
+        assert!(control(&s, 0x31, 1));
         s.device_controls.insert(0x31, 2);
         assert!(control(&s, 0x31, 1));
+    }
+
+    #[test]
+    fn only_catalogued_choices_can_be_sent_without_a_report() {
+        let known = Snapshot {
+            model: "A3063".into(),
+            firmware: "9A348".into(),
+            ..Default::default()
+        };
+        for (id, value) in [
+            (0x01, 1),
+            (0x0A, 2),
+            (0x16, 0x0101),
+            (0x1A, 6),
+            (0x23, 2),
+            (0x31, 1),
+            (0x40, 50),
+        ] {
+            assert!(unreported_choice(&known, id, value), "id {id:#x}");
+        }
+        assert!(!unreported_choice(&known, 0x25, 1));
+        assert!(!control(&known, 0x25, 1));
+        assert!(!control(&known, 0x1A, 9));
+        let unknown = Snapshot {
+            model: "future".into(),
+            ..known
+        };
+        assert!(!unreported_choice(&unknown, 0x23, 2));
+        assert!(!control(&unknown, 0x23, 2));
     }
 
     #[test]
@@ -278,7 +318,10 @@ mod tests {
             assert!(control(&s, 0x0D, 1));
             let wireless_case = matches!(model, "A3439" | "A3440" | "A3441");
             for (id, value) in [(0x23, 1), (0x25, 1), (0x31, 1), (0x40, 50)] {
-                assert!(!control(&s, id, value));
+                assert_eq!(
+                    control(&s, id, value),
+                    wireless_case && matches!(id, 0x23 | 0x31 | 0x40)
+                );
                 s.device_controls.insert(id, value);
                 assert_eq!(control(&s, id, value), wireless_case);
             }

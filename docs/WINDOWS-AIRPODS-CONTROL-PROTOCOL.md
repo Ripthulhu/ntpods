@@ -142,7 +142,7 @@ every model supports every ID.
 | ID | Setting | Accepted value and wire interpretation |
 | --- | --- | --- |
 | `0x01` | Microphone side | `0` Automatic, `1` Right, `2` Left |
-| `0x0A` | Ear detection | `1` enabled, `2` disabled |
+| `0x0A` | Ear detection | `2` enabled, `1` disabled; opposite to the other boolean controls |
 | `0x0D` | Listening mode | `1` Off, `2` ANC, `3` Transparency, `4` Adaptive |
 | `0x16` | Press-and-hold action | `v0` right, `v1` left; each `1` noise control or `5` assistant; `v2=v3=0` |
 | `0x17` | Press speed | `0` Default, `1` Slower, `2` Slowest |
@@ -152,7 +152,7 @@ every model supports every ID.
 | `0x1C` | Max crown direction | `1` reversed, `2` default |
 | `0x1F` | Tone volume | `v0=0..100`, `v1=0x50`, `v2=v3=0` |
 | `0x20` | Connect automatically | `1` enabled, `2` disabled; device preference, not the Windows reconnect switch |
-| `0x23` | Volume-swipe duration | `1` Default, `2` Longer, `3` Longest |
+| `0x23` | Volume-swipe duration | `0` Default, `1` Longer, `2` Longest |
 | `0x24` | Call gesture layout | `00 03 00 00` default, `00 02 00 00` swapped; no Windows call integration implied |
 | `0x25` | Volume swipe | `1` enabled, `2` disabled |
 | `0x26` | Personalized Volume | `1` enabled, `2` disabled |
@@ -165,10 +165,32 @@ every model supports every ID.
 | `0x3B` | Optimized charging | `1` enabled, `2` disabled; upstream name is Dynamic End of Charge |
 | `0x40` | Case tone volume | `0..100` |
 
+Ear detection uses reversed boolean values. Apple's
+[setter](https://github.com/EthanArbuckle/iPhone18-3_26.1_23B85_Restore/blob/90aa0cfe59d9682b4265e1354c8b19ec3c7823ab/usr/sbin/bluetoothd/bluetoothd_50.mm#L931-L1020)
+sends `0x0A=2` when enabled and `1` when disabled, alongside a notification-filter
+change. Windows ear-detection behavior still needs a controlled hardware check.
+Wear reports (`0x06`) and NTPods' automatic-pause
+preference are separate from that configuration value.
+
+Outgoing hold-action commands (`0x16`) carry current right/left actions in the
+low two bytes and zeroes in the high two. Apple's
+[receive path](https://github.com/EthanArbuckle/iPhone18-3_26.1_23B85_Restore/blob/90aa0cfe59d9682b4265e1354c8b19ec3c7823ab/usr/sbin/bluetoothd/bluetoothd_50.mm#L7076-L7104)
+also reports the previous right/left actions in the high bytes. NTPods validates
+and retains only the current low pair; previous-action bytes never enter a new
+command. This incoming form has not been captured on Windows.
+
 Model allowlists and firmware checks in
 [device_models.rs](../windows/daemon/src/device_models.rs) apply in addition to
-value validation. A setting normally needs a valid device report before NTPods
-allows a write. The Pro 3 Allow Off exception permits a silent write and saves
+value validation. On known catalog models, controls `01`, `0A`, `16`, `1A`,
+`23`, `31` and `40` accept an explicit choice without a current device report.
+Apple's getters for several of these preferences read its host cache; no wire
+query for their current values has been verified. NTPods keeps the last
+successfully sent choice separate from device reports, saves it per paired
+identity, and replaces its displayed choice with any fresh valid report.
+Loading a saved choice never sends it to the AirPods. A complete left/right
+hold-action pair is required before writing `16`; an unknown half is never
+filled with a default. Other settings still require their existing reports.
+The Pro 3 Allow Off exception permits a silent write and saves
 the choice per paired identity. Unknown models get only a conservative subset
 of reported controls; they do not inherit Pro 3 EQ, microphone or sensor support.
 Adaptive requires public firmware major 6+, sleep detection 8+, and head tracking
@@ -178,6 +200,8 @@ major 1–6. Other listening profiles permit Off unless the device reports it di
 
 `PendingSettings` keeps reports separate from requests. Most writes wait up to ten
 seconds for a matching report, starting after the transport write completes.
+An explicit choice for an initially unreported preference is shown as sent,
+without a false confirmation timeout.
 Reports arriving during a write remain authoritative, and connection changes
 invalidate old write completions. A timeout means unconfirmed, not rejected.
 
@@ -395,7 +419,7 @@ that assumption needs comparison on each model/firmware.
 | Handle | Operation | Current format |
 | --- | --- | --- |
 | `0x001B` | Loud Sound Reduction | Read response `0B value`, value `0`/`1`; write `12 1B 00 value`, require `13`, then read back |
-| Discovered (`0x002A` in captures) | Hearing-assistance settings | Read 104 value bytes; validate the format, both audiograms and per-ear controls; preserve the header; use the advertised write method and confirm by readback |
+| Discovered (`0x002A` in captures) | Hearing-assistance settings | Read 104 value bytes; validate the header, both audiograms and per-ear controls; write the known V2 format using the advertised method and confirm by readback |
 | `0x002B` in captures | Settings CCCD | macOS subscribes here; NTPods does not change hearing subscriptions |
 
 Separate custom Transparency settings were identified in the
@@ -403,10 +427,19 @@ Separate custom Transparency settings were identified in the
 at characteristic UUID `D5621CC1-F7AB-45DB-9403-9EAF744D5390`, handle `0x0018`
 on the tested pair. [transparency.rs](../windows/daemon/src/transparency.rs)
 discovers service `7798082B-B7B7-45A6-9933-563492EFE04E` and this characteristic by
-UUID. Its experimental editor accepts exactly 104 bytes, reads before changing
-them, preserves both eight-band curves and own-voice bytes, and reads back after
-writing. The captured characteristic advertises Read, Write Without
-Response and Notify (`0x16`), so NTPods sends a Write Command (`0x52`) without
+UUID. Its experimental editor accepts exactly 104 bytes. A write includes the
+confirmed settings from before the edit as `expected`; these must match both the
+daemon's current settings and a fresh ATT read. Missing or changed settings
+require another read before editing. The UI preserves this baseline while an
+edit is unsent, even if another client changes the device.
+
+Edits preserve both eight-band curves, own-voice bytes and every untouched
+control. Readback must match all 104 written bytes. If it still returns the exact
+original record, NTPods retries the read up to four times at 75 ms intervals.
+Other mismatches or errors fail immediately; the write is never repeated.
+
+The captured characteristic advertises Read, Write Without Response and Notify
+(`0x16`), so NTPods sends a Write Command (`0x52`) without
 waiting for an ACK. Characteristics advertising Write use a Write Request (`0x12`)
 and its ACK instead. It exposes the float32 enable flag at offset 0 and
 per-ear amplification/tone (−1–1), Conversation Boost (0/1), and ambient-noise
@@ -428,8 +461,8 @@ editing exposed controls leaves all curve and own-voice bytes unchanged.
 
 Pro 3 / 9A348 captures from Tahoe 26.7.1 (25G241) on AX200 contain successful
 104-byte reads of Custom Transparency and hearing settings. The four unenrolled
-hearing values have identical zero per-ear curves; hardware hearing-write
-semantics remain unverified. The pairing trace establishes:
+hearing values have identical zero per-ear curves. These captures contain no
+hearing-settings writes. The pairing trace establishes:
 
 - Encryption completed before ATT opened on BR/EDR PSM `0x001F`.
 - Tahoe subscribed before reading each characteristic.
@@ -449,14 +482,28 @@ The four unenrolled hearing reads across connection, case and wearing captures
 return header `02 00 60 00`. After iPhone Hearing Test setup, Pro 3 / 9A348
 returned `02 02 60 00` with nonzero per-ear curves while Hearing Aid and Media
 Assist were off. The stored value matched after refreshing the Windows control
-connection. NTPods accepts both exact 104-byte layouts for read-only display,
-with the same scalar and audiogram validation. It blocks fitting edits in those
-formats; the separate mode controls can activate an already enrolled profile
-without rewriting it. Other unknown headers
-remain unsupported. The existing formats with byte 2 equal to `0` or `0x64`
-remain editable when the characteristic advertises writes. Their original
-header is preserved; the writer does not force `0x64`. No hearing-value write
-was captured, so header semantics and hardware write behavior remain unresolved.
+connection. NTPods accepts exactly 104 bytes with header `02 00 60 00`,
+`02 00 64 00`, `02 02 60 00` or `02 02 64 00`. The `02 00` forms stay read-only;
+the `02 02` forms permit edits when the characteristic advertises writes.
+Other headers and lengths are rejected.
+
+Apple's iOS 26.1 [writer](https://github.com/EthanArbuckle/iPhone18-3_26.1_23B85_Restore/blob/90aa0cfe59d9682b4265e1354c8b19ec3c7823ab/System/Library/PrivateFrameworks/HearingModeService_Private.framework/HearingModeService_Private/HMDeviceManager.mm#L1630-L1652)
+builds a 104-byte V2 record. Its [prefix serializer](https://github.com/EthanArbuckle/iPhone18-3_26.1_23B85_Restore/blob/90aa0cfe59d9682b4265e1354c8b19ec3c7823ab/System/Library/PrivateFrameworks/HearingModeService_Private.framework/HearingModeService_Private/HMDeviceManager.mm#L1755-L1803)
+copies the existing prefix, keeps version 2, and sets the next fields to 2 and
+100, producing `02 02 64 00`. NTPods uses that write header and preserves every
+unmodified body byte. Readback must return `02 02 60 00` or `02 02 64 00` and
+match all 100 body bytes exactly. If a read still returns the complete original
+body, NTPods retries the read up to four times at 75 ms intervals without
+resending the write. Any other mismatch fails. The `0x60`/`0x64` read variation
+does not authorize other header changes.
+
+A development preview on Pro 3 A3063 / 9A348 confirmed Amplification, Balance,
+Tone, Conversation Boost and one left 250 Hz audiogram edit, restoring the full
+original record after each. The listener reported audible changes in
+Transparency, without identifying each control separately. See
+[hardware coverage](WINDOWS-VALIDATION.md#controls-batteries-and-sensors) for
+conditions, timing and remaining checks. Raw header normalization remains
+unverified.
 
 On Windows 11 with AX200 and Pro 3 A3064 / 9A348:
 
@@ -508,7 +555,7 @@ setting allowlist. Settings offsets relative to the characteristic value are:
 
 | Offset | Field |
 | --- | --- |
-| 0–3 | Preserved header; captured `02 00 60 00` and `02 02 60 00` are read-only |
+| 0–3 | Validated header; writes use `02 02 64 00`; see accepted read formats above |
 | 4 / 52 | Left/right eight-band audiogram, eight little-endian float32 values |
 | 36 / 84 | Left/right amplification |
 | 40 / 88 | Tone |
@@ -518,12 +565,15 @@ setting allowlist. Settings offsets relative to the characteristic value are:
 
 Mode-only enables read the enrolled fitting first and verify its complete bytes
 afterward; mode-only requests never write `A4120005` or notification subscriptions.
-Device reports, rather than successful sends, confirm both switches. NTPods
-refreshes the control connection after a mode change while the microphone is
-idle, then checks fresh reports. Enables also verify the unchanged fitting;
-disables do not read it. Missing or inconsistent mode reports leave the result
-unconfirmed. An explicit Off retry retains its last confirmed raw template
-within the same connection; reconnects discard that template.
+Fresh device reports confirm both switches. NTPods uses reports from the current
+session when available; otherwise it refreshes the control connection while the
+microphone is idle. Only the refresh owned by that pending mode request bypasses
+the manual refresh cooldown. Enables also verify the unchanged fitting; disables
+do not read it. Missing or inconsistent mode reports leave the result unconfirmed.
+No dedicated mode-query command has been verified. Apple's host cache updates
+after successful sends do not establish device confirmation. An explicit Off
+retry retains its last confirmed raw template within the same connection;
+reconnects discard that template.
 
 Hearing assistance has an explicit read operation that sends no enable command
 or notification subscription. Fitting edits require that successful read
@@ -532,19 +582,23 @@ AAP enabled state. Before a fitting edit's enable command or settings write,
 the backend compares the caller's original baseline with the latest confirmed state, reads
 again and rejects any mismatch. A refresh by another client cannot authorize an
 older draft. It retains the original value across the enable sequence,
-preserves opaque bytes and requires matching settings and
-header on readback. Discovery repeats after a new enable before choosing the
-write handle and method.
+preserves untouched body bytes and requires exact body readback with one of the
+two known fitted V2 headers. Discovery repeats after a new enable before choosing
+the write handle and method.
 
 The editor starts from those confirmed per-ear values. Scalar edits retain both
 audiograms and untouched per-ear controls, including noise reduction and own
-voice. Empty or incomplete curves are rejected. Reads accept amplification
-from −1.5–1.5, matching Apple's version-2 reader. The editor still offers −1–1
-amplification and tone, 0–90 dB HL thresholds, and 0–1 noise reduction and own
-voice. A saved amplification outside the editor's range stays read-only.
-Unsupported values are rejected rather
-than clamped. Failed reads or writes require another read before editing; a
-reconnect clears the saved baseline. The UI uses a session-bound editability
+voice. Audiogram edits require an explicit Apply; tuning changes are coalesced
+for 1.5 seconds. Empty or incomplete curves are rejected. Amplification accepts
+−1.5–1.5, tone −1–1, thresholds 0–90 dB HL, and noise reduction and own voice 0–1.
+The amplification slider uses `A = 2a - 1` for normalized position `a`; signed
+balance `B` produces left gain `A - B/2` and right gain `A + B/2`. This matches
+Apple's [gain conversion](https://github.com/EthanArbuckle/iPhone18-3_26.1_23B85_Restore/blob/90aa0cfe59d9682b4265e1354c8b19ec3c7823ab/System/Library/PrivateFrameworks/HearingModeService_Private.framework/HearingModeService_Private/HMDeviceManager.mm#L1904-L1938),
+also corroborated by Tahoe 25G241's native enrollment writer. Existing gains
+remain unchanged until a gain slider is edited. Tone and Conversation Boost
+apply to both ears; untouched asymmetric values remain intact.
+Invalid values are rejected. Failed reads or writes require another read before
+editing; a reconnect clears the saved baseline. The UI uses a session-bound editability
 flag; missing flags from older backends default to read-only. Disable remains
 available after a read failure. A failed new enable requests AAP-only disable while that request still
 owns the connection; cleanup failure is reported. The editor keeps a recovery
@@ -575,8 +629,14 @@ its raw diagnostic output also needs review before sharing.
 ### Diagnostic and dosimetry records
 
 These records belong to service `7798082B-B7B7-45A6-9933-563492EFE04E`.
-NTPods has no diagnostic trigger or diagnostics UI. Its offline decoder reads
-saved 71-byte records without connecting to the buds:
+The experimental **Hardware checks** card manually reads cached results on
+Pro 2 and Pro 3. It discovers `A4120002` by UUID on each request, then reads
+the returned handle while the microphone is idle. It sends no self-test,
+clock, subscription or hearing-mode writes. Results from a replaced connection
+are discarded. The card separates each ear's completion status and component
+flags from the time NTPods read them; it has no self-test button.
+
+The offline decoder also reads saved 71-byte records without connecting:
 
 ```powershell
 cargo run --locked --manifest-path windows/daemon/Cargo.toml --example decode_hearing_diagnostics -- record.bin 2027
@@ -637,14 +697,25 @@ enum names and model gates:
 | 7 | Unmapped | `NoStatus` |
 
 Component flags cover distortion, frequency accuracy, speaker, vents and
-microphones. Their raw `0`/`1` labels are `Pass`/`Fail`, consumed only for
-measurement status `0` or `1`, a nonzero measurement timestamp, and product IDs
-`0x2014`, `0x2024` or Pro 3 `0x2027`. The same products pass the occlusion-support
-gate, but an occlusion
-assessment also needs accumulated fault history and indication state. ANC
-scores have a separate gate: product `0x201B` with record version at least 4;
-Pro 3 does not pass it. These cached fields alone are not a current health
-verdict. [Later source changes](https://github.com/blacktop/ipsw-diffs/blob/af456047befbab058df4c3d7c7094462ad4753d6/iOS/26_5_23F77_vs_27_0_24A5355q/DYLIBS/System/Library/PrivateFrameworks/HearingModeService.framework/HearingModeService.md#L85-L158)
+microphones. Their raw `0`/`1` labels are `Pass`/`Fail`. NTPods exposes them only
+for measurement status `0` or `1`, a nonzero measurement timestamp, and product
+IDs `0x2014`, `0x2024` or Pro 3 `0x2027`. The same products pass Apple's
+occlusion-support gate, but an occlusion assessment also needs accumulated
+fault history and indication state. A cached failure flag does not establish a
+current hardware fault. Device-clock alignment remains uncertain, so NTPods
+preserves the reported seconds without applying timezone or age corrections.
+A zero timestamp cannot produce a completed-check label.
+
+Apple's [ANC-score reader](https://github.com/EthanArbuckle/iPhone18-3_26.1_23B85_Restore/blob/90aa0cfe59d9682b4265e1354c8b19ec3c7823ab/System/Library/PrivateFrameworks/HearingModeService.framework/HearingModeService/HMDeviceDiagnosticRecord.mm#L3167-L3202)
+assigns bytes `27/28` to full-loss left/right, `29/30` to clean-loss left/right,
+and `31/32` to severe-loss left/right. Bytes `25/26`, score units and thresholds
+remain unresolved. The offline decoder exposes these raw scores only for
+product `0x201B` with a dated, completed measurement; Apple's version gate is
+at least 4, while NTPods accepts only the observed version 8. Pro 3 does not
+pass this product gate. Result bit 15 is retained without assigning an ANC-loss
+name, and the app does not display the scores.
+
+[Later source changes](https://github.com/blacktop/ipsw-diffs/blob/af456047befbab058df4c3d7c7094462ad4753d6/iOS/26_5_23F77_vs_27_0_24A5355q/DYLIBS/System/Library/PrivateFrameworks/HearingModeService.framework/HearingModeService.md#L85-L158)
 name mileage, model version, test-start time, attempt hash and pre-check flags;
 their offsets and widths in this tail are unverified. Diagnostic times must not
 be labelled Hearing Test dates.

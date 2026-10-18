@@ -55,13 +55,12 @@ public sealed partial class DeviceSettingsCard : UserControl
         AddHint(PlaybackPanel, "MicrophoneHint", 0x01);
 
         AddNoiseCycle();
-        AddChoice(StemPanel, 0x16, "LeftHold", [1, 5], ["NoiseControl", "Assistant"], 8);
-        AddChoice(StemPanel, 0x16, "RightHold", [1, 5], ["NoiseControl", "Assistant"], 0);
+        AddHoldActions();
         AddHint(StemPanel, "AssistantHint", 0x16);
         AddToggle(StemPanel, 0x25, "VolumeSwipe");
         AddChoice(StemPanel, 0x17, "PressSpeed", [0, 1, 2], ["Default", "Slower", "Slowest"]);
         AddChoice(StemPanel, 0x18, "HoldDuration", [0, 1, 2], ["Default", "Slower", "Slowest"]);
-        AddChoice(StemPanel, 0x23, "SwipeDuration", [1, 2, 3], ["Default", "Longer", "Longest"]);
+        AddChoice(StemPanel, 0x23, "SwipeDuration", [0, 1, 2], ["Default", "Longer", "Longest"]);
         AddChoice(StemPanel, 0x24, "CallControls", [0x0300, 0x0200], ["CallDefault", "CallSwapped"]);
         AddHint(StemPanel, "CallHint", 0x24);
         AddChoice(StemPanel, 0x1C, "CrownDirection", [2, 1], ["Default", "Reversed"]);
@@ -118,21 +117,61 @@ public sealed partial class DeviceSettingsCard : UserControl
 
     private void AddToggle(StackPanel panel, byte id, string label)
     {
+        bool canChooseWithoutReport = id is 0x0A or 0x31;
         var toggle = new ToggleSwitch { Style = (Style)Application.Current.Resources["SettingToggle"], VerticalAlignment = VerticalAlignment.Center };
         Bind(toggle, AutomationProperties.NameProperty, label);
+        ComboBox? choice = null;
+        if (canChooseWithoutReport)
+        {
+            choice = new ComboBox { MinWidth = 120, PlaceholderText = "—", VerticalAlignment = VerticalAlignment.Center };
+            Bind(choice, AutomationProperties.NameProperty, label);
+            foreach (string key in new[] { "Toggle_On", "Toggle_Off" })
+            {
+                var itemText = new TextBlock();
+                itemText.SetBinding(TextBlock.TextProperty, new Binding { Source = Loc.Instance, Path = new PropertyPath($"[{key}]") });
+                choice.Items.Add(new ComboBoxItem { Content = itemText });
+            }
+        }
         var text = Label(label);
         text.VerticalAlignment = VerticalAlignment.Center;
         var row = new Grid { ColumnSpacing = 16, MinHeight = 36 };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        Grid.SetColumn(toggle, 1);
         row.Children.Add(text);
-        row.Children.Add(toggle);
+        if (choice is not null)
+        {
+            var controlSlot = new Grid { Width = 144, HorizontalAlignment = HorizontalAlignment.Right };
+            toggle.HorizontalAlignment = HorizontalAlignment.Right;
+            controlSlot.Children.Add(toggle);
+            controlSlot.Children.Add(choice);
+            Grid.SetColumn(controlSlot, 1);
+            row.Children.Add(controlSlot);
+        }
+        else
+        {
+            Grid.SetColumn(toggle, 1);
+            row.Children.Add(toggle);
+        }
         AddRow(panel, row, id);
         toggle.Toggled += (_, _) =>
         {
             if (!_applying && DeviceSettingStatus.CanChange(_snapshot, id))
-                Client?.SetDeviceControl(id, toggle.IsOn ? 1u : 2u);
+                Client?.SetDeviceControl(id, DeviceSettingStatus.ToggleValue(id, toggle.IsOn));
+        };
+        if (choice is not null) choice.SelectionChanged += (_, _) =>
+        {
+            if (!_applying && choice.SelectedIndex >= 0 && !DeviceSettingStatus.Available(_snapshot, id) &&
+                DeviceSettingStatus.CanChoose(_snapshot, id))
+            {
+                if (Client?.Send(new SetDeviceControlCmd
+                    { Id = id, Value = DeviceSettingStatus.ToggleValue(id, choice.SelectedIndex == 0) }) != true)
+                {
+                    Update(_snapshot);
+                    return;
+                }
+                choice.IsEnabled = false;
+                AutomationProperties.SetHelpText(choice, Localize.Get("DeviceSetting.Pending"));
+            }
         };
         _updates.Add(s =>
         {
@@ -141,13 +180,104 @@ public sealed partial class DeviceSettingsCard : UserControl
                 text.Text = Localize.Get(DeviceModels.Headphone(s) ? "DeviceControls.HeadDetection" : "DeviceControls.EarDetection");
                 AutomationProperties.SetName(toggle, text.Text);
             }
+            bool reported = s.DeviceControls.ContainsKey(id);
+            var value = DeviceSettingStatus.DisplayValue(s, id);
+            if (choice is not null)
+            {
+                toggle.Visibility = reported ? Visibility.Visible : Visibility.Collapsed;
+                choice.Visibility = reported ? Visibility.Collapsed : Visibility.Visible;
+                choice.IsEnabled = DeviceSettingStatus.CanChoose(s, id);
+                choice.SelectedIndex = value == DeviceSettingStatus.ToggleValue(id, true) ? 0 :
+                    value == DeviceSettingStatus.ToggleValue(id, false) ? 1 : -1;
+                SetStatus(choice, row, s, id);
+            }
             toggle.IsEnabled = DeviceSettingStatus.CanChange(s, id);
-            toggle.IsOn = DeviceSettingStatus.DisplayValue(s, id) == 1;
+            toggle.IsOn = value == DeviceSettingStatus.ToggleValue(id, true);
             SetStatus(toggle, row, s, id);
         });
     }
 
-    private void AddChoice(StackPanel panel, byte id, string label, uint[] values, string[] names, int? shift = null)
+    private void AddHoldActions()
+    {
+        const byte id = 0x16;
+        var panel = new StackPanel { Spacing = 8 };
+        ComboBox Picker(string label)
+        {
+            var choice = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch, PlaceholderText = "—" };
+            Bind(choice, AutomationProperties.NameProperty, label);
+            foreach (var key in new[] { "NoiseControl", "Assistant" })
+            {
+                var text = new TextBlock { TextWrapping = TextWrapping.Wrap };
+                Bind(text, TextBlock.TextProperty, key);
+                choice.Items.Add(new ComboBoxItem { Content = text });
+            }
+            panel.Children.Add(Label(label));
+            panel.Children.Add(choice);
+            return choice;
+        }
+        var left = Picker("LeftHold");
+        var right = Picker("RightHold");
+        var apply = new Button();
+        Bind(apply, ContentControl.ContentProperty, "Apply");
+        Bind(apply, AutomationProperties.NameProperty, "ApplyHoldActions");
+        panel.Children.Add(apply);
+        AddRow(StemPanel, panel, id);
+        bool dirty = false;
+        string? owner = null;
+        uint? baseline = null;
+        void Changed(object sender, SelectionChangedEventArgs e)
+        {
+            if (_applying || !DeviceSettingStatus.CanChoose(_snapshot, id)) return;
+            if (!dirty)
+            {
+                owner = _snapshot.DeviceId;
+                baseline = DeviceSettingStatus.DisplayValue(_snapshot, id);
+            }
+            dirty = true;
+            apply.IsEnabled = left.SelectedIndex >= 0 && right.SelectedIndex >= 0;
+            SetStatus(apply, panel, _snapshot, id, dirty);
+        }
+        left.SelectionChanged += Changed;
+        right.SelectionChanged += Changed;
+        apply.Click += (_, _) =>
+        {
+            if (!dirty || owner != _snapshot.DeviceId || left.SelectedIndex < 0 || right.SelectedIndex < 0 ||
+                !DeviceSettingStatus.CanChoose(_snapshot, id) || Client is null) return;
+            uint value = ((left.SelectedIndex == 0 ? 1u : 5u) << 8) | (right.SelectedIndex == 0 ? 1u : 5u);
+            if (!Client.Send(new SetDeviceControlCmd { Id = id, Value = value })) return;
+            dirty = false;
+            owner = null;
+            baseline = null;
+            apply.IsEnabled = false;
+            AutomationProperties.SetHelpText(apply, Localize.Get("DeviceSetting.Pending"));
+        };
+        _updates.Add(s =>
+        {
+            var value = DeviceSettingStatus.DisplayValue(s, id);
+            if (_deviceChanged || !s.Connected || s.LinkStale || dirty && baseline != value)
+            {
+                dirty = false;
+                owner = null;
+                baseline = null;
+            }
+            bool enabled = DeviceSettingStatus.CanChoose(s, id);
+            left.IsEnabled = enabled;
+            right.IsEnabled = enabled;
+            ((ComboBoxItem)left.Items[0]).Visibility = DeviceModels.Listening(s) ? Visibility.Visible : Visibility.Collapsed;
+            ((ComboBoxItem)right.Items[0]).Visibility = DeviceModels.Listening(s) ? Visibility.Visible : Visibility.Collapsed;
+            if (!dirty)
+            {
+                left.SelectedIndex = value.HasValue ? ((value.Value >> 8) & 0xFF) switch { 1 => 0, 5 => 1, _ => -1 } : -1;
+                right.SelectedIndex = value.HasValue ? (value.Value & 0xFF) switch { 1 => 0, 5 => 1, _ => -1 } : -1;
+            }
+            apply.IsEnabled = enabled && dirty && left.SelectedIndex >= 0 && right.SelectedIndex >= 0;
+            SetStatus(left, panel, s, id, dirty);
+            SetStatus(right, panel, s, id, dirty);
+            SetStatus(apply, panel, s, id, dirty);
+        });
+    }
+
+    private void AddChoice(StackPanel panel, byte id, string label, uint[] values, string[] names)
     {
         var choice = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
         Bind(choice, AutomationProperties.NameProperty, label);
@@ -163,23 +293,20 @@ public sealed partial class DeviceSettingsCard : UserControl
         AddRow(panel, row, id);
         choice.SelectionChanged += (_, _) =>
         {
-            if (_applying || choice.SelectedIndex < 0 || !DeviceSettingStatus.CanChange(_snapshot, id)) return;
+            if (_applying || choice.SelectedIndex < 0 || !DeviceSettingStatus.CanChoose(_snapshot, id)) return;
             uint value = values[choice.SelectedIndex];
-            if (shift is int offset)
+            if (Client?.Send(new SetDeviceControlCmd { Id = id, Value = value }) != true)
             {
-                uint current = DeviceSettingStatus.DisplayValue(_snapshot, id)!.Value;
-                value = (current & ~(0xFFu << offset)) | (value << offset);
+                Update(_snapshot);
+                return;
             }
-            Client?.SetDeviceControl(id, value);
+            choice.IsEnabled = false;
+            AutomationProperties.SetHelpText(choice, Localize.Get("DeviceSetting.Pending"));
         };
         _updates.Add(s =>
         {
-            choice.IsEnabled = DeviceSettingStatus.CanChange(s, id);
-            for (int i = 0; i < values.Length; i++)
-                ((ComboBoxItem)choice.Items[i]).Visibility = id == 0x16 && values[i] == 1 && !DeviceModels.Listening(s)
-                    ? Visibility.Collapsed : Visibility.Visible;
+            choice.IsEnabled = DeviceSettingStatus.CanChoose(s, id);
             var value = DeviceSettingStatus.DisplayValue(s, id);
-            if (value.HasValue && shift is int offset) value = (value.Value >> offset) & 0xFF;
             choice.SelectedIndex = value.HasValue ? Array.IndexOf(values, value.Value) : -1;
             SetStatus(choice, row, s, id);
         });
@@ -203,6 +330,8 @@ public sealed partial class DeviceSettingsCard : UserControl
         AddRow(StemPanel, panel, id);
         bool dirty = false;
         bool allowOff = false;
+        string? owner = null;
+        uint? baseline = null;
         int SelectedCount() => options.Count(x => x.Visibility == Visibility.Visible && x.IsChecked == true);
         foreach (var box in options)
         {
@@ -211,40 +340,53 @@ public sealed partial class DeviceSettingsCard : UserControl
         }
         void Changed(object sender, RoutedEventArgs e)
         {
-            if (_applying || !DeviceSettingStatus.CanChange(_snapshot, id)) return;
+            if (_applying || !DeviceSettingStatus.CanChoose(_snapshot, id)) return;
+            if (!dirty)
+            {
+                owner = _snapshot.DeviceId;
+                baseline = DeviceSettingStatus.DisplayValue(_snapshot, id);
+            }
             dirty = true;
             apply.IsEnabled = SelectedCount() >= 2;
             SetStatus(apply, panel, _snapshot, id, dirty);
         }
         apply.Click += (_, _) =>
         {
-            if (!dirty || Client is null || !DeviceSettingStatus.CanChange(_snapshot, id) || SelectedCount() < 2) return;
+            if (!dirty || owner != _snapshot.DeviceId || Client is null ||
+                !DeviceSettingStatus.CanChoose(_snapshot, id) || SelectedCount() < 2) return;
             uint mask = 0;
             for (int i = 0; i < options.Length; i++)
                 if (options[i].Visibility == Visibility.Visible && options[i].IsChecked == true) mask |= 1u << i;
-            Client.SetDeviceControl(id, mask);
+            if (!Client.Send(new SetDeviceControlCmd { Id = id, Value = mask })) return;
             dirty = false;
+            owner = null;
+            baseline = null;
             apply.IsEnabled = false;
             AutomationProperties.SetHelpText(apply, Localize.Get("DeviceSetting.Pending"));
         };
         _updates.Add(s =>
         {
-            bool available = DeviceSettingStatus.Available(s, id);
+            bool enabled = DeviceSettingStatus.CanChoose(s, id);
+            var value = DeviceSettingStatus.DisplayValue(s, id);
             title.Text = Localize.Get(DeviceModels.Headphone(s) ? "DeviceControls.ButtonNoiseCycle" : "DeviceControls.NoiseCycle");
             hint.Text = Localize.Get(DeviceModels.AllowOffOption(s) ? "DeviceControls.CycleHint" : "DeviceControls.LegacyCycleHint");
             bool offEnabled = DeviceSettingStatus.AllowOffEnabled(s);
-            if (_deviceChanged || !available || offEnabled != allowOff) dirty = false;
+            if (_deviceChanged || !enabled || offEnabled != allowOff || dirty && baseline != value)
+            {
+                dirty = false;
+                owner = null;
+                baseline = null;
+            }
             allowOff = offEnabled;
             options[0].Visibility = allowOff ? Visibility.Visible : Visibility.Collapsed;
             options[3].Visibility = DeviceModels.Adaptive(s) ? Visibility.Visible : Visibility.Collapsed;
-            var value = DeviceSettingStatus.DisplayValue(s, id);
             for (int i = 0; i < options.Length; i++)
             {
-                options[i].IsEnabled = DeviceSettingStatus.CanChange(s, id);
+                options[i].IsEnabled = enabled;
                 SetStatus(options[i], panel, s, id, dirty);
                 if (!dirty) options[i].IsChecked = value.HasValue ? (value & (1u << i)) != 0 : null;
             }
-            apply.IsEnabled = DeviceSettingStatus.CanChange(s, id) && dirty && SelectedCount() >= 2;
+            apply.IsEnabled = enabled && dirty && SelectedCount() >= 2;
             SetStatus(apply, panel, s, id, dirty);
         });
     }
@@ -260,31 +402,52 @@ public sealed partial class DeviceSettingsCard : UserControl
         var row = new StackPanel { Spacing = 8, Children = { Label(label), slider, valueText, apply } };
         AddRow(ComfortPanel, row, id);
         bool dirty = false;
+        string? owner = null;
+        uint? baseline = null;
         slider.ValueChanged += (_, _) =>
         {
             valueText.Text = $"{slider.Value:0} / 100";
-            if (_applying || !DeviceSettingStatus.CanChange(_snapshot, id)) return;
+            if (_applying || !DeviceSettingStatus.CanChoose(_snapshot, id)) return;
+            if (!dirty)
+            {
+                owner = _snapshot.DeviceId;
+                baseline = DeviceSettingStatus.DisplayValue(_snapshot, id);
+            }
             dirty = true;
             apply.IsEnabled = true;
             SetStatus(slider, row, _snapshot, id, dirty);
         };
         apply.Click += (_, _) =>
         {
-            if (Client is null || !DeviceSettingStatus.CanChange(_snapshot, id) || !dirty) return;
-            Client.SetDeviceControl(id, prefix | (uint)slider.Value);
+            bool initialChoice = id == 0x40 && !DeviceSettingStatus.DisplayValue(_snapshot, id).HasValue;
+            if (Client is null || !DeviceSettingStatus.CanChoose(_snapshot, id) ||
+                !(dirty && owner == _snapshot.DeviceId || initialChoice && !dirty)) return;
+            if (!Client.Send(new SetDeviceControlCmd { Id = id, Value = prefix | (uint)slider.Value })) return;
             dirty = false;
+            owner = null;
+            baseline = null;
             apply.IsEnabled = false;
             AutomationProperties.SetHelpText(apply, Localize.Get("DeviceSetting.Pending"));
         };
         _updates.Add(s =>
         {
-            if (_deviceChanged || !DeviceSettingStatus.Available(s, id)) dirty = false;
-            slider.IsEnabled = DeviceSettingStatus.CanChange(s, id);
-            if (!dirty && DeviceSettingStatus.DisplayValue(s, id) is uint value) slider.Value = value & 0xFF;
-            valueText.Text = dirty || DeviceSettingStatus.DisplayValue(s, id).HasValue ? $"{slider.Value:0} / 100" : "";
-            apply.IsEnabled = slider.IsEnabled && dirty;
+            var value = DeviceSettingStatus.DisplayValue(s, id);
+            if (_deviceChanged || !DeviceSettingStatus.CanChoose(s, id) || dirty && baseline != value)
+            {
+                dirty = false;
+                owner = null;
+                baseline = null;
+            }
+            slider.IsEnabled = DeviceSettingStatus.CanChoose(s, id);
+            if (!dirty && value is uint current) slider.Value = current & 0xFF;
+            else if (_deviceChanged && !value.HasValue) slider.Value = 0;
+            valueText.Text = dirty || value.HasValue ? $"{slider.Value:0} / 100" : "—";
+            bool initialChoice = id == 0x40 && !value.HasValue;
+            apply.IsEnabled = slider.IsEnabled && (dirty || initialChoice);
             SetStatus(slider, row, s, id, dirty);
             SetStatus(apply, row, s, id, dirty);
+            if (initialChoice && !dirty && apply.IsEnabled)
+                AutomationProperties.SetHelpText(apply, Localize.Get("DeviceControls.ChooseVolume", slider.Value));
         });
     }
 

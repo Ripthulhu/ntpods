@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UserControl
+    x:Class="NTPods.WinUI.Controls.HardwareDiagnosticsCard"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Expander x:Name="DiagnosticsExpander" Style="{StaticResource GroupExpander}"
+              Header="{Binding [HardwareChecks_Title], Source={StaticResource Loc}}">
+        <StackPanel Spacing="16">
+            <TextBlock Text="{Binding [HardwareChecks_Description], Source={StaticResource Loc}}"
+                       FontSize="13" TextWrapping="Wrap" Foreground="{ThemeResource AppleSecondaryBrush}" />
+            <Button x:Name="ReadButton" HorizontalAlignment="Stretch" Click="Read_Click">
+                <TextBlock Text="{Binding [HardwareChecks_Refresh], Source={StaticResource Loc}}" TextWrapping="Wrap" />
+            </Button>
+            <TextBlock x:Name="EmptyText" Text="{Binding [HardwareChecks_NotRead], Source={StaticResource Loc}}"
+                       FontSize="13" TextWrapping="Wrap" Foreground="{ThemeResource AppleSecondaryBrush}" />
+            <StackPanel x:Name="Results" Spacing="16" Visibility="Collapsed">
+                <StackPanel Spacing="4">
+                    <TextBlock Text="{Binding [HardwareChecks_Left], Source={StaticResource Loc}}" FontSize="16" />
+                    <TextBlock x:Name="LeftResult" FontSize="16" TextWrapping="Wrap" />
+                    <TextBlock x:Name="LeftFlags" FontSize="13" TextWrapping="Wrap"
+                               Foreground="{ThemeResource AppleSecondaryBrush}" />
+                    <TextBlock x:Name="LeftTime" FontSize="13" TextWrapping="Wrap"
+                               Foreground="{ThemeResource AppleSecondaryBrush}" />
+                </StackPanel>
+                <Border Style="{StaticResource InsetDivider}" Margin="0" />
+                <StackPanel Spacing="4">
+                    <TextBlock Text="{Binding [HardwareChecks_Right], Source={StaticResource Loc}}" FontSize="16" />
+                    <TextBlock x:Name="RightResult" FontSize="16" TextWrapping="Wrap" />
+                    <TextBlock x:Name="RightFlags" FontSize="13" TextWrapping="Wrap"
+                               Foreground="{ThemeResource AppleSecondaryBrush}" />
+                    <TextBlock x:Name="RightTime" FontSize="13" TextWrapping="Wrap"
+                               Foreground="{ThemeResource AppleSecondaryBrush}" />
+                </StackPanel>
+                <TextBlock x:Name="ReadTime" FontSize="13" TextWrapping="Wrap"
+                           Foreground="{ThemeResource AppleSecondaryBrush}" />
+                <TextBlock Text="{Binding [HardwareChecks_ResultHelp], Source={StaticResource Loc}}"
+                           FontSize="13" TextWrapping="Wrap" Foreground="{ThemeResource AppleSecondaryBrush}" />
+            </StackPanel>
+            <TextBlock x:Name="ErrorText" FontSize="13" TextWrapping="Wrap" Visibility="Collapsed"
+                       Foreground="{ThemeResource SystemFillColorCriticalBrush}" AutomationProperties.LiveSetting="Polite" />
+        </StackPanel>
+    </Expander>
+</UserControl>

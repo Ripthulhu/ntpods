@@ -2,24 +2,17 @@
     Rename the ACX microphone to match the connected device without restarting
     audio. Requires administrator access to the endpoint registry properties.
 
-    The installed helper task reads %LOCALAPPDATA%\NTPods\micname.txt.
+    The installed helper reads the name with the user's unelevated permissions.
     To supply a name manually, run elevated: .\rename-mic.ps1 -Name "AirPods Pro"
 #>
-param([string]$Name)
+param([Parameter(Mandatory=$true)][string]$Name)
 $ErrorActionPreference = 'Stop'
 
-$dir = Join-Path $env:LOCALAPPDATA 'NTPods'
 function Log([string]$msg) {
     $line = '{0:yyyy-MM-ddTHH:mm:ss.fffZ} {1}' -f (Get-Date).ToUniversalTime(), $msg
     Write-Host $line
 }
 
-if (-not $Name) {
-    $file = Join-Path $dir 'micname.txt'
-    if (-not (Test-Path $file)) { Log "no -Name given and $file does not exist"; exit 1 }
-    if ((Get-Item -LiteralPath $file).Length -gt 1KB) { throw 'The microphone name file is too large.' }
-    $Name = (Get-Content $file -Raw -Encoding UTF8).Trim()
-}
 if (-not $Name) { Log 'empty name, nothing to do'; exit 1 }
 if ($Name.Length -gt 128 -or $Name -match '[\x00-\x1F\x7F]') { throw 'Invalid microphone name.' }
 

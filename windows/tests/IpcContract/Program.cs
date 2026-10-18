@@ -85,6 +85,11 @@ for (var index = 0; index < lines.Length - 2; ++index)
         s.TransparencyError == (raw.RootElement.TryGetProperty("transparency_error", out var transparencyError) && transparencyError.ValueKind != JsonValueKind.Null
             ? transparencyError.GetString() : null),
         "Transparency readback, pending and error states must remain separate across IPC.");
+    Check(s.HardwareDiagnostics == (raw.RootElement.TryGetProperty("hardware_diagnostics", out var diagnostics) && diagnostics.ValueKind != JsonValueKind.Null
+            ? diagnostics.Deserialize<HardwareDiagnostics>() : null) &&
+        s.HardwareDiagnosticsPending == (raw.RootElement.TryGetProperty("hardware_diagnostics_pending", out var diagnosticPending) && diagnosticPending.GetBoolean()) &&
+        s.HardwareDiagnosticsError == (raw.RootElement.TryGetProperty("hardware_diagnostics_error", out var diagnosticError) && diagnosticError.ValueKind != JsonValueKind.Null
+            ? diagnosticError.GetString() : null), "Saved diagnostics must retain their full-width dates and separate read status.");
     if (index < phases.Length)
     {
         var phase = phases[index];
@@ -115,6 +120,8 @@ for (var index = 0; index < lines.Length - 2; ++index)
         Check(s.MicError == (phase == "error" ? "Output failed: \"device gone\"\nTry again — later." : null), $"Error text changed: {phase}");
         Check(s.DeviceControls.Count == 4 && s.DeviceControls[1] == 0 && s.DeviceControls[31] == 0x504B &&
             s.DeviceControls[36] == 0x0300 && s.DeviceControls[40] == 2, $"Four-byte device controls changed: {phase}");
+        Check(s.DeviceControlsRequested.Count == (phase == "starting" ? 1 : 0) &&
+            (phase != "starting" || s.DeviceControlsRequested[0x23] == 2), $"Sent choices changed: {phase}");
         Check(s.DeviceControlsPending.Count == (phase == "starting" ? 2 : 0), $"Pending controls changed: {phase}");
         Check(s.AacpCapabilities.Count == 3 && s.AacpCapabilities[0x11] == 1 &&
             s.AacpCapabilities[0xC0] == 2 && s.AacpCapabilities[0x30] == uint.MaxValue,
@@ -149,6 +156,8 @@ for (var index = 0; index < lines.Length - 2; ++index)
             "Older snapshots must leave playback delay and buffer targets unknown.");
         Check(s.Transparency is null && !s.TransparencyPending && s.TransparencyError is null,
             "Older snapshots must leave Transparency settings unknown.");
+        Check(s.HardwareDiagnostics is null && !s.HardwareDiagnosticsPending && s.HardwareDiagnosticsError is null,
+            "Older snapshots must leave hardware checks unknown.");
         Check(s.HearingAidEnabled is null && s.HearingAidRevision == 0,
             "Older snapshots must not manufacture a hearing-assistance report.");
         Check(s.HearingAidSettings is null && !s.HearingAidEditable && !s.HearingAidPending && s.HearingAidError is null,
@@ -164,7 +173,7 @@ for (var index = 0; index < lines.Length - 2; ++index)
         Check(s.MicMode == "automatic" && s.MicStopDelaySecs == 0 && !s.MicManualActive, "A legacy snapshot must not enable a new microphone policy.");
         Check(!s.MicCaptureActive && !s.MicUplinkActive && s.MicState == "unavailable" && s.MicError is null,
             "Missing lifecycle fields must not infer capture permission or uplink state");
-        Check(s.AutoPause && !s.AncUnconfirmed && s.DeviceControls.Count == 0 && s.DeviceControlsPending.Count == 0 &&
+        Check(s.AutoPause && !s.AncUnconfirmed && s.DeviceControls.Count == 0 && s.DeviceControlsRequested.Count == 0 && s.DeviceControlsPending.Count == 0 &&
             s.Eq is null && s.EqPending is null && s.DeviceSettingsError is null, "Legacy device settings must remain unknown");
         Check(s.AacpCapabilities.Count == 0, "Older snapshots must not invent AACP capabilities.");
     }
@@ -251,6 +260,9 @@ string[] malformed = ["", " ", "{", "null", "true", "12", "\"text\"", "[]", "[{}
     "{\"event\":\"state\",\"allow_off_requested\":1}",
     "{\"event\":\"state\",\"allow_off_requested\":\"true\"}",
     "{\"event\":\"state\",\"device_controls\":null}",
+    "{\"event\":\"state\",\"device_controls_requested\":null}",
+    "{\"event\":\"state\",\"device_controls_requested\":{\"256\":1}}",
+    "{\"event\":\"state\",\"device_controls_requested\":{\"1\":-1}}",
     "{\"event\":\"state\",\"device_controls_pending\":null}",
     "{\"event\":\"state\",\"aacp_capabilities\":null}",
     "{\"event\":\"state\",\"aacp_capabilities\":{\"256\":1}}",
@@ -332,6 +344,23 @@ foreach (string key in new[] { "transparency_pending", "transparency_error" })
     Check(Wire.ParseEvent("{\"event\":\"state\",\"" + key + "\":1}") is null, "Malformed Transparency state must be rejected.");
 
 string[] malformedPresence = ["0", "1", "\"true\"", "[]"];
+foreach (string value in new[] { "{}", "[]", "1", "true", "{\"read_at_unix_seconds\":1,\"left\":null,\"right\":null}" })
+    Check(Wire.ParseEvent("{\"event\":\"state\",\"hardware_diagnostics\":" + value + "}") is null,
+        "Malformed saved checks must not become successful-looking defaults.");
+var diagnosticFixture = JsonNode.Parse(lines[0])!;
+foreach (string ear in new[] { "left", "right" })
+    foreach (string key in new[] { "measured_at_unix_seconds", "general", "measurement", "component_failures", "unknown_bits" })
+    {
+        var diagnosticMissing = diagnosticFixture.DeepClone();
+        diagnosticMissing["hardware_diagnostics"]![ear]!.AsObject().Remove(key);
+        Check(Wire.ParseEvent(diagnosticMissing.ToJsonString()) is null, "Incomplete saved checks must be rejected.");
+    }
+foreach (string key in new[] { "general", "measurement" })
+{
+    var diagnosticOutOfRange = diagnosticFixture.DeepClone();
+    diagnosticOutOfRange["hardware_diagnostics"]!["left"]![key] = 8;
+    Check(Wire.ParseEvent(diagnosticOutOfRange.ToJsonString()) is null, "Unknown status encodings must not exceed their three-bit fields.");
+}
 var hearingState = new JsonObject { ["event"] = "state", ["hearing_aid_settings"] = JsonSerializer.SerializeToNode(Hearing()) };
 Check(Wire.ParseEvent(hearingState.ToJsonString()) is DaemonEvent.State { Snapshot.HearingAidSettings: { } hearingRoundtrip } &&
     hearingRoundtrip.SameValues(Hearing()), "Asymmetric hearing curves and tuning must survive C# parsing.");
@@ -437,7 +466,7 @@ foreach (var (mode, bestEffort, kbps) in new[] { ("aac", true, 512u), ("aac", fa
 output.Add(Wire.ToLine(new SetPlaybackBitrateCmd { Mode = "aac_eld", BestEffort = true, Kbps = 256, Variable = true }).TrimEnd('\n'));
 output.Add(Wire.ToLine(new GetTransparencyCmd()).TrimEnd('\n'));
 foreach (bool enabled in new[] { false, true })
-    output.Add(Wire.ToLine(new SetTransparencyCmd { Settings = Transparency(enabled) }).TrimEnd('\n'));
+    output.Add(Wire.ToLine(new SetTransparencyCmd { Settings = Transparency(enabled), Expected = Transparency(false) }).TrimEnd('\n'));
 output.Add(Wire.ToLine(new GetHearingAidCmd()).TrimEnd('\n'));
 foreach (ulong id in new ulong[] { 0, 73 })
 {
@@ -468,6 +497,7 @@ foreach (bool on in new[] { false, true })
         output.Add(line.TrimEnd('\n'));
     }
 }
+output.Add(Wire.ToLine(new GetHardwareDiagnosticsCmd()).TrimEnd('\n'));
 Check(Wire.ParseEvent(lines[^2]) is DaemonEvent.PairingNearby(0x2720, true),
     "Nearby invitations must retain the public model hint and lid state.");
 Check(Wire.ParseEvent("{\"event\":\"pairing_nearby\",\"model\":10016,\"lid_open\":false}")

@@ -1,7 +1,7 @@
 //! Name the virtual microphone after the connected device.
 //! Endpoint names are stored in HKLM, so the unelevated daemon writes the desired
 //! name to a file and triggers the installer-created "NTPods Rename Mic" task.
-//! `rename-mic.ps1` skips the write and audio-service restart when the name matches.
+//! The helper reads that file without elevation before updating the endpoint.
 
 use std::os::windows::process::CommandExt;
 use std::process::Command;

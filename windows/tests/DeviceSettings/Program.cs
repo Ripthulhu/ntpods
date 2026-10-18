@@ -18,6 +18,7 @@ MicrophoneNotificationChecks.Run(Check);
 PlaybackModeChecks.Run(Check);
 TransparencyChecks.Run(Check);
 HearingAidChecks.Run(Check);
+HardwareDiagnosticsChecks.Run(Check);
 IslandTakeoverChecks.Run(Check);
 
 Check(AppVersion.Read(typeof(AppVersion).Assembly) == "v0.2.18",
@@ -84,6 +85,40 @@ Check(!DeviceSettingStatus.CanChange(controls, toneVolume), "A disconnected devi
 controls.Connected = true;
 controls.DeviceControls.Clear();
 Check(!DeviceSettingStatus.CanChange(controls, toneVolume), "An unreported setting stays disabled.");
+
+var defaultSwipe = new Snapshot { Connected = true, Model = "A3063", DeviceControls = new() { [0x23] = 0 } };
+Check(DeviceSettingStatus.Available(defaultSwipe, 0x23) && DeviceSettingStatus.CanChange(defaultSwipe, 0x23) &&
+    DeviceSettingStatus.DisplayValue(defaultSwipe, 0x23) == 0,
+    "A reported Default swipe duration is zero, not a missing setting.");
+
+var unreported = new Snapshot { Connected = true, Model = "A3063", Firmware = "9A348" };
+foreach (byte id in new byte[] { 0x01, 0x0A, 0x16, 0x1A, 0x23, 0x31, 0x40 })
+    Check(DeviceSettingStatus.CanChoose(unreported, id) && !DeviceSettingStatus.Available(unreported, id) &&
+        DeviceSettingStatus.DisplayValue(unreported, id) is null,
+        $"Known Pro 3 setting {id:X2} can be explicitly chosen without pretending it was reported.");
+Check(!DeviceSettingStatus.CanChoose(unreported, 0x1F), "Unreported tone volume keeps its readback requirement.");
+Check(DeviceSettingStatus.ToggleValue(0x0A, true) == 2 && DeviceSettingStatus.ToggleValue(0x0A, false) == 1 &&
+    DeviceSettingStatus.ToggleValue(0x31, true) == 1 && DeviceSettingStatus.ToggleValue(0x31, false) == 2,
+    "Ear detection uses its own enabled/disabled values; other toggles keep the usual mapping.");
+unreported.DeviceControlsRequested[0x31] = 1;
+Check(!DeviceSettingStatus.Available(unreported, 0x31) && DeviceSettingStatus.DisplayValue(unreported, 0x31) == 1 &&
+    DeviceSettingStatus.Text(unreported, 0x31) == Localize.Get("DeviceSetting.Sent"),
+    "A sent choice is shown separately from an AirPods report.");
+unreported.DeviceControls[0x31] = 2;
+Check(DeviceSettingStatus.Available(unreported, 0x31) && DeviceSettingStatus.DisplayValue(unreported, 0x31) == 2,
+    "A fresh AirPods report wins over a prior sent choice.");
+unreported.DeviceControlsPending[0x31] = 1;
+Check(!DeviceSettingStatus.CanChoose(unreported, 0x31) && DeviceSettingStatus.DisplayValue(unreported, 0x31) == 1,
+    "An in-flight write blocks another choice without replacing the report.");
+unreported.DeviceControlsPending.Clear();
+unreported.LinkStale = true;
+Check(!DeviceSettingStatus.CanChoose(unreported, 0x01), "A stale connection cannot accept an unreported choice.");
+unreported.LinkStale = false;
+unreported.Connected = false;
+Check(!DeviceSettingStatus.CanChoose(unreported, 0x01), "A disconnected device cannot accept an unreported choice.");
+unreported.Connected = true;
+unreported.Model = "unknown";
+Check(!DeviceSettingStatus.CanChoose(unreported, 0x01), "An unknown model cannot use the no-report path.");
 
 foreach (var model in new[] { "A3063", "A3064", "A3065" })
 {

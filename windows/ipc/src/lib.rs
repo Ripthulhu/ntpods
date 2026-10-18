@@ -44,6 +44,23 @@ impl Default for PlaybackBitrate {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HardwareDiagnosticEar {
+    pub measured_at_unix_seconds: u64,
+    pub general: u8,
+    pub measurement: u8,
+    /// Present only for a supported model with a dated, completed check.
+    pub component_failures: Option<u8>,
+    pub unknown_bits: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HardwareDiagnostics {
+    pub read_at_unix_seconds: u64,
+    pub left: HardwareDiagnosticEar,
+    pub right: HardwareDiagnosticEar,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct TransparencySettings {
     pub enabled: bool,
@@ -239,6 +256,9 @@ pub struct Snapshot {
     /// Validated four-byte AACP settings, confirmed by the current device session.
     #[serde(default, deserialize_with = "deserialize_device_controls")]
     pub device_controls: BTreeMap<u8, u32>,
+    /// Last successfully sent choices without a current device report.
+    #[serde(default, deserialize_with = "deserialize_device_controls")]
+    pub device_controls_requested: BTreeMap<u8, u32>,
     #[serde(default, deserialize_with = "deserialize_device_controls")]
     pub device_controls_pending: BTreeMap<u8, u32>,
     /// Raw capability IDs and values reported by the current AACP connection.
@@ -274,6 +294,12 @@ pub struct Snapshot {
     pub hearing_aid_pending: bool,
     #[serde(default)]
     pub hearing_aid_error: Option<String>,
+    #[serde(default)]
+    pub hardware_diagnostics: Option<HardwareDiagnostics>,
+    #[serde(default)]
+    pub hardware_diagnostics_pending: bool,
+    #[serde(default)]
+    pub hardware_diagnostics_error: Option<String>,
     /// ATT handle 0x1B, independently confirmed; absent until a successful read.
     #[serde(default)]
     pub loud_sound_reduction: Option<bool>,
@@ -448,6 +474,7 @@ impl Default for Snapshot {
             allow_off: false,
             allow_off_requested: None,
             device_controls: BTreeMap::new(),
+            device_controls_requested: BTreeMap::new(),
             device_controls_pending: BTreeMap::new(),
             aacp_capabilities: BTreeMap::new(),
             adaptive_strength_requested: None,
@@ -464,6 +491,9 @@ impl Default for Snapshot {
             hearing_aid_editable: false,
             hearing_aid_pending: false,
             hearing_aid_error: None,
+            hardware_diagnostics: None,
+            hardware_diagnostics_pending: false,
+            hardware_diagnostics_error: None,
             loud_sound_reduction: None,
             loud_sound_reduction_pending: false,
             loud_sound_reduction_error: None,
@@ -631,6 +661,8 @@ pub enum Command {
     GetLoudSoundReduction,
     GetTransparency,
     SetTransparency {
+        #[serde(default)]
+        expected: Option<TransparencySettings>,
         settings: TransparencySettings,
     },
     SetLoudSoundReduction {
@@ -638,6 +670,8 @@ pub enum Command {
     },
     /// Read both existing audiograms and per-ear controls without enabling or writing.
     GetHearingAid,
+    /// Read the last saved hardware checks; never starts a self-test.
+    GetHardwareDiagnostics,
     /// Toggle the stored fitting without editing its audiogram or adjustments.
     SetHearingAidMode {
         request_id: u64,
@@ -1199,6 +1233,7 @@ mod tests {
     fn tagged_state_roundtrip_preserves_numeric_keys_and_full_control_values() {
         let state = Snapshot {
             device_controls: [(0x24, 0x0200), (0x1F, 0x5064)].into(),
+            device_controls_requested: [(0x23, 2)].into(),
             aacp_capabilities: [(0x11, 1), (0xC0, 2), (0x30, u32::MAX)].into(),
             allow_off_requested: Some(false),
             adaptive_strength_requested: Some(25),
@@ -1224,6 +1259,7 @@ mod tests {
             "anc_unconfirmed",
             "auto_pause",
             "device_controls",
+            "device_controls_requested",
             "device_controls_pending",
             "aacp_capabilities",
             "adaptive_strength_requested",
@@ -1241,6 +1277,7 @@ mod tests {
             panic!("expected legacy state");
         };
         assert!(actual.auto_pause && actual.device_controls.is_empty() && actual.eq.is_none());
+        assert!(actual.device_controls_requested.is_empty());
         assert!(actual.aacp_capabilities.is_empty());
         assert!(!actual.anc_unconfirmed);
         assert!(actual.adaptive_strength_requested.is_none());
@@ -1283,7 +1320,11 @@ mod tests {
             "null",
             "[]",
         ] {
-            for field in ["device_controls", "aacp_capabilities"] {
+            for field in [
+                "device_controls",
+                "device_controls_requested",
+                "aacp_capabilities",
+            ] {
                 let mut state = serde_json::to_value(Event::State(Snapshot::default())).unwrap();
                 state[field] = serde_json::from_str(map).unwrap();
                 assert!(

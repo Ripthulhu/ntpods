@@ -70,19 +70,28 @@ public sealed partial class TransparencyCard : UserControl
         if (!_applying) Render();
     }
 
-    private void Slider_Changed(object sender, RangeBaseValueChangedEventArgs e) => Edit();
-    private void Toggle_Changed(object sender, RoutedEventArgs e) => Edit();
+    private void Slider_Changed(object sender, RangeBaseValueChangedEventArgs e) => Edit(sender);
+    private void Toggle_Changed(object sender, RoutedEventArgs e) => Edit(sender);
 
-    private void Edit()
+    private void Edit(object sender)
     {
         if (_applying || !Available || _edit.Requesting || _snapshot.TransparencyPending || _edit.Draft is not { } value) return;
-        float amplification = (float)(Amplification.Value / 100);
-        float tone = (float)(Tone.Value / 100);
-        float ambient = (float)(Ambient.Value / 100);
-        value = value with { Enabled = EnableSwitch.IsOn };
-        _edit.Edit(EarPicker.SelectedIndex == 1
-            ? value with { RightAmplification = amplification, RightTone = tone, RightAmbientNoiseReduction = ambient, RightConversationBoost = BoostSwitch.IsOn }
-            : value with { LeftAmplification = amplification, LeftTone = tone, LeftAmbientNoiseReduction = ambient, LeftConversationBoost = BoostSwitch.IsOn });
+        bool right = EarPicker.SelectedIndex == 1;
+        if (ReferenceEquals(sender, EnableSwitch)) value = value with { Enabled = EnableSwitch.IsOn };
+        else if (ReferenceEquals(sender, BoostSwitch)) value = right
+            ? value with { RightConversationBoost = BoostSwitch.IsOn }
+            : value with { LeftConversationBoost = BoostSwitch.IsOn };
+        else if (ReferenceEquals(sender, Amplification)) value = right
+            ? value with { RightAmplification = (float)(Amplification.Value / 100) }
+            : value with { LeftAmplification = (float)(Amplification.Value / 100) };
+        else if (ReferenceEquals(sender, Tone)) value = right
+            ? value with { RightTone = (float)(Tone.Value / 100) }
+            : value with { LeftTone = (float)(Tone.Value / 100) };
+        else if (ReferenceEquals(sender, Ambient)) value = right
+            ? value with { RightAmbientNoiseReduction = (float)(Ambient.Value / 100) }
+            : value with { LeftAmbientNoiseReduction = (float)(Ambient.Value / 100) };
+        else return;
+        _edit.Edit(value);
         ApplyButton.IsEnabled = true;
     }
 
@@ -94,7 +103,7 @@ public sealed partial class TransparencyCard : UserControl
     private void Apply_Click(object sender, RoutedEventArgs e)
     {
         if (ApplyButton.IsEnabled && _edit.Draft is { IsValid: true } value)
-            Send(new SetTransparencyCmd { Settings = value });
+            Send(new SetTransparencyCmd { Settings = value, Expected = _edit.Baseline });
     }
 
     private void Send(object command)

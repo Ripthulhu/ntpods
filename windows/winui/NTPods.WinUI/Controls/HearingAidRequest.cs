@@ -11,22 +11,24 @@ internal sealed class HearingAidRequest(string command = "set_hearing_aid")
     public bool? Enabled { get; private set; }
     public bool Requested { get; private set; }
     public bool EditQueued { get; private set; }
+    public bool ManualEditQueued { get; private set; }
     public bool EnableMayHaveApplied { get; private set; }
     public bool EnableUnconfirmed => EnableMayHaveApplied && Enabled != true;
     public bool CanDisable => Enabled == true || EnableMayHaveApplied;
     public bool CanEnable(bool? enrolled) => enrolled == true && Enabled is not null && !EnableUnconfirmed;
 
-    public void Update(bool? enabled, ulong revision, bool verifying = false)
+    public bool Update(bool? enabled, ulong revision, bool verifying = false)
     {
-        if (_reportedRevision is ulong previous && revision <= previous) return;
+        if (_reportedRevision is ulong previous && revision <= previous) return false;
         _reportedRevision = revision;
         Enabled = enabled;
         if (enabled == false && !verifying) EnableMayHaveApplied = false;
         if (enabled != true)
         {
-            EditQueued = false;
+            CancelEdit();
             if (enabled == false && Requested && !verifying) Pending = null;
         }
+        return enabled != true && !verifying;
     }
 
     public static bool RetainWhileRefreshing(Snapshot snapshot, string deviceId,
@@ -34,19 +36,25 @@ internal sealed class HearingAidRequest(string command = "set_hearing_aid")
         deviceId.Length > 0 && snapshot.DeviceId == deviceId && snapshot.HearingAidPending &&
         (mode.Pending is not null || media.Pending is not null);
 
-    public bool QueueEdit() => EditQueued = Enabled == true && Pending is null;
-    public void CancelEdit() => EditQueued = false;
-
-    public bool TakeEdit()
+    public bool QueueEdit(bool requireApply = false)
     {
+        EditQueued = Enabled == true && Pending is null;
+        ManualEditQueued = EditQueued && (ManualEditQueued || requireApply);
+        return EditQueued;
+    }
+    public void CancelEdit() => EditQueued = ManualEditQueued = false;
+
+    public bool TakeEdit(bool explicitApply = false)
+    {
+        if (ManualEditQueued && !explicitApply) return false;
         bool apply = EditQueued && Enabled == true && Pending is null;
-        EditQueued = false;
+        CancelEdit();
         return apply;
     }
 
     public ulong Begin(bool on, string? requestCommand = null)
     {
-        EditQueued = false;
+        CancelEdit();
         _pendingCommand = requestCommand ?? command;
         Requested = on;
         if (on) EnableMayHaveApplied = true;
@@ -62,6 +70,6 @@ internal sealed class HearingAidRequest(string command = "set_hearing_aid")
         return true;
     }
 
-    public void Cancel() { Pending = null; EditQueued = false; }
+    public void Cancel() { Pending = null; CancelEdit(); }
     public void Reset() { Cancel(); Enabled = null; Requested = EnableMayHaveApplied = false; _reportedRevision = null; }
 }

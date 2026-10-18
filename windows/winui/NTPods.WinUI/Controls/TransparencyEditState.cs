@@ -9,6 +9,7 @@ internal sealed class TransparencyEditState
     private string? _errorAtRequest;
     private TransparencySettings? _written;
     public TransparencySettings? Draft { get; private set; }
+    public TransparencySettings? Baseline { get; private set; }
     public bool Dirty { get; private set; }
     public bool Requesting { get; private set; }
 
@@ -17,7 +18,7 @@ internal sealed class TransparencyEditState
         if (_deviceId != s.DeviceId || !available)
         {
             _deviceId = s.DeviceId;
-            Draft = available ? s.Transparency : null;
+            Draft = Baseline = available ? s.Transparency : null;
             Dirty = Requesting = _pending = false;
             return;
         }
@@ -26,7 +27,7 @@ internal sealed class TransparencyEditState
             Requesting = false;
         if (_pending && !s.TransparencyPending || !Dirty && !Requesting && !s.TransparencyPending)
         {
-            Draft = s.Transparency;
+            Draft = Baseline = s.Transparency;
             Dirty = false;
         }
         _pending = s.TransparencyPending;

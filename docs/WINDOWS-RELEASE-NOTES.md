@@ -57,6 +57,10 @@ Unlisted models keep their current provider.
 
 ## Compatibility
 
+**Hardware checks** reads the saved self-check results on supported Pro 2 and Pro 3
+pairs. Refresh does not run a test or play sounds. These cached flags do not
+establish a current fault, and the device clock may differ from the PC's clock.
+
 Hardware testing covers AirPods Pro 1 (6F21) and Pro 3 (9A348) with an Intel
 AX200. Pro 1's high-quality microphone is disabled. Other models, long sessions
 and microphone transitions with the smaller buffer remain unverified.
@@ -64,8 +68,10 @@ and microphone transitions with the smaller buffer remain unverified.
 Available controls depend on model and firmware. Head tracking displays raw
 movement. Custom Transparency, Hearing Aid and Media Assist are experimental.
 On Pro 3 (9A348), Hearing Aid and Media Assist can independently use a profile
-already fitted on an iPhone. NTPods cannot create or edit that fitting; other
-models remain untested. See the
+already fitted on an iPhone. Amplification, balance, tone, Conversation Boost
+and one audiogram field passed write/readback and restoration checks on that
+model. Complete audiogram replacement and other models remain untested.
+NTPods cannot run the iPhone Hearing Test. See the
 [model list](https://github.com/Ripthulhu/ntpods/blob/main/docs/WINDOWS-MODEL-SUPPORT.md),
 [playback test guide](https://github.com/Ripthulhu/ntpods/blob/main/windows/playback/TESTING.md)
 and [validation results](https://github.com/Ripthulhu/ntpods/blob/main/docs/WINDOWS-VALIDATION.md).

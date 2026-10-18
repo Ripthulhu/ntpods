@@ -12,6 +12,7 @@ AirPods. See the [model list](WINDOWS-MODEL-SUPPORT.md) for capability gates and
 | Stems | Press-and-hold actions, noise-mode cycle, volume swipe, press speed, hold/swipe duration and stored call gestures |
 | Accessibility and charging | One-bud ANC, tone and case volume, case sounds, optimized charging and experimental Loud Sound Reduction |
 | Sensors and hearing | Heart rate, live head movement, experimental Hearing Aid, Media Assist and Custom Transparency |
+| Hardware checks | Saved per-ear self-check results on Pro 2 and Pro 3 |
 
 Automatic pause is a local NTPods preference. It resumes only the same media
 session that NTPods paused. Editing an AirPods call or assistant preference does
@@ -26,7 +27,11 @@ Some firmware reports settings only when the control connection opens again.
 Use **Refresh device settings** for that readback while the microphone is idle.
 The backend rejects refresh during recording or recovery rather than queuing it.
 
-Most advanced controls remain unavailable until the AirPods report the setting.
+Known models allow explicit choices for microphone side, ear detection, both hold
+actions, noise-mode cycle, swipe duration, case sounds and case volume without a
+current report. NTPods saves these choices per pair without sending them again on
+reconnect. Fresh reports take precedence. Other controls retain their report
+requirements; see the [protocol reference](WINDOWS-AIRPODS-CONTROL-PROTOCOL.md#setting-values-and-confirmation).
 Native EQ also permits an explicit request on eligible models with firmware major
 9 or newer, following LibrePods' compatibility gate. The app never writes EQ
 defaults on connection.
@@ -134,11 +139,23 @@ Conversation Boost after reading the current settings. On Pro 3, the
 [Apple Bluetooth identity](BLUETOOTH-HOST-IDENTITY.md) allowed reads, writes
 and an audible Custom Transparency adjustment, with restoration confirmed by
 readback. Hearing Aid and Media Assist can switch an existing iPhone-fitted
-profile independently on Pro 3 / 9A348. NTPods reads and preserves its separate
-eight-band audiogram; the captured fitting formats remain read-only. The mode
-switches require confirmed device reports, and other models remain untested.
+profile independently on Pro 3 / 9A348. Mode switches use fresh device reports
+when available and refresh the control connection only when needed. The hearing
+editor supports the fitted V2 format: eight-band audiograms, amplification,
+balance, tone and Conversation Boost. Audiogram changes require Apply; tuning
+changes are batched. Each write preserves untouched values and requires matching
+readback. Amplification, balance, tone, Conversation Boost and one audiogram
+field passed write/readback and full restoration checks on Pro 3 / 9A348.
+Complete audiogram replacement and other models remain untested.
 Neither feature is the native three-band EQ. See the
 [control protocol](WINDOWS-AIRPODS-CONTROL-PROTOCOL.md#att-settings).
+
+With experimental controls enabled, **Hardware checks → Refresh** reads the
+checks saved by Pro 2 or Pro 3 while the microphone is idle. It shows each ear's
+completion or abort status and any reported component flags. Refresh does not
+start a test or change hearing settings. Saved flags are not a current fault
+diagnosis, and the displayed device time may differ from this PC. The app has
+no self-test button; see the [record format](WINDOWS-AIRPODS-CONTROL-PROTOCOL.md#diagnostic-and-dosimetry-records).
 
 Find My and firmware updates are not implemented. SPL0 sensor messages have no
 verified measurement scale and no UI. See the

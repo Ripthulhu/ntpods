@@ -91,7 +91,9 @@ fn patch(value: &mut [u8], requested: &TransparencySettings) {
         ),
         (96, requested.right_ambient_noise_reduction),
     ] {
-        value[offset..offset + 4].copy_from_slice(&v.to_le_bytes());
+        if read_f32(value, offset) != v {
+            value[offset..offset + 4].copy_from_slice(&v.to_le_bytes());
+        }
     }
 }
 
@@ -101,12 +103,47 @@ fn discover(
     crate::att_settings::discover(exchange, &CHARACTERISTIC, "Custom Transparency")
 }
 
+fn confirm(
+    exchange: &mut impl FnMut(&[u8]) -> Result<Vec<u8>, String>,
+    read: &[u8],
+    original: &[u8],
+    written: &[u8],
+    mut wait: impl FnMut(),
+) -> Result<TransparencySettings, String> {
+    for attempt in 0..5 {
+        let response = exchange(read)?;
+        let Some(value) = response.strip_prefix(&[0x0b]) else {
+            return Err(hearing::att_error(
+                "Could not confirm Custom Transparency.",
+                &response,
+            ));
+        };
+        let settings = parse(value)?;
+        if value == written {
+            return Ok(settings);
+        }
+        // A delayed write may still return the old record; never retry another change.
+        if value != original || attempt == 4 {
+            return Err(
+                "AirPods did not confirm Custom Transparency. Read the settings and try again."
+                    .into(),
+            );
+        }
+        wait();
+    }
+    unreachable!()
+}
+
 fn transaction(
     requested: Option<&TransparencySettings>,
+    expected: Option<&TransparencySettings>,
     mut exchange: impl FnMut(&[u8]) -> Result<Vec<u8>, String>,
 ) -> Result<Option<TransparencySettings>, String> {
     if requested.is_some_and(|value| !value.is_valid()) {
         return Err("Custom Transparency values are out of range.".into());
+    }
+    if requested.is_some() && !expected.is_some_and(TransparencySettings::is_valid) {
+        return Err("Read Custom Transparency before changing it.".into());
     }
     let Some(Characteristic {
         handle,
@@ -124,11 +161,17 @@ fn transaction(
         ));
     };
     let current = parse(value)?;
+    if requested.is_some() && expected != Some(&current) {
+        return Err(
+            "Custom Transparency changed on the AirPods. Read the settings and try again.".into(),
+        );
+    }
     let Some(requested) = requested.filter(|requested| **requested != current) else {
         return Ok(Some(current));
     };
     let write_opcode = write_opcode.ok_or("Custom Transparency is read-only on these AirPods.")?;
-    let mut value = value.to_vec();
+    let original = value.to_vec();
+    let mut value = original.clone();
     patch(&mut value, requested);
     let mut write = vec![write_opcode, handle as u8, (handle >> 8) as u8];
     write.extend_from_slice(&value);
@@ -136,21 +179,17 @@ fn transaction(
     if write_opcode == 0x12 && response != [0x13] {
         return Err("AirPods did not acknowledge Custom Transparency.".into());
     }
-    let response = exchange(&read)?;
-    let Some(value) = response.strip_prefix(&[0x0b]) else {
-        return Err(hearing::att_error(
-            "Could not confirm Custom Transparency.",
-            &response,
-        ));
-    };
-    // The caller compares this confirmed state with the request before reporting success.
-    parse(value).map(Some)
+    confirm(&mut exchange, &read, &original, &value, || {
+        std::thread::sleep(std::time::Duration::from_millis(75));
+    })
+    .map(Some)
 }
 
 pub fn settings(
     drv: &Driver,
     token: Token,
     requested: Option<&TransparencySettings>,
+    expected: Option<&TransparencySettings>,
     hearing_supported: bool,
 ) -> Result<Option<TransparencySettings>, String> {
     if requested.is_some_and(|value| !value.is_valid()) {
@@ -165,7 +204,7 @@ pub fn settings(
             {
                 return Err("Turn off hearing assistance before enabling Custom Transparency. Reconnect if it is already off.".into());
             }
-            transaction(requested, exchange)
+            transaction(requested, expected, exchange)
         },
     )? {
         Some(Some(settings)) => Ok(Some(settings)),
@@ -177,7 +216,7 @@ pub fn settings(
 pub(super) fn read_enabled(
     exchange: impl FnMut(&[u8]) -> Result<Vec<u8>, String>,
 ) -> Result<bool, String> {
-    transaction(None, exchange).map(|settings| settings.is_some_and(|s| s.enabled))
+    transaction(None, None, exchange).map(|settings| settings.is_some_and(|s| s.enabled))
 }
 
 #[cfg(test)]
@@ -245,6 +284,21 @@ mod tests {
     }
 
     #[test]
+    fn editing_one_field_preserves_untouched_signed_zeroes() {
+        let mut bytes = value();
+        for offset in [0, 36, 40, 44, 48, 84, 88, 92, 96] {
+            bytes[offset..offset + 4].copy_from_slice(&(-0.0f32).to_le_bytes());
+        }
+        let original = bytes.clone();
+        let mut requested = parse(&bytes).unwrap();
+        requested.left_tone = 0.25;
+        patch(&mut bytes, &requested);
+        assert_eq!(&bytes[..40], &original[..40]);
+        assert_eq!(&bytes[44..], &original[44..]);
+        assert_eq!(read_f32(&bytes, 40), 0.25);
+    }
+
+    #[test]
     fn malformed_or_hearing_aid_layouts_are_not_written() {
         for size in [0, 4, 99, 100, 103, 105, 108] {
             assert!(parse(&vec![0; size]).is_err());
@@ -260,9 +314,10 @@ mod tests {
         for bad in [f32::NAN, f32::INFINITY, -1.01, 1.01] {
             let mut requested = parse(&value()).unwrap();
             requested.left_tone = bad;
-            assert!(
-                transaction(Some(&requested), |_| panic!("invalid input reached ATT")).is_err()
-            );
+            assert!(transaction(Some(&requested), None, |_| panic!(
+                "invalid input reached ATT"
+            ))
+            .is_err());
         }
     }
 
@@ -337,7 +392,7 @@ mod tests {
         ]
         .into_iter();
         assert_eq!(
-            transaction(None, |request| {
+            transaction(None, None, |request| {
                 let (expected, response) = exchanges.next().unwrap();
                 assert_eq!(request, expected);
                 Ok(response)
@@ -425,25 +480,116 @@ mod tests {
         patch(&mut changed, &requested);
         let mut write = vec![0x12, 0x35, 0];
         write.extend_from_slice(&changed);
-        for readback in [&current, &changed] {
-            let mut exchanges = discovery();
-            exchanges.extend([
-                (vec![0x0a, 0x35, 0], [vec![0x0b], current.clone()].concat()),
-                (write.clone(), vec![0x13]),
-                (vec![0x0a, 0x35, 0], [vec![0x0b], readback.clone()].concat()),
-            ]);
-            let mut exchanges = exchanges.into_iter();
-            assert_eq!(
-                transaction(Some(&requested), |request| {
+        let mut exchanges = discovery();
+        exchanges.extend([
+            (vec![0x0a, 0x35, 0], [vec![0x0b], current].concat()),
+            (write, vec![0x13]),
+            (vec![0x0a, 0x35, 0], [vec![0x0b], changed].concat()),
+        ]);
+        let mut exchanges = exchanges.into_iter();
+        assert_eq!(
+            transaction(
+                Some(&requested),
+                Some(&parse(&value()).unwrap()),
+                |request| {
                     let (expected, response) = exchanges.next().expect("extra ATT write");
                     assert_eq!(request, expected);
                     Ok(response)
-                })
-                .unwrap(),
-                Some(parse(readback).unwrap())
-            );
-            assert!(exchanges.next().is_none());
+                }
+            )
+            .unwrap(),
+            Some(requested)
+        );
+        assert!(exchanges.next().is_none());
+    }
+
+    #[test]
+    fn missing_or_stale_baselines_never_write() {
+        let baseline = parse(&value()).unwrap();
+        let requested = TransparencySettings {
+            enabled: true,
+            ..baseline
+        };
+        for expected in [
+            None,
+            Some(TransparencySettings {
+                left_tone: f32::NAN,
+                ..baseline
+            }),
+        ] {
+            assert!(transaction(Some(&requested), expected.as_ref(), |_| {
+                panic!("an invalid baseline reached ATT")
+            })
+            .is_err());
         }
+        let mut changed = value();
+        changed[88..92].copy_from_slice(&0.5f32.to_le_bytes());
+        let mut exchanges = discovery();
+        exchanges.push((vec![0x0a, 0x35, 0], [vec![0x0b], changed].concat()));
+        let mut exchanges = exchanges.into_iter();
+        assert!(transaction(Some(&requested), Some(&baseline), |request| {
+            let (expected, response) = exchanges.next().expect("a stale baseline wrote settings");
+            assert_eq!(request, expected);
+            Ok(response)
+        })
+        .is_err());
+        assert!(exchanges.next().is_none());
+    }
+
+    #[test]
+    fn confirmation_waits_only_for_the_unchanged_original_record() {
+        let original = value();
+        let mut requested = parse(&original).unwrap();
+        requested.enabled = true;
+        let mut written = original.clone();
+        patch(&mut written, &requested);
+        for stale_reads in [0, 1, 4, 5] {
+            let mut reads = 0;
+            let mut waits = 0;
+            let result = confirm(
+                &mut |request| {
+                    assert_eq!(request, [0x0a, 0x35, 0]);
+                    reads += 1;
+                    let bytes = if reads <= stale_reads {
+                        &original
+                    } else {
+                        &written
+                    };
+                    Ok([vec![0x0b], bytes.clone()].concat())
+                },
+                &[0x0a, 0x35, 0],
+                &original,
+                &written,
+                || waits += 1,
+            );
+            assert_eq!(reads, (stale_reads + 1).min(5));
+            assert_eq!(waits, stale_reads.min(4));
+            if stale_reads < 5 {
+                assert_eq!(result.unwrap(), requested);
+            } else {
+                assert!(result.is_err());
+            }
+        }
+        for offset in [4, 52, 100, 40] {
+            let mut unrelated = written.clone();
+            unrelated[offset..offset + 4].copy_from_slice(&0.25f32.to_le_bytes());
+            assert!(confirm(
+                &mut |_| Ok([vec![0x0b], unrelated.clone()].concat()),
+                &[0x0a, 0x35, 0],
+                &original,
+                &written,
+                || panic!("unrelated record changes must not be retried"),
+            )
+            .is_err());
+        }
+        assert!(confirm(
+            &mut |_| Err("connection changed".into()),
+            &[0x0a, 0x35, 0],
+            &original,
+            &written,
+            || panic!("failed reads must not be retried"),
+        )
+        .is_err());
     }
 
     #[test]
@@ -470,11 +616,15 @@ mod tests {
         ]);
         let mut exchanges = exchanges.into_iter();
         assert_eq!(
-            transaction(Some(&requested), |request| {
-                let (expected, response) = exchanges.next().expect("unexpected ACK wait");
-                assert_eq!(request, expected);
-                Ok(response)
-            })
+            transaction(
+                Some(&requested),
+                Some(&parse(&value()).unwrap()),
+                |request| {
+                    let (expected, response) = exchanges.next().expect("unexpected ACK wait");
+                    assert_eq!(request, expected);
+                    Ok(response)
+                }
+            )
             .unwrap(),
             Some(requested)
         );
@@ -489,7 +639,7 @@ mod tests {
             exchanges.push((vec![0x0a, 0x35, 0], [vec![0x0b], value()].concat()));
             let mut exchanges = exchanges.into_iter();
             assert_eq!(
-                transaction(input, |request| {
+                transaction(input, Some(&requested), |request| {
                     let (expected, response) = exchanges.next().expect("unexpected write");
                     assert_eq!(request, expected);
                     Ok(response)
@@ -502,7 +652,7 @@ mod tests {
         for response in [vec![], vec![0x0b, 0], vec![1, 0x0a, 0x35, 0, 3]] {
             let mut exchanges = discovery().into_iter();
             let mut reads = 0;
-            assert!(transaction(Some(&requested), |request| {
+            assert!(transaction(Some(&requested), Some(&requested), |request| {
                 if let Some((_, response)) = exchanges.next() {
                     return Ok(response);
                 }
@@ -522,24 +672,28 @@ mod tests {
         for reply in [vec![], vec![0x13, 0], vec![1, 0x12, 0x35, 0, 3], vec![0x13]] {
             let mut exchanges = discovery().into_iter();
             let mut step = 0;
-            assert!(transaction(Some(&requested), |request| {
-                if let Some((_, response)) = exchanges.next() {
-                    return Ok(response);
-                }
-                step += 1;
-                match step {
-                    1 => Ok([vec![0x0b], value()].concat()),
-                    2 => {
-                        assert_eq!(request[0], 0x12);
-                        Ok(reply.clone())
+            assert!(transaction(
+                Some(&requested),
+                Some(&parse(&value()).unwrap()),
+                |request| {
+                    if let Some((_, response)) = exchanges.next() {
+                        return Ok(response);
                     }
-                    3 => {
-                        assert_eq!(request, [0x0a, 0x35, 0]);
-                        Ok(vec![0x0b, 0])
+                    step += 1;
+                    match step {
+                        1 => Ok([vec![0x0b], value()].concat()),
+                        2 => {
+                            assert_eq!(request[0], 0x12);
+                            Ok(reply.clone())
+                        }
+                        3 => {
+                            assert_eq!(request, [0x0a, 0x35, 0]);
+                            Ok(vec![0x0b, 0])
+                        }
+                        _ => panic!("unconfirmed write retried"),
                     }
-                    _ => panic!("unconfirmed write retried"),
                 }
-            })
+            )
             .is_err());
             assert_eq!(step, if reply == [0x13] { 3 } else { 2 });
         }

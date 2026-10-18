@@ -16,6 +16,7 @@ param([switch]$Yes, [ValidateSet('auto', 'acx')][string]$MicDriver = 'acx')
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $here 'setup-common.ps1')
+. (Join-Path $here 'app-transaction.ps1')
 $dest = Join-Path $env:ProgramFiles 'NTPods'
 $sid = Get-CurrentUserSid
 
@@ -64,8 +65,7 @@ if ($missing) {
 }
 
 # Validate protected destinations before driver changes.
-New-Item -ItemType Directory -Force -Path $dest | Out-Null
-Assert-ProtectedInstallPath $dest
+if (Test-Path -LiteralPath $dest) { Assert-ProtectedInstallPath $dest }
 Stop-NTPods
 $setupDir = Initialize-SetupDirectory
 Remove-SetupLeftovers $env:LOCALAPPDATA
@@ -73,6 +73,7 @@ Remove-SetupLeftovers $env:LOCALAPPDATA
 $work = Join-Path $setupDir "drivers-$([guid]::NewGuid())"
 $transactionId = [guid]::NewGuid().ToString()
 try {
+Prepare-NTPodsAppTransaction $here $transactionId
 try { Install-NTPodsDrivers $here $work $MicDriver $sid $transactionId }
 finally {
     if ([IO.Path]::GetFullPath($work).StartsWith($setupDir + '\', [StringComparison]::OrdinalIgnoreCase)) {
@@ -80,18 +81,8 @@ finally {
     }
 }
 
-Write-Host "==> Copying the apps to $dest"
-Assert-ProtectedInstallPath $dest
-foreach ($f in 'ntpodsd.exe', 'avcodec-61.dll', 'avutil-59.dll', 'swresample-5.dll', 'ntpods-aac-encoder.exe', 'ntpods-eld-encoder.exe', 'fdk-aac.dll', 'fix-driver.ps1', 'rename-mic.ps1', 'setup-common.ps1', 'audio-driver.ps1', 'restore-playback.ps1', 'stop-ntpods.ps1', 'msi-setup.ps1', 'uninstall.ps1', 'bluetooth-host-identity.ps1') {
-    Copy-Item (Join-Path $here $f) $dest -Force
-}
-# The WinUI app ships as a self-contained folder.
-Copy-Item (Join-Path $here 'winui') $dest -Recurse -Force
-Copy-Item (Join-Path $here 'tools') $dest -Recurse -Force
-Copy-Item (Join-Path $here 'licenses') $dest -Recurse -Force
-# Files from a downloaded zip carry the internet zone mark; clear it on the
-# installed copy so startup and the scheduled tasks don't get blocked or prompted.
-Get-ChildItem $dest -Recurse -File | Unblock-File
+Write-Host "==> Installing the apps in $dest"
+Install-NTPodsAppTransaction $transactionId
 
 Register-NTPodsTasks $dest $sid
 New-Item -Path 'HKLM:\SOFTWARE\NTPods' -Force | Out-Null
@@ -111,14 +102,20 @@ Set-RunValues $sid (Join-Path $dest 'ntpodsd.exe') (Join-Path $dest 'winui\ntpod
     $failure = $_
     try { & (Join-Path $here 'bluetooth-host-identity.ps1') -Action Rollback -TransactionId $transactionId }
     catch { Write-Warning "Bluetooth identity recovery failed: $_ The original backup was retained." }
+    $recoveryErrors = @()
     try { Restore-NTPodsDriverCheckpoint $here $transactionId }
-    catch { throw "Installation failed: $failure Driver recovery failed: $_ Backup retained at $(Get-DriverCheckpointPath)." }
+    catch { $recoveryErrors += "Driver recovery failed: $_ Backup retained at $(Get-DriverCheckpointPath)." }
+    try { Restore-NTPodsAppTransaction $transactionId }
+    catch { $recoveryErrors += "App recovery failed: $_ Backup retained at $(Get-NTPodsAppTransactionPath)." }
+    if ($recoveryErrors.Count) { throw "Installation failed: $failure $($recoveryErrors -join ' ')" }
     throw $failure
 }
 try { & (Join-Path $dest 'bluetooth-host-identity.ps1') -Action Commit -TransactionId $transactionId }
 catch { Write-Warning "Installation completed, but Bluetooth identity transaction cleanup failed: $_" }
 try { Complete-NTPodsDriverTransaction $transactionId }
 catch { Write-Warning "Installation completed, but backup cleanup failed at $(Get-DriverCheckpointPath). Remaining backup files may be incomplete. $_" }
+try { Complete-NTPodsAppTransaction $transactionId }
+catch { Write-Warning "Installation completed, but app backup cleanup failed at $(Get-NTPodsAppTransactionPath). $_" }
 
 Write-Host ''
 Write-Host '==> Done. A reboot is needed to finish the driver install.' -ForegroundColor Green

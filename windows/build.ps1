@@ -172,6 +172,8 @@ try {
     if (-not $ui) { throw 'Missing built WinUI executable.' }
     & windows/installer/test-setup.ps1
     Run "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'windows/installer/test-setup.ps1')
+    & windows/installer/test-app-transaction.ps1
+    Run "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'windows/installer/test-app-transaction.ps1')
     & windows/installer/test-driver-rollback.ps1
     Run "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'windows/installer/test-driver-rollback.ps1')
     & windows/installer/test-audio-driver.ps1

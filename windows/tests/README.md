@@ -62,6 +62,11 @@ verifies fresh-install defaults and preservation of on/off through repair and
 upgrade. Both checks run in `windows/build.ps1` and leave installed startup entries
 untouched.
 
+`pwsh -File windows/installer/test-app-transaction.ps1` checks ZIP application
+staging and rollback with temporary files and mocked system operations. It covers
+copy and setup failures, retained recovery backups and redirected paths. The
+complete build runs it in PowerShell 7 and Windows PowerShell.
+
 ## UI interaction and motion
 
 ```powershell

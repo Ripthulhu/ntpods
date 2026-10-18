@@ -169,7 +169,9 @@ uninstall restores Microsoft's Bluetooth audio driver for that pair.
 4. Play music and remove one earbud. Check automatic pause, then reinsertion.
    Music paused manually must not resume merely because the earbuds return.
 5. If the earbuds report stem/accessibility settings, change one, confirm the
-   result, and restore it. Unreported settings must remain unavailable.
+   result, and restore it. Supported explicit choices can be edited without a
+   report; check that they show as sent, not confirmed. Unsupported settings must
+   remain unavailable.
 6. Open live movement and turn/nod gently. Record whether data arrives and stops
    when the section closes. A working graph is a separate pass from audio.
 7. Close the case and check nearby battery updates if this pair provides its

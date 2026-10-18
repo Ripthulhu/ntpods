@@ -50,7 +50,7 @@ public sealed partial class HearingAidCard : UserControl
     private string _deviceId = "";
     private bool _supported;
     private bool _applying = true;
-    // Coalesce audiogram edits to avoid a device round-trip for each field.
+    // Coalesce tuning gestures; audiogram changes require Apply.
     private readonly DispatcherTimer _debounce = new() { Interval = TimeSpan.FromMilliseconds(1500) };
 
     public HearingAidCard()
@@ -121,6 +121,10 @@ public sealed partial class HearingAidCard : UserControl
             IsEnabled = false,
         };
         nb.ValueChanged += (_, _) => CurveChanged();
+        nb.GotFocus += (_, _) =>
+        {
+            if (!_applying && CanEdit && _request.EditQueued) QueueEdit(requireApply: true);
+        };
         return nb;
     }
 
@@ -175,6 +179,7 @@ public sealed partial class HearingAidCard : UserControl
         ConvBoostSwitch.IsEnabled = on && !_edit.InvalidCurve;
         foreach (var b in _leftEq) b.IsEnabled = on;
         foreach (var b in _rightEq) b.IsEnabled = on;
+        ApplyAudiogramButton.IsEnabled = on && _request.ManualEditQueued && _edit.CanApply;
         string help = busy ? Localize.Get("DeviceSetting.Pending") :
             _request.EnableUnconfirmed ? Localize.Get("HearingAid.EnableUnconfirmed") :
             _snapshot.HearingAidEnrolled == false ? Localize.Get("HearingAid.SetupRequired") :
@@ -250,7 +255,8 @@ public sealed partial class HearingAidCard : UserControl
         _supported = supported;
         if (_supported)
         {
-            _request.Update(snapshot.HearingAidEnabled, snapshot.HearingAidRevision, refreshing);
+            if (_request.Update(snapshot.HearingAidEnabled, snapshot.HearingAidRevision, refreshing))
+                _edit.Reset();
             _media.Update(snapshot.MediaAssistEnabled, snapshot.MediaAssistRevision, refreshing);
         }
         if (!refreshing && _edit.Update(snapshot, _supported))
@@ -292,7 +298,7 @@ public sealed partial class HearingAidCard : UserControl
         if (_edit.EditCurve(CurveValues(_leftEq), CurveValues(_rightEq)))
         {
             ShowError(null);
-            QueueEdit();
+            QueueEdit(requireApply: true);
         }
         else
         {
@@ -306,10 +312,19 @@ public sealed partial class HearingAidCard : UserControl
     private static double[] CurveValues(NumberBox[] boxes) => boxes
         .Select(box => string.IsNullOrWhiteSpace(box.Text) ? double.NaN : box.Value).ToArray();
 
-    private void QueueEdit()
+    private void QueueEdit(bool requireApply = false)
     {
-        if (!_applying && CanEdit && _edit.CanApply && _request.QueueEdit())
-        { _debounce.Stop(); _debounce.Start(); }
+        if (!_applying && CanEdit && _edit.CanApply && _request.QueueEdit(requireApply))
+        {
+            _debounce.Stop();
+            if (!_request.ManualEditQueued) _debounce.Start();
+        }
+        RenderRequest();
+    }
+
+    private void ApplyAudiogram_Click(object sender, RoutedEventArgs e)
+    {
+        if (ApplyAudiogramButton.IsEnabled && _request.TakeEdit(explicitApply: true)) Apply();
     }
 
     private void Read_Click(object sender, RoutedEventArgs e)
@@ -355,7 +370,10 @@ public sealed partial class HearingAidCard : UserControl
         _edit.Reset();
         _edit.Update(_snapshot, _supported);
         RenderValues();
-        if (!on) _reading = _readPendingSeen = false;
+        if (!on)
+        {
+            _reading = _readPendingSeen = false;
+        }
         ulong id = request.Begin(on);
         ShowError(null);
         bool sent = request == _media
@@ -403,7 +421,9 @@ public sealed partial class HearingAidCard : UserControl
         if (!_request.Complete(result) && !_media.Complete(result)) return;
         _timeout.Stop();
         if (_request.Pending is not null || _media.Pending is not null || _reading) _timeout.Start();
-        ShowError(result.Ok ? null : result.Message);
+        // A superseded request only releases its pending state.
+        if (result.Ok || !string.IsNullOrEmpty(result.Message))
+            ShowError(result.Ok ? null : result.Message);
         RenderRequest();
     });
 

@@ -63,6 +63,8 @@
                        Foreground="{ThemeResource AppleSecondaryBrush}"
                        Margin="0,4,0,0" />
             <Grid x:Name="AudiogramGrid" ColumnSpacing="10" RowSpacing="4" />
+            <Button x:Name="ApplyAudiogramButton" IsEnabled="False" Click="ApplyAudiogram_Click"
+                    Content="{Binding [DeviceControls_Apply], Source={StaticResource Loc}}" />
 
             <Slider x:Name="AmpSlider" Minimum="0" Maximum="100" Value="50"
                     Header="{Binding [HearingAidAmp_Header], Source={StaticResource Loc}}"

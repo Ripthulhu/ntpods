@@ -31,6 +31,7 @@
     <Compile Include="../../winui/NTPods.WinUI/Controls/TransparencyEditState.cs" Link="TransparencyEditState.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Controls/HearingAidRequest.cs" Link="HearingAidRequest.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Controls/HearingAidEditState.cs" Link="HearingAidEditState.cs" />
+    <Compile Include="../../winui/NTPods.WinUI/Controls/HardwareDiagnosticsPresentation.cs" Link="HardwareDiagnosticsPresentation.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Controls/DeviceSettingStatus.cs" Link="DeviceSettingStatus.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Controls/RenameRequest.cs" Link="RenameRequest.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Controls/PlaybackModeRequest.cs" Link="PlaybackModeRequest.cs" />

@@ -96,6 +96,25 @@ public sealed record TransparencySettings
         float.IsFinite(RightAmbientNoiseReduction) && RightAmbientNoiseReduction is >= 0 and <= 1;
 }
 
+public sealed record HardwareDiagnosticEar
+{
+    [JsonRequired, JsonPropertyName("measured_at_unix_seconds")] public ulong MeasuredAtUnixSeconds { get; init; }
+    [JsonRequired, JsonPropertyName("general")] public byte General { get; init; }
+    [JsonRequired, JsonPropertyName("measurement")] public byte Measurement { get; init; }
+    [JsonRequired, JsonPropertyName("component_failures")] public byte? ComponentFailures { get; init; }
+    [JsonRequired, JsonPropertyName("unknown_bits")] public uint UnknownBits { get; init; }
+    [JsonIgnore] public bool IsValid => General <= 7 && Measurement <= 7 &&
+        (ComponentFailures is null || (MeasuredAtUnixSeconds != 0 && Measurement <= 1));
+}
+
+public sealed record HardwareDiagnostics
+{
+    [JsonRequired, JsonPropertyName("read_at_unix_seconds")] public ulong ReadAtUnixSeconds { get; init; }
+    [JsonRequired, JsonPropertyName("left")] public required HardwareDiagnosticEar Left { get; init; }
+    [JsonRequired, JsonPropertyName("right")] public required HardwareDiagnosticEar Right { get; init; }
+    [JsonIgnore] public bool IsValid => Left is { IsValid: true } && Right is { IsValid: true };
+}
+
 /// The daemon's authoritative state, pushed on connect and on every change.
 public sealed class Snapshot
 {
@@ -154,6 +173,9 @@ public sealed class Snapshot
     [JsonPropertyName("hearing_aid_editable")] public bool HearingAidEditable { get; set; }
     [JsonPropertyName("hearing_aid_pending")] public bool HearingAidPending { get; set; }
     [JsonPropertyName("hearing_aid_error")] public string? HearingAidError { get; set; }
+    [JsonPropertyName("hardware_diagnostics")] public HardwareDiagnostics? HardwareDiagnostics { get; set; }
+    [JsonPropertyName("hardware_diagnostics_pending")] public bool HardwareDiagnosticsPending { get; set; }
+    [JsonPropertyName("hardware_diagnostics_error")] public string? HardwareDiagnosticsError { get; set; }
     [JsonPropertyName("loud_sound_reduction")] public bool? LoudSoundReduction { get; set; }
     [JsonPropertyName("loud_sound_reduction_pending")] public bool LoudSoundReductionPending { get; set; }
     [JsonPropertyName("loud_sound_reduction_error")] public string? LoudSoundReductionError { get; set; }
@@ -164,6 +186,7 @@ public sealed class Snapshot
     /// Last successfully sent choice on Pro 3, which may not acknowledge this setting.
     [JsonPropertyName("allow_off_requested")] public bool? AllowOffRequested { get; set; }
     [JsonPropertyName("device_controls")] public Dictionary<byte, uint> DeviceControls { get; set; } = new();
+    [JsonPropertyName("device_controls_requested")] public Dictionary<byte, uint> DeviceControlsRequested { get; set; } = new();
     [JsonPropertyName("device_controls_pending")] public Dictionary<byte, uint> DeviceControlsPending { get; set; } = new();
     [JsonPropertyName("aacp_capabilities")] public Dictionary<byte, uint> AacpCapabilities { get; set; } = new();
     /// Successfully sent strength, awaiting an actual device report.
@@ -412,6 +435,7 @@ public sealed class GetTransparencyCmd
 public sealed class SetTransparencyCmd
 {
     [JsonPropertyName("cmd")] public string Cmd => "set_transparency";
+    [JsonPropertyName("expected")] public TransparencySettings? Expected { get; init; }
     [JsonPropertyName("settings")] public required TransparencySettings Settings { get; init; }
 }
 
@@ -419,6 +443,11 @@ public sealed class SetLoudSoundReductionCmd
 {
     [JsonPropertyName("cmd")] public string Cmd => "set_loud_sound_reduction";
     [JsonPropertyName("on")] public bool On { get; init; }
+}
+
+public sealed class GetHardwareDiagnosticsCmd
+{
+    [JsonPropertyName("cmd")] public string Cmd => "get_hardware_diagnostics";
 }
 
 public sealed class GetHearingAidCmd
@@ -542,7 +571,7 @@ public static class Wire
                     // Serde flattens Snapshot beside the event tag; deserialize the whole object.
                     var snap = root.Deserialize<Snapshot>(Json) ?? new Snapshot();
                     if (snap.Battery is null || snap.BatterySource is null || snap.BatteryFreshness is { IsValid: false } ||
-                        snap.DeviceControls is null || snap.DeviceControlsPending is null || snap.AacpCapabilities is null ||
+                        snap.DeviceControls is null || snap.DeviceControlsRequested is null || snap.DeviceControlsPending is null || snap.AacpCapabilities is null ||
                         snap.MicMode is not ("automatic" or "keep_active" or "manual") || snap.MicStopDelaySecs > 3600 ||
                         snap.PlaybackMode is not ("windows" or "aac" or "aac_eld") ||
                         snap.PlaybackPreferredMode is not (null or "windows" or "aac" or "aac_eld") ||
@@ -553,6 +582,7 @@ public static class Wire
                         snap.HeadTrackingState is not ("idle" or "starting" or "streaming" or "error" or "waiting_for_ear") ||
                         snap.AdaptiveStrengthRequested is > 100 || snap.ConversationVolume > 100 ||
                         snap.Transparency is { IsValid: false } || snap.HearingAidSettings is { IsValid: false } ||
+                        snap.HardwareDiagnostics is { IsValid: false } ||
                         snap.Eq is { IsValid: false } || snap.EqPending is { IsValid: false }) return null;
                     return new DaemonEvent.State(snap);
 

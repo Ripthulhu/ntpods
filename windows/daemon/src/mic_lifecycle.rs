@@ -9,7 +9,7 @@ pub fn playback_allows_microphone(state: &Snapshot) -> bool {
         return false;
     }
     // Hearing Off remains available during capture; pending edits only block a new uplink.
-    if state.hearing_aid_pending
+    if (state.hearing_aid_pending || state.hardware_diagnostics_pending)
         && !state.mic_uplink_active
         && !matches!(
             state.mic_state.as_str(),

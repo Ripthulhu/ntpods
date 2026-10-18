@@ -25,6 +25,15 @@ Keep native Windows text, keyboard controls and accessibility.
 Expander headings use the same normal-weight body style as setting labels.
 The name and connection status use single-line ellipsis; settings labels wrap.
 
+Supported unreported preferences allow an explicit choice. Unknown booleans use
+an unselected native On/Off chooser in the same 144 DIP slot as the reported
+switch. Keep sent choices separate from device reports in tooltips and accessible
+help. Require both hold actions before Apply. Saved choices stay with their pair
+and never send automatically when loaded.
+
+Require explicit Apply for audiogram changes; debounce tuning gestures and
+preserve untouched settings from the current pair's confirmed profile.
+
 ## Listening modes
 
 Modes share one draggable glass capsule. Adaptive expands within the rail to
@@ -60,6 +69,10 @@ pairing. Pause background Classic scans while a card or dialog is open, but allo
 its requested scan. Inhibit discovery during microphone capture and shutdown.
 
 ## Checks
+
+Hardware checks use a collapsed expander and manual Refresh. Show saved per-ear
+results with neutral text and separate device timestamps from the time read.
+Cached flags do not establish a current fault.
 
 Keep backend behavior, localization, themes and error handling intact. Visual
 tests must use an isolated renderer and must not send commands to AirPods.

@@ -305,6 +305,12 @@ pub fn parse_device_control(data: &[u8]) -> Option<(u8, u32)> {
         return None;
     }
     let value = u32::from_le_bytes(data[7..11].try_into().ok()?);
+    // Hold reports include previous actions in the upper bytes; commands do not.
+    let value = if data[6] == 0x16 {
+        value & 0xFFFF
+    } else {
+        value
+    };
     super::device_settings::valid_control(data[6], value).then_some((data[6], value))
 }
 
@@ -1024,11 +1030,40 @@ mod tests {
             assert_eq!(parse_device_control(&wrong_header), None);
         }
         assert_eq!(parse_device_control(&device_control_command(0x03, 1)), None);
-        assert_eq!(parse_device_control(&device_control_command(0x23, 0)), None);
+        assert_eq!(
+            parse_device_control(&device_control_command(0x23, 0)),
+            Some((0x23, 0))
+        );
+        assert_eq!(parse_device_control(&device_control_command(0x23, 3)), None);
         assert_eq!(
             parse_device_control(&device_control_command(0x28, 0x0101)),
             None
         );
+    }
+
+    #[test]
+    fn hold_reports_keep_current_actions_without_reusing_previous_action_bytes() {
+        let report = [4, 0, 4, 0, 9, 0, 0x16, 1, 5, 5, 1];
+        assert_eq!(parse_device_control(&report), Some((0x16, 0x0501)));
+        assert!(!crate::device_settings::valid_control(0x16, 0x01050501));
+        assert_eq!(
+            device_control_command(0x16, parse_device_control(&report).unwrap().1),
+            [4, 0, 4, 0, 9, 0, 0x16, 1, 5, 0, 0]
+        );
+        let mut opaque_previous = report;
+        opaque_previous[9..].copy_from_slice(&[0, 255]);
+        assert_eq!(parse_device_control(&opaque_previous), Some((0x16, 0x0501)));
+        for (right, left) in [(0, 5), (1, 0), (2, 5), (1, 6), (255, 255)] {
+            let mut malformed = report;
+            malformed[7..9].copy_from_slice(&[right, left]);
+            assert!(parse_device_control(&malformed).is_none());
+        }
+        for length in 0..report.len() {
+            assert!(parse_device_control(&report[..length]).is_none());
+        }
+        let mut trailing = report.to_vec();
+        trailing.push(0);
+        assert!(parse_device_control(&trailing).is_none());
     }
 
     #[test]

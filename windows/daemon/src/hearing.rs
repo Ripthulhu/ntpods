@@ -336,7 +336,6 @@ const ATT_TIMEOUT_MS: u32 = 900;
 
 // f32 offsets into the settings value (bytes after the ATT opcode) — mirror the
 // Linux reference exactly.
-const OFF_FORMAT: usize = 2;
 const OFF_LEFT_EQ: usize = 4; // + i*4, 8 bands
 const OFF_LEFT_AMP: usize = 36;
 const OFF_LEFT_TONE: usize = 40;
@@ -622,9 +621,7 @@ fn require_write_response(response: &[u8]) -> Result<(), String> {
 }
 
 fn parse_settings(value: &[u8]) -> Result<HearingAidSettings, String> {
-    if value.len() != 104
-        || !(matches!(value[OFF_FORMAT], 0 | 0x64) || matches!(value[..4], [2, 0 | 2, 0x60, 0]))
-    {
+    if value.len() != 104 || !matches!(value[..4], [2, 0 | 2, 0x60 | 0x64, 0]) {
         return Err("The AirPods returned an unsupported hearing-settings format.".into());
     }
     let read = |offset| f32::from_le_bytes(value[offset..offset + 4].try_into().unwrap());
@@ -693,10 +690,9 @@ fn read_settings(
 }
 
 fn editable_value(value: &[u8], characteristic: Characteristic) -> bool {
-    // Captured 0x60 headers are readable, but their write semantics are not established.
     characteristic.write_opcode.is_some()
         && value.len() == 104
-        && matches!(value[OFF_FORMAT], 0 | 0x64)
+        && matches!(value[..4], [2, 2, 0x60 | 0x64, 0])
 }
 
 /// Capture report identity before a request waits for the shared ATT lock.
@@ -791,27 +787,21 @@ fn patch_settings(value: &mut [u8], requested: &HearingAidSettings) {
         (OFF_RIGHT_AMP, requested.right_amplification),
         (OFF_LEFT_TONE, requested.left_tone),
         (OFF_RIGHT_TONE, requested.right_tone),
-        (
-            OFF_LEFT_CONV,
-            if requested.left_conversation_boost {
-                1.0
-            } else {
-                0.0
-            },
-        ),
-        (
-            OFF_RIGHT_CONV,
-            if requested.right_conversation_boost {
-                1.0
-            } else {
-                0.0
-            },
-        ),
         (OFF_LEFT_ANR, requested.left_ambient_noise_reduction),
         (OFF_RIGHT_ANR, requested.right_ambient_noise_reduction),
         (OFF_OWN_VOICE, requested.own_voice),
     ] {
         put_f32(value, offset, v);
+    }
+    for (offset, on) in [
+        (OFF_LEFT_CONV, requested.left_conversation_boost),
+        (OFF_RIGHT_CONV, requested.right_conversation_boost),
+    ] {
+        let current = f32::from_le_bytes(value[offset..offset + 4].try_into().unwrap());
+        // Both signs of zero mean false; retain untouched device bytes.
+        if (current == 1.0) != on {
+            put_f32(value, offset, if on { 1.0 } else { 0.0 });
+        }
     }
 }
 
@@ -828,23 +818,41 @@ fn write_settings(
     if !editable_value(&preserved, characteristic) {
         return Err("These hearing settings can be read but not edited yet.".into());
     }
+    let original = preserved.clone();
     patch_settings(&mut preserved, requested);
+    // Apple's v2 writer counts the 100-byte prefix; device reads may report 96.
+    preserved[..4].copy_from_slice(&[2, 2, 0x64, 0]);
     let mut write = att_write_pdu(characteristic.handle, &preserved);
     write[0] = characteristic.write_opcode.unwrap();
     let response = exchange(&write)?;
     if write[0] == 0x12 {
         require_write_response(&response)?;
     }
-    let (confirmed_value, confirmed) = read_value(&mut exchange, characteristic.handle)?;
-    if confirmed_value[..4] != preserved[..4] {
-        return Err("AirPods returned a different hearing-settings format after the write.".into());
+    confirm_settings(&mut exchange, characteristic.handle, &original, &preserved, thread::sleep)
+}
+
+fn confirm_settings(
+    exchange: &mut impl FnMut(&[u8]) -> Result<Vec<u8>, String>,
+    handle: u16,
+    original: &[u8],
+    written: &[u8],
+    mut wait: impl FnMut(Duration),
+) -> Result<HearingAidSettings, String> {
+    for attempt in 0..5 {
+        let (value, settings) = read_value(exchange, handle)?;
+        if !matches!(value[..4], [2, 2, 0x60 | 0x64, 0]) {
+            return Err("AirPods returned a different hearing-settings format after the write.".into());
+        }
+        if value[4..] == written[4..] {
+            return Ok(settings);
+        }
+        // A Write Command may finish after the first read; never resend it or accept other changes.
+        if value[4..] != original[4..] || attempt == 4 {
+            break;
+        }
+        wait(Duration::from_millis(75));
     }
-    if confirmed != *requested {
-        return Err(
-            "AirPods did not apply the hearing settings. Read them again before editing.".into(),
-        );
-    }
-    Ok(confirmed)
+    Err("AirPods did not apply the hearing settings. Read them again before editing.".into())
 }
 
 fn update_settings(
@@ -864,9 +872,9 @@ fn update_settings(
             return Err("These hearing settings can be read but not edited yet.".into());
         }
         let (enabled_value, _) = read_value(&mut exchange, characteristic.handle)?;
-        if enabled_value[..4] != preserved[..4] {
+        if enabled_value != preserved {
             return Err(
-                "AirPods changed the hearing-settings format while enabling assistance.".into(),
+                "AirPods changed the hearing settings while enabling assistance. Read them again before editing.".into(),
             );
         }
     }
@@ -996,6 +1004,16 @@ fn mode_plan(cache: &ModeCache, mode: Mode, on: bool) -> Result<ModePlan, String
     })
 }
 
+pub fn next_mode_gen(mode: Mode, on: bool) -> Result<u64, String> {
+    let cache = MODES.lock().unwrap_or_else(|error| error.into_inner());
+    if cache.session != session() {
+        return Err("AirPods connection changed.".into());
+    }
+    mode_plan(&cache, mode, on)?;
+    // Reject an unsafe Off before cancelling the other mode's confirmation.
+    Ok(next_gen())
+}
+
 fn mode_confirmed(plan: &ModePlan, cache: &ModeCache) -> bool {
     let state = cache.state();
     cache
@@ -1053,14 +1071,13 @@ fn reserve_mode_change(
 
 fn stored_profile_read(
     mut exchange: impl FnMut(&[u8]) -> Result<Vec<u8>, String>,
-) -> Result<(Vec<u8>, HearingAidSettings), String> {
-    let (_, value, settings) = read_settings(&mut |request| {
+) -> Result<(Characteristic, Vec<u8>, HearingAidSettings), String> {
+    read_settings(&mut |request| {
         if !matches!(request.first(), Some(0x06 | 0x08 | 0x0a)) {
             return Err("Stored hearing profiles can only be read.".into());
         }
         exchange(request)
-    })?;
-    Ok((value, settings))
+    })
 }
 
 pub fn mode_reports_complete() -> bool {
@@ -1074,12 +1091,12 @@ pub fn mode_reports_complete() -> bool {
 fn verify_profile(
     original: &[u8],
     mut exchange: impl FnMut(&[u8]) -> Result<Vec<u8>, String>,
-) -> Result<HearingAidSettings, String> {
-    let (confirmed, settings) = stored_profile_read(|request| exchange(request))?;
+) -> Result<(HearingAidSettings, bool), String> {
+    let (characteristic, confirmed, settings) = stored_profile_read(|request| exchange(request))?;
     if confirmed != original {
         return Err("The stored hearing profile changed. Read it again before continuing.".into());
     }
-    Ok(settings)
+    Ok((settings, editable_value(&confirmed, characteristic)))
 }
 
 /// Firmware may report mode changes only on a new AACP session.
@@ -1090,27 +1107,30 @@ pub fn verify_mode(
 ) -> Result<Option<Applied>, String> {
     let session = self::session();
     let current = || is_current(gen) && self::session() == session;
-    att_transaction(drv, &current, |exchange| {
-        let settings = verification
-            .original_profile
-            .as_ref()
-            .map(|original| verify_profile(original, |request| exchange(request)))
-            .transpose()?;
+    let check_modes = || {
         let modes = MODES.lock().unwrap_or_else(|error| error.into_inner());
         if let Some(error) = &verification.send_error {
             return Err(format!("The mode change was incomplete ({error}). The AirPods state was refreshed; check the switches before trying again."));
         }
         if modes.session != session || !mode_confirmed(&verification.plan, &modes) {
-            return Err(
-                "The AirPods reported different hearing modes. Read their state again.".into(),
-            );
+            return Err("The AirPods reported different hearing modes. Read their state again.".into());
         }
-        drop(modes);
-        let Some(settings) = settings else {
-            return Ok(Applied::Disabled);
-        };
+        Ok(())
+    };
+    // Turning a mode off must remain possible when the ATT channel needs recovery.
+    let Some(original) = &verification.original_profile else {
+        if !current() {
+            return Ok(None);
+        }
+        check_modes()?;
+        return Ok(current().then_some(Applied::Disabled));
+    };
+    att_transaction(drv, &current, |exchange| {
+        check_modes()?;
+        let (settings, editable) = verify_profile(original, |request| exchange(request))?;
+        check_modes()?;
         HEARING_READ_SESSION.store(session, Ordering::SeqCst);
-        HEARING_EDIT_SESSION.store(u64::MAX, Ordering::SeqCst);
+        HEARING_EDIT_SESSION.store(if editable { session } else { u64::MAX }, Ordering::SeqCst);
         Ok(Applied::Settings(settings))
     })
 }
@@ -1164,7 +1184,7 @@ pub fn set_mode(
         }
         if !plan.packets.is_empty() {
             let mut modes = MODES.lock().unwrap_or_else(|error| error.into_inner());
-            if modes.session != session {
+            if !current() || modes.session != session {
                 return Err("AirPods connection changed.".into());
             }
             if reserve_mode_change(&cache, &mut modes, &plan)? {
@@ -1177,13 +1197,13 @@ pub fn set_mode(
                 send_mode_packets(&plan.packets, &current, |packet| drv.send(packet)).err();
             return Ok(Applied::Requested(ModeVerification {
                 plan,
-                original_profile: baseline.map(|(value, _)| value),
+                original_profile: baseline.map(|(_, value, _)| value),
                 send_error,
                 session,
             }));
         }
-        if let Some((original, _)) = baseline {
-            let (confirmed, settings) = stored_profile_read(|request| {
+        if let Some((_, original, _)) = baseline {
+            let (characteristic, confirmed, settings) = stored_profile_read(|request| {
                 att_exchange(drv, &current, session, request, &mut reply_pending)
             })?;
             if confirmed != original {
@@ -1199,7 +1219,13 @@ pub fn set_mode(
                 );
             }
             HEARING_READ_SESSION.store(session, Ordering::SeqCst);
-            HEARING_EDIT_SESSION.store(u64::MAX, Ordering::SeqCst);
+            HEARING_EDIT_SESSION.store(
+                if editable_value(&confirmed, characteristic) { session } else { u64::MAX },
+                Ordering::SeqCst,
+            );
+            if plan.hearing {
+                *transaction = Some((session, HEARING_OFF_REVISION.load(Ordering::SeqCst)));
+            }
             Ok(Applied::Settings(settings))
         } else {
             Ok(Applied::Disabled)
@@ -1265,7 +1291,7 @@ pub fn apply(
 
     // Mode-only disable remains available even when ATT needs a reconnect.
     require_clean_att_session(session)?;
-    let enabled = enabled_in_session(*state, session, off_revision);
+    let enabled = enabled_in_session(*state, session, off_revision) || authorized.report & 3 == 2;
     let mut reply_pending = false;
     if !enabled {
         let custom = crate::transparency::read_enabled(|request| {
@@ -1475,6 +1501,28 @@ mod tests {
     }
 
     #[test]
+    fn pending_other_mode_off_is_rejected_without_cancelling_its_confirmation() {
+        let _guard = HEARING_STATE.lock().unwrap();
+        for (pending_mode, other_mode, hearing, media) in [
+            (Mode::MediaAssist, Mode::HearingAid, true, false),
+            (Mode::HearingAid, Mode::MediaAssist, false, true),
+        ] {
+            invalidate_session();
+            let mut original = mode_fixture(hearing, media, media);
+            original.session = session();
+            let plan = mode_plan(&original, pending_mode, true).unwrap();
+            let mut reserved = original.clone();
+            reserve_mode_change(&original, &mut reserved, &plan).unwrap();
+            *MODES.lock().unwrap() = reserved;
+            let generation = HEARING_GEN.load(Ordering::SeqCst);
+            assert!(next_mode_gen(other_mode, false).is_err());
+            assert!(is_current(generation));
+            assert_eq!(next_mode_gen(pending_mode, false).unwrap(), generation.wrapping_add(1));
+        }
+        invalidate_session();
+    }
+
+    #[test]
     fn partial_mode_send_stops_at_the_failure_and_keeps_it_for_verification() {
         let plan = mode_plan(&mode_fixture(false, false, false), Mode::HearingAid, true).unwrap();
         assert_eq!(plan.packets.len(), 3);
@@ -1581,7 +1629,8 @@ mod tests {
             Ok(response)
         })
         .unwrap();
-        assert_eq!(result, (original, settings));
+        assert_eq!(result.0, Characteristic { handle: 0x39, write_opcode: None });
+        assert_eq!((result.1, result.2), (original, settings));
         assert!(replies.next().is_none());
     }
 
@@ -1603,7 +1652,7 @@ mod tests {
                 Ok(response)
             });
             if changed.is_none() {
-                assert_eq!(result.unwrap(), expected);
+                assert_eq!(result.unwrap(), (expected, false));
             } else {
                 assert!(result.is_err());
             }
@@ -1839,7 +1888,7 @@ mod tests {
             own_voice: 0.5,
         };
         let mut value = vec![0; 104];
-        value[..4].copy_from_slice(&[7, 9, 0, 11]);
+        value[..4].copy_from_slice(&[2, 2, 0x64, 0]);
         patch_settings(&mut value, &settings);
         (value, settings)
     }
@@ -1861,7 +1910,39 @@ mod tests {
     }
 
     #[test]
-    fn captured_readonly_header_preserves_values_but_blocks_legacy_edits() {
+    fn hearing_reads_require_a_complete_known_v2_header() {
+        let (mut value, settings) = fixture();
+        for enrollment in [0, 2] {
+            for format in [0x60, 0x64] {
+                value[..4].copy_from_slice(&[2, enrollment, format, 0]);
+                assert_eq!(parse_settings(&value).unwrap(), settings);
+            }
+        }
+        for header in [
+            [0, 0, 0, 0],
+            [7, 9, 0, 11],
+            [1, 2, 0x64, 0],
+            [3, 2, 0x64, 0],
+            [2, 1, 0x64, 0],
+            [2, 3, 0x64, 0],
+            [2, 2, 0x64, 1],
+            [2, 2, 0x60, 1],
+            [2, 2, 0, 0],
+            [2, 2, 0x61, 0],
+        ] {
+            value[..4].copy_from_slice(&header);
+            assert!(parse_settings(&value).is_err(), "header {header:02x?}");
+        }
+        value[..4].copy_from_slice(&[1, 2, 0x64, 0]);
+        assert!(parse_settings(&value[..100]).is_err());
+        value[..4].copy_from_slice(&[2, 2, 0x64, 0]);
+        assert!(parse_settings(&value[..103]).is_err());
+        value.push(0);
+        assert!(parse_settings(&value).is_err());
+    }
+
+    #[test]
+    fn fitted_v2_header_is_editable_only_with_advertised_write_permission() {
         let (mut value, settings) = fixture();
         for header in [[2, 0, 0x60, 0], [2, 2, 0x60, 0]] {
             value[..4].copy_from_slice(&header);
@@ -1876,30 +1957,9 @@ mod tests {
             .unwrap();
             assert_eq!(actual, settings);
             assert_eq!(original, value);
-            assert!(!editable_value(&original, characteristic));
+            assert_eq!(editable_value(&original, characteristic), header[1] == 2);
             assert!(replies.next().is_none());
-
-            // A previous editable read has the same fields; fresh format must still win.
-            let mut requests = 0;
-            assert!(update_settings(
-                |request| {
-                    requests += 1;
-                    assert_eq!(request, [0x0a, 0x35, 0]);
-                    Ok([vec![0x0b], value.clone()].concat())
-                },
-                &settings,
-                &settings,
-                || panic!("read-only baseline enabled hearing")
-            )
-            .is_err());
-            assert_eq!(requests, 1);
-            assert!(write_settings(
-                |_| panic!("read-only value was written"),
-                characteristic,
-                value.clone(),
-                &settings
-            )
-            .is_err());
+            assert!(!editable_value(&original, Characteristic { write_opcode: None, ..characteristic }));
         }
         for header in [
             [0, 0, 0x60, 0],
@@ -1912,6 +1972,11 @@ mod tests {
         ] {
             value[..4].copy_from_slice(&header);
             assert!(parse_settings(&value).is_err());
+            assert!(!editable_value(&value, TEST_SETTING));
+        }
+        for header in [[7, 9, 0, 11], [1, 2, 0x64, 0], [2, 0, 0x64, 0], [2, 2, 0x64, 1]] {
+            value[..4].copy_from_slice(&header);
+            assert!(write_settings(|_| panic!("unknown format was written"), TEST_SETTING, value.clone(), &settings).is_err());
         }
     }
 
@@ -1946,19 +2011,19 @@ mod tests {
     }
 
     #[test]
-    fn hearing_writes_follow_discovered_properties_and_preserve_the_header() {
+    fn hearing_writes_use_the_apple_v2_header_and_discovered_write_method() {
         let (original, baseline) = fixture();
         let requested = HearingAidSettings {
             left_tone: 0.75,
             ..baseline
         };
         for (properties, opcode) in [(0x16, 0x52), (0x0a, 0x12)] {
-            for header in [[7, 9, 0, 11], [2, 0, 0x64, 0]] {
+            for header in [[2, 2, 0x60, 0], [2, 2, 0x64, 0]] {
                 let mut original = original.clone();
                 original[..4].copy_from_slice(&header);
                 let mut changed = original.clone();
                 patch_settings(&mut changed, &requested);
-                assert_eq!(&changed[..4], &header);
+                changed[..4].copy_from_slice(&[2, 2, 0x64, 0]);
                 let mut write = vec![opcode, 0x39, 0];
                 write.extend_from_slice(&changed);
                 let mut replies = discovery(properties, 0x39);
@@ -2013,6 +2078,35 @@ mod tests {
     }
 
     #[test]
+    fn fitted_write_accepts_only_exact_body_readback_with_known_header_normalization() {
+        let (mut original, baseline) = fixture();
+        original[..4].copy_from_slice(&[2, 2, 0x60, 0]);
+        let requested = HearingAidSettings { left_eq: [12.0; 8], ..baseline };
+        for header in [[2, 2, 0x60, 0], [2, 2, 0x64, 0], [2, 0, 0x60, 0]] {
+            for changed_byte in [None, Some(OFF_RIGHT_EQ), Some(OFF_OWN_VOICE)] {
+                let mut readback = original.clone();
+                patch_settings(&mut readback, &requested);
+                readback[..4].copy_from_slice(&header);
+                if let Some(offset) = changed_byte { readback[offset] ^= 1; }
+                let mut writes = 0;
+                let result = write_settings(|request| {
+                    if request[0] == 0x12 {
+                        writes += 1;
+                        assert_eq!(&request[3..7], &[2, 2, 0x64, 0]);
+                        assert_eq!(&request[3 + OFF_LEFT_AMP..], &original[OFF_LEFT_AMP..]);
+                        Ok(vec![0x13])
+                    } else {
+                        assert_eq!(request[0], 0x0a);
+                        Ok([vec![0x0b], readback.clone()].concat())
+                    }
+                }, TEST_SETTING, original.clone(), &requested);
+                assert_eq!(result.is_ok(), header[1] == 2 && changed_byte.is_none());
+                assert_eq!(writes, 1);
+            }
+        }
+    }
+
+    #[test]
     fn command_readback_must_match_settings_and_header() {
         let (original, baseline) = fixture();
         let requested = HearingAidSettings {
@@ -2045,22 +2139,49 @@ mod tests {
                 &requested,
             );
             assert!(result.is_err());
-            assert_eq!(calls, 2);
+            assert_eq!(calls, if changed_header { 2 } else { 6 });
         }
     }
 
     #[test]
-    fn a_new_enable_rediscovers_the_handle_and_preserves_pre_enable_curves() {
+    fn delayed_write_readback_retries_only_the_unchanged_original_value() {
         let (original, baseline) = fixture();
-        let mut reset = original.clone();
-        put_f32(&mut reset, OFF_LEFT_EQ, 0.0);
+        let mut written = original.clone();
+        let requested = HearingAidSettings { left_tone: 0.75, ..baseline };
+        patch_settings(&mut written, &requested);
+        for stale_reads in [0, 1, 4, 5] {
+            let mut reads = 0;
+            let mut waits = 0;
+            let result = confirm_settings(&mut |request| {
+                assert_eq!(request, att_read_req(TEST_SETTING.handle));
+                reads += 1;
+                Ok([vec![0x0b], if reads <= stale_reads { original.clone() } else { written.clone() }].concat())
+            }, TEST_SETTING.handle, &original, &written, |delay| {
+                assert_eq!(delay, Duration::from_millis(75));
+                waits += 1;
+            });
+            assert_eq!(result.is_ok(), stale_reads < 5);
+            assert_eq!(reads, (stale_reads + 1).min(5));
+            assert_eq!(waits, stale_reads.min(4));
+        }
+        let mut unexpected = original.clone();
+        put_f32(&mut unexpected, OFF_RIGHT_EQ, 50.0);
+        assert!(confirm_settings(&mut |_| Ok([vec![0x0b], unexpected.clone()].concat()),
+            TEST_SETTING.handle, &original, &written, |_| panic!("unrelated change retried")).is_err());
+        assert!(confirm_settings(&mut |_| Err("session changed".into()),
+            TEST_SETTING.handle, &original, &written, |_| panic!("failed read retried")).is_err());
+    }
+
+    #[test]
+    fn a_new_enable_rediscovers_the_handle_before_writing_unchanged_pre_enable_curves() {
+        let (original, baseline) = fixture();
         let mut write = vec![0x52, 0x3c, 0];
         write.extend_from_slice(&original);
         let mut replies = discovery(0x0a, 0x35);
         replies.push((vec![0x0a, 0x35, 0], [vec![0x0b], original.clone()].concat()));
         replies.extend(discovery(0x16, 0x3c));
         replies.extend([
-            (vec![0x0a, 0x3c, 0], [vec![0x0b], reset].concat()),
+            (vec![0x0a, 0x3c, 0], [vec![0x0b], original.clone()].concat()),
             (write, vec![]),
             (vec![0x0a, 0x3c, 0], [vec![0x0b], original].concat()),
         ]);
@@ -2083,9 +2204,57 @@ mod tests {
     }
 
     #[test]
+    fn enable_cannot_overwrite_a_profile_that_changed_during_the_request() {
+        let (original, baseline) = fixture();
+        for offset in [OFF_LEFT_EQ, OFF_RIGHT_EQ, OFF_LEFT_TONE, OFF_OWN_VOICE] {
+            let mut changed = original.clone();
+            changed[offset] ^= 1;
+            let mut replies = discovery(0x0a, 0x35);
+            replies.push((vec![0x0a, 0x35, 0], [vec![0x0b], original.clone()].concat()));
+            replies.extend(discovery(0x16, 0x3c));
+            replies.push((vec![0x0a, 0x3c, 0], [vec![0x0b], changed].concat()));
+            let mut replies = replies.into_iter();
+            assert!(super::update_settings(
+                |request| {
+                    let (expected, response) = replies.next().expect("changed profile was overwritten");
+                    assert_eq!(request, expected);
+                    Ok(response)
+                },
+                &baseline,
+                &baseline,
+                || Ok(true),
+            ).is_err());
+            assert!(replies.next().is_none());
+        }
+    }
+
+    #[test]
+    fn unrelated_edits_preserve_signed_zero_boost_flags() {
+        let (mut value, baseline) = fixture();
+        put_f32(&mut value, OFF_LEFT_CONV, -0.0);
+        put_f32(&mut value, OFF_RIGHT_CONV, -0.0);
+        let requested = HearingAidSettings {
+            left_tone: 0.75,
+            left_conversation_boost: false,
+            right_conversation_boost: false,
+            ..baseline
+        };
+        patch_settings(&mut value, &requested);
+        for offset in [OFF_LEFT_CONV, OFF_RIGHT_CONV] {
+            assert_eq!(&value[offset..offset + 4], &(-0.0f32).to_le_bytes());
+        }
+        patch_settings(&mut value, &HearingAidSettings {
+            right_conversation_boost: true,
+            ..requested
+        });
+        assert_eq!(&value[OFF_LEFT_CONV..OFF_LEFT_CONV + 4], &(-0.0f32).to_le_bytes());
+        assert_eq!(&value[OFF_RIGHT_CONV..OFF_RIGHT_CONV + 4], &1.0f32.to_le_bytes());
+    }
+
+    #[test]
     fn a_new_enable_never_writes_if_the_format_or_write_permission_changed() {
         let (mut original, baseline) = fixture();
-        original[..4].copy_from_slice(&[2, 0, 0x64, 0]);
+        original[..4].copy_from_slice(&[2, 2, 0x64, 0]);
         for properties in [0x02, 0x16] {
             let mut changed = original.clone();
             changed[..4].copy_from_slice(&[2, 0, 0x60, 0]);

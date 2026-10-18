@@ -3,10 +3,103 @@
 
 use ntpods_ipc::{Equalizer, Snapshot};
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 const CONFIRM_TIMEOUT: Duration = Duration::from_secs(10);
+const CHOICES_MAX_BYTES: u64 = 1024;
+
+pub fn explicit_choice_id(id: u8) -> bool {
+    matches!(id, 0x01 | 0x0A | 0x16 | 0x1A | 0x23 | 0x31 | 0x40)
+}
+
+fn choices_path(base: &Path, mac: u64) -> io::Result<PathBuf> {
+    if mac == 0 || mac > 0xffff_ffff_ffff {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Invalid Bluetooth address",
+        ));
+    }
+    Ok(base
+        .join("NTPods")
+        .join(format!("device-choices-{mac:012x}.json")))
+}
+
+fn load_control_choices_at(base: &Path, mac: u64) -> BTreeMap<u8, u32> {
+    let Some(bytes) = choices_path(base, mac).ok().and_then(|path| {
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)
+            .ok()?
+            .take(CHOICES_MAX_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        (bytes.len() as u64 <= CHOICES_MAX_BYTES).then_some(bytes)
+    }) else {
+        return BTreeMap::new();
+    };
+    let Ok(raw) = serde_json::from_slice::<BTreeMap<String, u32>>(&bytes) else {
+        return BTreeMap::new();
+    };
+    if raw.len() > 7 {
+        return BTreeMap::new();
+    }
+    raw.into_iter()
+        .map(|(key, value)| {
+            let id = key.parse::<u8>().ok()?;
+            (key == id.to_string() && explicit_choice_id(id) && valid_control(id, value))
+                .then_some((id, value))
+        })
+        .collect::<Option<BTreeMap<_, _>>>()
+        .unwrap_or_default()
+}
+
+pub fn load_control_choices(mac: u64) -> BTreeMap<u8, u32> {
+    std::env::var_os("LOCALAPPDATA")
+        .map(|base| load_control_choices_at(Path::new(&base), mac))
+        .unwrap_or_default()
+}
+
+fn save_control_choice_at(base: &Path, mac: u64, id: u8, value: u32) -> io::Result<()> {
+    let path = choices_path(base, mac)?;
+    if !explicit_choice_id(id) || !valid_control(id, value) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Invalid device choice",
+        ));
+    }
+    let mut choices = load_control_choices_at(base, mac);
+    choices.insert(id, value);
+    crate::atomic_file::write(
+        &path,
+        &serde_json::to_vec(&choices).map_err(io::Error::other)?,
+    )
+}
+
+pub fn save_control_choice(mac: u64, id: u8, value: u32) -> io::Result<()> {
+    let base = std::env::var_os("LOCALAPPDATA")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "LOCALAPPDATA is unavailable"))?;
+    save_control_choice_at(Path::new(&base), mac, id, value)
+}
+
+pub fn apply_control_choices(
+    state: &mut Snapshot,
+    pending: &PendingSettings,
+    saved: BTreeMap<u8, u32>,
+) -> bool {
+    let mut changed = false;
+    for (id, value) in saved {
+        if !pending.in_flight.contains(&id)
+            && !state.device_controls_requested.contains_key(&id)
+            && !state.device_controls_pending.contains_key(&id)
+            && crate::device_models::unreported_choice(state, id, value)
+        {
+            state.device_controls_requested.insert(id, value);
+            changed = true;
+        }
+    }
+    changed
+}
 
 pub fn supports_silent_allow_off(model: &str) -> bool {
     matches!(model, "A3063" | "A3064" | "A3065")
@@ -66,7 +159,7 @@ pub fn valid_control(id: u8, value: u32) -> bool {
         0x1C => matches!(value, 1 | 2),
         // LibrePods sends the tone level followed by the fixed 0x50 byte.
         0x1F => value >> 8 == 0x50 && value & 0xFF <= 100,
-        0x23 => (1..=3).contains(&value),
+        0x23 => value <= 2,
         0x24 => matches!(value, 0x0200 | 0x0300),
         0x2E | 0x40 => value <= 100,
         _ => false,
@@ -91,6 +184,7 @@ pub struct PendingSettings {
 pub struct WriteToken {
     session: u64,
     report: u64,
+    unreported_choice: bool,
 }
 
 impl PendingSettings {
@@ -102,6 +196,7 @@ impl PendingSettings {
         self.eq = None;
         self.unconfirmed_anc = None;
         state.device_controls.clear();
+        state.device_controls_requested.clear();
         state.device_controls_pending.clear();
         state.adaptive_strength_requested = None;
         state.allow_off_requested = None;
@@ -114,6 +209,9 @@ impl PendingSettings {
         state.hearing_aid_settings = None;
         state.hearing_aid_pending = false;
         state.hearing_aid_error = None;
+        state.hardware_diagnostics = None;
+        state.hardware_diagnostics_pending = false;
+        state.hardware_diagnostics_error = None;
         state.transparency = None;
         state.transparency_pending = false;
         state.transparency_error = None;
@@ -130,13 +228,43 @@ impl PendingSettings {
         WriteToken {
             session: self.session,
             report: *self.reports.get(&id).unwrap_or(&0),
+            unreported_choice: false,
         }
     }
 
-    pub fn begin_control(&mut self, state: &mut Snapshot, id: u8, value: u32) -> WriteToken {
-        let token = self.token(id);
+    pub fn session(&self) -> u64 {
+        self.session
+    }
+
+    pub fn reported_during(&self, id: u8, token: WriteToken) -> bool {
+        token.session == self.session && token.report != self.token(id).report
+    }
+
+    pub fn can_remember_choice(
+        &self,
+        state: &Snapshot,
+        id: u8,
+        value: u32,
+        token: WriteToken,
+    ) -> bool {
+        token.session == self.session
+            && (!self.reported_during(id, token) || state.device_controls.get(&id) == Some(&value))
+    }
+
+    pub fn begin_control(
+        &mut self,
+        state: &mut Snapshot,
+        id: u8,
+        value: u32,
+        unreported_choice: bool,
+    ) -> WriteToken {
+        let mut token = self.token(id);
+        token.unreported_choice = unreported_choice;
         self.in_flight.insert(id);
-        if id == 0x2E || (id == 0x34 && supports_silent_allow_off(&state.model)) {
+        if unreported_choice
+            || id == 0x2E
+            || (id == 0x34 && supports_silent_allow_off(&state.model))
+        {
             self.control_attempted(state, id, value);
         } else {
             // Register before sending: the receive thread may observe the reply first.
@@ -165,6 +293,11 @@ impl PendingSettings {
             }
             state.device_settings_error =
                 Some("Could not send the setting. Check the AirPods connection.".into());
+        } else if token.unreported_choice {
+            if token.report == self.token(id).report {
+                state.device_controls_requested.insert(id, value);
+                state.device_settings_error = None;
+            }
         } else if (id == 0x2E || (id == 0x34 && supports_silent_allow_off(&state.model)))
             && token.report == self.token(id).report
         {
@@ -254,6 +387,7 @@ impl PendingSettings {
         let strength_reported = id == 0x2E && state.adaptive_strength_requested.take().is_some();
         let allow_off_reported = id == 0x34 && state.allow_off_requested.take().is_some();
         let changed = state.device_controls.insert(id, value) != Some(value);
+        let requested_cleared = state.device_controls_requested.remove(&id).is_some();
         let matched = state.device_controls_pending.get(&id) == Some(&value);
         if matched {
             state.device_controls_pending.remove(&id);
@@ -274,7 +408,12 @@ impl PendingSettings {
             0x34 => state.allow_off = value == 1,
             _ => (),
         }
-        changed || matched || anc_confirmed || strength_reported || allow_off_reported
+        changed
+            || matched
+            || requested_cleared
+            || anc_confirmed
+            || strength_reported
+            || allow_off_reported
     }
 
     pub fn confirm_eq(&mut self, state: &mut Snapshot, eq: Equalizer) -> bool {
@@ -328,12 +467,165 @@ impl PendingSettings {
 mod tests {
     use super::*;
 
+    fn pro_three() -> Snapshot {
+        Snapshot {
+            model: "A3063".into(),
+            firmware: "9A348".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn unreported_choice_is_not_a_report_or_a_timed_request() {
+        let mut pending = PendingSettings::default();
+        let mut state = pro_three();
+        assert!(crate::device_models::unreported_choice(&state, 0x23, 2));
+        let token = pending.begin_control(&mut state, 0x23, 2, true);
+        assert!(state.device_controls_pending.is_empty());
+        assert!(pending.finish_control(&mut state, 0x23, 2, token, true));
+        assert_eq!(state.device_controls_requested.get(&0x23), Some(&2));
+        assert!(!state.device_controls.contains_key(&0x23));
+        assert!(!pending.expire(&mut state, Instant::now() + CONFIRM_TIMEOUT));
+        assert!(state.device_settings_error.is_none());
+        assert!(pending.confirm_control(&mut state, 0x23, 0));
+        assert_eq!(state.device_controls.get(&0x23), Some(&0));
+        assert!(!state.device_controls_requested.contains_key(&0x23));
+    }
+
+    #[test]
+    fn failed_unreported_send_preserves_the_last_choice_and_reset_clears_it() {
+        let mut pending = PendingSettings::default();
+        let mut state = pro_three();
+        let first = pending.begin_control(&mut state, 0x23, 1, true);
+        pending.finish_control(&mut state, 0x23, 1, first, true);
+        let second = pending.begin_control(&mut state, 0x23, 2, true);
+        pending.finish_control(&mut state, 0x23, 2, second, false);
+        assert_eq!(state.device_controls_requested.get(&0x23), Some(&1));
+        assert!(state.device_settings_error.is_some());
+        pending.reset(&mut state);
+        assert!(state.device_controls_requested.is_empty());
+        assert!(!pending.finish_control(&mut state, 0x23, 2, second, true));
+    }
+
+    #[test]
+    fn only_a_fresh_opposing_report_vetoes_remembering_a_successful_choice() {
+        let mut pending = PendingSettings::default();
+        let mut state = pro_three();
+        pending.confirm_control(&mut state, 0x23, 0);
+
+        let token = pending.begin_control(&mut state, 0x23, 2, false);
+        pending.finish_control(&mut state, 0x23, 2, token, true);
+        assert!(pending.can_remember_choice(&state, 0x23, 2, token));
+
+        let token = pending.begin_control(&mut state, 0x23, 2, false);
+        pending.confirm_control(&mut state, 0x23, 2);
+        pending.finish_control(&mut state, 0x23, 2, token, true);
+        assert!(pending.reported_during(0x23, token));
+        assert!(pending.can_remember_choice(&state, 0x23, 2, token));
+        assert!(state.device_controls_requested.is_empty());
+
+        let token = pending.begin_control(&mut state, 0x23, 1, false);
+        pending.confirm_control(&mut state, 0x23, 2);
+        pending.finish_control(&mut state, 0x23, 1, token, true);
+        assert!(!pending.can_remember_choice(&state, 0x23, 1, token));
+    }
+
+    #[test]
+    fn cached_choices_are_per_pair_bounded_and_validated() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base =
+            std::env::temp_dir().join(format!("ntpods-choices-{}-{unique}", std::process::id()));
+        let first = 0x112233445566;
+        let second = 0x665544332211;
+        assert!(choices_path(&base, 0).is_err());
+        assert!(choices_path(&base, 0x1_0000_0000_0000).is_err());
+        assert!(save_control_choice_at(&base, first, 0x25, 1).is_err());
+        assert!(save_control_choice_at(&base, first, 0x23, 3).is_err());
+        assert!(load_control_choices_at(&base, first).is_empty());
+        save_control_choice_at(&base, first, 0x23, 1).unwrap();
+        let mut pending = PendingSettings::default();
+        let mut state = pro_three();
+        pending.confirm_control(&mut state, 0x23, 0);
+        let token = pending.begin_control(&mut state, 0x23, 2, false);
+        assert!(pending.finish_control(&mut state, 0x23, 2, token, true));
+        assert!(pending.can_remember_choice(&state, 0x23, 2, token));
+        save_control_choice_at(&base, first, 0x23, 2).unwrap();
+        pending.reset(&mut state);
+        assert!(apply_control_choices(
+            &mut state,
+            &pending,
+            load_control_choices_at(&base, first)
+        ));
+        assert_eq!(state.device_controls_requested.get(&0x23), Some(&2));
+        assert!(!state.device_controls.contains_key(&0x23));
+        assert_eq!(load_control_choices_at(&base, first).get(&0x23), Some(&2));
+        assert!(load_control_choices_at(&base, second).is_empty());
+        let path = choices_path(&base, first).unwrap();
+        for invalid in [
+            "not json".to_string(),
+            "{\"35\":3}".to_string(),
+            "{\"37\":1}".to_string(),
+            "{\"035\":2}".to_string(),
+            "x".repeat(CHOICES_MAX_BYTES as usize + 1),
+        ] {
+            std::fs::write(&path, invalid).unwrap();
+            assert!(load_control_choices_at(&base, first).is_empty());
+        }
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn cache_restore_waits_for_idle_and_never_replaces_fresh_state() {
+        let mut pending = PendingSettings::default();
+        let mut state = pro_three();
+        let saved = [(0x23, 2)].into();
+        assert!(apply_control_choices(&mut state, &pending, saved));
+        assert_eq!(state.device_controls_requested.get(&0x23), Some(&2));
+
+        state.device_controls_requested.insert(0x23, 1);
+        assert!(!apply_control_choices(
+            &mut state,
+            &pending,
+            [(0x23, 2)].into()
+        ));
+        assert_eq!(state.device_controls_requested.get(&0x23), Some(&1));
+
+        state.device_controls_requested.clear();
+        let token = pending.begin_control(&mut state, 0x23, 1, true);
+        assert!(!apply_control_choices(
+            &mut state,
+            &pending,
+            [(0x23, 2)].into()
+        ));
+        pending.finish_control(&mut state, 0x23, 1, token, true);
+        assert_eq!(state.device_controls_requested.get(&0x23), Some(&1));
+
+        pending.confirm_control(&mut state, 0x23, 0);
+        assert!(!apply_control_choices(
+            &mut state,
+            &pending,
+            [(0x23, 2)].into()
+        ));
+        assert!(!state.device_controls_requested.contains_key(&0x23));
+
+        pending.reset(&mut state);
+        state.model = "future".into();
+        assert!(!apply_control_choices(
+            &mut state,
+            &pending,
+            [(0x23, 2)].into()
+        ));
+    }
+
     #[test]
     fn confirmation_timeout_starts_after_the_write_finishes() {
         let mut pending = PendingSettings::default();
         let mut state = Snapshot::default();
         let start = Instant::now();
-        let token = pending.begin_control(&mut state, 0x28, 1);
+        let token = pending.begin_control(&mut state, 0x28, 1, false);
         assert!(!pending.expire(&mut state, start + Duration::from_secs(30)));
         pending.finish_control(&mut state, 0x28, 1, token, true);
         assert!(!pending.expire(&mut state, Instant::now()));
@@ -354,7 +646,7 @@ mod tests {
     fn replies_during_a_send_are_not_replaced_by_pending_state() {
         let mut pending = PendingSettings::default();
         let mut state = Snapshot::default();
-        let token = pending.begin_control(&mut state, 0x0D, 4);
+        let token = pending.begin_control(&mut state, 0x0D, 4, false);
         pending.confirm_control(&mut state, 0x0D, 4);
         pending.finish_control(&mut state, 0x0D, 4, token, true);
         assert_eq!(state.anc, 4);
@@ -371,7 +663,7 @@ mod tests {
         pending.finish_eq(&mut state, token, true);
         assert_eq!(state.eq, Some(eq));
         assert!(state.eq_pending.is_none());
-        let token = pending.begin_control(&mut state, 0x2E, 51);
+        let token = pending.begin_control(&mut state, 0x2E, 51, false);
         pending.confirm_control(&mut state, 0x2E, 50);
         pending.finish_control(&mut state, 0x2E, 51, token, true);
         assert!(state.adaptive_strength_requested.is_none());
@@ -382,12 +674,12 @@ mod tests {
     fn failed_and_old_session_writes_do_not_recreate_requests() {
         let mut pending = PendingSettings::default();
         let mut state = Snapshot::default();
-        let token = pending.begin_control(&mut state, 0x28, 1);
+        let token = pending.begin_control(&mut state, 0x28, 1, false);
         pending.finish_control(&mut state, 0x28, 1, token, false);
         assert!(state.device_controls_pending.is_empty());
         assert!(state.conversational_awareness_pending.is_none());
         assert!(state.device_settings_error.is_some());
-        let token = pending.begin_control(&mut state, 0x2E, 23);
+        let token = pending.begin_control(&mut state, 0x2E, 23, false);
         state.loud_sound_reduction = Some(true);
         state.loud_sound_reduction_pending = true;
         state.loud_sound_reduction_error = Some("old connection".into());
@@ -397,7 +689,7 @@ mod tests {
         assert!(state.loud_sound_reduction_error.is_none());
         assert!(!pending.finish_control(&mut state, 0x2E, 23, token, true));
         assert!(state.adaptive_strength_requested.is_none());
-        let token = pending.begin_control(&mut state, 0x2E, 35);
+        let token = pending.begin_control(&mut state, 0x2E, 35, false);
         pending.finish_control(&mut state, 0x2E, 35, token, false);
         assert!(state.adaptive_strength_requested.is_none());
     }
@@ -555,6 +847,25 @@ mod tests {
     }
 
     #[test]
+    fn captured_default_swipe_duration_is_retained_and_all_choices_confirm() {
+        let report = [4, 0, 4, 0, 9, 0, 0x23, 0, 0, 0, 0];
+        let (id, value) = crate::aap::parse_device_control(&report).unwrap();
+        let mut pending = PendingSettings::default();
+        let mut state = Snapshot::default();
+        assert!(pending.confirm_control(&mut state, id, value));
+        assert_eq!(state.device_controls.get(&0x23), Some(&0));
+        for value in 0..=2 {
+            assert!(valid_control(id, value));
+            pending.control_sent(&mut state, id, value, Instant::now());
+            pending.confirm_control(&mut state, id, value);
+            assert_eq!(state.device_controls.get(&id), Some(&value));
+            assert!(state.device_controls_pending.is_empty());
+        }
+        assert!(!pending.confirm_control(&mut state, id, 3));
+        assert_eq!(state.device_controls.get(&id), Some(&2));
+    }
+
+    #[test]
     fn controls_accept_only_documented_values_and_preserve_two_byte_settings() {
         for (id, valid, invalid) in [
             (0x01, 0, 3),
@@ -566,7 +877,7 @@ mod tests {
             (0x1C, 1, 0),
             (0x1C, 2, 3),
             (0x1F, 0x5064, 0x5065),
-            (0x23, 3, 0),
+            (0x23, 0, 3),
             (0x24, 0x0200, 2),
             (0x2E, 100, 101),
             (0x40, 0, 256),
@@ -633,13 +944,13 @@ mod tests {
             high: 60,
         };
         pending.eq_sent(&mut state, eq, now);
-        pending.control_sent(&mut state, 0x23, 3, now);
+        pending.control_sent(&mut state, 0x23, 2, now);
         assert!(state.eq.is_none());
         assert!(pending.confirm_eq(&mut state, eq));
         assert_eq!(state.eq, Some(eq));
         assert!(state.eq_pending.is_none());
-        assert_eq!(state.device_controls_pending.get(&0x23), Some(&3));
-        assert!(pending.confirm_control(&mut state, 0x23, 3));
+        assert_eq!(state.device_controls_pending.get(&0x23), Some(&2));
+        assert!(pending.confirm_control(&mut state, 0x23, 2));
         assert!(!pending.expire(&mut state, now + CONFIRM_TIMEOUT));
         state.transparency = Some(ntpods_ipc::TransparencySettings {
             enabled: true,
@@ -654,11 +965,17 @@ mod tests {
         });
         state.transparency_pending = true;
         state.transparency_error = Some("Previous pair's request failed.".into());
+        let ear = ntpods_ipc::HardwareDiagnosticEar { measured_at_unix_seconds: 1,
+            general: 0, measurement: 0, component_failures: Some(0), unknown_bits: 0 };
+        state.hardware_diagnostics = Some(ntpods_ipc::HardwareDiagnostics { read_at_unix_seconds: 2, left: ear, right: ear });
+        state.hardware_diagnostics_pending = true;
+        state.hardware_diagnostics_error = Some("Previous pair.".into());
         pending.reset(&mut state);
         assert!(state.eq.is_none() && state.eq_pending.is_none());
         assert!(state.device_controls.is_empty() && state.device_controls_pending.is_empty());
         assert!(state.transparency.is_none() && !state.transparency_pending);
         assert!(state.transparency_error.is_none());
+        assert!(state.hardware_diagnostics.is_none() && !state.hardware_diagnostics_pending && state.hardware_diagnostics_error.is_none());
         assert!(
             state.auto_pause,
             "device reconnect must not change the host preference"
@@ -748,7 +1065,7 @@ mod tests {
         ] {
             assert!(!pending.confirm_eq(&mut state, eq));
         }
-        assert!(!pending.confirm_control(&mut state, 0x23, 0));
+        assert!(!pending.confirm_control(&mut state, 0x23, 3));
         assert!(state.eq.is_none() && state.device_controls.is_empty());
     }
 

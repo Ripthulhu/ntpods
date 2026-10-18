@@ -21,8 +21,10 @@ Windows 11, Intel AX200, Pro 3 A3064 / 9A348:
 | Custom Transparency | Audible noise-reduction adjustment and restoration confirmed by readback |
 | Saved hearing modes | With an iPhone-fitted profile, Hearing Aid and Media Assist changed independently; the fitting bytes stayed unchanged |
 
-The captured fitting remains read-only; NTPods cannot run the iPhone Hearing
-Test. The Windows SDP reply, other models and other adapters remain unverified.
+A development preview on Pro 3 A3063 / 9A348 also confirmed fitting adjustments
+and restoration; see [hardware coverage](WINDOWS-VALIDATION.md#controls-batteries-and-sensors).
+The Windows SDP reply, other models and other adapters remain unverified.
+NTPods cannot run the iPhone Hearing Test.
 
 ## Backup and recovery
 

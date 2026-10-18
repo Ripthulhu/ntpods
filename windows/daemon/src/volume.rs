@@ -19,26 +19,34 @@ pub fn init() {
     }
 }
 
-fn output_device() -> windows::core::Result<IMMDevice> {
-    #[cfg(feature = "experimental-playback")]
-    let address = crate::playback::active_address();
-    #[cfg(not(feature = "experimental-playback"))]
-    let address = None;
-    output_device_for(address)
+pub fn output_address(mode: ntpods_ipc::PlaybackMode, selected: u64) -> Option<u64> {
+    // A missing selected address must fail, not select unrelated default speakers.
+    (mode != ntpods_ipc::PlaybackMode::Windows).then_some(selected)
 }
 
 #[cfg(feature = "experimental-playback")]
 pub(crate) fn native_output_device(address: u64) -> windows::core::Result<IMMDevice> {
-    if address == 0 || address > 0xffff_ffff_ffff {
+    find_output(Some(address), crate::driver::native_endpoint_owner)
+}
+
+fn output_device_for(address: Option<u64>) -> windows::core::Result<IMMDevice> {
+    find_output(address, |instance, selected| {
+        selected_output_owner(instance, selected, || {
+            crate::driver::native_endpoint_owner(instance, selected)
+        })
+    })
+}
+
+fn find_output(
+    address: Option<u64>,
+    matches: impl Fn(&str, u64) -> bool,
+) -> windows::core::Result<IMMDevice> {
+    if address.is_some_and(|address| address == 0 || address > 0xffff_ffff_ffff) {
         return Err(Error::new(
             windows::Win32::Foundation::E_INVALIDARG,
             "Invalid Bluetooth address",
         ));
     }
-    output_device_for(Some(address))
-}
-
-fn output_device_for(address: Option<u64>) -> windows::core::Result<IMMDevice> {
     unsafe {
         let enumerator: IMMDeviceEnumerator =
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
@@ -51,7 +59,7 @@ fn output_device_for(address: Option<u64>) -> windows::core::Result<IMMDevice> {
                 for index in 0..devices.GetCount()? {
                     let device = devices.Item(index)?;
                     if adapter_instance(&enumerator, &device)
-                        .is_ok_and(|id| crate::driver::native_endpoint_owner(&id, address.unwrap()))
+                        .is_ok_and(|id| matches(&id, address.unwrap()))
                     {
                         candidates.push(device);
                     }
@@ -84,6 +92,10 @@ fn selected_adapter(instance: &str, address: u64) -> bool {
         .get(..AUDIO_SINK.len())
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case(AUDIO_SINK))
         && crate::driver::device_instance_address(instance) == Some(address)
+}
+
+fn selected_output_owner(instance: &str, address: u64, native: impl FnOnce() -> bool) -> bool {
+    selected_adapter(instance, address) || native()
 }
 
 /// An active render endpoint whose connected Bluetooth adapter belongs to this pair.
@@ -137,8 +149,8 @@ fn resolve_output<T>(
     }
 }
 
-fn endpoint() -> windows::core::Result<IAudioEndpointVolume> {
-    unsafe { output_device()?.Activate(CLSCTX_ALL, None) }
+fn endpoint(address: Option<u64>) -> windows::core::Result<IAudioEndpointVolume> {
+    unsafe { output_device_for(address)?.Activate(CLSCTX_ALL, None) }
 }
 
 fn endpoint_id(device: &IMMDevice) -> Option<String> {
@@ -151,9 +163,10 @@ fn endpoint_id(device: &IMMDevice) -> Option<String> {
 }
 
 fn change_volume(
+    address: Option<u64>,
     change: impl FnOnce(&IAudioEndpointVolume) -> windows::core::Result<()>,
 ) -> Option<String> {
-    let device = output_device().ok()?;
+    let device = output_device_for(address).ok()?;
     let id = endpoint_id(&device)?;
     let volume = unsafe { device.Activate(CLSCTX_ALL, None).ok()? };
     change(&volume).ok()?;
@@ -161,21 +174,21 @@ fn change_volume(
 }
 
 /// Current master volume of the selected output (0..=100), or None if it fails.
-pub fn get() -> Option<u8> {
-    let vol = endpoint().ok()?;
+pub fn get(address: Option<u64>) -> Option<u8> {
+    let vol = endpoint(address).ok()?;
     let level = unsafe { vol.GetMasterVolumeLevelScalar().ok()? };
     Some((level * 100.0).round().clamp(0.0, 100.0) as u8)
 }
 
-pub fn set(percent: u8) -> Option<String> {
-    change_volume(|vol| unsafe {
+pub fn set(address: Option<u64>, percent: u8) -> Option<String> {
+    change_volume(address, |vol| unsafe {
         let level = percent.min(100) as f32 / 100.0;
         vol.SetMasterVolumeLevelScalar(level, std::ptr::null())
     })
 }
 
-pub fn step(delta: i32) -> Option<String> {
-    change_volume(|vol| unsafe {
+pub fn step(address: Option<u64>, delta: i32) -> Option<String> {
+    change_volume(address, |vol| unsafe {
         let current = vol.GetMasterVolumeLevelScalar()?;
         let percent = (current * 100.0).round() as i32;
         let level = percent.saturating_add(delta).clamp(0, 100) as f32 / 100.0;
@@ -183,24 +196,37 @@ pub fn step(delta: i32) -> Option<String> {
     })
 }
 
-pub fn is_muted() -> bool {
-    endpoint()
+pub fn is_muted(address: Option<u64>) -> Option<bool> {
+    endpoint(address)
         .and_then(|v| unsafe { v.GetMute() })
         .map(|b| b.as_bool())
-        .unwrap_or(false)
+        .ok()
 }
 
-pub fn toggle_mute() -> Option<String> {
-    change_volume(|vol| unsafe {
+pub fn update_readback(
+    state: &mut ntpods_ipc::Snapshot,
+    level: Option<u8>,
+    muted: Option<bool>,
+) -> bool {
+    let level = level.unwrap_or(state.volume);
+    let muted = muted.unwrap_or(state.muted);
+    let changed = state.volume != level || state.muted != muted;
+    state.volume = level;
+    state.muted = muted;
+    changed
+}
+
+pub fn toggle_mute(address: Option<u64>) -> Option<String> {
+    change_volume(address, |vol| unsafe {
         let new = !vol.GetMute()?.as_bool();
         vol.SetMute(new, std::ptr::null())
     })
 }
 
 /// Includes apps without an SMTC session, but excludes notification sounds.
-pub fn any_render_active() -> bool {
+pub fn any_render_active(address: Option<u64>) -> bool {
     unsafe {
-        let Ok(device) = output_device() else {
+        let Ok(device) = output_device_for(address) else {
             return false;
         };
         let Ok(manager) = device.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) else {
@@ -263,9 +289,9 @@ impl ConvDuck {
 
     /// 1/3 cap playback at the chosen volume; 2 reduces it further to 60% of
     /// that cap. Ending statuses restore only volume that we still own.
-    pub fn on_status(&mut self, status: u8, address: u64) {
+    pub fn on_status(&mut self, status: u8, address: u64, output: Option<u64>) {
         if matches!(status, 1 | 2 | 3) {
-            let current = DuckEndpoint::current(address);
+            let current = DuckEndpoint::current(address, output);
             update_duck_for_route(&mut self.active, status, self.limit, current);
         } else {
             update_duck(&mut self.active, status, self.limit, || None);
@@ -300,31 +326,24 @@ struct DuckEndpoint {
 }
 
 impl DuckEndpoint {
-    fn current(address: u64) -> Option<Self> {
+    fn current(address: u64, output: Option<u64>) -> Option<Self> {
         if address == 0 {
             return None;
         }
         unsafe {
-            let device = output_device().ok()?;
+            let device = output_device_for(output).ok()?;
             let id = endpoint_id(&device)?;
-            #[cfg(feature = "experimental-playback")]
-            let native_address = crate::playback::active_address();
-            #[cfg(not(feature = "experimental-playback"))]
-            let native_address: Option<u64> = None;
             let enumerator: IMMDeviceEnumerator =
                 CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).ok()?;
             let instance = adapter_instance(&enumerator, &device).ok()?;
-            let owned = if native_address.is_some() {
-                native_address == Some(address)
-                    && crate::driver::native_endpoint_owner(&instance, address)
-            } else {
-                crate::driver::device_instance_address(&instance) == Some(address)
-            };
+            let native = crate::driver::native_endpoint_owner(&instance, address);
+            let owned = output.is_none_or(|output| output == address)
+                && (native || crate::driver::device_instance_address(&instance) == Some(address));
             if !owned {
                 return None;
             }
             let volume: IAudioEndpointVolume = device.Activate(CLSCTX_ALL, None).ok()?;
-            let remote_volume = native_address.is_some()
+            let remote_volume = native
                 && volume.QueryHardwareSupport().unwrap_or(0)
                     & windows::Win32::Media::Audio::ENDPOINT_HARDWARE_SUPPORT_VOLUME
                     != 0;
@@ -552,6 +571,101 @@ mod tests {
                 windows::Win32::Foundation::E_INVALIDARG
             );
         }
+    }
+
+    #[test]
+    fn configured_native_volume_never_uses_default_during_recovery() {
+        use ntpods_ipc::PlaybackMode;
+        let selected = 0xaabbccddeeff;
+        for mode in [PlaybackMode::Aac, PlaybackMode::AacEld] {
+            let target = output_address(mode, selected);
+            assert_eq!(target, Some(selected));
+            let error = resolve_output::<u8>(
+                target.is_some(),
+                || panic!("recovering AirPods must not change default speakers"),
+                || Ok(vec![]),
+            )
+            .unwrap_err();
+            assert_eq!(
+                error.code(),
+                windows::core::HRESULT::from_win32(ERROR_NOT_FOUND.0)
+            );
+            for missing in [0, 0x1_0000_0000_0000] {
+                assert_eq!(output_address(mode, missing), Some(missing));
+                assert_eq!(
+                    output_device_for(output_address(mode, missing))
+                        .unwrap_err()
+                        .code(),
+                    windows::Win32::Foundation::E_INVALIDARG
+                );
+            }
+        }
+        for address in [0, selected] {
+            let target = output_address(PlaybackMode::Windows, address);
+            assert_eq!(target, None);
+            assert_eq!(
+                resolve_output(
+                    target.is_some(),
+                    || Ok(7),
+                    || panic!("legacy output uses default")
+                )
+                .unwrap(),
+                7
+            );
+        }
+    }
+
+    #[test]
+    fn native_preference_still_controls_the_selected_windows_audio_sink() {
+        let address = 0xaabbccddeeff;
+        let sink = r"BTHENUM\{0000110b-0000-1000-8000-00805f9b34fb}_VID&0001004c_PID&2027\7&1&2&AABBCCDDEEFF_C00000000";
+        let other = sink.replace("AABBCCDDEEFF", "112233445566");
+        let speakers = r"HDAUDIO\FUNC_01&VEN_10EC\4&123";
+        for mode in [
+            ntpods_ipc::PlaybackMode::Aac,
+            ntpods_ipc::PlaybackMode::AacEld,
+        ] {
+            let target = output_address(mode, address);
+            let candidates: Vec<_> = [speakers, other.as_str(), sink]
+                .into_iter()
+                .filter(|instance| selected_output_owner(instance, target.unwrap(), || false))
+                .collect();
+            assert_eq!(
+                resolve_output(
+                    target.is_some(),
+                    || panic!("must not use default speakers"),
+                    || Ok(candidates)
+                )
+                .unwrap(),
+                sink
+            );
+        }
+        assert!(selected_output_owner(
+            "native child adapter",
+            address,
+            || true
+        ));
+        assert!(!selected_output_owner(
+            "native child adapter",
+            address,
+            || false
+        ));
+    }
+
+    #[test]
+    fn unavailable_readbacks_preserve_volume_and_mute() {
+        let mut state = ntpods_ipc::Snapshot {
+            volume: 53,
+            muted: true,
+            ..Default::default()
+        };
+        assert!(!update_readback(&mut state, None, None));
+        assert_eq!((state.volume, state.muted), (53, true));
+        assert!(update_readback(&mut state, Some(0), None));
+        assert_eq!((state.volume, state.muted), (0, true));
+        assert!(update_readback(&mut state, None, Some(false)));
+        assert_eq!((state.volume, state.muted), (0, false));
+        assert!(!update_readback(&mut state, Some(0), Some(false)));
     }
 
     #[test]
