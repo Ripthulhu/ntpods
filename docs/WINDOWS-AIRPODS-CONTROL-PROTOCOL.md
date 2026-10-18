@@ -99,6 +99,27 @@ Other versions or malformed layouts stay opaque. The raw product ID is not the
 case's standard PnP product ID, and its raw version is not the DULT firmware value.
 No field establishes the case's BLE address or a unique association with the buds.
 
+The iOS 27.0.1 (24A446) wire parser establishes these offsets, relative to the
+body after the six-byte AAP header. `N` excludes the name's terminating NUL;
+`E = 14 + N` starts the extension:
+
+| Body offset | Width | Field |
+| --- | --- | --- |
+| 0 | 1 | Message version |
+| 1 | 2 | Vendor ID |
+| 3 | 4 | Product ID |
+| 7 | 2 | Vendor ID source |
+| 9 | 1 | Case color |
+| 10 | 2 | Low 16 bits of case version |
+| 12 | 1 | Name length `N` |
+| 13 | `N + 1` | Name bytes followed by NUL |
+| `E` | 6 | Case version bits 16–63 |
+| `E + 6` | 4 | Reserved value |
+
+The two version fragments form one uint64 LE value. The native extension is
+present when the message version exceeds 1; NTPods accepts only the captured
+version-3, 25-byte form and applies its own NUL and UTF-8 validation.
+
 For `4C`, payload offsets below start after the two-byte length. Tahoe 25G241's
 `AACPClient::adaptiveVolumeMessageRecvEvent` supplies the field names and layout:
 
@@ -333,6 +354,13 @@ identity. `Keys` deliberately has no Debug/Serialize implementation. Captures
 containing the key response, serials or host addresses must stay private; replace
 them with synthetic fixtures before contributing examples.
 
+Public type `0x07` model/lid fields can invite pairing before keys exist; they
+do not establish a unique identity or authorize audio. Reports verified as
+belonging to the selected, still-paired Windows device are excluded before
+changing unpaired invitation state. Removing its Windows bond permits
+invitations again even when cached keys remain. Verified paired-lid events
+follow a separate path.
+
 ### Freshness and connection policy
 
 Battery cache values last for the daemon session and remain tied to the selected
@@ -442,6 +470,52 @@ Start response or Sound Completed event, and the user heard no sound.
 Notification restoration was verified. NTPods has no case-ringing control;
 the reported sound capability and successful Stop response do not establish
 working Start/Stop behavior.
+
+### Case sound and bonding limits
+
+The iOS 27.0.1 (24A446) Hawkeye configuration writer uses `01 00 02` for Start
+and `01 01 02` for Stop on service `FD44`, characteristic
+`4F860002-943B-49EF-BED4-2F730304427A`. These are three-byte values: prefix `01`
+and a uint16 LE opcode. They are distinct from the two-byte DULT commands above.
+Its configuration response is seven bytes: `01 0B 02`, acknowledged opcode
+uint16 LE, then status uint16 LE; `01 0D 02` is a separate completion event.
+The native non-owner characteristic is `4F860003-943B-49EF-BED4-2F730304427A`,
+with `01 00 03` / `01 01 03` sound values. These native layouts do not prove
+that the tested case accepts either sound route.
+
+On the user-identified Pro 3 case, Apple PnP `2029`, Windows 11 / AX200,
+indication subscription before BLE pairing failed with ATT `0x05`
+(Insufficient Authentication); no sound command was sent in that check.
+Retaining the same connection through ordinary ConfirmOnly pairing allowed
+encryption, subscription and both configuration sound writes. The BTHPORT trace
+confirmed Encryption Change success with encryption enabled, ATT success for
+Start/Stop, and notification-setting restoration. No protocol acknowledgment
+or completion was decoded, and the listener heard no sound. A separate API-level
+repeat after the pairing light stopped also produced no sound; that repeat
+has no HCI capture.
+
+A fresh bonded reconnect failed before GATT discovery. HCI Encryption Change
+returned status `0x13` with encryption disabled, followed by disconnection
+without an ATT exchange. This localizes the failure to connection/encryption
+setup; it does not identify a missing key or establish a Find My registration
+requirement. The retained-session trace references are records 1131
+(encryption), 1262/1264 (Start), 1298/1302 (Stop), and 1365–1373 (restoration);
+the separate reconnect uses records 194–198. Raw traces remain private.
+
+The native Hawkeye hello path includes a separated-key latch, opcode `0x0206`.
+Its activation and firmware requirements remain unresolved. Posh/DULT discovery
+has a separate subscription path and does not run that Hawkeye latch; finding
+both services does not establish a shared initialization recipe. The inspected
+iOS `ClassicPlaySoundPayload.case` path uses Find My server/push handling and
+does not establish a local AACP case-sound command. NTPods implements none of
+these initialization or sound writers. The next prerequisite is a verified
+initialization/authorization sequence and a working Start, Stop and completion
+exchange on the identified case.
+
+The native source is AccessoryInteraction UUID
+`A7BDB20B-24BB-31B5-8C52-C204DE92D00D`; `startSoundHawkeyeTask` at `0x236a72d68`
+and `sendHelloSequenceWithConfiguration:` at `0x236ac06a0` identify the separate
+sound and initialization boundaries.
 
 ## Sensors
 
@@ -963,8 +1037,10 @@ A coordinated curve update still needs device readback and restoration checks.
 
 The PersonalAudio source is UUID `FC2D1EB8-2D5F-3C86-AC56-E49F730A76DD`;
 its configuration bridge is `0x29490D570`. The separate host `hear` Audio Unit
-performs hearing compensation; its DSP is not proof of the AirPods' ambient
-fitting algorithm.
+in `libAudioDSP.dylib` (UUID `E5A8D405-69F6-3D20-A574-CC3AD83CE646`) calculates
+gain targets by interpolating hearing-loss rows and frequencies, with separate
+media and speech biases. These host DSP coefficients and bounds do not establish
+the AirPods' ambient fitting algorithm or change NTPods' input limits.
 
 ## Evidence and comparison gaps
 

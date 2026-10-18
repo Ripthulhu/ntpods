@@ -53,7 +53,7 @@ established by the captured fields.
 | --- | --- |
 | AAP `0x02`, capabilities | 41 entries, identical across both runs; names and multi-valued fields need individual validation |
 | AAP `0x08`, bud role | First byte identifies the primary side in LibrePods; a later flag changes before secondary disconnection |
-| AAP `0x23`, CaseInfo | Identical 25-byte response to `0x22`; tentative identity/version fields, no established battery or lid field |
+| AAP `0x23`, CaseInfo | Identical 25-byte response to `0x22`; decoded v3 model/version/name metadata, no established battery or lid field |
 | Control `0x09/0x38` | Reports 82; reference calls it PPE cap-level configuration, but units and writable range are unknown |
 | AAP `0x4C`, Adaptive Volume | Same two DRC mode/version reports in both runs; user-setting mapping unknown |
 | AAP `0x4E`, proximity card | Eight zero bytes during setup in each run; no state change observed |
@@ -82,10 +82,11 @@ captures do not establish all its values. NTPods' current pause and microphone
 policies treat the two wear slots symmetrically and do not need this role map.
 
 Empty CaseInfo requests at A1201/B1407 receive identical 25-byte replies at
-A1229/B1487, 213/158 ms later. The reference tentatively splits the body into
-version, vendor/product fields and 16 opaque bytes. No observed change ties
-these fields to the charger or lid. Do not use them as a battery report or a
-replacement for the paired BLE identity key.
+A1229/B1487, 213/158 ms later. The iOS 27.0.1 (24A446) wire parser establishes
+vendor/product fields, color, name, a split uint64 version and a reserved value;
+see the [current layout](WINDOWS-AIRPODS-CONTROL-PROTOCOL.md#implemented-message-families).
+No observed change ties these fields to the charger or lid. They supply neither
+a battery report nor a verified unique case BLE identity.
 
 Adaptive Volume `0x4C` carries a little-endian length of 3 followed by either
 `04 02 00` or `04 3A 01` (A1211/1215, B1426/1429). Tahoe 25G241's native
