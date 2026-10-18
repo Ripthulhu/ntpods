@@ -42,8 +42,18 @@ impl Invitations {
         let index = EARBUD_MODELS
             .iter()
             .position(|candidate| *candidate == model)?;
+        if data[5] & 0x44 == 0 {
+            return None;
+        }
         // Both buds can advertise with different private addresses.
         let visit = &mut self.0[index];
+        if data[8] & 8 != 0 && !visit.lid_open {
+            return None;
+        }
+        // Paired case reports must not change another case's invitation.
+        if already_paired() {
+            return None;
+        }
         if visit
             .last_seen_ms
             .is_none_or(|at| now_ms.saturating_sub(at) >= INVITATION_ABSENCE_MS)
@@ -51,9 +61,6 @@ impl Invitations {
             visit.offered = false;
         }
         visit.last_seen_ms = Some(now_ms);
-        if data[5] & 0x44 == 0 {
-            return None;
-        }
         if data[8] & 8 != 0 {
             visit.offered = false;
             let was_open = std::mem::replace(&mut visit.lid_open, false);
@@ -64,7 +71,7 @@ impl Invitations {
             return None;
         }
         visit.offered = true;
-        (!already_paired()).then_some((model, true))
+        Some((model, true))
     }
 }
 
@@ -844,30 +851,18 @@ mod tests {
         );
         data[5] = 0x55;
         for now in (101..120_101).step_by(1_000) {
-            assert_eq!(
-                invitations.observe(&data, now, || panic!("same visit")),
-                None
-            );
+            assert_eq!(invitations.observe(&data, now, || false), None);
         }
         data[5] = 0x20;
-        assert_eq!(
-            invitations.observe(&data, 120_101, || panic!("unknown lid")),
-            None
-        );
+        assert_eq!(invitations.observe(&data, 120_101, || false), None);
         data[5] = 0x35;
-        assert_eq!(
-            invitations.observe(&data, 120_102, || panic!("unknown lid did not rearm")),
-            None
-        );
+        assert_eq!(invitations.observe(&data, 120_102, || false), None);
         data[8] = 0x38;
         assert_eq!(
-            invitations.observe(&data, 121_000, || panic!("closed lid")),
+            invitations.observe(&data, 121_000, || false),
             Some((0x2720, false))
         );
-        assert_eq!(
-            invitations.observe(&data, 121_000, || panic!("duplicate close")),
-            None
-        );
+        assert_eq!(invitations.observe(&data, 121_000, || false), None);
         data[8] = 0x31;
         assert_eq!(
             invitations.observe(&data, 121_001, || false),
@@ -875,7 +870,7 @@ mod tests {
         );
         data[8] = 0x38;
         assert_eq!(
-            invitations.observe(&data, 121_002, || panic!("closed lid")),
+            invitations.observe(&data, 121_002, || false),
             Some((0x2720, false))
         );
         data[8] = 0x31;
@@ -883,20 +878,14 @@ mod tests {
             invitations.observe(&data, 121_003, || false),
             Some((0x2720, true))
         );
-        assert_eq!(
-            invitations.observe(&data, 126_001, || panic!("same visit")),
-            None
-        );
+        assert_eq!(invitations.observe(&data, 126_001, || false), None);
         data[3..5].copy_from_slice(&0x0e20u16.to_be_bytes());
         assert_eq!(
             invitations.observe(&data, 126_002, || false),
             Some((0x0e20, true))
         );
         data[3..5].copy_from_slice(&0x2720u16.to_be_bytes());
-        assert_eq!(
-            invitations.observe(&data, 126_003, || panic!("same visit")),
-            None
-        );
+        assert_eq!(invitations.observe(&data, 126_003, || false), None);
         assert_eq!(
             invitations.observe(&data, 126_003 + INVITATION_ABSENCE_MS, || false),
             Some((0x2720, true))
@@ -923,17 +912,22 @@ mod tests {
                 invitations.observe(&data, 0, || owned && paired),
                 (!paired).then_some((0x2720, true))
             );
-            assert_eq!(
-                invitations.observe(&data, 1000, || panic!("pair lookup repeated")),
-                None
-            );
+            assert_eq!(invitations.observe(&data, 1000, || owned && paired), None);
             data[8] = 0x38;
             assert_eq!(
-                invitations.observe(&data, 1001, || panic!("closing does not query pairing")),
-                Some((0x2720, false))
+                invitations.observe(&data, 1001, || owned && paired),
+                (!paired).then_some((0x2720, false))
             );
             data[8] = 0x31;
         }
+        let mut invitations = Invitations::default();
+        let mut paired = true;
+        assert_eq!(invitations.observe(&data, 0, || owned && paired), None);
+        paired = false;
+        assert_eq!(
+            invitations.observe(&data, 1, || owned && paired),
+            Some((0x2720, true))
+        );
     }
 
     #[test]
@@ -941,10 +935,7 @@ mod tests {
         let mut data = [0u8; 27];
         data[..11].copy_from_slice(&[7, 25, 1, 0x27, 0x20, 0x35, 0x88, 0xb3, 0x38, 0, 4]);
         let mut invitations = Invitations::default();
-        assert_eq!(
-            invitations.observe(&data, 0, || panic!("initial close")),
-            None
-        );
+        assert_eq!(invitations.observe(&data, 0, || false), None);
         data[8] = 0x31;
         assert_eq!(
             invitations.observe(&data, 1, || false),
@@ -952,10 +943,7 @@ mod tests {
         );
         data[8] = 0x38;
         data[5] = 0x20;
-        assert_eq!(
-            invitations.observe(&data, 2, || panic!("unknown lid")),
-            None
-        );
+        assert_eq!(invitations.observe(&data, 2, || false), None);
         data[5] = 0x35;
         data[2] = 7;
         assert_eq!(
@@ -964,14 +952,59 @@ mod tests {
         );
         data[2] = 1;
         assert_eq!(
-            invitations.observe(&data, 2 + INVITATION_ABSENCE_MS, || panic!("late close")),
+            invitations.observe(&data, 2 + INVITATION_ABSENCE_MS, || false),
             Some((0x2720, false))
         );
         assert_eq!(
-            invitations.observe(&data, 3 + INVITATION_ABSENCE_MS, || panic!(
-                "duplicate close"
-            )),
+            invitations.observe(&data, 3 + INVITATION_ABSENCE_MS, || false),
             None
+        );
+    }
+
+    #[test]
+    fn paired_case_reports_cannot_change_an_unpaired_same_model_visit() {
+        let mut open = [0u8; 27];
+        open[..11].copy_from_slice(&[7, 25, 1, 0x27, 0x20, 0x35, 0x88, 0xb3, 0x31, 0, 4]);
+        let mut closed = open;
+        closed[8] = 0x38;
+        let mut invitations = Invitations::default();
+
+        // A paired case opening first must not suppress the other case's invitation.
+        assert_eq!(invitations.observe(&open, 1, || true), None);
+        assert_eq!(
+            invitations.observe(&open, 2, || false),
+            Some((0x2720, true))
+        );
+        let index = EARBUD_MODELS
+            .iter()
+            .position(|model| *model == 0x2720)
+            .unwrap();
+        let visit = invitations.0[index];
+        for report in [&closed, &open] {
+            assert_eq!(invitations.observe(report, 3, || true), None);
+            let after = invitations.0[index];
+            assert_eq!(
+                (after.last_seen_ms, after.lid_open, after.offered),
+                (visit.last_seen_ms, visit.lid_open, visit.offered)
+            );
+        }
+        assert_eq!(invitations.observe(&open, 4, || false), None);
+        assert_eq!(
+            invitations.observe(&closed, 5, || false),
+            Some((0x2720, false))
+        );
+        assert_eq!(
+            invitations.observe(&open, 6, || false),
+            Some((0x2720, true))
+        );
+        // The paired case cannot keep a different case's old visit alive.
+        assert_eq!(
+            invitations.observe(&open, 6 + INVITATION_ABSENCE_MS - 1, || true),
+            None
+        );
+        assert_eq!(
+            invitations.observe(&open, 6 + INVITATION_ABSENCE_MS, || false),
+            Some((0x2720, true))
         );
     }
 

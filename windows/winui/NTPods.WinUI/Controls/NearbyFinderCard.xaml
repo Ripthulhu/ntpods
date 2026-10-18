@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UserControl x:Class="NTPods.WinUI.Controls.NearbyFinderCard"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Expander x:Name="Panel" Style="{StaticResource GroupExpander}"
+              Header="{Binding [NearbyFinder_Title], Source={StaticResource Loc}}"
+              Expanding="Panel_Expanding" Collapsed="Panel_Collapsed">
+        <StackPanel Spacing="16">
+            <TextBlock Text="{Binding [NearbyFinder_Description], Source={StaticResource Loc}}"
+                       FontSize="13" TextWrapping="Wrap" Foreground="{ThemeResource AppleSecondaryBrush}" />
+            <StackPanel Spacing="8">
+                <TextBlock x:Name="StatusText" FontSize="16" TextWrapping="Wrap" MinHeight="24"
+                           AutomationProperties.LiveSetting="Polite" />
+                <ProgressBar x:Name="SignalBar" Minimum="0" Maximum="100" IsIndeterminate="False"
+                             Foreground="{ThemeResource NTPodsAccentBrush}"
+                             AutomationProperties.Name="{Binding [NearbyFinder_Signal], Source={StaticResource Loc}}" />
+                <TextBlock x:Name="TrendText" FontSize="13" TextWrapping="Wrap" MinHeight="20"
+                           Foreground="{ThemeResource AppleSecondaryBrush}" />
+                <TextBlock x:Name="LastHeardText" FontSize="13" TextWrapping="Wrap" MinHeight="20"
+                           Foreground="{ThemeResource AppleSecondaryBrush}" />
+            </StackPanel>
+            <Button x:Name="StartStopButton" HorizontalAlignment="Stretch" Click="StartStop_Click">
+                <TextBlock x:Name="ActionText" TextWrapping="Wrap" TextAlignment="Center" />
+            </Button>
+            <TextBlock x:Name="ErrorText" FontSize="13" TextWrapping="Wrap" Visibility="Collapsed"
+                       Foreground="{ThemeResource SystemFillColorCriticalBrush}" AutomationProperties.LiveSetting="Polite" />
+        </StackPanel>
+    </Expander>
+</UserControl>

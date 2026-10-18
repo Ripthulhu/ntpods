@@ -1,7 +1,8 @@
 //! Executed by windows/tests/test-ipc.ps1 against the real C# wire model.
 use ntpods_ipc::{
     from_line, to_line, BatteryFreshness, BatteryObservation, Command, Equalizer, Event,
-    HearingAidSettings, MicMode, PlaybackBitrate, PlaybackMode, Snapshot, TransparencySettings,
+    HearingAidSettings, MicMode, NearbyFinderState, PlaybackBitrate, PlaybackMode, Snapshot,
+    TransparencySettings,
 };
 
 fn transparency(enabled: bool) -> TransparencySettings {
@@ -241,6 +242,15 @@ fn snapshots() -> Vec<Snapshot> {
         }
         .into(),
         head_tracking_error: (phase == "error").then(|| "No head-tracking data.".into()),
+        nearby_finder: NearbyFinderState {
+            revision: if phase == "starting" { u64::MAX - 1 } else { 2 },
+            active: matches!(phase, "starting" | "capturing"),
+            paused: phase == "capturing",
+            available_identity: true,
+            rssi: (phase == "starting").then_some(-68),
+            trend: if phase == "starting" { "stronger" } else { "unknown" }.into(),
+            last_heard_age_ms: (phase == "starting").then_some(1_200),
+        },
         anc_unconfirmed: matches!(phase, "starting" | "error"),
         ..Snapshot::default()
     })
@@ -364,6 +374,7 @@ fn main() {
                 "head_tracking_enabled",
                 "head_tracking_state",
                 "head_tracking_error",
+                "nearby_finder",
                 "playback_mode",
                 "playback_preferred_mode",
                 "playback_state",
@@ -418,6 +429,7 @@ fn main() {
                     && old.head_tracking_error.is_none()
             );
             assert!(!old.ble_scan_while_connected);
+            assert_eq!(old.nearby_finder, NearbyFinderState::default());
             assert!(
                 !old.battery_live
                     && old.battery_freshness.is_none()
@@ -442,8 +454,8 @@ fn main() {
             let lines: Vec<_> = text.lines().collect();
             assert_eq!(
                 lines.len(),
-                states.len() + 57,
-                "C# states, legacy state, fifty-four commands and two lid events expected"
+                states.len() + 59,
+                "C# states, legacy state, fifty-six commands and two lid events expected"
             );
             for (line, expected) in lines.iter().zip(&states) {
                 let Event::State(actual) = from_line::<Event>(line).expect("C# event must parse")
@@ -496,6 +508,7 @@ fn main() {
             assert_eq!(legacy.mic_stop_delay_secs, 0);
             assert!(!legacy.mic_manual_active);
             assert!(!legacy.ble_scan_while_connected);
+            assert_eq!(legacy.nearby_finder, NearbyFinderState::default());
             assert!(
                 !legacy.head_tracking_enabled
                     && legacy.head_tracking_state == "idle"
@@ -701,6 +714,10 @@ fn main() {
                     _ => None,
                 })
                 .collect();
+            assert!(matches!(from_line::<Command>(commands[53]),
+                Some(Command::StartNearbyFinder { device_id }) if device_id == "001122334455"));
+            assert!(matches!(from_line::<Command>(commands[54]),
+                Some(Command::StopNearbyFinder { device_id }) if device_id == "001122334455"));
             assert!(matches!(from_line::<Command>(commands.last().unwrap()), Some(Command::GetHardwareDiagnostics)));
             assert_eq!(
                 modes,

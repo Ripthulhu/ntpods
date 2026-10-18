@@ -12,6 +12,7 @@ static void Check(bool condition, string message)
 UiInteractionChecks.Run(Check);
 AppSettingsChecks.Run(Check);
 PairingChecks.Run(Check);
+PairingArtworkChecks.Run(Check);
 HeadTrackingChecks.Run(Check);
 ModelCompatibilityChecks.Run(Check);
 MicrophoneNotificationChecks.Run(Check);
@@ -20,6 +21,9 @@ TransparencyChecks.Run(Check);
 HearingAidChecks.Run(Check);
 HardwareDiagnosticsChecks.Run(Check);
 IslandTakeoverChecks.Run(Check);
+NearbyFinderChecks.Run(Check);
+DultCaseChecks.Run(Check);
+CaseInformationChecks.Run(Check);
 
 Check(AppVersion.Read(typeof(AppVersion).Assembly) == "v0.2.18",
     "About must display the release file version, not the fixed 0.2.0 assembly version.");

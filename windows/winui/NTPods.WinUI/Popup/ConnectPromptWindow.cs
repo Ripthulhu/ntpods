@@ -21,7 +21,7 @@ public sealed class ConnectPromptWindow : Window
     private Func<CancellationToken, Task<string?>>? _connect;
     private string _busyStatusKey = "Pairing.Pairing";
     private CancellationTokenSource? _request;
-    private bool _closed, _rendering, _hovered, _active, _shown, _hiding, _paired, _interacted;
+    private bool _closed, _rendering, _hovered, _active, _shown, _hiding, _paired, _interacted, _lidInvitation;
     private int _generation, _width, _height;
     private double _scale = 1;
     private (int Left, int Top, int Width, int Height, int Diameter)? _region;
@@ -34,12 +34,14 @@ public sealed class ConnectPromptWindow : Window
     {
         Title = "NTPods";
         Content = _view;
+        _view.SetAnimationsEnabled(_settings.AnimationsEnabled);
+        _view.SetPresentationActive(false);
         PopupWindowNative.Configure(this, interactive: true);
         _expiry = DispatcherQueue.CreateTimer();
         _expiry.IsRepeating = false;
         _expiry.Tick += (_, _) =>
         {
-            if (Busy || _hovered || _active) ArmExpiry();
+            if (Busy || _hovered || _active || _lidInvitation) ArmExpiry();
             else HidePrompt();
         };
         _view.ConnectRequested += Connect;
@@ -61,12 +63,15 @@ public sealed class ConnectPromptWindow : Window
         };
         if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
             _settings.AnimationsEnabledChanged += AnimationsChanged;
+        AppWindow.Changed += OnPopupVisibilityChanged;
         Closed += (_, _) =>
         {
             _closed = true;
+            ReleasePresentation();
             CancelRequest();
             _expiry.Stop();
             StopRendering();
+            AppWindow.Changed -= OnPopupVisibilityChanged;
             if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
                 _settings.AnimationsEnabledChanged -= AnimationsChanged;
         };
@@ -76,29 +81,38 @@ public sealed class ConnectPromptWindow : Window
         string statusKey = "Pairing.Nearby", string busyStatusKey = "Pairing.Pairing", ushort? model = null)
     {
         if (_closed || Busy) return;
-        ++_generation;
-        _hiding = false;
-        _paired = false;
-        _interacted = false;
-        _shown = true;
-        _connect = connect;
-        _busyStatusKey = busyStatusKey;
-        _view.SetName(name, model);
-        string? gesture = PairingInstructions.InitialGesture(statusKey, busyStatusKey);
-        _view.SetState(false, gesture ?? statusKey, beforeConnect: gesture is not null);
-        var work = DisplayArea.Primary.WorkArea;
-        AppWindow.Move(new PointInt32(work.X + work.Width / 2, work.Y + work.Height / 2));
-        Prepare();
-        _motion.Show(_clock.Elapsed.TotalMilliseconds, _settings.AnimationsEnabled);
-        Advance();
-        if (!PromptVisible) return;
-        AppWindow.Show(false);
-        ArmExpiry();
+        try
+        {
+            ++_generation;
+            _hiding = false;
+            _paired = false;
+            _interacted = false;
+            _lidInvitation = model.HasValue;
+            _expiry.Stop();
+            _shown = true;
+            _connect = connect;
+            _busyStatusKey = busyStatusKey;
+            _view.SetAnimationsEnabled(_settings.AnimationsEnabled);
+            _view.SetName(name, model);
+            string? gesture = PairingInstructions.InitialGesture(statusKey, busyStatusKey);
+            _view.SetState(false, gesture ?? statusKey, beforeConnect: gesture is not null);
+            var work = DisplayArea.Primary.WorkArea;
+            AppWindow.Move(new PointInt32(work.X + work.Width / 2, work.Y + work.Height / 2));
+            Prepare();
+            _motion.Show(_clock.Elapsed.TotalMilliseconds, _settings.AnimationsEnabled);
+            Advance();
+            if (!PromptVisible) return;
+            AppWindow.Show(false);
+            if (!AppWindow.IsVisible) { HideImmediately(); return; }
+            _view.SetPresentationActive(true);
+            ArmExpiry();
+        }
+        catch (Exception) { HideImmediately(); }
     }
 
     private async void Connect()
     {
-        if (!PromptVisible || _closed || _request?.IsCancellationRequested == true) return;
+        if (!PromptVisible || _closed || _hiding || _request?.IsCancellationRequested == true) return;
         if (_paired) { HidePrompt(); return; }
         if (Busy || _connect is null) return;
         _interacted = true;
@@ -156,6 +170,8 @@ public sealed class ConnectPromptWindow : Window
     {
         if (_closed || _hiding || !PromptVisible) return;
         _hiding = true;
+        try { _view.SetPresentationActive(false); }
+        catch (Exception) { HideImmediately(); return; }
         bool busy = Busy;
         CancelRequest();
         _connect = null;
@@ -168,14 +184,15 @@ public sealed class ConnectPromptWindow : Window
     private void CancelRequest()
     {
         ++_generation;
-        _request?.Cancel();
+        var request = _request;
         _request = null;
+        try { request?.Cancel(); } catch (Exception) { }
     }
 
     private void ArmExpiry()
     {
-        if (_closed || _hiding || !PromptVisible || Busy || _paired || _interacted) return;
         _expiry.Stop();
+        if (_closed || _hiding || !PromptVisible || Busy || _paired || _interacted || _lidInvitation) return;
         _expiry.Interval = TimeSpan.FromSeconds(20);
         _expiry.Start();
     }
@@ -219,6 +236,7 @@ public sealed class ConnectPromptWindow : Window
         StopRendering();
         _motion.Hide();
         try { AppWindow.Hide(); } catch (Exception) { }
+        ReleasePresentation();
         if (!_shown) return;
         _shown = false;
         Dismissed?.Invoke();
@@ -231,7 +249,8 @@ public sealed class ConnectPromptWindow : Window
         if (!PromptVisible)
         {
             StopRendering();
-            AppWindow.Hide();
+            try { AppWindow.Hide(); }
+            finally { ReleasePresentation(); }
             if (_shown)
             {
                 _shown = false;
@@ -263,11 +282,29 @@ public sealed class ConnectPromptWindow : Window
         _rendering = false;
     }
 
+    private void ReleasePresentation()
+    {
+        try { _view.SetPresentationActive(false); } catch (Exception) { }
+        try { _view.ReleasePresentation(); } catch (Exception) { }
+    }
+
+    private void OnPopupVisibilityChanged(AppWindow sender, AppWindowChangedEventArgs args)
+    {
+        if (!_closed && _shown && !_hiding && args.DidVisibilityChange && !sender.IsVisible)
+            HideImmediately();
+    }
+
     private void AnimationsChanged(UISettings sender, UISettingsAnimationsEnabledChangedEventArgs args) =>
         DispatcherQueue.TryEnqueue(() =>
         {
-            if (_closed || !PromptVisible) return;
-            _motion.SetAnimationsEnabled(_clock.Elapsed.TotalMilliseconds, sender.AnimationsEnabled);
-            Advance();
+            if (_closed) return;
+            try
+            {
+                _view.SetAnimationsEnabled(sender.AnimationsEnabled);
+                if (!PromptVisible) return;
+                _motion.SetAnimationsEnabled(_clock.Elapsed.TotalMilliseconds, sender.AnimationsEnabled);
+                Advance();
+            }
+            catch (Exception) { HideImmediately(); }
         });
 }

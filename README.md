@@ -44,6 +44,8 @@ https://github.com/user-attachments/assets/44b47894-22f6-49f1-a891-99ce0b7346bc
 
 - Listening-mode controls with an adjustable Adaptive slider.
 - Earbud and case battery levels, including nearby charging updates.
+- Find nearby with signal strength, trend and last-heard time for your paired AirPods.
+- Nearby charging-case information on Pro 3, without a separate Windows BLE bond.
 - A pairing popup when you open a nearby unpaired AirPods case.
 - Three-band EQ, Conversation Awareness and Personalized Volume.
 - Low-latency AAC-ELD and AAC playback through one AirPods output, with separate

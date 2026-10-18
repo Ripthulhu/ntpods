@@ -53,6 +53,9 @@ for (var index = 0; index < lines.Length - 2; ++index)
         s.HeadTrackingState == (raw.RootElement.TryGetProperty("head_tracking_state", out var trackingState) ? trackingState.GetString() : "idle") &&
         s.HeadTrackingError == (raw.RootElement.TryGetProperty("head_tracking_error", out var trackingError) && trackingError.ValueKind != JsonValueKind.Null ? trackingError.GetString() : null),
         "Head tracking state must match Rust and default to idle for older snapshots.");
+    Check(s.NearbyFinder == (raw.RootElement.TryGetProperty("nearby_finder", out var nearbyFinder)
+        ? nearbyFinder.Deserialize<NearbyFinderState>() : null),
+        "Nearby finder state must preserve the selected-pair signal and pause state.");
     Check(s.DevName == "AirPods fixture — \"test\"", "Unicode or string escaping changed");
     Check(s.HearingAidEnabled == (raw.RootElement.TryGetProperty("hearing_aid_enabled", out var hearing) &&
         hearing.ValueKind != JsonValueKind.Null ? hearing.GetBoolean() : (bool?)null) &&
@@ -497,6 +500,8 @@ foreach (bool on in new[] { false, true })
         output.Add(line.TrimEnd('\n'));
     }
 }
+output.Add(Wire.ToLine(new StartNearbyFinderCmd { DeviceId = "001122334455" }).TrimEnd('\n'));
+output.Add(Wire.ToLine(new StopNearbyFinderCmd { DeviceId = "001122334455" }).TrimEnd('\n'));
 output.Add(Wire.ToLine(new GetHardwareDiagnosticsCmd()).TrimEnd('\n'));
 Check(Wire.ParseEvent(lines[^2]) is DaemonEvent.PairingNearby(0x2720, true),
     "Nearby invitations must retain the public model hint and lid state.");

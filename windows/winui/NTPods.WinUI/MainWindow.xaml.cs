@@ -47,6 +47,7 @@ public sealed partial class MainWindow : Window
         Closed += (_, _) =>
         {
             _closed = true;
+            DevicePageView.StopNearbyFinder();
             if (_sizingRoot is not null) _sizingRoot.Changed -= OnRootChanged;
             FinishEntrance();
             FinishNavigation();
@@ -78,7 +79,11 @@ public sealed partial class MainWindow : Window
         ApplyTitleBarTheme();
         AppWindow.Changed += (sender, e) =>
         {
-            if (e.DidVisibilityChange && !sender.IsVisible) DevicePageView.CancelShortcutCapture();
+            if (e.DidVisibilityChange && !sender.IsVisible)
+            {
+                DevicePageView.CancelShortcutCapture();
+                DevicePageView.StopNearbyFinder();
+            }
             if (e.DidSizeChange) EnforceMinimumSize();
         };
         TrySetWindowIcon();
@@ -200,21 +205,28 @@ public sealed partial class MainWindow : Window
         {
             StopPairing();
             DevicePageView.StopHeadTracking();
+            DevicePageView.StopNearbyFinder();
         }
         else UpdatePairingAvailability();
         Title = closing ? Localize.Get("Shutdown.Closing") : "NTPods";
         DevicePageView.SetDaemonReady(!closing && _client.IsReady);
     }
 
-    public async Task ShowShutdownFailureAsync()
+    internal Task<bool> StopNearbyCaseInformationAsync() => DevicePageView.StopNearbyCaseInformationAsync();
+
+    public Task ShowShutdownFailureAsync() => ShowMessageAsync("Shutdown.FailedTitle", "Shutdown.FailedBody");
+
+    internal Task ShowCaseCleanupFailureAsync() => ShowMessageAsync("NearbyCase.Title", "NearbyCase.RestoreUncertain");
+
+    private async Task ShowMessageAsync(string titleKey, string bodyKey)
     {
         ShowFromTray();
         var dialog = new ContentDialog
         {
             XamlRoot = RootGrid.XamlRoot,
             RequestedTheme = RootGrid.RequestedTheme,
-            Title = Localize.Get("Shutdown.FailedTitle"),
-            Content = Localize.Get("Shutdown.FailedBody"),
+            Title = Localize.Get(titleKey),
+            Content = Localize.Get(bodyKey),
             CloseButtonText = Localize.Get("Action_Close"),
         };
         await dialog.ShowAsync();
@@ -224,6 +236,7 @@ public sealed partial class MainWindow : Window
     {
         args.Cancel = true;   // Keep the tray client alive when the window closes.
         DevicePageView.StopHeadTracking();
+        DevicePageView.StopNearbyFinder();
         FinishEntrance();
         FinishNavigation();
         AppWindow.Hide();
@@ -236,7 +249,11 @@ public sealed partial class MainWindow : Window
         if (_showingSettings == settings) return;
         _showingSettings = settings;
         UpdatePairingAvailability();
-        if (settings) DevicePageView.StopHeadTracking();
+        if (settings)
+        {
+            DevicePageView.StopHeadTracking();
+            DevicePageView.StopNearbyFinder();
+        }
         DevicePageView.IsHitTestVisible = !settings;
         SettingsView.IsHitTestVisible = settings;
         DevicePageView.Visibility = SettingsView.Visibility = Visibility.Visible;

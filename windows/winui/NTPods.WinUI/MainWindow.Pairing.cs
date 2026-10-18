@@ -215,6 +215,7 @@ public sealed partial class MainWindow
         _pairedPromptHeadphone = headphone;
         NearbyPairingSucceeded?.Invoke(deviceId);
         prompt.MarkPaired();
+        DevicePageView.QueueNearbyCaseInformation(deviceId, model);
         if (_lastSnapshot is { } snapshot) UpdatePairingSnapshot(snapshot);
         return null;
     }
@@ -251,6 +252,9 @@ public sealed partial class MainWindow
             if (_closed || _pairingShuttingDown) return;
             if (dialog.Paired && (dialog.PairedAddress is not { } address || !_client.PairingCompleted(address)))
                 DevicePageView.ShowPairingError("Pairing.HandoffUnavailable");
+            else if (dialog.Paired && dialog.PairedAddress is { } pairedAddress &&
+                PairingBatteryState.DeviceId(pairedAddress) is { } deviceId)
+                DevicePageView.QueueNearbyCaseInformation(deviceId, null);
         }
         catch (Exception) { DevicePageView.ShowPairingError(); }
         finally

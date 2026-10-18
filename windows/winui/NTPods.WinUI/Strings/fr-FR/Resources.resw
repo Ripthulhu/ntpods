@@ -516,4 +516,50 @@
   <data name="HardwareChecks.ResultHelp" xml:space="preserve"><value>Les vérifications enregistrées ne sont pas un diagnostic actuel. L’heure de l’appareil peut différer de celle de ce PC.</value></data>
   <data name="HardwareChecks.TimedOut" xml:space="preserve"><value>Le délai de lecture est écoulé. Réessayez avec Actualiser.</value></data>
   <data name="HardwareChecks.PauseMic" xml:space="preserve"><value>Arrêtez la capture du microphone avant d’actualiser.</value></data>
+  <data name="NearbyFinder.Title" xml:space="preserve"><value>Rechercher à proximité</value></data>
+  <data name="NearbyFinder.Description" xml:space="preserve"><value>Déplacez-vous lentement et observez la puissance du signal. Les mises à jour peuvent être rares lorsque le boîtier est fermé.</value></data>
+  <data name="NearbyFinder.Signal" xml:space="preserve"><value>Signal Bluetooth</value></data>
+  <data name="NearbyFinder.Start" xml:space="preserve"><value>Démarrer</value></data>
+  <data name="NearbyFinder.Stop" xml:space="preserve"><value>Arrêter</value></data>
+  <data name="NearbyFinder.Ready" xml:space="preserve"><value>Prêt à rechercher</value></data>
+  <data name="NearbyFinder.Starting" xml:space="preserve"><value>Démarrage…</value></data>
+  <data name="NearbyFinder.Waiting" xml:space="preserve"><value>En attente d’un signal</value></data>
+  <data name="NearbyFinder.NoRecentSignal" xml:space="preserve"><value>En attente d’un nouveau signal</value></data>
+  <data name="NearbyFinder.Paused" xml:space="preserve"><value>En pause pendant l’utilisation du microphone</value></data>
+  <data name="NearbyFinder.NoIdentity" xml:space="preserve"><value>La recherche à proximité n’est pas encore disponible pour ces AirPods.</value></data>
+  <data name="NearbyFinder.Unavailable" xml:space="preserve"><value>La recherche à proximité est indisponible.</value></data>
+  <data name="NearbyFinder.Busy" xml:space="preserve"><value>Une recherche à proximité est déjà en cours.</value></data>
+  <data name="NearbyFinder.Strong" xml:space="preserve"><value>Signal fort</value></data>
+  <data name="NearbyFinder.Moderate" xml:space="preserve"><value>Signal modéré</value></data>
+  <data name="NearbyFinder.Weak" xml:space="preserve"><value>Signal faible</value></data>
+  <data name="NearbyFinder.Stronger" xml:space="preserve"><value>Le signal augmente</value></data>
+  <data name="NearbyFinder.Weaker" xml:space="preserve"><value>Le signal diminue</value></data>
+  <data name="NearbyFinder.Steady" xml:space="preserve"><value>Signal stable</value></data>
+  <data name="NearbyFinder.JustHeard" xml:space="preserve"><value>Signal reçu à l’instant</value></data>
+  <data name="NearbyFinder.SecondsAgo" xml:space="preserve"><value>Dernier signal il y a {0} s</value></data>
+  <data name="NearbyFinder.MinutesAgo" xml:space="preserve"><value>Dernier signal il y a {0} min</value></data>
+  <data name="NearbyFinder.HoursAgo" xml:space="preserve"><value>Dernier signal il y a {0} h</value></data>
+  <data name="NearbyFinder.StartFailed" xml:space="preserve"><value>Impossible de démarrer la recherche à proximité. Réessayez.</value></data>
+  <data name="NearbyCase.Title" xml:space="preserve"><value>Boîtier de charge à proximité</value></data>
+  <data name="NearbyCase.Description" xml:space="preserve"><value>Ouvrez votre boîtier de charge à proximité. Aucun jumelage n’est nécessaire.</value></data>
+  <data name="NearbyCase.Read" xml:space="preserve"><value>Lire les informations</value></data>
+  <data name="NearbyCase.Reading" xml:space="preserve"><value>Lecture…</value></data>
+  <data name="NearbyCase.Protocol" xml:space="preserve"><value>Protocole de l’accessoire (DULT)</value></data>
+  <data name="NearbyCase.Firmware" xml:space="preserve"><value>Programme interne indiqué</value></data>
+  <data name="NearbyCase.Capabilities" xml:space="preserve"><value>Fonctions indiquées</value></data>
+  <data name="NearbyCase.NearbyOnly" xml:space="preserve"><value>Ce boîtier à proximité n’est pas associé aux AirPods sélectionnés.</value></data>
+  <data name="NearbyCase.Sound" xml:space="preserve"><value>Son</value></data>
+  <data name="NearbyCase.Motion" xml:space="preserve"><value>Détection de mouvement</value></data>
+  <data name="NearbyCase.Nfc" xml:space="preserve"><value>Identification NFC</value></data>
+  <data name="NearbyCase.BluetoothIdentity" xml:space="preserve"><value>Identification Bluetooth</value></data>
+  <data name="NearbyCase.NoneReported" xml:space="preserve"><value>Aucune fonction reconnue</value></data>
+  <data name="NearbyCase.PauseMic" xml:space="preserve"><value>Arrêtez le microphone avant de lire les informations du boîtier.</value></data>
+  <data name="NearbyCase.NotFound" xml:space="preserve"><value>Ouvrez le boîtier à proximité, puis réessayez.</value></data>
+  <data name="NearbyCase.Ambiguous" xml:space="preserve"><value>Plusieurs accessoires à proximité répondent. Éloignez-vous des autres traceurs, puis réessayez.</value></data>
+  <data name="NearbyCase.Paired" xml:space="preserve"><value>Les informations ne sont pas disponibles si le boîtier est déjà jumelé dans Windows.</value></data>
+  <data name="NearbyCase.Unreachable" xml:space="preserve"><value>Le boîtier ne répond plus. Fermez et rouvrez le couvercle, puis réessayez.</value></data>
+  <data name="NearbyCase.Unsupported" xml:space="preserve"><value>Aucun boîtier compatible n’a répondu. Ouvrez votre boîtier à proximité, puis réessayez.</value></data>
+  <data name="NearbyCase.InvalidResponse" xml:space="preserve"><value>Le boîtier a renvoyé des informations illisibles. Réessayez.</value></data>
+  <data name="NearbyCase.RestoreUncertain" xml:space="preserve"><value>La connexion au boîtier n’a pas pu être rétablie. Fermez et rouvrez son couvercle avant de réessayer.</value></data>
+  <data name="NearbyCase.Busy" xml:space="preserve"><value>La lecture d’un autre boîtier est en cours. Réessayez dans un instant.</value></data>
 </root>

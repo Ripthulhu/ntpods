@@ -17,7 +17,7 @@ work and platform limits; hardware coverage is in
 | [yicareful Chinese fork](https://github.com/yicareful/librepods_Chinese/tree/9c556558e2531a427b2af4e2d470a770fa5c8025) | `9c556558` | Android fork; no Windows transport or audio implementation to import. |
 | [arctumn Windows native](https://github.com/arctumn/librepods/tree/eb002807795f9abebffddf296b0e8d9a8d201111) | `eb002807` | Windows predecessor to NTPods. |
 | [arctumn heart-rate MTU branch](https://github.com/arctumn/librepods/tree/eda9eae99233c98b61577ec1e9b7cbb23958417b) | `eda9eae9` | Inbound MTU 1691, HR packet parsing and history. NTPods already carries this work. |
-| [thibaup Find My](https://github.com/thibaup/librepods/tree/3f4f9391ebb4fd1cef645e081052854a967ff969) | `3f4f9391` | Verified BLE RSSI finder plus Apple-account/cloud discovery. The latter needs a separate authentication and security implementation. |
+| [thibaup Find My](https://github.com/thibaup/librepods/tree/3f4f9391ebb4fd1cef645e081052854a967ff969) | `3f4f9391` | BLE signal finder with an anonymous Find My fallback, plus Apple-account/cloud discovery. NTPods requires a verified paired identity. |
 | [Wtrwx](https://github.com/Wtrwx/librepods/tree/e21b388b7bd775cb39ec9c5f4b8772c9d0afc1af) | `e21b388b` | Xiaomi Bluetooth battery metadata and Android/Mac routing changes; platform hooks do not transfer directly. |
 
 ## Protocol and platform findings
@@ -34,12 +34,11 @@ work and platform limits; hardware coverage is in
 2. **Device capability reports.** The rewrite parses message opcode `0x02` using
    the fixed widths in
    [Capability.kt](https://github.com/librepods-org/librepods/blob/34076c85f0fc2eaf32ad1d5cad1bb7315df9c89c/android/app/src/main/kotlin/me/kavishdevar/librepods/bluetooth/aacp/types/Capability.kt).
-   Windows can add bounded parsing and a device-details view without changing
-   the handshake. Unknown capability IDs have no encoded width, so a parser must
-   reject an undecodable report instead of guessing where the next entry starts.
-   A capability report establishes advertised support; it does not establish a
-   setting's current value or prove that a write succeeded. NTPods does not yet
-   parse this report.
+   NTPods parses the report and retains its raw values for the current connection.
+   Unknown widths, duplicate IDs, truncation and trailing bytes reject the report.
+   The widths are reference-derived; reported values do not change feature gating
+   or confirm settings. Additional bounded accessory reports are described in the
+   [control reference](WINDOWS-AIRPODS-CONTROL-PROTOCOL.md#implemented-message-families).
 
 3. **Workspace-use hearing protection setting.** The rewrite's
    [HearingProtectionScreen.kt, lines 103–117](https://github.com/librepods-org/librepods/blob/34076c85f0fc2eaf32ad1d5cad1bb7315df9c89c/android/app/src/main/kotlin/me/kavishdevar/librepods/presentation/screens/apple/HearingProtectionScreen.kt#L103)
@@ -59,14 +58,15 @@ work and platform limits; hardware coverage is in
    rewrite's raw-gesture settings screen is commented out; enum and packet
    definitions alone are not complete custom-action support.
 
-5. **Find nearby using verified RSSI.** thibaup's
+5. **Find nearby.** thibaup's
    [NearbyAirPodsFinder.kt](https://github.com/thibaup/librepods/blob/3f4f9391ebb4fd1cef645e081052854a967ff969/android/app/src/main/java/me/kavishdevar/librepods/finder/NearbyAirPodsFinder.kt)
-   consumes identity-verified BLE scans only while explicitly active. A Windows
-   port could show signal getting stronger or weaker using the existing BLE
-   watcher. NTPods permits scanning during playback only when enabled and pauses it
-   during high-quality capture. A finder must respect that policy and distinguish
-   signal loss from distance. Cloud Find My, case ringing and Ultra Wideband
-   navigation require separate implementations.
+   accepts owned signals and can fall back to anonymous `0x12` Find My advertisements
+   selected by its [BLE scanner](https://github.com/thibaup/librepods/blob/3f4f9391ebb4fd1cef645e081052854a967ff969/android/app/src/main/java/me/kavishdevar/librepods/bluetooth/BLEManager.kt).
+   NTPods uses only addresses resolved with the selected pair's stored IRK. Its
+   explicit Start/Stop session shows signal, trend and last-heard age, permits
+   scanning during playback, and pauses during high-quality microphone use.
+   Cloud Find My, case ringing and Ultra Wideband navigation remain unimplemented;
+   see [finder limits](WINDOWS-AIRPODS-CONTROL-PROTOCOL.md#find-nearby).
 
 ## Existing coverage and unresolved gaps
 

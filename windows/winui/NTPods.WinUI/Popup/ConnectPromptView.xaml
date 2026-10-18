@@ -13,21 +13,37 @@
                            TextAlignment="Center" VerticalAlignment="Center" TextWrapping="Wrap"
                            MaxLines="2" TextTrimming="CharacterEllipsis"
                            AutomationProperties.LiveSetting="Polite" />
-                <Button Grid.Column="2" Width="40" Height="40" Padding="0"
+                <Button x:Name="CloseButton" Grid.Column="2" Width="40" Height="40" Padding="0"
                         Style="{StaticResource QuietButton}" VerticalAlignment="Top" Click="Close_Click"
                         AutomationProperties.Name="{Binding [Action_Close], Source={StaticResource Loc}}">
                     <FontIcon Glyph="&#xE711;" FontSize="14" />
                 </Button>
             </Grid>
-            <Image x:Name="DeviceImage" Height="160" Stretch="Uniform"
-                   AutomationProperties.AccessibilityView="Raw" />
+            <Grid x:Name="ArtworkHost" Height="160">
+                <Image x:Name="DeviceImage" Stretch="Uniform" AutomationProperties.AccessibilityView="Raw" />
+                <Viewbox x:Name="ArtworkViewport" Stretch="Uniform" IsHitTestVisible="False"
+                         AutomationProperties.AccessibilityView="Raw">
+                    <Grid Width="1050" Height="354">
+                        <MediaPlayerElement x:Name="ArtworkVideo" Width="1050" Height="354" Stretch="Fill" Visibility="Collapsed"
+                                            AreTransportControlsEnabled="False" IsHitTestVisible="False" IsTabStop="False"
+                                            Background="{ThemeResource AppleGroupBrush}" AutomationProperties.AccessibilityView="Raw" />
+                        <Image x:Name="ArtworkPoster" Stretch="Fill" Visibility="Collapsed"
+                               AutomationProperties.AccessibilityView="Raw" />
+                    </Grid>
+                </Viewbox>
+            </Grid>
             <Grid MinHeight="96">
-                <TextBlock x:Name="StatusText" FontSize="14" TextAlignment="Center" TextWrapping="Wrap"
-                           VerticalAlignment="Center" Foreground="{ThemeResource AppleSecondaryBrush}"
-                           AutomationProperties.LiveSetting="Polite" />
-                <StackPanel x:Name="CompletedContent" Visibility="Collapsed" Spacing="8"
-                            VerticalAlignment="Center">
-                    <TextBlock Text="{Binding [ConnectPrompt_Paired], Source={StaticResource Loc}}"
+                <Grid x:Name="StatusContent">
+                    <TextBlock x:Name="OutgoingStatusText" FontSize="14" TextAlignment="Center" TextWrapping="Wrap"
+                               VerticalAlignment="Center" Foreground="{ThemeResource AppleSecondaryBrush}"
+                               AutomationProperties.AccessibilityView="Raw" />
+                    <TextBlock x:Name="StatusText" FontSize="14" TextAlignment="Center" TextWrapping="Wrap"
+                               VerticalAlignment="Center" Foreground="{ThemeResource AppleSecondaryBrush}"
+                               AutomationProperties.LiveSetting="Polite" />
+                </Grid>
+                <StackPanel x:Name="CompletedContent" Spacing="8"
+                            IsHitTestVisible="False" VerticalAlignment="Center">
+                    <TextBlock x:Name="PairedLabel" Text="{Binding [ConnectPrompt_Paired], Source={StaticResource Loc}}"
                                FontSize="14" FontWeight="SemiBold" TextAlignment="Center"
                                AutomationProperties.LiveSetting="Polite" />
                     <Grid x:Name="BatteryRow" ColumnSpacing="12" AutomationProperties.LiveSetting="Polite">
@@ -86,8 +102,13 @@
                     AutomationProperties.Name="{Binding [ConnectPrompt_Connect], Source={StaticResource Loc}}">
                 <Grid>
                     <TextBlock x:Name="ConnectLabel" Text="{Binding [ConnectPrompt_Connect], Source={StaticResource Loc}}"
-                               FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                    <ProgressRing x:Name="Progress" Width="24" Height="24" IsActive="False" Visibility="Collapsed" />
+                               FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"
+                               AutomationProperties.AccessibilityView="Raw" />
+                    <TextBlock x:Name="ContinueLabel" Text="{Binding [ConnectPrompt_Continue], Source={StaticResource Loc}}"
+                               FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"
+                               AutomationProperties.AccessibilityView="Raw" />
+                    <ProgressRing x:Name="Progress" Width="24" Height="24" IsActive="False"
+                                  AutomationProperties.AccessibilityView="Raw" />
                 </Grid>
             </Button>
         </StackPanel>

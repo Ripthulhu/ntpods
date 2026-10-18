@@ -1,10 +1,11 @@
 //! Passive Apple advertisements. The caller verifies the paired device's IRK
-//! before using battery data. Advertisements never request an audio connection.
+//! before using its signal or battery data. Advertisements never request audio.
 //!
 //! Scanning is PASSIVE (listen only, no scan requests) and only runs while
-//! `should_scan` permits it. Connected scanning is opt-in because radio
-//! coexistence varies; microphone capture and uplink always inhibit it.
+//! `should_scan` permits it. Connected scanning requires an explicit setting
+//! or temporary finder session; microphone capture and uplink always inhibit it.
 
+use std::time::Instant;
 use windows::Devices::Bluetooth::Advertisement::{
     BluetoothLEAdvertisementReceivedEventArgs, BluetoothLEAdvertisementWatcher,
     BluetoothLEAdvertisementWatcherStatus, BluetoothLEScanningMode,
@@ -19,13 +20,14 @@ const APPLE_COMPANY_ID: u16 = 0x004C;
 /// only scan while `should_scan()` is true. Blocks (keeps COM + the watcher
 /// alive), so run it on its own thread.
 pub fn watch_nearby(
-    on_nearby: impl Fn(u64, &[u8]) + Send + Sync + 'static,
+    on_nearby: impl Fn(u64, &[u8], Option<i16>, u64) + Send + Sync + 'static,
     should_scan: impl Fn() -> bool + Send + 'static,
+    clock: Instant,
 ) {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
     }
-    let watcher = match setup(on_nearby) {
+    let watcher = match setup(on_nearby, clock) {
         Ok(w) => w,
         Err(_) => return,
     };
@@ -57,7 +59,8 @@ fn scan_action(
 }
 
 fn setup(
-    on_nearby: impl Fn(u64, &[u8]) + Send + Sync + 'static,
+    on_nearby: impl Fn(u64, &[u8], Option<i16>, u64) + Send + Sync + 'static,
+    clock: Instant,
 ) -> windows::core::Result<BluetoothLEAdvertisementWatcher> {
     let watcher = BluetoothLEAdvertisementWatcher::new()?;
     watcher.SetScanningMode(BluetoothLEScanningMode::Passive)?;
@@ -65,7 +68,7 @@ fn setup(
         move |_s: &Option<BluetoothLEAdvertisementWatcher>,
               args: &Option<BluetoothLEAdvertisementReceivedEventArgs>| {
             if let Some(args) = args.as_ref() {
-                read_apple_data(args, &on_nearby);
+                read_apple_data(args, &on_nearby, &clock);
             }
             Ok(())
         },
@@ -76,7 +79,8 @@ fn setup(
 
 fn read_apple_data(
     args: &BluetoothLEAdvertisementReceivedEventArgs,
-    on_nearby: &impl Fn(u64, &[u8]),
+    on_nearby: &impl Fn(u64, &[u8], Option<i16>, u64),
+    clock: &Instant,
 ) {
     if args.BluetoothAddressType().ok() != Some(BluetoothAddressType::Random) {
         return;
@@ -104,7 +108,12 @@ fn read_apple_data(
             if let Ok(reader) = DataReader::FromBuffer(&buf) {
                 let mut bytes = vec![0u8; len];
                 if reader.ReadBytes(&mut bytes).is_ok() {
-                    on_nearby(address, &bytes);
+                    on_nearby(
+                        address,
+                        &bytes,
+                        args.RawSignalStrengthInDBm().ok(),
+                        clock.elapsed().as_millis() as u64,
+                    );
                 }
             }
         }

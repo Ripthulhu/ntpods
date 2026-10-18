@@ -34,6 +34,7 @@ mod le;
 mod media;
 mod mic_lifecycle;
 mod micpipe;
+mod nearby_finder;
 #[cfg(feature = "experimental-playback")]
 mod playback;
 mod rename;
@@ -42,6 +43,7 @@ mod security;
 mod transparency;
 mod volume;
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -168,6 +170,8 @@ struct Ctx {
     hr_commands: Arc<Mutex<()>>,
     hr_generation: Arc<AtomicU64>,
     head_tracking: Arc<Mutex<head_tracking::Tracker>>,
+    nearby_finder: Arc<Mutex<nearby_finder::Finder>>,
+    nearby_last_heard_tick: Arc<AtomicU64>,
     auto_pause: Arc<Mutex<media::AutoPausePolicy>>,
     hr_db: hrdb::HrDb,
     clients: Arc<Mutex<Vec<ClientTx>>>,
@@ -225,19 +229,26 @@ impl Ctx {
         if self.shutting_down.load(Ordering::Acquire) {
             return false;
         }
-        let (opt_in, allowed) = {
+        let (opt_in, connected, capture, uplink) = {
             let state = self.state.lock().unwrap();
             (
                 state.ble_scan_while_connected,
-                battery_ble::scan_allowed(
-                    state.ble_scan_while_connected,
-                    state.connected,
-                    state.mic_capture_active || self.capture_active.load(Ordering::Acquire),
-                    state.mic_uplink_active || self.mic_on.load(Ordering::Acquire),
-                ),
+                state.connected,
+                state.mic_capture_active || self.capture_active.load(Ordering::Acquire),
+                state.mic_uplink_active || self.mic_on.load(Ordering::Acquire),
             )
         };
-        allowed && (opt_in || self.mac() == 0 || !bt::is_connected(self.mac()))
+        let finder_scan = {
+            let mut finder = self.nearby_finder.lock().unwrap();
+            let paused = finder.active() && (capture || uplink);
+            if finder.set_paused(paused) {
+                publish_nearby_finder(self, &finder);
+            }
+            finder.scanning()
+        };
+        let permitted = opt_in || finder_scan;
+        battery_ble::scan_allowed(permitted, connected, capture, uplink)
+            && (permitted || self.mac() == 0 || !bt::is_connected(self.mac()))
     }
     /// Queue without waiting for writers; drop disconnected clients or full queues.
     fn send_event(&self, ev: &Event) {
@@ -254,6 +265,13 @@ impl Ctx {
         };
         let snap = {
             let mut s = self.state.lock().unwrap();
+            let last_heard_tick = self.nearby_last_heard_tick.load(Ordering::Acquire);
+            if s.nearby_finder.active && last_heard_tick != 0 {
+                s.nearby_finder.last_heard_age_ms = Some(
+                    (self.mic_clock.elapsed().as_millis() as u64)
+                        .saturating_sub(last_heard_tick - 1),
+                );
+            }
             #[cfg(feature = "experimental-playback")]
             let native_address = playback::active_address();
             #[cfg(not(feature = "experimental-playback"))]
@@ -1195,6 +1213,68 @@ fn publish_head_tracking(ctx: &Ctx, tracking: &head_tracking::Tracker) {
     state.head_tracking_error = error;
     drop(state);
     ctx.push_state();
+}
+
+fn publish_nearby_finder(ctx: &Ctx, finder: &nearby_finder::Finder) {
+    let now_ms = ctx.mic_clock.elapsed().as_millis() as u64;
+    let snapshot = finder.snapshot(now_ms);
+    let last_heard_tick = snapshot
+        .last_heard_age_ms
+        .map(|age| now_ms.saturating_sub(age).saturating_add(1))
+        .unwrap_or(0);
+    ctx.nearby_last_heard_tick
+        .store(last_heard_tick, Ordering::Release);
+    let mut state = ctx.state.lock().unwrap();
+    state.nearby_finder = snapshot;
+    drop(state);
+    ctx.push_state();
+}
+
+fn start_nearby_finder(ctx: &Ctx, device_id: &str) -> Option<u64> {
+    if ctx.shutting_down.load(Ordering::Acquire) {
+        return None;
+    }
+    let (current_id, mic_busy) = {
+        let state = ctx.state.lock().unwrap();
+        (
+            state.device_id.clone(),
+            state.mic_capture_active
+                || state.mic_uplink_active
+                || ctx.capture_active.load(Ordering::Acquire)
+                || ctx.mic_on.load(Ordering::Acquire),
+        )
+    };
+    if current_id != device_id || device_id.is_empty() {
+        return None;
+    }
+    let mut finder = ctx.nearby_finder.lock().unwrap();
+    let owner = finder.start(device_id)?;
+    finder.set_paused(mic_busy);
+    publish_nearby_finder(ctx, &finder);
+    Some(owner)
+}
+
+fn stop_nearby_finder(ctx: &Ctx, device_id: &str, owner: u64) -> bool {
+    let mut finder = ctx.nearby_finder.lock().unwrap();
+    if !finder.stop(device_id, owner) {
+        return false;
+    }
+    publish_nearby_finder(ctx, &finder);
+    true
+}
+
+fn clear_nearby_finder(ctx: &Ctx) {
+    let mut finder = ctx.nearby_finder.lock().unwrap();
+    if finder.clear() {
+        publish_nearby_finder(ctx, &finder);
+    }
+}
+
+fn refresh_nearby_identity(ctx: &Ctx, mac: u64, available: bool) {
+    let mut finder = ctx.nearby_finder.lock().unwrap();
+    if finder.set_identity(&format!("{mac:012x}"), available) {
+        publish_nearby_finder(ctx, &finder);
+    }
 }
 
 fn set_head_tracking(ctx: &Ctx, on: bool) -> u64 {
@@ -3002,6 +3082,8 @@ fn apply_prepared_command(
         Command::SetHeadTracking { on } => {
             set_head_tracking(ctx, on);
         }
+        // These require command-pipe ownership and are handled by ipc_server.
+        Command::StartNearbyFinder { .. } | Command::StopNearbyFinder { .. } => {}
         Command::GetHearingAid => hearing_request(ctx, None),
         Command::GetHardwareDiagnostics => hardware_diagnostics_request(ctx),
         Command::SetHearingAidMode { request_id, on } => hearing_request(
@@ -3150,6 +3232,7 @@ fn apply_prepared_command(
             ctx.push_state();
         }
         Command::Disconnect => {
+            clear_nearby_finder(ctx);
             cancel_microphone_request(ctx);
             hearing::invalidate_session();
             silence_mic(ctx);
@@ -3204,6 +3287,7 @@ fn apply_prepared_command(
         }
         Command::Shutdown => {
             hearing::invalidate_session();
+            clear_nearby_finder(ctx);
             ctx.shutting_down.store(true, Ordering::Release);
             bt::begin_audio_shutdown();
             set_microphone_enabled(ctx, false, false, None);
@@ -3527,6 +3611,7 @@ fn select_paired_device(ctx: &Ctx, mac: u64, name: &str, request: Option<u64>) -
         return false;
     }
     let keys = battery_ble::Keys::load(mac);
+    let finder_identity_available = keys.is_some();
     #[cfg(feature = "experimental-playback")]
     let native_bound = driver::native_audio_bound(mac);
     let connected = bt::is_connected(mac);
@@ -3606,6 +3691,7 @@ fn select_paired_device(ctx: &Ctx, mac: u64, name: &str, request: Option<u64>) -
     drop(_hr);
     drop(_mic);
     drop(_write);
+    refresh_nearby_identity(ctx, mac, finder_identity_available);
     rename::apply(name);
     ctx.push_state();
     if let Some(intent) = dispatch {
@@ -3941,6 +4027,7 @@ fn run_receiver(ctx: Ctx) {
             }
         }
         let mut sensors = rtbuddy::Discovery::default();
+        let mut accessory_reports: HashMap<u8, Vec<u8>> = HashMap::new();
         let mut host_clock_sent = false;
         hr_decoder.reset(); // Device mappings belong to this connection.
                             // Reuse bounded retries when heart-rate monitoring survives a reconnect.
@@ -4069,6 +4156,8 @@ fn run_receiver(ctx: Ctx) {
                                 }
                                 *current = Some(keys);
                             }
+                            drop(current);
+                            refresh_nearby_identity(&ctx, mac, true);
                         }
                         buf[..n].fill(0);
                         continue;
@@ -4272,6 +4361,13 @@ fn run_receiver(ctx: Ctx) {
                                 ctx.state.lock().unwrap().multipoint = list;
                                 ctx.push_state();
                                 last_devices = devs;
+                            }
+                        }
+                        if let Some(report) = aap::accessory::parse(data) {
+                            let opcode = data[4];
+                            if accessory_reports.get(&opcode).is_none_or(|old| old != data) {
+                                log(&format!("accessory: {}", report.summary()));
+                                accessory_reports.insert(opcode, data.to_vec());
                             }
                         }
                         if let Some((op, detail)) = aap::route_diag(data) {
@@ -4832,6 +4928,9 @@ fn main() {
         })
         .is_some_and(|value| value.trim() == "true");
     let pipe = Arc::new(micpipe::MicPipeCell::new());
+    let battery_keys = battery_ble::Keys::load(mac);
+    let finder_identity_available =
+        mac != 0 && battery_keys.as_ref().is_some_and(|keys| keys.mac == mac);
     #[cfg(feature = "experimental-playback")]
     let playback_mode = playback::load_selection();
     #[cfg(not(feature = "experimental-playback"))]
@@ -4840,7 +4939,7 @@ fn main() {
     log(&format!("mic pipe opened: {}", pipe.is_open()));
     log(&format!("mic driver: {}", micpipe::driver_kind()));
     let ctx = Ctx {
-        battery_keys: Arc::new(Mutex::new(battery_ble::Keys::load(mac))),
+        battery_keys: Arc::new(Mutex::new(battery_keys)),
         battery_cache: Arc::new(Mutex::new(battery_ble::Cache::default())),
         state: Arc::new(Mutex::new(Snapshot {
             dev_name: dev_name.clone(),
@@ -4853,6 +4952,10 @@ fn main() {
             auto_pause,
             conversation_volume,
             ble_scan_while_connected,
+            nearby_finder: ipc::NearbyFinderState {
+                available_identity: finder_identity_available,
+                ..Default::default()
+            },
             mic_available: pipe.is_open(),
             mic_state: "idle".into(),
             playback_mode,
@@ -4881,6 +4984,15 @@ fn main() {
         hr_commands: Arc::new(Mutex::new(())),
         hr_generation: Arc::new(AtomicU64::new(0)),
         head_tracking: Arc::new(Mutex::new(head_tracking::Tracker::default())),
+        nearby_finder: Arc::new(Mutex::new(nearby_finder::Finder::new(
+            if mac == 0 {
+                String::new()
+            } else {
+                format!("{mac:012x}")
+            },
+            finder_identity_available,
+        ))),
+        nearby_last_heard_tick: Arc::new(AtomicU64::new(0)),
         auto_pause: Arc::new(Mutex::new(media::AutoPausePolicy::new(auto_pause))),
         driver_cell: Arc::new(Mutex::new(None)),
         shared_driver: Arc::new(driver::Shared::default()),
@@ -4925,7 +5037,7 @@ fn main() {
         let c = ctx.clone();
         thread::spawn(move || unsafe { ipc_server::cmds_server(c) });
     }
-    // Public lid reports invite pairing; battery data requires the selected pair's identity key.
+    // Public lid reports invite pairing; signal and battery data require the selected pair's key.
     // Nearby advertisements never acquire the audio route.
     {
         let c = ctx.clone();
@@ -4934,8 +5046,9 @@ fn main() {
             let last_published = Mutex::new(0u64);
             let lid_transitions = Mutex::new(battery_ble::PairedLidTransitions::default());
             let invitations = Mutex::new(battery_ble::Invitations::default());
+            let scan_clock = c.mic_clock;
             le::watch_nearby(
-                move |address, data| {
+                move |address, data, rssi, received_ms| {
                     if !c.nearby_scan_allowed() {
                         return;
                     }
@@ -4948,25 +5061,37 @@ fn main() {
                             keys.and_then(|keys| keys.decode(paired_mac, address, data)),
                         )
                     };
+                    let paired = owned && bt::paired_aap_name(paired_mac).is_some();
                     if let Some((model, lid_open)) = invitations.lock().unwrap().observe(
                         data,
                         c.mic_clock.elapsed().as_millis() as u64,
-                        || owned && bt::paired_aap_name(paired_mac).is_some(),
+                        || paired,
                     ) {
                         c.send_event(&Event::PairingNearby { model, lid_open });
+                    }
+                    if c.mac() != paired_mac {
+                        return;
+                    }
+                    // The rotating address must resolve with this pair's stored IRK.
+                    if let Some(rssi) = rssi.filter(|_| owned) {
+                        let mut finder = c.nearby_finder.lock().unwrap();
+                        if finder.observe_verified(&format!("{paired_mac:012x}"), rssi, received_ms)
+                        {
+                            publish_nearby_finder(&c, &finder);
+                        }
                     }
                     let Some(report) = report else {
                         return;
                     };
+                    let finder_scan = c.nearby_finder.lock().unwrap().scanning();
                     let now_ms = unix_millis();
                     let mut published = last_published.lock().unwrap();
-                    let bonded =
-                        report.lid_closed.is_some() && bt::paired_aap_name(paired_mac).is_some();
+                    let bonded = report.lid_closed.is_some() && paired;
                     let (restored, changed, lid_edge) = {
                         let mut state = c.state.lock().unwrap();
                         if c.mac() != paired_mac
                             || !battery_ble::scan_allowed(
-                                state.ble_scan_while_connected,
+                                state.ble_scan_while_connected || finder_scan,
                                 state.connected,
                                 state.mic_capture_active
                                     || c.capture_active.load(Ordering::Acquire),
@@ -5014,6 +5139,7 @@ fn main() {
                     }
                 },
                 move || c_scan.nearby_scan_allowed(),
+                scan_clock,
             );
         });
     }

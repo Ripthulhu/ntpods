@@ -23,11 +23,13 @@
                         <controls:MicCard x:Name="MicCard" />
                         <controls:DeviceSettingsCard x:Name="DeviceSettingsCard" />
                         <StackPanel x:Name="ExtraSections" Spacing="12">
+                            <controls:NearbyFinderCard x:Name="NearbyFinderCard" Visibility="Collapsed" />
                             <controls:HeartRateCard x:Name="HeartRateCard" />
                             <controls:HeadTrackingCard x:Name="HeadTrackingCard" />
                             <controls:HearingAidCard x:Name="HearingAidCard" Visibility="Collapsed" />
                             <controls:TransparencyCard x:Name="TransparencyCard" Visibility="Collapsed" />
                             <controls:HardwareDiagnosticsCard x:Name="HardwareDiagnosticsCard" Visibility="Collapsed" />
+                            <controls:NearbyCaseCard x:Name="NearbyCaseCard" Visibility="Collapsed" />
                             <controls:MultipointCard x:Name="MultipointCard" Visibility="Collapsed" />
                         </StackPanel>
                     </StackPanel>

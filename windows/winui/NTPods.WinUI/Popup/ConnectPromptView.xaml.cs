@@ -1,7 +1,6 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
-using Microsoft.UI.Xaml.Media.Imaging;
 using NTPods.WinUI.Services;
 
 namespace NTPods.WinUI.Popup;
@@ -17,7 +16,8 @@ public sealed partial class ConnectPromptView : UserControl
     {
         InitializeComponent();
         CardScroll.RenderTransform = _sheet;
-        DeviceImage.Source = new BitmapImage(new Uri(DeviceArt.MainImage(null)));
+        InitializeTransitions();
+        InitializeArtwork();
     }
 
     public void SetName(string name, ushort? model)
@@ -27,44 +27,32 @@ public sealed partial class ConnectPromptView : UserControl
         string? catalogModel = model is ushort id ? PairingInvitationPolicy.NearbyCatalogModel(id) : null;
         _headphoneModel = DeviceModels.Find(catalogModel).Headphone ||
             name.Contains("AirPods Max", StringComparison.OrdinalIgnoreCase);
-        DeviceImage.Source = new BitmapImage(new Uri(DeviceArt.MainImage(catalogModel,
-            _headphoneModel)));
+        SetArtworkModel(catalogModel);
     }
 
     public void Fit(double height)
     {
         CardScroll.MaxHeight = height;
-        DeviceImage.Height = Math.Clamp(height - 260, 80, 160);
+        ArtworkHost.Height = Math.Clamp(height - 260, 80, 160);
     }
 
     public void SetState(bool busy, string statusKey, bool retry = false, bool beforeConnect = false)
     {
-        StatusText.Text = Localize.Get(statusKey) +
-            (beforeConnect ? $"\n\n{Localize.Get("Pairing.ThenConnect")}" : "");
-        StatusText.Visibility = Visibility.Visible;
-        CompletedContent.Visibility = Visibility.Collapsed;
+        SetStatusText(Localize.Get(statusKey) +
+            (beforeConnect ? $"\n\n{Localize.Get("Pairing.ThenConnect")}" : ""));
         ConnectLabel.Text = Localize.Get(retry ? "Playback.Retry" : "ConnectPrompt_Connect");
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(ConnectButton, ConnectLabel.Text);
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(DeviceName, DeviceName.Text);
-        ConnectButton.IsEnabled = !busy;
-        Progress.IsActive = busy;
-        Progress.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
-        ConnectLabel.Opacity = busy ? 0 : 1;
+        TransitionContent(paired: false, busy);
     }
 
     public void SetPaired()
     {
-        StatusText.Visibility = Visibility.Collapsed;
-        CompletedContent.Visibility = Visibility.Visible;
         SetBattery(null, null, null, false, false, false, _headphoneModel, null, false);
-        ConnectButton.IsEnabled = true;
-        Progress.IsActive = false;
-        Progress.Visibility = Visibility.Collapsed;
-        ConnectLabel.Opacity = 1;
-        ConnectLabel.Text = Localize.Get("ConnectPrompt_Continue");
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(ConnectButton, ConnectLabel.Text);
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(ConnectButton, ContinueLabel.Text);
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(DeviceName,
             $"{DeviceName.Text}. {Localize.Get("ConnectPrompt_Paired")}");
+        TransitionContent(paired: true, busy: false);
     }
 
     public bool SetBattery(byte? left, byte? right, byte? caseLevel,
@@ -80,7 +68,7 @@ public sealed partial class ConnectPromptView : UserControl
         if (headphone && !_headphoneModel)
         {
             _headphoneModel = true;
-            DeviceImage.Source = new BitmapImage(new Uri(DeviceArt.MainImage(null, headphone: true)));
+            SetArtworkModel(null);
         }
         bool wasHeadphone = CaseCell.Visibility == Visibility.Collapsed;
         bool wasSplit = RightRow.Visibility == Visibility.Visible;
@@ -97,6 +85,7 @@ public sealed partial class ConnectPromptView : UserControl
             RightRow.Visibility = Visibility.Collapsed;
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(BudsValue,
                 Description(BudsLabel.Text, headphoneLevel, headphoneCharging));
+            UpdateContentInput();
             return !wasHeadphone || wasSplit;
         }
         leftCharging &= left.HasValue;
@@ -124,6 +113,7 @@ public sealed partial class ConnectPromptView : UserControl
             Description(Localize.Get("BatteryRightLabel_Text"), right, rightCharging));
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(CaseValue,
             Description(Localize.Get("BatteryCaseLabel_Text"), caseLevel, caseCharging));
+        UpdateContentInput();
         return wasHeadphone || wasSplit != split;
     }
 
@@ -132,7 +122,11 @@ public sealed partial class ConnectPromptView : UserControl
     private static string Description(string label, byte? level, bool charging) =>
         $"{label}, {Percent(level)}" + (level.HasValue && charging ? $", {Localize.Get("Battery_Charging")}" : "");
 
-    public void Render(double expansion, double height) => _sheet.Y = (1 - expansion) * height;
+    public void Render(double expansion, double height)
+    {
+        _sheet.Y = (1 - expansion) * height;
+        UpdateArtworkEntrance(expansion);
+    }
     private void Connect_Click(object sender, RoutedEventArgs args) => ConnectRequested?.Invoke();
     private void Close_Click(object sender, RoutedEventArgs args) => DismissRequested?.Invoke();
 }

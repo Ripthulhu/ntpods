@@ -55,7 +55,7 @@ established by the captured fields.
 | AAP `0x08`, bud role | First byte identifies the primary side in LibrePods; a later flag changes before secondary disconnection |
 | AAP `0x23`, CaseInfo | Identical 25-byte response to `0x22`; tentative identity/version fields, no established battery or lid field |
 | Control `0x09/0x38` | Reports 82; reference calls it PPE cap-level configuration, but units and writable range are unknown |
-| AAP `0x4C`, Adaptive Volume | Same two setup payloads in both runs; field meanings remain unknown |
+| AAP `0x4C`, Adaptive Volume | Same two DRC mode/version reports in both runs; user-setting mapping unknown |
 | AAP `0x4E`, proximity card | Eight zero bytes during setup in each run; no state change observed |
 | AAP `0x53` | Matches the eight-band Headphone Accommodation layout; disabled flags and zero EQ in both runs |
 | AAP `0x54` | Radio-band configuration; distinct from audio EQ |
@@ -71,7 +71,8 @@ not uniformly boolean: ID `0x18` reports 3, for example. Reference labels includ
 heart rate (`0x26`), dynamic end of charge (`0x29`), hearing protection (`0x30`),
 hearing aid V2 (`0x31`) and preference EQ (`0x37`), each reporting 1 here. A
 capability report alone does not validate the feature or its control sequence.
-NTPods currently uses its shared model catalog rather than parsing this message.
+NTPods retains the reported values in its capability inventory; feature availability
+still follows its shared model catalog.
 
 Role `0x08` has a four-byte body. LibrePods maps body byte 0 as 1=left primary,
 2=right primary; only 1 occurs in the two case runs. The body changes from
@@ -87,9 +88,11 @@ these fields to the charger or lid. Do not use them as a battery report or a
 replacement for the paired BLE identity key.
 
 Adaptive Volume `0x4C` carries a little-endian length of 3 followed by either
-`04 02 00` or `04 3A 01` (A1211/1215, B1426/1429). Both occur during setup,
-before notification registration. They provide no demonstrated mapping to
-Personalized Volume (`0x09/0x26`) or Adaptive strength (`0x09/0x2E`).
+`04 02 00` or `04 3A 01` (A1211/1215, B1426/1429). Tahoe 25G241's native
+consumer identifies these as subtype `04`, DRC mode/version pairs `02/00` and
+`3A/01`. Both occur during setup, before notification registration. They provide
+no demonstrated mapping to Personalized Volume (`0x09/0x26`) or Adaptive strength
+(`0x09/0x2E`); see the [current decoder](WINDOWS-AIRPODS-CONTROL-PROTOCOL.md#implemented-message-families).
 
 ### Sensor descriptions
 

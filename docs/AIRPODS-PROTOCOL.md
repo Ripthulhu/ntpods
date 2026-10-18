@@ -4,7 +4,7 @@ Wire formats, implementation links and hardware coverage for NTPods.
 
 | Reference | Contents |
 | --- | --- |
-| [Controls, battery and sensors](WINDOWS-AIRPODS-CONTROL-PROTOCOL.md) | AAP connection setup, settings, notifications, nearby BLE battery data, ATT and sensor reports |
+| [Controls, battery and sensors](WINDOWS-AIRPODS-CONTROL-PROTOCOL.md) | AAP setup, settings, accessory reports, nearby BLE battery and signal finding, DULT case information, ATT and sensors |
 | [Playback and microphone](WINDOWS-AIRPODS-AUDIO-PROTOCOL.md) | AAC/AAC-ELD negotiation, media packets, mic uplink, start/stop and recovery |
 | [Apple Profile Fast Connect](APPLE-FAST-CONNECT.md) | Discovery, channel assignment, profile descriptors and the Windows driver boundary |
 | [macOS capture procedure](MACOS-PROTOCOL-CAPTURE.md) | Repeatable comparisons with Apple's implementation and a record for unknown traffic |
@@ -22,7 +22,8 @@ Wire formats, implementation links and hardware coverage for NTPods.
 | --- | --- | --- |
 | Bluetooth Classic L2CAP, PSM `0x1001` | Apple's accessory protocol, called AAP or AACP in these sources; controls, notifications and HQ microphone packets | [aap.rs](../windows/daemon/src/aap.rs), [AAP driver](../windows/drivers/aap) |
 | AVDTP signaling and media | Playback codec selection, stream control and encoded AAC/AAC-ELD | [playback](../windows/daemon/src/playback), [playback guide](../windows/playback/README.md) |
-| BLE manufacturer advertisements | Nearby battery and case reports without opening the audio connection | [battery_ble.rs](../windows/daemon/src/battery_ble.rs) |
+| BLE manufacturer advertisements | Nearby battery, case and identity-verified signal reports without opening audio | [battery_ble.rs](../windows/daemon/src/battery_ble.rs), [nearby_finder.rs](../windows/daemon/src/nearby_finder.rs) |
+| BLE GATT, DULT non-owner service | Read-only information from a nearby charging case, separate from the Classic bud connection | [BluetoothCaseInformation.cs](../windows/winui/NTPods.WinUI/Services/BluetoothCaseInformation.cs), [DultCaseProtocol.cs](../windows/winui/NTPods.WinUI/Services/DultCaseProtocol.cs) |
 | ATT | Additional settings, including hearing-assistance data | [device settings](../windows/daemon/src/device_settings.rs), [hearing.rs](../windows/daemon/src/hearing.rs) |
 | Standard Bluetooth profiles | Service discovery, media controls and hands-free audio can also appear in a host capture | Mostly handled by Windows; [hands-free visibility](../windows/daemon/src/handsfree.rs) controls which matching endpoints NTPods hides |
 | Windows driver/IPC | PCM handoff and application state; these formats are local to NTPods | [IPC](../windows/ipc/src/lib.rs), [driver source](../windows/drivers) |

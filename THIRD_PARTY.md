@@ -23,6 +23,21 @@ from that commit. Its layout follows `presentation/overlays/IslandContent.kt`.
 `res-apple/drawable/img_airpods_max.png`.
 Other AirPods product artwork remains from the original NTPods asset set.
 
+The pairing card's `pairing_spin.mp4` and `pairing_spin_poster.png` are unchanged
+copies from the LibrePods rewrite fork at
+[`3303ba76b7cb484e97947be3f922159fb7f61856`](https://github.com/Ripthulhu/librepods/commit/3303ba76b7cb484e97947be3f922159fb7f61856),
+under `android/app/src/main/res/raw` and `res/drawable-nodpi`. The silent H.264
+loop is 178 frames at its original 30 fps; it reuses Pro-style artwork for known
+Pro models without changing their identity or capabilities. The fork trimmed
+two opening frames from upstream's `res/raw/connected.mp4` and added a matching
+poster. Playback lifecycle follows its GPL-3.0-or-later `PairingArtwork.kt`.
+The movie SHA-256 is
+`80974daff740fc4cb718b2c6f360e46293dc88b02b047e265a959230cfa26ead`;
+the poster SHA-256 is
+`d338cf9295f5bcf66dbf183e548767f8c099203d8060207026bb114904d2fca8`.
+Apple product artwork remains Apple's property; these files are not covered by
+a separate asset license in that source tree.
+
 The shared `GroupExpander` template adapts the WinUI `Expander` template in
 `Microsoft.WinUI/Themes/generic.xaml` from the pinned
 [Microsoft.WindowsAppSDK 1.7.260224002 package](https://www.nuget.org/packages/Microsoft.WindowsAppSDK/1.7.260224002).

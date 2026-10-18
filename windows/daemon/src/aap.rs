@@ -1,5 +1,7 @@
 //! AAP protocol: outgoing commands + parsers for the packets the AirPods push.
 
+pub mod accessory;
+
 pub const PSM_AACP: u16 = 0x1001;
 
 pub const HANDSHAKE: [u8; 16] = [

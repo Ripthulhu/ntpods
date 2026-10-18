@@ -30,7 +30,7 @@ for observed but unimplemented messages.
 | 0x001D       | Host        | [Device information](device-info.md)                         |
 | 0x001E       | Accessory   | External Accessory session packet (reference label)                 |
 | 0x0022       | Accessory   | CaseInfo request                                                   |
-| 0x0023       | Host        | CaseInfo response; field meanings incomplete                        |
+| 0x0023       | Host        | CaseInfo response; bounded v3 metadata, unknown forms kept opaque    |
 | 0x0029       | Accessory   | Country code (reference label)                                     |
 | 0x002B       | Host        | Stream State Info (reference label); bounded diagnostics in NTPods  |
 | 0x002D       | Accessory   | Connected-host list request      |
@@ -38,7 +38,7 @@ for observed but unimplemented messages.
 | 0x0030       | Accessory   | BLE key request                                  |
 | 0x0031       | Host        | BLE keys response                             |
 | 0x004B       | Host        | [Conversation awareness](AAP%20Definitions.md#conversational-awareness)        |
-| 0x004C       | Host        | Adaptive Volume message; payload meanings unknown                   |
+| 0x004C       | Host        | [Adaptive Volume targets and DRC reports](WINDOWS-AIRPODS-CONTROL-PROTOCOL.md#implemented-message-families) |
 | 0x004D       | Accessory   | [Host capabilities](AAP%20Definitions.md#setting-specific-features-for-airpods-pro-2)                    |
 | 0x004E       | Host        | Proximity-card status (reference label)                             |
 | 0x004F       | Both        | UARP information, asset and firmware protocol                        |

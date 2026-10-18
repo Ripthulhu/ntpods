@@ -265,7 +265,9 @@ public partial class App : Application
         _window?.SetClosingState(true);
         try
         {
+            bool caseCleanupConfirmed = _window is null || await _window.StopNearbyCaseInformationAsync();
             await Daemon.ShutdownAsync();
+            if (!caseCleanupConfirmed && _window is not null) await _window.ShowCaseCleanupFailureAsync();
         }
         catch (Exception)
         {

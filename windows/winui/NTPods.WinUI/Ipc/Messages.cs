@@ -115,6 +115,17 @@ public sealed record HardwareDiagnostics
     [JsonIgnore] public bool IsValid => Left is { IsValid: true } && Right is { IsValid: true };
 }
 
+public sealed record NearbyFinderState
+{
+    [JsonPropertyName("revision")] public ulong Revision { get; init; }
+    [JsonPropertyName("active")] public bool Active { get; init; }
+    [JsonPropertyName("paused")] public bool Paused { get; init; }
+    [JsonPropertyName("available_identity")] public bool AvailableIdentity { get; init; }
+    [JsonPropertyName("rssi")] public short? Rssi { get; init; }
+    [JsonPropertyName("trend")] public string Trend { get; init; } = "unknown";
+    [JsonPropertyName("last_heard_age_ms")] public ulong? LastHeardAgeMs { get; init; }
+}
+
 /// The daemon's authoritative state, pushed on connect and on every change.
 public sealed class Snapshot
 {
@@ -203,6 +214,8 @@ public sealed class Snapshot
     [JsonPropertyName("head_tracking_enabled")] public bool HeadTrackingEnabled { get; set; }
     [JsonPropertyName("head_tracking_state")] public string HeadTrackingState { get; set; } = "idle";
     [JsonPropertyName("head_tracking_error")] public string? HeadTrackingError { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [JsonPropertyName("nearby_finder")] public NearbyFinderState? NearbyFinder { get; set; }
 
     // AAP 0x1D metadata includes the serial number; keep it behind the Settings reveal toggle.
     [JsonPropertyName("model")] public string Model { get; set; } = "";
@@ -420,6 +433,18 @@ public sealed class SetHeadTrackingCmd
 {
     [JsonPropertyName("cmd")] public string Cmd => "set_head_tracking";
     [JsonPropertyName("on")] public bool On { get; init; }
+}
+
+public sealed class StartNearbyFinderCmd
+{
+    [JsonPropertyName("cmd")] public string Cmd => "start_nearby_finder";
+    [JsonPropertyName("device_id")] public required string DeviceId { get; init; }
+}
+
+public sealed class StopNearbyFinderCmd
+{
+    [JsonPropertyName("cmd")] public string Cmd => "stop_nearby_finder";
+    [JsonPropertyName("device_id")] public required string DeviceId { get; init; }
 }
 
 public sealed class GetLoudSoundReductionCmd

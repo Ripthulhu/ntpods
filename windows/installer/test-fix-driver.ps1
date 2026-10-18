@@ -41,6 +41,7 @@ try {
     $script:restartExitCode = 0
     $script:healAfterRestart = $false
     $script:missingAfterRestart = $false
+    $script:throwOnRestart = $false
     function Read-RecoveryAddress { param($Path, $Now)
         $expected = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'NTPods\driver-recovery.txt'
         if ($Path -cne $expected) { throw 'Recovery read outside the scheduled user data directory.' }
@@ -62,7 +63,11 @@ try {
         $device = $script:devices | Where-Object { $_.InstanceId -ceq $InstanceId } | Select-Object -First 1
         [pscustomobject]@{ Data = $(if ($KeyName -ceq 'DEVPKEY_Device_Service') { $device.Service } else { $device.ProblemCode }) }
     }
-    function Restart-RecoveryTarget { param($InstanceId) $script:restarts += $InstanceId; $script:restartExitCode }
+    function Restart-RecoveryTarget { param($InstanceId)
+        $script:restarts += $InstanceId
+        if ($script:throwOnRestart) { throw 'Synthetic restart refusal.' }
+        $script:restartExitCode
+    }
     function Start-Sleep { param($Milliseconds) }
     function Device([string]$Address, [string]$Status = 'Error', [bool]$Present = $true, [string]$Service = 'NTPodsAAP', [uint32]$Problem = 38) {
         [pscustomobject]@{
@@ -90,6 +95,14 @@ try {
     $script:restartExitCode = 3010
     Check-Restarts 1 3010
     $script:restartExitCode = 0
+    $script:throwOnRestart = $true
+    Check-Restarts 1 3010
+    $script:missingAfterRestart = $true
+    $refused = $false
+    try { Check-Restarts 1 3010 } catch { $refused = $_.ToString() -match 'Synthetic restart refusal' }
+    if (-not $refused) { throw 'A missing target after a refused restart was classified as restart-required.' }
+    $script:missingAfterRestart = $false
+    $script:throwOnRestart = $false
     $script:missingAfterRestart = $true
     Check-Restarts 1 1
     $script:missingAfterRestart = $false

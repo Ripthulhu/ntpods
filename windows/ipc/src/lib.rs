@@ -177,6 +177,33 @@ pub struct BatteryFreshness {
     pub headphone: BatteryObservation,
 }
 
+/// Temporary signal view for the selected, IRK-verified pair. RSSI is not distance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NearbyFinderState {
+    #[serde(default)]
+    pub revision: u64,
+    pub active: bool,
+    pub paused: bool,
+    pub available_identity: bool,
+    pub rssi: Option<i16>,
+    pub trend: String,
+    pub last_heard_age_ms: Option<u64>,
+}
+
+impl Default for NearbyFinderState {
+    fn default() -> Self {
+        Self {
+            revision: 0,
+            active: false,
+            paused: false,
+            available_identity: false,
+            rssi: None,
+            trend: "unknown".into(),
+            last_heard_age_ms: None,
+        }
+    }
+}
+
 /// The daemon's authoritative state, pushed to clients on connect and on change.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -369,6 +396,9 @@ pub struct Snapshot {
     pub head_tracking_state: String,
     #[serde(default)]
     pub head_tracking_error: Option<String>,
+    /// Explicit nearby session. No position or distance is inferred.
+    #[serde(default)]
+    pub nearby_finder: NearbyFinderState,
     /// Metadata from packet 0x1D, retained across reconnects to the same pair.
     /// The serial is sensitive and remains hidden until revealed in the app.
     #[serde(default)]
@@ -523,6 +553,7 @@ impl Default for Snapshot {
             head_tracking_enabled: false,
             head_tracking_state: default_head_tracking_state(),
             head_tracking_error: None,
+            nearby_finder: NearbyFinderState::default(),
             model: String::new(),
             firmware: String::new(),
             serial: String::new(),
@@ -657,6 +688,13 @@ pub enum Command {
     /// Start/stop live movement for this command client; closing its pipe stops it.
     SetHeadTracking {
         on: bool,
+    },
+    /// The command pipe owns this temporary scan until Stop or disconnection.
+    StartNearbyFinder {
+        device_id: String,
+    },
+    StopNearbyFinder {
+        device_id: String,
     },
     GetLoudSoundReduction,
     GetTransparency,
@@ -870,6 +908,51 @@ mod tests {
         ] {
             assert!(from_line::<Command>(malformed).is_none());
         }
+    }
+
+    #[test]
+    fn finder_requires_pair_identity_and_defaults_off_for_legacy_snapshots() {
+        for cmd in [
+            Command::StartNearbyFinder {
+                device_id: "001122334455".into(),
+            },
+            Command::StopNearbyFinder {
+                device_id: "001122334455".into(),
+            },
+        ] {
+            let line = to_line(&cmd);
+            assert!(line.contains("\"device_id\":\"001122334455\""));
+            assert!(from_line::<Command>(&line).is_some());
+        }
+        for malformed in [
+            r#"{"cmd":"start_nearby_finder"}"#,
+            r#"{"cmd":"stop_nearby_finder","device_id":null}"#,
+            r#"{"cmd":"start_nearby_finder","device_id":42}"#,
+        ] {
+            assert!(from_line::<Command>(malformed).is_none());
+        }
+        let mut old = serde_json::to_value(Snapshot::default()).unwrap();
+        old.as_object_mut().unwrap().remove("nearby_finder");
+        let snapshot: Snapshot = serde_json::from_value(old).unwrap();
+        assert_eq!(snapshot.nearby_finder, NearbyFinderState::default());
+        let finder = NearbyFinderState {
+            revision: u64::MAX - 1,
+            active: true,
+            paused: false,
+            available_identity: true,
+            rssi: Some(-62),
+            trend: "stronger".into(),
+            last_heard_age_ms: Some(1_234),
+        };
+        assert_eq!(
+            serde_json::from_str::<NearbyFinderState>(&serde_json::to_string(&finder).unwrap())
+                .unwrap(),
+            finder
+        );
+        let mut previous = serde_json::to_value(&finder).unwrap();
+        previous.as_object_mut().unwrap().remove("revision");
+        let previous: NearbyFinderState = serde_json::from_value(previous).unwrap();
+        assert_eq!(previous.revision, 0);
     }
 
     #[test]

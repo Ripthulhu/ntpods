@@ -58,26 +58,61 @@ another file is named.
 | `0x0002` | B → H | Capability count, then fixed-width ID/value entries |
 | `0x0004` | B → H | Battery count and five-byte component records; see below |
 | `0x0006` | B → H | Primary and secondary ear states at offsets 6 and 7 |
+| `0x0008` | B → H | Exactly four body bytes: primary role and three unassigned flag bytes |
 | `0x0009` | Both | One-byte setting ID, then a four-byte little-endian value; exactly 11 bytes for `parse_device_control` |
 | `0x000F` | H → B | Four-byte notification mask; the normal writer sends all bits set |
 | `0x0017` | Both | RTBuddy/SensorDataWX framing; see sensor section |
 | `0x001A` | H → B | Rename: `01 length 00`, then UTF-8 bytes (`build_rename`); command handler allows 1–64 bytes and rejects blank names |
 | `0x001D` | B → H | Device metadata; strings begin at offset 11 (`parse_metadata`) |
+| `0x0023` | B → H | Captured 25-byte CaseInfo body; bounded version-3 metadata decoder, unknown forms retained as opaque bytes |
 | `0x002E` | B → H | Connected-host list; count at offset 8, entries begin at 9 |
 | `0x0030` | H → B | BLE key request payload `05 00` |
 | `0x0031` | B → H | BLE key response; never forwarded to UI or general packet logs |
 | `0x004B` | B → H | Conversation Awareness event; status at offset 9 |
+| `0x004C` | B → H | uint16 LE length followed by exactly that many bytes, at most 256; Adaptive Volume targets or DRC report |
 | `0x004D` | H → B | Feature mask from session setup |
+| `0x0055` | B → H | Exactly four body bytes; meaning unknown |
 | `0x0058` | Both | High-quality microphone control/audio; [audio reference](WINDOWS-AIRPODS-AUDIO-PROTOCOL.md) |
 | `0x0063` | Both | Three-band EQ: `05 00 01 mode low mid high`; exactly 13 bytes |
 
 [`capabilities.rs`](../windows/daemon/src/capabilities.rs) keeps reported capability
 IDs and raw values in the IPC `aacp_capabilities` map for the current control
 connection. IDs `03`–`08` and `30` carry uint32 LE values; other recognized IDs
-carry one byte. Entries have no length field, so unknown widths, duplicate IDs,
+carry one byte. Widths follow the pinned LibrePods
+[table](https://github.com/librepods-org/librepods/blob/34076c85f0fc2eaf32ad1d5cad1bb7315df9c89c/android/app/src/main/kotlin/me/kavishdevar/librepods/bluetooth/aacp/types/Capability.kt).
+Entries have no length field, so unknown widths, duplicate IDs,
 truncated values and trailing bytes are rejected without replacing the previous
 report. Reconnecting clears the map. Values use different schemes across IDs;
 this map does not change feature availability or activate hearing modes.
+
+The read-only [accessory parser](../windows/daemon/src/aap/accessory.rs) also
+validates `08`/`23`/`4C`/`55` reports under the service-4 header.
+The receive path logs changed reports as lengths or decoded metadata, without
+case names, opaque identity or payload bytes. These reports do not grant
+feature support, select an audio route or send commands.
+
+CaseInfo's verified version-3, 25-byte body contains a uint16 vendor ID, uint32
+product ID, uint16 vendor source, color byte, split uint64 version, length-prefixed
+NUL-terminated name and uint32 reserved value. Integers are little-endian.
+The decoder checks the complete envelope, name length, terminator and UTF-8.
+Other versions or malformed layouts stay opaque. The raw product ID is not the
+case's standard PnP product ID, and its raw version is not the DULT firmware value.
+No field establishes the case's BLE address or a unique association with the buds.
+
+For `4C`, payload offsets below start after the two-byte length. Tahoe 25G241's
+`AACPClient::adaptiveVolumeMessageRecvEvent` supplies the field names and layout:
+
+| Subtype | Exact payload | Meaning |
+| --- | --- | --- |
+| `04` | `04 mode version` | DRC mode and version, both raw uint8 values |
+| `01` | `01 media telephony voiceCommand rampUp rampDown` | Three raw uint8 targets, then two uint16 LE ramp durations in milliseconds |
+
+Pro 3 / 9A348 captures contain `04 02 00` and `04 3A 01` at A1211/1215 and
+B1426/1429 in the [case capture](MACOS-CASE-CAPTURE-2026-10-12.md).
+Subtype `01` is native-code evidence only; no captured report confirms it yet.
+Unknown subtypes or shapes remain opaque. Mode `3A` is not a boolean or a known
+user setting. These reports are separate from Personalized Volume (`09/26`)
+and Adaptive strength (`09/2E`); no writable mapping is established.
 
 The receive path recognizes `0x2B`, `0x44`, and `0x52` for route diagnostics
 but does not decode their state. Their names in `route_opcode_name` are working
@@ -228,9 +263,9 @@ setting `0x0A`.
 
 LibrePods maps the first body byte of role message `0x08` as 1=left primary,
 2=right primary. The [Tahoe case captures](MACOS-CASE-CAPTURE-2026-10-12.md)
-contain left-primary reports, but do not validate every role flag. NTPods does
-not currently parse this message; its pause and microphone policies work on
-both wear slots without assigning physical sides.
+contain left-primary reports, but do not validate every role flag. NTPods parses
+the four-byte body and preserves unknown values. Its pause and microphone
+policies still work on both wear slots without assigning physical sides.
 
 Conversation event `0x4B` is separate from the enabled setting `0x09/0x28`.
 Conversation Awareness may apply without echoing the setting. NTPods retains a
@@ -313,8 +348,9 @@ have arrived about a minute apart on the tested AX200 setup, so a ten-second
 timeout would be too short. No later packet means cached/disconnected state,
 not a request to wake the case.
 
-Scanning while connected is opt-in; capture or an active microphone uplink always
-stops scanning. Verified battery advertisements keep a closed case's battery
+Scanning while connected requires the saved opt-in or an active Find nearby
+session; capture or an active microphone uplink always stops scanning.
+Verified battery advertisements keep a closed case's battery
 visible without reconnecting audio. Nearby and case-open reports never request
 an audio connection: availability does not establish which host the user wants.
 Connect, Repair, audio rebuild and pairing completion explicitly request audio;
@@ -325,6 +361,87 @@ completed link loss, custom playback currently requires Connect because its
 driver exposes no verified peer-initiated audio-return signal. Windows itself
 can still reconnect its paired Bluetooth profiles. No advertisement can prove whether the case is currently
 charging if its case slot is absent.
+
+### Find nearby
+
+[Find nearby](../windows/daemon/src/nearby_finder.rs) uses only advertisements whose
+rotating address resolves with the selected pair's stored IRK. It accepts RSSI
+without requiring a battery payload and rejects anonymous `0x12` Find My reports.
+Signal uses a seven-sample median followed by exponential smoothing; trend
+compares five smoothed readings with a 3 dB threshold. The UI retains the last
+signal and its age when reports stop. Signal strength does not establish distance,
+direction or which part of the pair transmitted.
+
+Start and Stop require the selected device ID. The command-pipe owner holds the
+session; an old client's Stop or disconnect cannot stop a newer session. Closing
+or collapsing the view, changing devices, leaving the page or losing the daemon
+ends the UI's session. Starting the finder temporarily permits connected scanning
+without changing the saved preference. Microphone capture or uplink pauses it.
+Advertisements never start audio.
+
+Apple's supported [Find My setup](https://support.apple.com/en-lamr/guide/airpods/dev8e8b93d71/web)
+requires initial pairing with an iPhone or iPad signed in to the Apple Account;
+the enrolled pair can then appear and play sounds in Find My on a same-account
+Mac. Mac-only enrollment is unproven. NTPods implements local signal finding;
+Apple-account enrollment, cloud location, case ringing and UWB navigation remain
+unimplemented.
+
+The pinned [apple-wireshark decoder](https://github.com/pabloaul/apple-wireshark/tree/2e9822247195fad2f79c729010308c33a29546ea/plugins/cldurian)
+labels its ClDurian command table `airtag_tasks`. Magnet's `0x91` dispatch and
+AirTag sound entries do not establish AirPods sound commands. AirPods-specific
+captures must verify the transport, authentication and target before adding a
+case-ringing writer.
+
+### Nearby charging-case information (DULT)
+
+The case has a separate BLE GATT connection. NTPods reads its DULT protocol
+version, capabilities and firmware value through service
+`15190001-12F4-C226-88ED-2AC5579F2A85`, characteristic
+`8E0C0001-1D68-FB92-BF61-48377421680E`. This is the Posh non-owner route in
+iOS AccessoryInteraction, distinct from the Hawkeye `FD44` configuration route
+and its Accessory Information service.
+
+| Request | Response | Operand |
+| --- | --- | --- |
+| `07 00` | `07 08` | Protocol implementation version |
+| `08 00` | `08 08` | Capabilities |
+| `0A 00` | `0A 08` | Firmware value |
+
+Opcodes are uint16 little-endian, with no extra header. Each accepted response
+is exactly six bytes: opcode followed by uint32 little-endian data. Generic
+Command Response `02 03` is not a metadata response, even with status zero.
+The protocol and standard capability meanings follow the
+[DULT draft, revision 03](https://datatracker.ietf.org/doc/html/draft-ledvina-apple-google-unwanted-trackers-03).
+Capability bits 0–3 denote sound, motion detector, NFC identifier and BLE identifier;
+unassigned bits remain raw. A sound capability does not prove a sound command works.
+
+On the tested Pro 3 case with Apple PnP product `2029`, AX200 and Windows 11,
+all three requests returned typed indications without a BLE bond. The user
+reported that the pair was not registered in Find My. Values were protocol
+`0x00010000` (1.0.0), capabilities `0x0000003B`, firmware `0x005A8600`.
+These are uncached Windows API observations, not an HCI capture.
+The firmware is shown raw; it is not the buds' marketing firmware or an AIS
+Find My version. AIS was absent from this case's returned service inventory.
+
+The bounded reader selects one fresh connectable candidate, verifies uncached
+Apple PnP identity and refuses ambiguity or an existing BLE bond. It temporarily
+enables indications, then attempts to restore the original notification setting
+and checks readback, including after cancellation. If restoration cannot be
+confirmed, the app retains a warning and reports it before quitting.
+It does not pair, remove bonds, send
+sound commands or open audio. Metadata is session-only and labelled nearby:
+model identity alone cannot bind a case to the selected Classic pair. An optional
+read after successful bud pairing does not delay audio or change pairing success.
+Permanent Windows case bonding and subsequent encrypted reconnection remain
+unresolved; this reader does not implement them.
+
+A separate DULT sound experiment sent `00 03` (Start), then `01 03` (Stop)
+after two seconds on the same unpaired connection. Both received ATT success;
+only Stop returned a typed Command Response with status zero. There was no
+Start response or Sound Completed event, and the user heard no sound.
+Notification restoration was verified. NTPods has no case-ringing control;
+the reported sound capability and successful Stop response do not establish
+working Start/Stop behavior.
 
 ## Sensors
 
@@ -508,6 +625,10 @@ body, NTPods retries the read up to four times at 75 ms intervals without
 resending the write. Any other mismatch fails. The `0x60`/`0x64` read variation
 does not authorize other header changes.
 
+The iOS 27.0.1 (24A446) native writer independently retains the 100-byte
+prefix and 104-byte V2 record, with own voice at offset 100. Its receiver's
+100-byte prefix read does not explain the fitted-read `0x0060` field.
+
 A development preview on Pro 3 A3063 / 9A348 confirmed Amplification, Balance,
 Tone, Conversation Boost and one left 250 Hz audiogram edit, restoring the full
 original record after each. The listener reported audible changes in
@@ -574,6 +695,25 @@ setting allowlist. Settings offsets relative to the characteristic value are:
 | 48 / 96 | Ambient-noise reduction |
 | 100 | Own voice |
 
+The eight audiogram slots are 250, 500, 1000, 2000, 3000, 4000, 6000 and
+8000 Hz, in that order. iOS 27.0.1 (24A446)'s native
+`HMHealthKitUtilities.frequencyBins` independently confirms this mapping.
+
+The native audiogram importer reads per-ear thresholds in dB HL. It requires
+250, 500, 1000, 2000, 4000 and 8000 Hz for both ears. If 3000 Hz is absent, it
+averages the 2000/4000 Hz values; if 6000 Hz is absent, it averages 4000/8000 Hz.
+Each ear is handled separately, using float32 values and arithmetic. Supplied
+3000/6000 Hz thresholds are retained. The input selection prefers the first
+available per-ear `clampedSensitivity`, falling back to `sensitivity`; that
+property's numerical range has not been traced.
+
+`updateHMSettingsStruct:fromAudiogram:` (`0x2808f6954`) stores these thresholds
+directly in the profile. The traced construction/upload chain adds the scalar
+adjustments and writes the record to `A4120005`; it does not calculate a filter
+bank or compression prescription. The firmware's ambient fitting algorithm
+remains unknown. NTPods still requires complete eight-band input and retains
+its existing validation bounds.
+
 Mode-only enables read the enrolled fitting first and verify its complete bytes
 afterward; mode-only requests never write `A4120005` or notification subscriptions.
 Fresh device reports confirm both switches. NTPods uses reports from the current
@@ -605,9 +745,42 @@ for 1.5 seconds. Empty or incomplete curves are rejected. Amplification accepts
 The amplification slider uses `A = 2a - 1` for normalized position `a`; signed
 balance `B` produces left gain `A - B/2` and right gain `A + B/2`. This matches
 Apple's [gain conversion](https://github.com/EthanArbuckle/iPhone18-3_26.1_23B85_Restore/blob/90aa0cfe59d9682b4265e1354c8b19ec3c7823ab/System/Library/PrivateFrameworks/HearingModeService_Private.framework/HearingModeService_Private/HMDeviceManager.mm#L1904-L1938),
-also corroborated by Tahoe 25G241's native enrollment writer. Existing gains
+also corroborated by Tahoe 25G241 and iOS 27.0.1 (24A446)'s native writers. Existing gains
 remain unchanged until a gain slider is edited. Tone and Conversation Boost
 apply to both ears; untouched asymmetric values remain intact.
+The iOS native new-audiogram selection path resets normalized amplification,
+balance, own voice and tone to 0.5, and beamformer/noise suppression to zero.
+That policy applies to selecting a new audiogram; ordinary edits preserve
+untouched settings. HearingTest's recovered B698/B788 stimulus-calibration
+tables do not establish personal fitting or on-bud DSP coefficients.
+
+The current native enrollment callbacks select an audiogram, request Hearing
+Assist enrollment, enable Hearing Aid, then enable the media/voice settings.
+They are not a complete fresh-enrollment procedure: earlier prerequisites and
+error recovery remain unverified. The writer gets its version from the device
+record; with no saved record and version zero, its fallback is V1. NTPods keeps
+its provisioned-profile requirement rather than synthesizing a fitted V2 record.
+
+Apple starts AHPS discovery before audiogram selection, subscribing to and
+reading the settings, protection and diagnostic characteristics. Its record
+decoder stores the received version before checking enrollment state; an
+unenrolled V2 record can therefore supply the writer's version. This is a
+source-derived path, not a verified fresh-enrollment procedure. The native
+decoder's fixed-size copies do not establish safe handling of short records.
+
+HealthKit availability also affects enrollment state. In
+`_deviceUpdateRegionStatus:` (`0x2808FDDD8`), a Hearing Assist status change to
+3 invokes `_deviceRescindHearingAssist:`. The underlying country, age and other
+eligibility requirements remain unresolved; the UI's region analytics alone
+do not describe that policy.
+
+The iOS 27.0.1 findings use iPhone19,2 build 24A446, with native framework UUIDs
+`43CA5DAE-B9BD-329B-9CA3-590BE7BAA8A6` (HearingModeService_Private),
+`D0838E2A-D9A3-3F7F-8059-14BC86742EF6` (HearingModeService), and
+`312AF164-11A5-363E-AEC3-523B6D1767C5` (HearingTest).
+The enrollment caller is HearingModeUI UUID
+`EA6FB41F-1E7B-39A7-80BA-5F20FD4E005E`, `enrollHearingAid` at `0x28096f398`.
+
 Invalid values are rejected. Failed reads or writes require another read before
 editing; a reconnect clears the saved baseline. The UI uses a session-bound editability
 flag; missing flags from older backends default to read-only. Disable remains
@@ -772,8 +945,26 @@ remains unresolved. On Windows with AX200 and an iPhone-fitted Pro 3 / 9A348,
 the listener reported a music change with Media Assist on and Hearing Aid off.
 That observation does not establish where processing runs or whether every
 configuration needs the separate gate.
-The subtype-2 arrays' frequency bins and physical units remain
-unverified, and the record does not establish a 24-band fitting transform.
+In iOS 27.0.1 (24A446), PersonalAudio's `lossArrayFromDictionary:`
+(`0x29491116C`) reads dB HL loss keys in order 250, 500, 1000, 2000, 3000,
+4000, 6000 and 10000 Hz. `onBudsMediaSettings` transfers four such arrays to
+the PME writer. The native AHPS-to-PersonalAudio bridge feeds the eighth
+AHPS value into the `10000` key directly; no 8000-to-10000 Hz resampling occurs
+in that bridge. These are host-source assignments, not measured per-band
+responses from the buds or evidence of a 24-band fitting transform.
+
+PME and AHPS contain separate curves, with separate updates in Apple's host.
+While shared Hearing Assist is active, the traced PersonalAudio bridge uses
+the AHPS ear-loss arrays; otherwise it uses the separate stored media/voice
+arrays. That host policy does not establish the buds' selection policy.
+NTPods' audiogram editor writes AHPS only; Media Assist mode changes preserve
+the stored PME curves. Synchronization after an AHPS edit remains unverified.
+A coordinated curve update still needs device readback and restoration checks.
+
+The PersonalAudio source is UUID `FC2D1EB8-2D5F-3C86-AC56-E49F730A76DD`;
+its configuration bridge is `0x29490D570`. The separate host `hear` Audio Unit
+performs hearing compensation; its DSP is not proof of the AirPods' ambient
+fitting algorithm.
 
 ## Evidence and comparison gaps
 
@@ -811,6 +1002,11 @@ Tests live beside the implementation unless linked separately. Useful names:
   `encrypted_report_requires_owned_address_and_preserves_exact_levels_and_unknowns`,
   `short_reconnect_does_not_discard_a_fresh_ble_report`,
   `buds_only_reports_do_not_refresh_an_old_case_or_its_charging_flag`.
+- `aap/accessory.rs`: `role_preserves_unassigned_side_and_flags_without_changing_policy`,
+  `opaque_case_and_setup_reports_preserve_bytes_but_do_not_log_them`.
+- `nearby_finder.rs`: `stale_owner_cannot_stop_new_client_or_new_pair`,
+  `unavailable_identity_never_activates_scan`,
+  `median_ema_trend_and_age_use_only_valid_monotonic_samples`.
 - `head_tracking.rs`: `signed_axes_decode_across_every_fragment_boundary_and_batched_frames`,
   `only_live_exact_motion_records_are_accepted`,
   `old_client_disconnect_cannot_stop_new_owner_and_session_end_never_rearms`.

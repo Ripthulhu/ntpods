@@ -520,4 +520,50 @@
   <data name="HardwareChecks.ResultHelp" xml:space="preserve"><value>Saved checks are not a current diagnosis. Device times may differ from this PC.</value></data>
   <data name="HardwareChecks.TimedOut" xml:space="preserve"><value>Reading timed out. Try Refresh again.</value></data>
   <data name="HardwareChecks.PauseMic" xml:space="preserve"><value>Stop microphone capture before refreshing.</value></data>
+  <data name="NearbyFinder.Title" xml:space="preserve"><value>Find nearby</value></data>
+  <data name="NearbyFinder.Description" xml:space="preserve"><value>Move slowly and watch the signal strength. Updates may be infrequent with the case closed.</value></data>
+  <data name="NearbyFinder.Signal" xml:space="preserve"><value>Bluetooth signal</value></data>
+  <data name="NearbyFinder.Start" xml:space="preserve"><value>Start</value></data>
+  <data name="NearbyFinder.Stop" xml:space="preserve"><value>Stop</value></data>
+  <data name="NearbyFinder.Ready" xml:space="preserve"><value>Ready to search</value></data>
+  <data name="NearbyFinder.Starting" xml:space="preserve"><value>Starting…</value></data>
+  <data name="NearbyFinder.Waiting" xml:space="preserve"><value>Waiting for a signal</value></data>
+  <data name="NearbyFinder.NoRecentSignal" xml:space="preserve"><value>Waiting for another signal</value></data>
+  <data name="NearbyFinder.Paused" xml:space="preserve"><value>Paused while the microphone is in use</value></data>
+  <data name="NearbyFinder.NoIdentity" xml:space="preserve"><value>Nearby search isn’t available for this pair yet.</value></data>
+  <data name="NearbyFinder.Unavailable" xml:space="preserve"><value>Nearby search is unavailable.</value></data>
+  <data name="NearbyFinder.Busy" xml:space="preserve"><value>Nearby search is already running.</value></data>
+  <data name="NearbyFinder.Strong" xml:space="preserve"><value>Strong signal</value></data>
+  <data name="NearbyFinder.Moderate" xml:space="preserve"><value>Moderate signal</value></data>
+  <data name="NearbyFinder.Weak" xml:space="preserve"><value>Weak signal</value></data>
+  <data name="NearbyFinder.Stronger" xml:space="preserve"><value>Signal getting stronger</value></data>
+  <data name="NearbyFinder.Weaker" xml:space="preserve"><value>Signal getting weaker</value></data>
+  <data name="NearbyFinder.Steady" xml:space="preserve"><value>Signal steady</value></data>
+  <data name="NearbyFinder.JustHeard" xml:space="preserve"><value>Last heard just now</value></data>
+  <data name="NearbyFinder.SecondsAgo" xml:space="preserve"><value>Last heard {0} s ago</value></data>
+  <data name="NearbyFinder.MinutesAgo" xml:space="preserve"><value>Last heard {0} min ago</value></data>
+  <data name="NearbyFinder.HoursAgo" xml:space="preserve"><value>Last heard {0} h ago</value></data>
+  <data name="NearbyFinder.StartFailed" xml:space="preserve"><value>Couldn’t start nearby search. Try again.</value></data>
+  <data name="NearbyCase.Title" xml:space="preserve"><value>Nearby charging case</value></data>
+  <data name="NearbyCase.Description" xml:space="preserve"><value>Open your charging case nearby. No pairing is needed.</value></data>
+  <data name="NearbyCase.Read" xml:space="preserve"><value>Read information</value></data>
+  <data name="NearbyCase.Reading" xml:space="preserve"><value>Reading…</value></data>
+  <data name="NearbyCase.Protocol" xml:space="preserve"><value>Accessory protocol (DULT)</value></data>
+  <data name="NearbyCase.Firmware" xml:space="preserve"><value>Reported firmware</value></data>
+  <data name="NearbyCase.Capabilities" xml:space="preserve"><value>Reported features</value></data>
+  <data name="NearbyCase.NearbyOnly" xml:space="preserve"><value>This nearby case isn’t linked to the selected AirPods.</value></data>
+  <data name="NearbyCase.Sound" xml:space="preserve"><value>Sound</value></data>
+  <data name="NearbyCase.Motion" xml:space="preserve"><value>Motion detection</value></data>
+  <data name="NearbyCase.Nfc" xml:space="preserve"><value>NFC identification</value></data>
+  <data name="NearbyCase.BluetoothIdentity" xml:space="preserve"><value>Bluetooth identification</value></data>
+  <data name="NearbyCase.NoneReported" xml:space="preserve"><value>No recognized features</value></data>
+  <data name="NearbyCase.PauseMic" xml:space="preserve"><value>Stop the microphone before reading case information.</value></data>
+  <data name="NearbyCase.NotFound" xml:space="preserve"><value>Open the case nearby, then try again.</value></data>
+  <data name="NearbyCase.Ambiguous" xml:space="preserve"><value>Several nearby accessories are responding. Move away from other trackers, then try again.</value></data>
+  <data name="NearbyCase.Paired" xml:space="preserve"><value>Information isn’t available for a case already paired in Windows.</value></data>
+  <data name="NearbyCase.Unreachable" xml:space="preserve"><value>The case stopped responding. Close and reopen the lid, then try again.</value></data>
+  <data name="NearbyCase.Unsupported" xml:space="preserve"><value>No supported charging case responded. Open your case nearby, then try again.</value></data>
+  <data name="NearbyCase.InvalidResponse" xml:space="preserve"><value>The case returned unreadable information. Try again.</value></data>
+  <data name="NearbyCase.RestoreUncertain" xml:space="preserve"><value>The case connection couldn’t be restored. Close and reopen its lid before trying again.</value></data>
+  <data name="NearbyCase.Busy" xml:space="preserve"><value>Another case read is in progress. Try again shortly.</value></data>
 </root>

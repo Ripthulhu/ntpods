@@ -1,7 +1,8 @@
 //! Per-client named-pipe transport, bounded NDJSON framing and handle cleanup.
 
 use super::{
-    apply_command, log, publish_head_tracking, security, set_head_tracking, volume, wide, Ctx,
+    apply_command, log, publish_head_tracking, security, set_head_tracking, start_nearby_finder,
+    stop_nearby_finder, volume, wide, Ctx,
 };
 use ntpods_ipc::{Command, PIPE_CMDS, PIPE_EVENTS};
 use std::sync::Arc;
@@ -74,6 +75,7 @@ fn client_reader(pipe: Arc<Pipe>, ctx: Ctx) {
     let mut buf = [0u8; 4096];
     let mut acc = Vec::new();
     let mut head_tracking_owner = None;
+    let mut nearby_finder_owner: Option<(String, u64)> = None;
     loop {
         let mut read = 0u32;
         let ok = unsafe {
@@ -92,10 +94,26 @@ fn client_reader(pipe: Arc<Pipe>, ctx: Ctx) {
             break; // Commands have a bounded input buffer.
         };
         for cmd in commands {
-            if let Command::SetHeadTracking { on } = cmd {
-                head_tracking_owner = Some(set_head_tracking(&ctx, on));
-            } else {
-                apply_command(&ctx, cmd);
+            match cmd {
+                Command::SetHeadTracking { on } => {
+                    head_tracking_owner = Some(set_head_tracking(&ctx, on));
+                }
+                Command::StartNearbyFinder { device_id } => {
+                    if let Some(owner) = start_nearby_finder(&ctx, &device_id) {
+                        nearby_finder_owner = Some((device_id, owner));
+                    }
+                }
+                Command::StopNearbyFinder { device_id } => {
+                    if nearby_finder_owner
+                        .as_ref()
+                        .is_some_and(|(id, _)| id == &device_id)
+                    {
+                        if let Some((id, owner)) = nearby_finder_owner.take() {
+                            stop_nearby_finder(&ctx, &id, owner);
+                        }
+                    }
+                }
+                cmd => apply_command(&ctx, cmd),
             }
         }
     }
@@ -104,6 +122,9 @@ fn client_reader(pipe: Arc<Pipe>, ctx: Ctx) {
         if tracking.release(owner) {
             publish_head_tracking(&ctx, &tracking);
         }
+    }
+    if let Some((device_id, owner)) = nearby_finder_owner {
+        stop_nearby_finder(&ctx, &device_id, owner);
     }
     // Dropping the final Arc closes the command pipe.
 }

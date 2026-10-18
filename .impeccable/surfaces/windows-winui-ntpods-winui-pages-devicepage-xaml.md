@@ -71,6 +71,14 @@ its requested scan. Inhibit discovery during microphone capture and shutdown.
 
 ## Checks
 
+Find nearby is a collapsed native expander with explicit Start and Stop. Show
+verified signal strength and trend for the selected pair, with last-heard age.
+Dim the retained signal when reports become stale; do not show distance, direction,
+or lost-device claims. Stop the view's search on collapse, navigation, window hide,
+unload, pair change or daemon loss. Opening the card must never start scanning or
+take over audio. Reuse native controls and the existing expander motion in every
+theme, including high contrast and reduced motion.
+
 Hardware checks use a collapsed expander and manual Refresh. Show saved per-ear
 results with neutral text and separate device timestamps from the time read.
 Cached flags do not establish a current fault.

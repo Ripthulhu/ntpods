@@ -516,4 +516,50 @@
   <data name="HardwareChecks.ResultHelp" xml:space="preserve"><value>Las comprobaciones guardadas no son un diagnóstico actual. La hora del dispositivo puede diferir de la de este PC.</value></data>
   <data name="HardwareChecks.TimedOut" xml:space="preserve"><value>Se agotó el tiempo de lectura. Pulsa Actualizar de nuevo.</value></data>
   <data name="HardwareChecks.PauseMic" xml:space="preserve"><value>Detén la captura del micrófono antes de actualizar.</value></data>
+  <data name="NearbyFinder.Title" xml:space="preserve"><value>Buscar cerca</value></data>
+  <data name="NearbyFinder.Description" xml:space="preserve"><value>Muévete despacio y observa la intensidad de la señal. Las actualizaciones pueden ser poco frecuentes con el estuche cerrado.</value></data>
+  <data name="NearbyFinder.Signal" xml:space="preserve"><value>Señal Bluetooth</value></data>
+  <data name="NearbyFinder.Start" xml:space="preserve"><value>Iniciar</value></data>
+  <data name="NearbyFinder.Stop" xml:space="preserve"><value>Detener</value></data>
+  <data name="NearbyFinder.Ready" xml:space="preserve"><value>Listo para buscar</value></data>
+  <data name="NearbyFinder.Starting" xml:space="preserve"><value>Iniciando…</value></data>
+  <data name="NearbyFinder.Waiting" xml:space="preserve"><value>Esperando una señal</value></data>
+  <data name="NearbyFinder.NoRecentSignal" xml:space="preserve"><value>Esperando otra señal</value></data>
+  <data name="NearbyFinder.Paused" xml:space="preserve"><value>En pausa mientras se usa el micrófono</value></data>
+  <data name="NearbyFinder.NoIdentity" xml:space="preserve"><value>La búsqueda cercana aún no está disponible para estos AirPods.</value></data>
+  <data name="NearbyFinder.Unavailable" xml:space="preserve"><value>La búsqueda cercana no está disponible.</value></data>
+  <data name="NearbyFinder.Busy" xml:space="preserve"><value>La búsqueda cercana ya está en curso.</value></data>
+  <data name="NearbyFinder.Strong" xml:space="preserve"><value>Señal fuerte</value></data>
+  <data name="NearbyFinder.Moderate" xml:space="preserve"><value>Señal moderada</value></data>
+  <data name="NearbyFinder.Weak" xml:space="preserve"><value>Señal débil</value></data>
+  <data name="NearbyFinder.Stronger" xml:space="preserve"><value>La señal aumenta</value></data>
+  <data name="NearbyFinder.Weaker" xml:space="preserve"><value>La señal disminuye</value></data>
+  <data name="NearbyFinder.Steady" xml:space="preserve"><value>Señal estable</value></data>
+  <data name="NearbyFinder.JustHeard" xml:space="preserve"><value>Señal recibida ahora mismo</value></data>
+  <data name="NearbyFinder.SecondsAgo" xml:space="preserve"><value>Última señal hace {0} s</value></data>
+  <data name="NearbyFinder.MinutesAgo" xml:space="preserve"><value>Última señal hace {0} min</value></data>
+  <data name="NearbyFinder.HoursAgo" xml:space="preserve"><value>Última señal hace {0} h</value></data>
+  <data name="NearbyFinder.StartFailed" xml:space="preserve"><value>No se pudo iniciar la búsqueda cercana. Inténtalo de nuevo.</value></data>
+  <data name="NearbyCase.Title" xml:space="preserve"><value>Estuche de carga cercano</value></data>
+  <data name="NearbyCase.Description" xml:space="preserve"><value>Abre tu estuche de carga cerca del equipo. No hace falta emparejarlo.</value></data>
+  <data name="NearbyCase.Read" xml:space="preserve"><value>Leer información</value></data>
+  <data name="NearbyCase.Reading" xml:space="preserve"><value>Leyendo…</value></data>
+  <data name="NearbyCase.Protocol" xml:space="preserve"><value>Protocolo del accesorio (DULT)</value></data>
+  <data name="NearbyCase.Firmware" xml:space="preserve"><value>Firmware indicado</value></data>
+  <data name="NearbyCase.Capabilities" xml:space="preserve"><value>Funciones indicadas</value></data>
+  <data name="NearbyCase.NearbyOnly" xml:space="preserve"><value>Este estuche cercano no está vinculado a los AirPods seleccionados.</value></data>
+  <data name="NearbyCase.Sound" xml:space="preserve"><value>Sonido</value></data>
+  <data name="NearbyCase.Motion" xml:space="preserve"><value>Detección de movimiento</value></data>
+  <data name="NearbyCase.Nfc" xml:space="preserve"><value>Identificación NFC</value></data>
+  <data name="NearbyCase.BluetoothIdentity" xml:space="preserve"><value>Identificación Bluetooth</value></data>
+  <data name="NearbyCase.NoneReported" xml:space="preserve"><value>Ninguna función reconocida</value></data>
+  <data name="NearbyCase.PauseMic" xml:space="preserve"><value>Detén el micrófono antes de leer la información del estuche.</value></data>
+  <data name="NearbyCase.NotFound" xml:space="preserve"><value>Abre el estuche cerca del equipo y vuelve a intentarlo.</value></data>
+  <data name="NearbyCase.Ambiguous" xml:space="preserve"><value>Hay varios accesorios cercanos respondiendo. Aléjate de otros localizadores y vuelve a intentarlo.</value></data>
+  <data name="NearbyCase.Paired" xml:space="preserve"><value>La información no está disponible si el estuche ya está emparejado en Windows.</value></data>
+  <data name="NearbyCase.Unreachable" xml:space="preserve"><value>El estuche ha dejado de responder. Cierra y vuelve a abrir la tapa e inténtalo de nuevo.</value></data>
+  <data name="NearbyCase.Unsupported" xml:space="preserve"><value>No ha respondido ningún estuche compatible. Abre tu estuche cerca y vuelve a intentarlo.</value></data>
+  <data name="NearbyCase.InvalidResponse" xml:space="preserve"><value>El estuche ha devuelto información ilegible. Vuelve a intentarlo.</value></data>
+  <data name="NearbyCase.RestoreUncertain" xml:space="preserve"><value>No se pudo restaurar la conexión del estuche. Cierra y vuelve a abrir la tapa antes de intentarlo de nuevo.</value></data>
+  <data name="NearbyCase.Busy" xml:space="preserve"><value>Ya se está leyendo otro estuche. Vuelve a intentarlo en unos momentos.</value></data>
 </root>

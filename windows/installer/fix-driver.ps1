@@ -66,7 +66,15 @@ function Invoke-NTPodsDriverRecovery {
     $current = Get-RecoveryTarget $address
     if (-not $current -or $current.InstanceId -cne $device.InstanceId) { return 1 }
     if ($current.ProblemCode -ne 38) { return (Get-RecoveryResult $current) }
-    if ((Restart-RecoveryTarget $current.InstanceId) -eq 3010) { return 3010 }
+    try {
+        if ((Restart-RecoveryTarget $current.InstanceId) -eq 3010) { return 3010 }
+    } catch {
+        # A refused restart can leave Code 38 in place; retain its restart requirement.
+        if ((Read-RecoveryAddress $request ([DateTimeOffset]::UtcNow)) -cne $address) { return 1 }
+        $current = Get-RecoveryTarget $address
+        if ($current -and $current.InstanceId -ceq $device.InstanceId -and $current.ProblemCode -in 14, 38) { return 3010 }
+        throw
+    }
     # PnPUtil success only confirms the request; wait for this exact device to start.
     for ($attempt = 0; $attempt -lt 20; $attempt++) {
         Start-Sleep -Milliseconds 250
