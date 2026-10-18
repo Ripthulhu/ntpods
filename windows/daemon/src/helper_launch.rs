@@ -6,13 +6,17 @@ use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use windows_sys::Win32::Security::{
-    GetTokenInformation, ImpersonateLoggedOnUser, RevertToSelf, TokenElevationType,
-    TokenElevationTypeLimited, TokenLinkedToken, TOKEN_LINKED_TOKEN, TOKEN_QUERY,
+    GetLengthSid, GetTokenInformation, ImpersonateLoggedOnUser, RevertToSelf, TokenElevationType,
+    TokenElevationTypeLimited, TokenPrimary, TokenSessionId, TokenType, TokenUser, TOKEN_DUPLICATE,
+    TOKEN_INFORMATION_CLASS, TOKEN_QUERY, TOKEN_USER,
 };
 use windows_sys::Win32::System::Registry::{
     RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RRF_SUBKEY_WOW6464KEY,
 };
-use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+use windows_sys::Win32::System::Threading::{
+    GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+};
+use windows_sys::Win32::UI::WindowsAndMessaging::{GetShellWindow, GetWindowThreadProcessId};
 
 fn helper_script(args: &[OsString]) -> Option<&'static str> {
     if args.len() != 2 || args[0] != "--run-helper" {
@@ -83,28 +87,112 @@ fn hidden_command(powershell: &Path, script: &Path) -> Command {
     command
 }
 
-fn linked_user_token() -> io::Result<OwnedHandle> {
+fn token_number(token: &OwnedHandle, kind: TOKEN_INFORMATION_CLASS) -> io::Result<u32> {
     unsafe {
-        let mut process = std::ptr::null_mut();
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut process) == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let process = OwnedHandle::from_raw_handle(process);
-        let mut linked = TOKEN_LINKED_TOKEN {
-            LinkedToken: std::ptr::null_mut(),
-        };
+        let mut value = 0u32;
         let mut bytes = 0;
         if GetTokenInformation(
-            process.as_raw_handle(),
-            TokenLinkedToken,
-            (&mut linked as *mut TOKEN_LINKED_TOKEN).cast(),
-            std::mem::size_of_val(&linked) as u32,
+            token.as_raw_handle(),
+            kind,
+            (&mut value as *mut u32).cast(),
+            std::mem::size_of_val(&value) as u32,
             &mut bytes,
         ) == 0
         {
             return Err(io::Error::last_os_error());
         }
-        Ok(OwnedHandle::from_raw_handle(linked.LinkedToken))
+        Ok(value)
+    }
+}
+
+fn token_user(token: &OwnedHandle) -> io::Result<Vec<u8>> {
+    unsafe {
+        let mut bytes = 0;
+        GetTokenInformation(
+            token.as_raw_handle(),
+            TokenUser,
+            std::ptr::null_mut(),
+            0,
+            &mut bytes,
+        );
+        if (bytes as usize) < std::mem::size_of::<TOKEN_USER>() {
+            return Err(io::Error::last_os_error());
+        }
+        // TOKEN_USER contains a pointer and must be aligned even though its size varies.
+        let mut storage = vec![0usize; (bytes as usize).div_ceil(std::mem::size_of::<usize>())];
+        if GetTokenInformation(
+            token.as_raw_handle(),
+            TokenUser,
+            storage.as_mut_ptr().cast(),
+            bytes,
+            &mut bytes,
+        ) == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let user = &*storage.as_ptr().cast::<TOKEN_USER>();
+        Ok(
+            std::slice::from_raw_parts(user.User.Sid.cast(), GetLengthSid(user.User.Sid) as usize)
+                .to_vec(),
+        )
+    }
+}
+
+fn desktop_user_token() -> io::Result<OwnedHandle> {
+    desktop_user_token_for_window(unsafe { GetShellWindow() })
+}
+
+fn desktop_user_token_for_window(
+    window: windows_sys::Win32::Foundation::HWND,
+) -> io::Result<OwnedHandle> {
+    if window.is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "Desktop shell unavailable",
+        ));
+    }
+    unsafe {
+        let mut pid = 0;
+        if GetWindowThreadProcessId(window, &mut pid) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let shell = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if shell.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let shell = OwnedHandle::from_raw_handle(shell);
+        let mut desktop = std::ptr::null_mut();
+        if OpenProcessToken(
+            shell.as_raw_handle(),
+            TOKEN_QUERY | TOKEN_DUPLICATE,
+            &mut desktop,
+        ) == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let desktop = OwnedHandle::from_raw_handle(desktop);
+        let mut process = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut process) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let process = OwnedHandle::from_raw_handle(process);
+        if token_number(&desktop, TokenElevationType)? != TokenElevationTypeLimited as u32 {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Desktop shell has no limited UAC token",
+            ));
+        }
+        if token_number(&desktop, TokenType)? != TokenPrimary as u32
+            || token_number(&desktop, TokenSessionId)? != token_number(&process, TokenSessionId)?
+            || token_user(&desktop)? != token_user(&process)?
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "A limited desktop token for the same user and session is required",
+            ));
+        }
+        // A linked UAC token can be identification-only; the shell's primary token can open files.
+        Ok(desktop)
     }
 }
 
@@ -202,7 +290,7 @@ fn run(script: &str) -> io::Result<i32> {
                 io::Error::new(io::ErrorKind::NotFound, "Local profile unavailable")
             })?)
             .join(r"NTPods\micname.txt");
-        let name = user_name(&request, &linked_user_token()?)?;
+        let name = user_name(&request, &desktop_user_token()?)?;
         command.arg("-Name").arg(name);
     }
     Ok(command.status()?.code().unwrap_or(1))
@@ -319,6 +407,16 @@ mod tests {
     }
 
     #[test]
+    fn missing_desktop_cannot_supply_a_user_token() {
+        assert_eq!(
+            desktop_user_token_for_window(std::ptr::null_mut())
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+    }
+
+    #[test]
     fn hidden_helper_has_no_console_and_preserves_exit_status() {
         let directory =
             std::env::temp_dir().join(format!("ntpods-helper-test-{}", std::process::id()));
@@ -354,7 +452,6 @@ exit 3010"#).unwrap();
         use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
         use windows_sys::Win32::Security::{
             SetFileSecurityW, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
-            TOKEN_DUPLICATE,
         };
         use windows_sys::Win32::System::Threading::{GetCurrentThread, OpenThreadToken};
 
@@ -402,50 +499,22 @@ exit 3010"#).unwrap();
             }
         }
 
-        let process = unsafe {
-            let mut token = std::ptr::null_mut();
-            assert_ne!(
-                OpenProcessToken(
-                    GetCurrentProcess(),
-                    TOKEN_QUERY | TOKEN_DUPLICATE,
-                    &mut token
-                ),
-                0
-            );
-            OwnedHandle::from_raw_handle(token)
-        };
         no_impersonation();
-        let token = if let Ok(guard) = UserRead::begin(&process) {
-            drop(guard);
-            process
-        } else if let Ok(linked) = linked_user_token() {
-            match UserRead::begin(&linked) {
-                Ok(guard) => {
-                    drop(guard);
-                    linked
-                }
-                Err(_) => {
-                    let error = user_name(
-                        Path::new(r"Z:\ntpods-missing-fixture\micname.txt"),
-                        &process,
-                    )
-                    .unwrap_err();
-                    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-                    no_impersonation();
-                    eprintln!("No usable limited UAC token: verified fail-closed behavior; native junction/ACL check unavailable.");
-                    return;
-                }
+        let token = match desktop_user_token() {
+            Ok(token) => token,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::Unsupported
+                ) =>
+            {
+                no_impersonation();
+                eprintln!(
+                    "No limited desktop token: {error}; native junction/ACL check unavailable."
+                );
+                return;
             }
-        } else {
-            let error = user_name(
-                Path::new(r"Z:\ntpods-missing-fixture\micname.txt"),
-                &process,
-            )
-            .unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-            no_impersonation();
-            eprintln!("No linked UAC token: verified fail-closed behavior; native junction/ACL check unavailable.");
-            return;
+            Err(error) => panic!("Could not acquire the desktop user token: {error}"),
         };
         no_impersonation();
 

@@ -33,7 +33,7 @@ function Read-Str($key, [string]$valueName) {
     return [string]$v
 }
 
-# Report errors to the helper's captured output.
+# Return failure to the scheduled helper.
 trap { Log "failed: $_"; exit 1 }
 
 $root = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($base)
