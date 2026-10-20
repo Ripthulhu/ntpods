@@ -51,7 +51,7 @@ function Reset-Fixture([string]$name, [bool]$existing) {
     [IO.Directory]::CreateDirectory($env:ProgramFiles) | Out-Null
     [IO.Directory]::CreateDirectory($script:source) | Out-Null
     $script:destination = Join-Path $env:ProgramFiles 'NTPods'
-    foreach ($name in 'ntpodsd.exe', 'avcodec-61.dll', 'avutil-59.dll', 'swresample-5.dll', 'ntpods-aac-encoder.exe', 'ntpods-eld-encoder.exe', 'fdk-aac.dll', 'fix-driver.ps1', 'rename-mic.ps1', 'setup-common.ps1', 'audio-driver.ps1', 'restore-playback.ps1', 'stop-ntpods.ps1', 'msi-setup.ps1', 'uninstall.ps1') {
+    foreach ($name in 'ntpodsd.exe', 'avcodec-61.dll', 'avutil-59.dll', 'swresample-5.dll', 'ntpods-aac-encoder.exe', 'ntpods-eld-encoder.exe', 'ntpods-fdk-q31.dll', 'fix-driver.ps1', 'rename-mic.ps1', 'setup-common.ps1', 'audio-driver.ps1', 'restore-playback.ps1', 'stop-ntpods.ps1', 'msi-setup.ps1', 'uninstall.ps1') {
         [IO.File]::WriteAllText((Join-Path $script:source $name), "new:$name")
     }
     [IO.File]::WriteAllText((Join-Path $script:source 'bluetooth-host-identity.ps1'), 'param($Action, $TransactionId)')
@@ -63,6 +63,7 @@ function Reset-Fixture([string]$name, [bool]$existing) {
         [IO.Directory]::CreateDirectory((Join-Path $script:destination 'winui')) | Out-Null
         [IO.File]::WriteAllText((Join-Path $script:destination 'ntpodsd.exe'), 'old:daemon')
         [IO.File]::WriteAllText((Join-Path $script:destination 'avcodec-61.dll'), 'old:library')
+        [IO.File]::WriteAllText((Join-Path $script:destination 'fdk-aac.dll'), 'old:fdk-s16')
         [IO.File]::WriteAllText((Join-Path $script:destination 'winui\payload.txt'), 'old:ui')
         [IO.File]::WriteAllText((Join-Path $script:destination 'preserved.txt'), 'old:other-file')
     }
@@ -85,12 +86,20 @@ function Invoke-InstallFixture([string]$transactionId) {
 function Assert-Original {
     Assert-True ([IO.File]::ReadAllText((Join-Path $script:destination 'ntpodsd.exe')) -ceq 'old:daemon') 'Old daemon was not restored.'
     Assert-True ([IO.File]::ReadAllText((Join-Path $script:destination 'avcodec-61.dll')) -ceq 'old:library') 'Old library was not restored.'
+    Assert-True ([IO.File]::ReadAllText((Join-Path $script:destination 'fdk-aac.dll')) -ceq 'old:fdk-s16') 'Old S16 FDK library was not restored.'
     Assert-True ([IO.File]::ReadAllText((Join-Path $script:destination 'winui\payload.txt')) -ceq 'old:ui') 'Old UI was not restored.'
     Assert-True ([IO.File]::ReadAllText((Join-Path $script:destination 'preserved.txt')) -ceq 'old:other-file') 'Unreplaced files were lost.'
-    Assert-True (-not (Test-Path -LiteralPath (Join-Path $script:destination 'fdk-aac.dll'))) 'Failed upgrade kept a new file.'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $script:destination 'ntpods-fdk-q31.dll'))) 'Failed upgrade kept a new file.'
 }
 
 try {
+    Reset-Fixture 'missing-wide-library' $true
+    Remove-Item -LiteralPath (Join-Path $script:source 'ntpods-fdk-q31.dll') -Force
+    $failure = Assert-Fails { Invoke-InstallFixture 'missing-wide-library' }
+    Assert-True ($failure.ToString() -match 'ntpods-fdk-q31.dll') 'The old S16 library was accepted for a Q31 worker.'
+    Assert-Original
+    Assert-True (-not $script:driverInstalled) 'Missing Q31 library reached driver installation.'
+
     Reset-Fixture 'copy-failure' $true
     $script:heldFile = [IO.File]::Open((Join-Path $script:source 'avcodec-61.dll'), 'Open', 'Read', 'None')
     try { $failure = Assert-Fails { Invoke-InstallFixture 'copy' } }
@@ -162,6 +171,8 @@ try {
     Prepare-NTPodsAppTransaction $script:source 'commit'
     Install-NTPodsAppTransaction 'commit'
     Assert-True ([IO.File]::ReadAllText((Join-Path $script:destination 'ntpodsd.exe')) -ceq 'new:ntpodsd.exe') 'The new app was not activated.'
+    Assert-True ([IO.File]::ReadAllText((Join-Path $script:destination 'ntpods-fdk-q31.dll')) -ceq 'new:ntpods-fdk-q31.dll') 'The matching Q31 library was not installed.'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $script:destination 'fdk-aac.dll'))) 'The old S16 library remained in the new installation.'
     Assert-True ([IO.File]::ReadAllText((Join-Path $script:destination 'preserved.txt')) -ceq 'old:other-file') 'Successful upgrade discarded unrelated installed files.'
     Complete-NTPodsAppTransaction 'commit'
     Assert-True (-not (Test-Path -LiteralPath (Get-NTPodsAppTransactionPath))) 'Commit retained its backup.'

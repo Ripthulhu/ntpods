@@ -1,4 +1,4 @@
-use super::{aac_protocol, encoder::Encoder, protocol};
+use super::{aac_protocol, encoder::Encoder, pcm::SampleFormat, protocol};
 use std::{fmt, io, time::Instant};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,6 +105,17 @@ impl AudioEncoder {
         match mode {
             Mode::Aac => Encoder::start(mode, bitrate, variable).map(Self::Aac),
             Mode::Eld => Encoder::start(mode, bitrate, variable).map(Self::Eld),
+        }
+    }
+    pub fn new_with_format(
+        mode: Mode,
+        bitrate: u32,
+        variable: bool,
+        format: SampleFormat,
+    ) -> io::Result<Self> {
+        match mode {
+            Mode::Aac => Encoder::start_with_format(mode, bitrate, variable, format).map(Self::Aac),
+            Mode::Eld => Encoder::start_with_format(mode, bitrate, variable, format).map(Self::Eld),
         }
     }
     pub fn write(&mut self, pcm: Vec<u8>) -> io::Result<()> {

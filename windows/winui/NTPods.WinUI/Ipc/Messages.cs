@@ -99,6 +99,7 @@ public sealed record TransparencySettings
 public sealed record HardwareDiagnosticEar
 {
     [JsonRequired, JsonPropertyName("measured_at_unix_seconds")] public ulong MeasuredAtUnixSeconds { get; init; }
+    [JsonPropertyName("first_use_unix_seconds")] public uint? FirstUseUnixSeconds { get; init; }
     [JsonRequired, JsonPropertyName("general")] public byte General { get; init; }
     [JsonRequired, JsonPropertyName("measurement")] public byte Measurement { get; init; }
     [JsonRequired, JsonPropertyName("component_failures")] public byte? ComponentFailures { get; init; }
@@ -113,6 +114,35 @@ public sealed record HardwareDiagnostics
     [JsonRequired, JsonPropertyName("left")] public required HardwareDiagnosticEar Left { get; init; }
     [JsonRequired, JsonPropertyName("right")] public required HardwareDiagnosticEar Right { get; init; }
     [JsonIgnore] public bool IsValid => Left is { IsValid: true } && Right is { IsValid: true };
+}
+
+public sealed record HearingMetadata
+{
+    [JsonRequired, JsonPropertyName("read_at_unix_seconds")] public ulong ReadAtUnixSeconds { get; init; }
+    [JsonRequired, JsonPropertyName("test_mode_raw")] public byte? TestModeRaw { get; init; }
+    [JsonRequired, JsonPropertyName("dosimetry_sensitivity_raw")] public float? DosimetrySensitivityRaw { get; init; }
+    [JsonRequired, JsonPropertyName("dosimetry_volume_curve_raw")] public float[]? DosimetryVolumeCurveRaw { get; init; }
+    [JsonIgnore] public bool IsValid => (DosimetrySensitivityRaw is null || float.IsFinite(DosimetrySensitivityRaw.Value)) &&
+        (DosimetryVolumeCurveRaw is null || DosimetryVolumeCurveRaw.Length == 17 && DosimetryVolumeCurveRaw.All(float.IsFinite));
+
+    public bool SameValues(HearingMetadata? other) => other is not null && ReadAtUnixSeconds == other.ReadAtUnixSeconds &&
+        TestModeRaw == other.TestModeRaw && DosimetrySensitivityRaw == other.DosimetrySensitivityRaw &&
+        (DosimetryVolumeCurveRaw is null ? other.DosimetryVolumeCurveRaw is null :
+            other.DosimetryVolumeCurveRaw is not null && DosimetryVolumeCurveRaw.SequenceEqual(other.DosimetryVolumeCurveRaw));
+}
+
+public sealed record HardwareCheckState
+{
+    [JsonRequired, JsonPropertyName("request_id")] public ulong RequestId { get; init; }
+    [JsonRequired, JsonPropertyName("phase")] public required string Phase { get; init; }
+    [JsonRequired, JsonPropertyName("left_updated")] public bool LeftUpdated { get; init; }
+    [JsonRequired, JsonPropertyName("right_updated")] public bool RightUpdated { get; init; }
+    [JsonRequired, JsonPropertyName("error")] public string? Error { get; init; }
+    [JsonIgnore] public bool IsValid => RequestId != 0 &&
+        Phase is "waiting_case_close" or "waiting_result" or "completed" or "timed_out" or "cancelled" or "error" &&
+        (Phase == "completed") == (LeftUpdated && RightUpdated) &&
+        (Phase != "waiting_case_close" || !LeftUpdated && !RightUpdated) &&
+        (Phase == "error" ? !string.IsNullOrWhiteSpace(Error) : Error is null);
 }
 
 public sealed record NearbyFinderState
@@ -187,6 +217,11 @@ public sealed class Snapshot
     [JsonPropertyName("hardware_diagnostics")] public HardwareDiagnostics? HardwareDiagnostics { get; set; }
     [JsonPropertyName("hardware_diagnostics_pending")] public bool HardwareDiagnosticsPending { get; set; }
     [JsonPropertyName("hardware_diagnostics_error")] public string? HardwareDiagnosticsError { get; set; }
+    [JsonPropertyName("hearing_metadata")] public HearingMetadata? HearingMetadata { get; set; }
+    [JsonPropertyName("hearing_metadata_pending")] public bool HearingMetadataPending { get; set; }
+    [JsonPropertyName("hearing_metadata_error")] public string? HearingMetadataError { get; set; }
+    [JsonPropertyName("hardware_check")] public HardwareCheckState? HardwareCheck { get; set; }
+    [JsonPropertyName("earbuds_in_case")] public bool? EarbudsInCase { get; set; }
     [JsonPropertyName("loud_sound_reduction")] public bool? LoudSoundReduction { get; set; }
     [JsonPropertyName("loud_sound_reduction_pending")] public bool LoudSoundReductionPending { get; set; }
     [JsonPropertyName("loud_sound_reduction_error")] public string? LoudSoundReductionError { get; set; }
@@ -305,6 +340,8 @@ public sealed class SetAncCmd
 {
     [JsonPropertyName("cmd")] public string Cmd => "set_anc";
     [JsonPropertyName("mode")] public byte Mode { get; init; } // 1..=4
+    [JsonPropertyName("device_id"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DeviceId { get; init; }
 }
 
 public sealed class SetMicModeCmd
@@ -378,6 +415,8 @@ public sealed class SetDeviceControlCmd
     [JsonPropertyName("cmd")] public string Cmd => "set_device_control";
     [JsonPropertyName("id")] public byte Id { get; init; }
     [JsonPropertyName("value")] public uint Value { get; init; }
+    [JsonPropertyName("device_id"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DeviceId { get; init; }
 }
 
 public sealed class SetEqCmd
@@ -475,6 +514,49 @@ public sealed class GetHardwareDiagnosticsCmd
     [JsonPropertyName("cmd")] public string Cmd => "get_hardware_diagnostics";
 }
 
+public sealed class GetHearingMetadataCmd
+{
+    [JsonPropertyName("cmd")] public string Cmd => "get_hearing_metadata";
+    [JsonPropertyName("device_id")] public string DeviceId { get; init; } = "";
+}
+
+public sealed class StartHardwareCheckCmd
+{
+    [JsonPropertyName("cmd")] public string Cmd => "start_hardware_check";
+    [JsonPropertyName("request_id")] public ulong RequestId { get; init; }
+    [JsonPropertyName("device_id")] public string DeviceId { get; init; } = "";
+    [JsonPropertyName("buds_in_case_confirmed")] public bool BudsInCaseConfirmed { get; init; }
+}
+
+public sealed class CancelHardwareCheckCmd
+{
+    [JsonPropertyName("cmd")] public string Cmd => "cancel_hardware_check";
+    [JsonPropertyName("request_id")] public ulong RequestId { get; init; }
+    [JsonPropertyName("device_id")] public string DeviceId { get; init; } = "";
+}
+
+public sealed class ProbeHearingTestModeCmd
+{
+    [JsonPropertyName("cmd")] public string Cmd => "probe_hearing_test_mode";
+    [JsonPropertyName("request_id")] public ulong RequestId { get; init; }
+    [JsonPropertyName("device_id")] public string DeviceId { get; init; } = "";
+    [JsonPropertyName("enable_check")] public bool EnableCheck { get; init; }
+}
+
+public sealed record HearingTestModeProbeResult
+{
+    [JsonPropertyName("initial_state")] public byte? InitialState { get; init; }
+    [JsonPropertyName("enabled_state")] public byte? EnabledState { get; init; }
+    [JsonPropertyName("final_state")] public byte? FinalState { get; init; }
+    [JsonRequired, JsonPropertyName("enable_sent")] public bool EnableSent { get; init; }
+    [JsonRequired, JsonPropertyName("disable_sent")] public bool DisableSent { get; init; }
+    [JsonRequired, JsonPropertyName("restoration_verified")] public bool RestorationVerified { get; init; }
+    [JsonPropertyName("error")] public string? Error { get; init; }
+    [JsonIgnore] public bool IsValid => (InitialState is null or <= 5) && (EnabledState is null or <= 5)
+        && (FinalState is null or <= 5) && (!DisableSent || EnableSent || !string.IsNullOrEmpty(Error))
+        && (!RestorationVerified || InitialState is not null && FinalState == InitialState);
+}
+
 public sealed class GetHearingAidCmd
 {
     [JsonPropertyName("cmd")] public string Cmd => "get_hearing_aid";
@@ -561,6 +643,7 @@ public abstract record DaemonEvent
     public sealed record PairingNearby(ushort Model, bool LidOpen) : DaemonEvent;
     public sealed record PairedLid(string DeviceId, bool LidOpen, ulong Sequence) : DaemonEvent;
     public sealed record CommandResult(string Command, ulong RequestId, bool Ok, string Message) : DaemonEvent;
+    public sealed record HearingTestModeProbe(ulong RequestId, string DeviceId, bool EnableCheck, HearingTestModeProbeResult Result) : DaemonEvent;
     public sealed record HeadTracking(ulong TimestampMs, short Horizontal, short Vertical) : DaemonEvent;
 }
 
@@ -607,7 +690,8 @@ public static class Wire
                         snap.HeadTrackingState is not ("idle" or "starting" or "streaming" or "error" or "waiting_for_ear") ||
                         snap.AdaptiveStrengthRequested is > 100 || snap.ConversationVolume > 100 ||
                         snap.Transparency is { IsValid: false } || snap.HearingAidSettings is { IsValid: false } ||
-                        snap.HardwareDiagnostics is { IsValid: false } ||
+                        snap.HardwareDiagnostics is { IsValid: false } || snap.HearingMetadata is { IsValid: false } ||
+                        snap.HardwareCheck is { IsValid: false } ||
                         snap.Eq is { IsValid: false } || snap.EqPending is { IsValid: false }) return null;
                     return new DaemonEvent.State(snap);
 
@@ -634,6 +718,15 @@ public static class Wire
                         !root.TryGetProperty("sequence", out var sequence) || sequence.ValueKind != JsonValueKind.Number ||
                         !sequence.TryGetUInt64(out var number) || number == 0) return null;
                     return new DaemonEvent.PairedLid(pairedId, pairedLidOpen.GetBoolean(), number);
+
+                case "hearing_test_mode_probe":
+                    if (!root.TryGetProperty("request_id", out var probeRequest) || probeRequest.ValueKind != JsonValueKind.Number || !probeRequest.TryGetUInt64(out var probeId) ||
+                        !root.TryGetProperty("device_id", out var probeTarget) || probeTarget.ValueKind != JsonValueKind.String ||
+                        probeTarget.GetString() is not { Length: 12 } probeDevice || !probeDevice.All(Uri.IsHexDigit) ||
+                        !root.TryGetProperty("enable_check", out var enableCheck) || enableCheck.ValueKind is not (JsonValueKind.True or JsonValueKind.False) ||
+                        !root.TryGetProperty("result", out var probeResult) || probeResult.ValueKind != JsonValueKind.Object ||
+                        probeResult.Deserialize<HearingTestModeProbeResult>(Json) is not { IsValid: true } parsedProbe) return null;
+                    return new DaemonEvent.HearingTestModeProbe(probeId, probeDevice, enableCheck.GetBoolean(), parsedProbe);
 
                 case "command_result":
                     if (!root.TryGetProperty("ok", out var ok) || ok.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) return null;

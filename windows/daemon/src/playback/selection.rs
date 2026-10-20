@@ -62,7 +62,8 @@ impl Selection {
         mic_on: bool,
         explicit_connection: bool,
     ) -> bool {
-        explicit_connection && !stopped && attempted != Some(self.revision)
+        explicit_connection && state.connected && !state.link_stale
+            && !stopped && attempted != Some(self.revision)
             // A command reserves the transition before a new capture client can start.
             && (matches!(state.playback_state.as_str(), "starting" | "stopping")
                 || (!mic_on && !state.mic_uplink_active
@@ -464,9 +465,29 @@ mod tests {
     }
 
     #[test]
+    fn playback_waits_for_fresh_control_handshake_after_connect_or_repair() {
+        let selected = Selection::new(PlaybackMode::AacEld);
+        let mut state = Snapshot {
+            playback_state: "starting".into(),
+            ..Default::default()
+        };
+        assert!(!selected.should_attempt(None, false, &state, false, false, true));
+        state.connected = true;
+        assert!(selected.should_attempt(None, false, &state, false, false, true));
+        state.link_stale = true;
+        assert!(!selected.should_attempt(None, false, &state, false, false, true));
+        state.connected = false;
+        state.link_stale = false;
+        assert!(!selected.should_attempt(None, false, &state, false, false, true));
+        state.connected = true;
+        assert!(selected.should_attempt(None, false, &state, false, false, true));
+    }
+
+    #[test]
     fn failure_waits_for_retry_and_saved_choices_wait_for_existing_capture() {
         let mut selected = Selection::new(PlaybackMode::Aac);
         let mut state = Snapshot {
+            connected: true,
             playback_mode: PlaybackMode::Aac,
             playback_state: "disconnected".into(),
             ..Default::default()

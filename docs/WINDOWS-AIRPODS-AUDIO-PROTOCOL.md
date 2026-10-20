@@ -26,8 +26,10 @@ timeout limits packet lifetime; it does not measure end-to-end latency. The
 accepted media MTU determines packet size; the host's receive MTU request is at
 most 8,192 bytes.
 
-The AudioSink driver supplies 48 kHz stereo signed 16-bit PCM to the backend.
-The backend encodes and packetizes it. The microphone takes the reverse path
+The AudioSink driver accepts 48 kHz stereo Float32 and PCM16 and preserves the
+selected format through its bridge. The backend encodes and packetizes it;
+Float32 AAC-ELD uses the separate Q31 encoder build. These host sample formats
+do not establish decoded precision or lossless Bluetooth audio. The microphone takes the reverse path
 through a separate 48 kHz mono signed 16-bit PCM endpoint. These PCM formats and
 Windows engine periods do not describe the Bluetooth wire format.
 
@@ -37,6 +39,20 @@ Sources: [L2CAP transport](../windows/drivers/aap/L2cap.c),
 [playback overview](../windows/playback/README.md).
 
 ## Playback negotiation
+
+Native Connect does not enable Windows' legacy AudioSink or HFP profiles when
+NTPods owns the playback driver. Disconnect still releases those profiles.
+For supported HQ microphones, a separate helper disables the selected pair's HFP
+service before exposing the native render endpoint, preserving its original state
+for restoration. This avoids Windows' endpoint-unification wait; it does not
+change AVDTP timing or the Windows-wide timeout. See
+[startup and lifetime](WINDOWS-AVRCP-VOLUME.md#startup-and-lifetime).
+AVDTP setup waits for a healthy AACP handshake. If the initial signaling channel
+is rejected with Windows error 71 after its bounded retries, NTPods permits one
+full control-session repair per explicit Connect intent. The receiver drains
+microphone, hearing-test and ATT work before closing AACP; playback can reopen
+only after a successful close and fresh handshake. Advertisements and repeated
+codec attempts cannot rearm this repair.
 
 NTPods opens signaling, sends `DISCOVER`, then queries unused audio sink SEIDs
 with `GET_ALL_CAPABILITIES`, falling back to `GET_CAPABILITIES` when unsupported.

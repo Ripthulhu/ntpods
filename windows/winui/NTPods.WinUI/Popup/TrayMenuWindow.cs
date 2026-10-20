@@ -34,7 +34,7 @@ public sealed class TrayMenuWindow : Window
         Content = _view;
         Title = "NTPods menu";
 
-        _view.OnAnc = a => _client.SetAnc(a);
+        _view.OnAnc = (mode, deviceId) => _client.SetAnc(mode, deviceId);
         _view.OnMute = () => _client.ToggleMute();
         _view.OnOpen = () => _onOpen();
         _view.OnBatteries = onBatteries;

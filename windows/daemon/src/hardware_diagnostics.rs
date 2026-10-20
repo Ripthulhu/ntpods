@@ -39,6 +39,8 @@ fn ear(value: &hearing_diagnostics::Ear) -> HardwareDiagnosticEar {
     let raw = value.result.raw;
     HardwareDiagnosticEar {
         measured_at_unix_seconds: value.last_measurement_unix_seconds,
+        first_use_unix_seconds: (value.first_use_unix_seconds != 0)
+            .then_some(value.first_use_unix_seconds),
         general: (raw & 7) as u8,
         measurement: ((raw >> 3) & 7) as u8,
         component_failures: value
@@ -148,13 +150,16 @@ mod tests {
         let mut value = value();
         value[17..21].copy_from_slice(&0x1234_8181u32.to_le_bytes());
         value[21..25].copy_from_slice(&0x4018u32.to_le_bytes());
+        value[33..37].copy_from_slice(&1_600_000_001u32.to_le_bytes());
         let record = hearing_diagnostics::parse(&value, Some(0x2027)).unwrap();
         let left = ear(&record.left);
         assert_eq!(left.measured_at_unix_seconds, 1_700_000_001);
+        assert_eq!(left.first_use_unix_seconds, Some(1_600_000_001));
         assert_eq!((left.general, left.measurement), (1, 0));
         assert_eq!(left.component_failures, Some(3));
         assert_eq!(left.unknown_bits, 0x1234_8000);
         let right = ear(&record.right);
+        assert_eq!(right.first_use_unix_seconds, None);
         assert_eq!((right.general, right.measurement), (0, 3));
         assert_eq!(right.component_failures, None);
         value[1..9].fill(0);

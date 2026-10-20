@@ -1,4 +1,4 @@
-use super::{codec::Mode, protocol::invalid, scheduling::AudioScheduling};
+use super::{codec::Mode, pcm::SampleFormat, protocol::invalid, scheduling::AudioScheduling};
 use std::io::{self, Read, Write};
 use std::os::windows::process::CommandExt;
 use std::path::Path;
@@ -13,6 +13,7 @@ pub struct Encoder {
     output: Receiver<io::Result<Vec<u8>>>,
     threads: Vec<JoinHandle<()>>,
     pcm_bytes: usize,
+    format: SampleFormat,
     config: Vec<u8>,
 }
 
@@ -65,26 +66,70 @@ fn maximum_au(mode: Mode, bitrate: u32) -> io::Result<usize> {
     })
 }
 
+fn float_preamble(mode: Mode) -> [u8; 16] {
+    let mut preamble = *b"NPF32001\x80\xbb\0\0\x02\0\0\0";
+    preamble[14..16].copy_from_slice(&(mode.frame_samples() as u16).to_le_bytes());
+    preamble
+}
+
+fn worker_pcm(format: SampleFormat, pcm: Vec<u8>) -> io::Result<Vec<u8>> {
+    if pcm.len() % format.frame_bytes() != 0 {
+        return Err(invalid("Partial stereo PCM frame"));
+    }
+    if format == SampleFormat::Float32 {
+        for bytes in pcm.chunks_exact(4) {
+            if !f32::from_le_bytes(bytes.try_into().unwrap()).is_finite() {
+                return Err(invalid("Non-finite playback PCM sample"));
+            }
+        }
+    }
+    Ok(pcm)
+}
+
 impl Encoder {
     pub fn start(mode: Mode, bitrate: u32, variable: bool) -> io::Result<Self> {
+        Self::start_with_format(mode, bitrate, variable, SampleFormat::S16)
+    }
+
+    pub fn start_with_format(
+        mode: Mode,
+        bitrate: u32,
+        variable: bool,
+        format: SampleFormat,
+    ) -> io::Result<Self> {
         let name = match mode {
             Mode::Aac => "ntpods-aac-encoder.exe",
             Mode::Eld => "ntpods-eld-encoder.exe",
         };
         let executable = std::env::current_exe()?.with_file_name(name);
-        Self::start_at(&executable, mode, bitrate, variable)
+        Self::start_at_with_format(&executable, mode, bitrate, variable, format)
     }
 
     pub fn config(&self) -> &[u8] {
         &self.config
     }
 
+    #[cfg(test)]
     fn start_at(executable: &Path, mode: Mode, bitrate: u32, variable: bool) -> io::Result<Self> {
+        Self::start_at_with_format(executable, mode, bitrate, variable, SampleFormat::S16)
+    }
+
+    fn start_at_with_format(
+        executable: &Path,
+        mode: Mode,
+        bitrate: u32,
+        variable: bool,
+        format: SampleFormat,
+    ) -> io::Result<Self> {
         let maximum = maximum_au(mode, bitrate)?;
         if variable && (mode != Mode::Eld || bitrate != 256_000) {
             return Err(invalid("Unsupported variable bitrate configuration"));
         }
         let mut command = Command::new(executable);
+        let float_worker = format == SampleFormat::Float32;
+        if float_worker {
+            command.arg("--pcm-f32");
+        }
         if variable {
             command.arg("--vbr");
         } else {
@@ -103,6 +148,14 @@ impl Encoder {
         let (ready_tx, ready) = mpsc::sync_channel(1);
         let writer = thread::spawn(move || {
             let _scheduling = AudioScheduling::acquire();
+            if float_worker
+                && stdin
+                    .write_all(&float_preamble(mode))
+                    .and_then(|_| stdin.flush())
+                    .is_err()
+            {
+                return;
+            }
             while let Ok(pcm) = pending.recv() {
                 if stdin.write_all(&pcm).and_then(|_| stdin.flush()).is_err() {
                     break;
@@ -143,7 +196,8 @@ impl Encoder {
             input: Some(input),
             output,
             threads: vec![writer, reader],
-            pcm_bytes: mode.frame_samples() * 4,
+            pcm_bytes: mode.frame_samples() * format.frame_bytes(),
+            format,
             config: Vec::new(),
         };
         encoder.config = ready.recv_timeout(Duration::from_secs(3)).map_err(|_| {
@@ -156,6 +210,7 @@ impl Encoder {
         if pcm.len() != self.pcm_bytes {
             return Err(invalid("Invalid stereo PCM frame length"));
         }
+        let pcm = worker_pcm(self.format, pcm)?;
         self.input
             .as_ref()
             .unwrap()
@@ -192,6 +247,45 @@ mod tests {
     use std::os::windows::io::{AsHandle, AsRawHandle};
     use std::time::Instant;
     use windows_sys::Win32::System::Threading::WaitForSingleObject;
+
+    fn floats(values: &[f32]) -> Vec<u8> {
+        values
+            .iter()
+            .flat_map(|sample| sample.to_le_bytes())
+            .collect()
+    }
+
+    #[test]
+    fn both_codecs_keep_float_samples_and_reject_non_finite_pcm() {
+        let samples = floats(&[1e-5, -1e-5, -1.0, 1.0, -2.0, 2.0, 0.0, f32::MAX]);
+        assert_eq!(
+            worker_pcm(SampleFormat::Float32, samples.clone()).unwrap(),
+            samples
+        );
+        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(worker_pcm(SampleFormat::Float32, floats(&[0.0, invalid])).is_err());
+        }
+        assert!(worker_pcm(SampleFormat::Float32, vec![0; 4]).is_err());
+        let legacy = vec![0xff, 0x7f, 0, 0x80];
+        assert_eq!(
+            worker_pcm(SampleFormat::S16, legacy.clone()).unwrap(),
+            legacy
+        );
+        for mode in [Mode::Aac, Mode::Eld] {
+            let preamble = float_preamble(mode);
+            assert_eq!(&preamble[..8], b"NPF32001");
+            assert_eq!(
+                u32::from_le_bytes(preamble[8..12].try_into().unwrap()),
+                48000
+            );
+            assert_eq!(u16::from_le_bytes(preamble[12..14].try_into().unwrap()), 2);
+            assert_eq!(
+                u16::from_le_bytes(preamble[14..16].try_into().unwrap()) as usize,
+                mode.frame_samples()
+            );
+        }
+    }
+
     #[test]
     fn rejects_wrong_encoder_format_and_short_header() {
         let valid = [
@@ -289,11 +383,13 @@ mod tests {
     #[ignore = "requires the local FDK worker via NTPODS_ELD_ENCODER_TEST_PATH"]
     fn streams_real_worker_and_drops_it() {
         for mode in [Mode::Aac, Mode::Eld] {
-            stream_and_drop(mode, false);
+            stream_and_drop(mode, false, SampleFormat::S16);
+            stream_and_drop(mode, false, SampleFormat::Float32);
             drop_with_blocked_pipes(mode);
             output_wakes_consumer(mode);
         }
-        stream_and_drop(Mode::Eld, true);
+        stream_and_drop(Mode::Eld, true, SampleFormat::S16);
+        stream_and_drop(Mode::Eld, true, SampleFormat::Float32);
     }
 
     fn output_wakes_consumer(mode: Mode) {
@@ -372,7 +468,7 @@ mod tests {
         );
     }
 
-    fn stream_and_drop(mode: Mode, variable: bool) {
+    fn stream_and_drop(mode: Mode, variable: bool, format: SampleFormat) {
         let worker_path_variable = match mode {
             Mode::Aac => "NTPODS_AAC_ENCODER_TEST_PATH",
             Mode::Eld => "NTPODS_ELD_ENCODER_TEST_PATH",
@@ -381,19 +477,29 @@ mod tests {
             std::env::var_os(worker_path_variable).expect(worker_path_variable),
         );
         assert!(executable.is_absolute());
-        let encoder = Encoder::start_at(&executable, mode, 256_000, variable)
+        let encoder = Encoder::start_at_with_format(&executable, mode, 256_000, variable, format)
             .expect("Worker must return a supported ASC");
         let process = encoder.child.as_handle().try_clone_to_owned().unwrap();
+        if format == SampleFormat::Float32 {
+            let mut invalid = vec![0; mode.frame_samples() * format.frame_bytes()];
+            invalid[..4].copy_from_slice(&f32::NAN.to_le_bytes());
+            assert!(encoder.write(invalid).is_err());
+            assert!(encoder.write(vec![0; mode.frame_samples() * 4]).is_err());
+        }
         let mut units = 0;
         for frame in 0..100 {
-            let mut pcm = Vec::with_capacity(mode.frame_samples() * 4);
+            let mut pcm = Vec::with_capacity(mode.frame_samples() * format.frame_bytes());
             for sample in 0..mode.frame_samples() {
                 let phase = std::f64::consts::TAU * (frame * mode.frame_samples() + sample) as f64
                     / 48_000.0;
                 for frequency in [440.0, 880.0] {
-                    pcm.extend_from_slice(
-                        &(((phase * frequency).sin() * 6000.0) as i16).to_le_bytes(),
-                    );
+                    let value = (phase * frequency).sin() * 6000.0;
+                    match format {
+                        SampleFormat::S16 => pcm.extend_from_slice(&(value as i16).to_le_bytes()),
+                        SampleFormat::Float32 => {
+                            pcm.extend_from_slice(&((value / 32768.0) as f32).to_le_bytes())
+                        }
+                    }
                 }
             }
             encoder.write(pcm).expect("Worker must consume paced PCM");

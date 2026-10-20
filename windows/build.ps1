@@ -100,6 +100,8 @@ try {
     Run (Join-Path $tests 'render-changes.exe') @()
     Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', "/Fe:$tests\render-volume.exe", "/Fo:$tests\render-volume.obj", 'windows/drivers/mic/tests/render_volume_test.cpp')
     Run (Join-Path $tests 'render-volume.exe') @()
+    Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', "/Fe:$tests\render-diagnostics.exe", "/Fo:$tests\render-diagnostics.obj", 'windows/drivers/mic/tests/render_diagnostics_test.cpp')
+    Run (Join-Path $tests 'render-diagnostics.exe') @()
     Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', "/Fe:$tests\packet-constraints.exe", "/Fo:$tests\packet-constraints.obj", 'windows/drivers/mic/tests/packet_constraints_test.cpp', '/link', 'setupapi.lib')
     Run (Join-Path $tests 'packet-constraints.exe') @('windows/drivers/audio/NTPodsAudio.inf', 'windows/drivers/mic/AudioCodec/Driver/AudioCodec.inf')
     Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', "/Fe:$tests\aap-playback.exe", "/Fo:$tests\aap-playback.obj", 'windows/drivers/aap/tests/playback_transport_test.cpp')

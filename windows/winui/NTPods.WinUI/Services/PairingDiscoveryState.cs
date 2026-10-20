@@ -211,6 +211,16 @@ internal static class PairingConfirmation
 
 internal static class PairingInstructions
 {
+    public static string? HeadingKey(bool busy, string statusKey, string? setupInstructions) => !busy ? null :
+        statusKey == "Pairing.Pairing" ? "Pairing.ConnectingTitle" : (setupInstructions ?? statusKey) switch
+        {
+            "Pairing.DoubleTapCase" => "Pairing.DoubleTapTitle",
+            "Pairing.HoldSetupButton" => "Pairing.HoldSetupTitle",
+            "Pairing.HoldNoiseControl" => "Pairing.HoldNoiseTitle",
+            "Pairing.PrepareCase" => "Pairing.PrepareTitle",
+            _ => null,
+        };
+
     public static string ForModel(ushort model) => model switch
     {
         0x1920 or 0x1b20 or 0x2720 or 0x3020 or 0x3620 => "Pairing.DoubleTapCase",

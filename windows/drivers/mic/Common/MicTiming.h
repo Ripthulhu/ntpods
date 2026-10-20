@@ -2,9 +2,10 @@
 #pragma once
 #include "MicRing.h"
 
-static inline bool MicRtPacketLayoutValid(unsigned count, unsigned size)
+static inline bool MicRtPacketLayoutValid(unsigned count, unsigned size,
+    unsigned maximum = MIC_RT_MAX_PACKET_BYTES)
 {
-    return count == 2 && size != 0 && size <= MIC_RT_MAX_PACKET_BYTES && (size & 1u) == 0;
+    return count == 2 && size != 0 && size <= maximum && (size & 1u) == 0;
 }
 
 static inline unsigned long long MicPositionBytes(unsigned long long startPosition,

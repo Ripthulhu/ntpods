@@ -9,6 +9,8 @@ public sealed partial class ConnectPromptView : UserControl
 {
     private readonly TranslateTransform _sheet = new();
     private bool _headphoneModel;
+    private string _deviceName = "";
+    private string? _setupInstructions;
     public event Action? ConnectRequested;
     public event Action? DismissRequested;
 
@@ -22,7 +24,13 @@ public sealed partial class ConnectPromptView : UserControl
 
     public void SetName(string name, ushort? model)
     {
-        DeviceName.Text = name;
+        _deviceName = name;
+        _setupInstructions = null;
+        ContentViewport.MinHeight = 96;
+        ModelHeadingMeasure.Text = name;
+        string setup = model is ushort known ? PairingInstructions.ForModel(known) : PairingInstructions.ForName(name);
+        SetupHeadingMeasure.Text = Localize.Get(PairingInstructions.HeadingKey(true, setup, null)!);
+        SetPresentationText(name, _statusRequested);
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(DeviceName, name);
         string? catalogModel = model is ushort id ? PairingInvitationPolicy.NearbyCatalogModel(id) : null;
         _headphoneModel = DeviceModels.Find(catalogModel).Headphone ||
@@ -38,20 +46,26 @@ public sealed partial class ConnectPromptView : UserControl
 
     public void SetState(bool busy, string statusKey, bool retry = false, bool beforeConnect = false)
     {
-        SetStatusText(Localize.Get(statusKey) +
+        if (beforeConnect)
+        {
+            _setupInstructions = statusKey;
+            SetupHeadingMeasure.Text = Localize.Get(PairingInstructions.HeadingKey(true, statusKey, null)!);
+        }
+        string? heading = PairingInstructions.HeadingKey(busy, statusKey, _setupInstructions);
+        SetPresentationText(heading is null ? _deviceName : Localize.Get(heading), Localize.Get(statusKey) +
             (beforeConnect ? $"\n\n{Localize.Get("Pairing.ThenConnect")}" : ""));
         ConnectLabel.Text = Localize.Get(retry ? "Playback.Retry" : "ConnectPrompt_Connect");
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(ConnectButton, ConnectLabel.Text);
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(DeviceName, DeviceName.Text);
         TransitionContent(paired: false, busy);
     }
 
     public void SetPaired()
     {
         SetBattery(null, null, null, false, false, false, _headphoneModel, null, false);
+        SetPresentationText(_deviceName, _statusRequested);
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(ConnectButton, ContinueLabel.Text);
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(DeviceName,
-            $"{DeviceName.Text}. {Localize.Get("ConnectPrompt_Paired")}");
+            $"{_deviceName}. {Localize.Get("ConnectPrompt_Paired")}");
         TransitionContent(paired: true, busy: false);
     }
 

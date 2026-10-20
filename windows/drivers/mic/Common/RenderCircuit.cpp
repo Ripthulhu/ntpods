@@ -21,6 +21,7 @@ static const GUID RenderVolumeProperty = {0x401e566b, 0xb47e, 0x4e34, {0xb0, 0xf
 
 struct RENDER_VOLUME_CONTEXT {
     KSPIN_LOCK Lock;
+    WDFDEVICE Device;
     RenderVolumeState State;
     ACXVOLUME Volume;
     ACXMUTE Mute;
@@ -46,6 +47,7 @@ static NTSTATUS RenderSetVolume(ACXVOLUME volume, ULONG channel, LONG level)
     KIRQL irql;
     KeAcquireSpinLock(&context->Lock, &irql);
     const auto changed = RenderAssignVolume(&context->State, level, false);
+    RenderPipeRecordVolume(context->Device, &context->State);
     KeReleaseSpinLock(&context->Lock, irql);
     RenderNotifyVolume(context, changed);
     return STATUS_SUCCESS;
@@ -71,6 +73,7 @@ static NTSTATUS RenderSetMute(ACXMUTE mute, ULONG channel, ULONG state)
     KIRQL irql;
     KeAcquireSpinLock(&context->Lock, &irql);
     const auto changed = RenderAssignMute(&context->State, state != 0);
+    RenderPipeRecordVolume(context->Device, &context->State);
     KeReleaseSpinLock(&context->Lock, irql);
     RenderNotifyVolume(context, changed);
     return STATUS_SUCCESS;
@@ -111,6 +114,7 @@ static VOID RenderVolumeRequest(ACXOBJECT object, WDFREQUEST request)
     KeAcquireSpinLock(&context->Lock, &irql);
     if (property.Verb == AcxPropertyVerbSet) changed = RenderAssignVolume(&context->State, level, true);
     else level = RenderRemoteVolume(&context->State);
+    if (property.Verb == AcxPropertyVerbSet) RenderPipeRecordVolume(context->Device, &context->State);
     KeReleaseSpinLock(&context->Lock, irql);
     if (property.Verb == AcxPropertyVerbGet) RtlCopyMemory(property.Value, &level, sizeof(level));
     RenderNotifyVolume(context, changed);
@@ -124,6 +128,7 @@ static NTSTATUS RenderVolumeSubscribe(ACXEVENT event)
     KIRQL irql;
     KeAcquireSpinLock(&context->Lock, &irql);
     context->State.Subscribed = true;
+    RenderPipeRecordVolume(context->Device, &context->State);
     KeReleaseSpinLock(&context->Lock, irql);
     return STATUS_SUCCESS;
 }
@@ -135,6 +140,7 @@ static VOID RenderVolumeUnsubscribe(ACXEVENT event)
     KIRQL irql;
     KeAcquireSpinLock(&context->Lock, &irql);
     RenderVolumeDisconnect(&context->State);
+    RenderPipeRecordVolume(context->Device, &context->State);
     KeReleaseSpinLock(&context->Lock, irql);
 }
 
@@ -144,6 +150,7 @@ VOID CodecR_ResetVolumeBridge(ACXCIRCUIT circuit)
     KIRQL irql;
     KeAcquireSpinLock(&context->Lock, &irql);
     RenderVolumeDisconnect(&context->State);
+    RenderPipeRecordVolume(context->Device, &context->State);
     KeReleaseSpinLock(&context->Lock, irql);
 }
 
@@ -178,12 +185,16 @@ static VOID RenderVolumeBasicSupport(ACXOBJECT object, ACXCONTEXT driverContext,
 class CRenderStreamEngine final : public CStreamEngine {
     WDFDEVICE m_Device;
     RENDER_VOLUME_CONTEXT* m_Volume;
+    const ULONG m_SourceFrameBytes;
     RenderPackets m_Submitted = {};
     bool m_Running = false;
 public:
     CRenderStreamEngine(WDFDEVICE device, ACXSTREAM stream, ACXDATAFORMAT format,
         RENDER_VOLUME_CONTEXT* volume)
-        : CStreamEngine(stream, format), m_Device(device), m_Volume(volume) {}
+        : CStreamEngine(stream, format,
+              AcxDataFormatGetBlockAlign(format) * (RENDER_PACKET_MAX_BYTES / RENDER_FRAME_BYTES)),
+          m_Device(device), m_Volume(volume),
+          m_SourceFrameBytes(AcxDataFormatGetBlockAlign(format)) {}
     ~CRenderStreamEngine() override
     {
         (void)Pause();
@@ -191,7 +202,9 @@ public:
     }
     NTSTATUS AllocateRtPackets(ULONG count, ULONG size, PACX_RTPACKET* packets) override
     {
-        if (size % RENDER_FRAME_BYTES) return STATUS_INVALID_PARAMETER;
+        if (!size || size % m_SourceFrameBytes ||
+            size / m_SourceFrameBytes > RENDER_PACKET_MAX_BYTES / RENDER_FRAME_BYTES)
+            return STATUS_INVALID_PARAMETER;
         NTSTATUS status = CStreamEngine::AllocateRtPackets(count, size, packets);
         if (NT_SUCCESS(status)) {
             KIRQL irql;
@@ -244,7 +257,7 @@ public:
             return STATUS_INVALID_DEVICE_STATE;
         }
         const auto result = RenderSubmit(&m_Submitted, (ULONG)m_CurrentPacket,
-            m_CurrentState == AcxStreamStateRun, packet, flags, eosLength, m_PacketSize);
+            m_CurrentState == AcxStreamStateRun, packet, flags, eosLength, m_PacketSize, m_SourceFrameBytes);
         KeReleaseSpinLock(&m_PacketLock, irql);
         switch (result) {
         case RenderSubmitResult::Accepted: return STATUS_SUCCESS;
@@ -310,13 +323,17 @@ protected:
         auto data = (PUCHAR)m_Packets[index] + (index == 0 ? m_FirstPacketOffset : 0);
         KeAcquireSpinLockAtDpcLevel(&m_Volume->Lock);
         const bool silent = RenderVolumeSilent(&m_Volume->State);
+        const auto volumeFlags = RenderDiagnosticVolumeFlags(&m_Volume->State);
         KeReleaseSpinLockFromDpcLevel(&m_Volume->Lock);
         // ACX removes Windows master attenuation. Wait for BthAvrcp's cache
         // initialization and subscription before forwarding unattenuated PCM.
-        const ULONG submitted = RenderPacketLength(&m_Submitted, current, m_PacketSize);
+        const bool missing = !m_Submitted.Ready[index] || m_Submitted.Number[index] != current;
+        const ULONG submitted = RenderPacketLength(&m_Submitted, current, m_PacketSize, m_SourceFrameBytes);
+        RenderPipeRecordPacket(m_Device, volumeFlags, missing, submitted,
+            RenderDiagnosticNonzero(data, submitted, m_SourceFrameBytes));
         const ULONG valid = silent ? 0 : submitted;
         RtlZeroMemory(data + valid, m_PacketSize - valid);
-        RenderPipeWrite(m_Device, data, m_PacketSize);
+        RenderPipeWrite(m_Device, data, m_PacketSize, m_SourceFrameBytes);
         KeReleaseSpinLock(&m_PacketLock, irql);
     }
 };
@@ -335,11 +352,16 @@ static NTSTATUS RenderCreateStream(WDFDEVICE device, ACXCIRCUIT circuit, ACXPIN 
     PAGED_CODE();
     UNREFERENCED_PARAMETER(pin);
     UNREFERENCED_PARAMETER(arguments);
-    if (!IsEqualGUID(*mode, AUDIO_SIGNALPROCESSINGMODE_RAW) ||
-        !IsEqualGUID(AcxDataFormatGetSubFormat(format), KSDATAFORMAT_SUBTYPE_PCM) ||
-        AcxDataFormatGetBitsPerSample(format) != 16 || AcxDataFormatGetChannelsCount(format) != 2 ||
-        AcxDataFormatGetSampleRate(format) != 48000 || AcxDataFormatGetBlockAlign(format) != 4 ||
-        AcxDataFormatGetAverageBytesPerSec(format) != 192000) {
+    const bool float32 = IsEqualGUID(AcxDataFormatGetSubFormat(format), KSDATAFORMAT_SUBTYPE_IEEE_FLOAT) &&
+        AcxDataFormatGetBitsPerSample(format) == 32;
+    const bool pcm16 = IsEqualGUID(AcxDataFormatGetSubFormat(format), KSDATAFORMAT_SUBTYPE_PCM) &&
+        AcxDataFormatGetBitsPerSample(format) == 16;
+    const ULONG frameBytes = float32 ? 8u : 4u;
+    if (!IsEqualGUID(*mode, AUDIO_SIGNALPROCESSINGMODE_RAW) || (!float32 && !pcm16) ||
+        AcxDataFormatGetValidBitsPerSample(format) != (float32 ? 32u : 16u) ||
+        AcxDataFormatGetChannelsCount(format) != 2 || AcxDataFormatGetSampleRate(format) != 48000 ||
+        AcxDataFormatGetBlockAlign(format) != frameBytes ||
+        AcxDataFormatGetAverageBytesPerSec(format) != 48000u * frameBytes) {
         return STATUS_NO_MATCH;
     }
     ACX_STREAM_CALLBACKS callbacks;
@@ -418,7 +440,9 @@ NTSTATUS CodecR_AddStaticRender(WDFDEVICE device, const GUID* component,
     RETURN_NTSTATUS_IF_FAILED(AcxCircuitCreate(device, &attributes, &init, &circuit));
     auto volume = RenderVolumeContext(circuit);
     KeInitializeSpinLock(&volume->Lock);
+    volume->Device = device;
     volume->State = {};
+    RenderPipeRecordVolume(device, &volume->State);
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attributes, RENDER_VOLUME_CONTROL_CONTEXT);
     attributes.ParentObject = circuit;
     ACX_VOLUME_CALLBACKS volumeCallbacks;
@@ -501,9 +525,20 @@ NTSTATUS CodecR_AddStaticRender(WDFDEVICE device, const GUID* component,
     pcm.WaveFormatExt.Format.nBlockAlign = 4;
     pcm.WaveFormatExt.Format.nAvgBytesPerSec = 192000;
     pcm.WaveFormatExt.dwChannelMask = KSAUDIO_SPEAKER_STEREO;
+    auto float32 = pcm;
+    float32.DataFormat.SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
+    float32.WaveFormatExt.SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
+    float32.WaveFormatExt.Format.wBitsPerSample = 32;
+    float32.WaveFormatExt.Samples.wValidBitsPerSample = 32;
+    float32.WaveFormatExt.Format.nBlockAlign = 8;
+    float32.WaveFormatExt.Format.nAvgBytesPerSec = 384000;
     ACXDATAFORMAT format;
+    const auto formats = AcxPinGetRawDataFormatList(pins[0]);
+    RETURN_NTSTATUS_IF_FAILED(AllocateFormat(float32, circuit, device, &format));
+    RETURN_NTSTATUS_IF_FAILED(AcxDataFormatListAddDataFormat(formats, format));
+    RETURN_NTSTATUS_IF_FAILED(AcxDataFormatListAssignDefaultDataFormat(formats, format));
     RETURN_NTSTATUS_IF_FAILED(AllocateFormat(pcm, circuit, device, &format));
-    RETURN_NTSTATUS_IF_FAILED(AcxDataFormatListAddDataFormat(AcxPinGetRawDataFormatList(pins[0]), format));
+    RETURN_NTSTATUS_IF_FAILED(AcxDataFormatListAddDataFormat(formats, format));
     RETURN_NTSTATUS_IF_FAILED(AcxCircuitAddPins(circuit, pins, 2));
     ACX_CONNECTION connections[3];
     ACX_CONNECTION_INIT(&connections[0], circuit, volume->Volume);

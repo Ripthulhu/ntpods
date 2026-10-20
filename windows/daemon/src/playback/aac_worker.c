@@ -5,13 +5,20 @@
 #include <avrt.h>
 #include "aac_shim.c"
 
-static int parse_bitrate(int argc, char **argv, uint32_t *bitrate) {
+static int parse_options(int argc, char **argv, uint32_t *bitrate, int *pcm_f32) {
     *bitrate = 256000;
-    if (argc == 1) return 1;
-    if (argc != 3 || strcmp(argv[1], "--bitrate")) return 0;
-    size_t length = strlen(argv[2]);
-    if (length < 5 || length > 6 || strspn(argv[2], "0123456789") != length) return 0;
-    *bitrate = (uint32_t)strtoul(argv[2], NULL, 10);
+    *pcm_f32 = 0;
+    int seen_bitrate = 0;
+    for (int index = 1; index < argc; ++index) {
+        if (!strcmp(argv[index], "--pcm-f32") && !*pcm_f32) {
+            *pcm_f32 = 1;
+        } else if (!strcmp(argv[index], "--bitrate") && !seen_bitrate && ++index < argc) {
+            const size_t length = strlen(argv[index]);
+            if (length < 5 || length > 6 || strspn(argv[index], "0123456789") != length) return 0;
+            *bitrate = (uint32_t)strtoul(argv[index], NULL, 10);
+            seen_bitrate = 1;
+        } else return 0;
+    }
     return *bitrate >= 96000 && *bitrate <= 512000 && *bitrate % 1000 == 0;
 }
 
@@ -35,27 +42,41 @@ static int drain(AacEnc *encoder) {
 
 int main(int argc, char **argv) {
     uint32_t bitrate;
-    if (!parse_bitrate(argc, argv, &bitrate)) {
-        fprintf(stderr, "Use --bitrate with 96000..512000 bits per second in 1000-bit steps.\n");
+    int pcm_f32;
+    if (!parse_options(argc, argv, &bitrate, &pcm_f32)) {
+        fprintf(stderr, "Use --bitrate with 96000..512000 bits per second in 1000-bit steps, optionally --pcm-f32.\n");
         return 1;
     }
     if (_setmode(_fileno(stdin), _O_BINARY) == -1 ||
         _setmode(_fileno(stdout), _O_BINARY) == -1) return 1;
+    if (pcm_f32) {
+        const uint8_t expected[16] = {'N','P','F','3','2','0','0','1',0x80,0xbb,0,0,2,0,0,4};
+        uint8_t preamble[sizeof(expected)];
+        if (fread(preamble, 1, sizeof(preamble), stdin) != sizeof(preamble) ||
+            memcmp(preamble, expected, sizeof(expected))) return 1;
+    }
     av_log_set_level(AV_LOG_ERROR);
     AacEnc *encoder = ntpods_aac_open_at(bitrate);
     if (!encoder) return 1;
     int exit_code = 1;
     DWORD task_index = 0;
     HANDLE audio_task = AvSetMmThreadCharacteristicsW(L"Audio", &task_index);
-    uint8_t config[AAC_MAX_CONFIG], pcm[AAC_PCM_BYTES];
+    uint8_t config[AAC_MAX_CONFIG], pcm[AAC_F32_PCM_BYTES];
+    const int pcm_bytes = pcm_f32 ? AAC_F32_PCM_BYTES : AAC_PCM_BYTES;
     int size = ntpods_aac_config(encoder, config, sizeof(config));
     if (size < 2 || !write_bytes("NPAAC001", 8) || !write_u16(AAC_SAMPLES) ||
         !write_u16((unsigned)size) || !write_bytes(config, (size_t)size) || fflush(stdout)) goto done;
     for (;;) {
-        size_t bytes = fread(pcm, 1, sizeof(pcm), stdin);
+        size_t bytes = fread(pcm, 1, (size_t)pcm_bytes, stdin);
+        if (ferror(stdin)) goto done;
         if (!bytes && feof(stdin)) break;
-        if (bytes != sizeof(pcm) || ferror(stdin) ||
-            ntpods_aac_write(encoder, pcm, sizeof(pcm)) != 0 || !drain(encoder)) goto done;
+        if (bytes != (size_t)pcm_bytes) goto done;
+        int status = pcm_f32 ? ntpods_aac_write_f32(encoder, pcm, pcm_bytes)
+            : ntpods_aac_write(encoder, pcm, pcm_bytes);
+        if (status == 1 && drain(encoder))
+            status = pcm_f32 ? ntpods_aac_write_f32(encoder, pcm, pcm_bytes)
+                : ntpods_aac_write(encoder, pcm, pcm_bytes);
+        if (status || !drain(encoder)) goto done;
     }
     if (avcodec_send_frame(encoder->ctx, NULL) == 0 && drain(encoder)) exit_code = 0;
 done:

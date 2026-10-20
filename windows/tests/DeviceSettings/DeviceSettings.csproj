@@ -23,6 +23,7 @@
     <Compile Include="../../winui/NTPods.WinUI/Controls/VolumeEditState.cs" Link="VolumeEditState.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Popup/TrayMenuLayout.cs" Link="TrayMenuLayout.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Popup/IslandPresence.cs" Link="IslandPresence.cs" />
+    <Compile Include="../../winui/NTPods.WinUI/Popup/IslandBatteryPresentation.cs" Link="IslandBatteryPresentation.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Popup/IslandMotion.cs" Link="IslandMotion.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Services/IslandTakeover.cs" Link="IslandTakeover.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Popup/MicrophoneNotifications.cs" Link="MicrophoneNotifications.cs" />

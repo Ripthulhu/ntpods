@@ -467,6 +467,11 @@
   <data name="Pairing.Nearby" xml:space="preserve"><value>Por perto</value></data>
   <data name="Pairing.Searching" xml:space="preserve"><value>A procurar…</value></data>
   <data name="Pairing.Pairing" xml:space="preserve"><value>A emparelhar…</value></data>
+  <data name="Pairing.ConnectingTitle" xml:space="preserve"><value>A ligar…</value></data>
+  <data name="Pairing.DoubleTapTitle" xml:space="preserve"><value>Toque duas vezes na caixa</value></data>
+  <data name="Pairing.HoldSetupTitle" xml:space="preserve"><value>Mantenha o botão de configuração premido</value></data>
+  <data name="Pairing.HoldNoiseTitle" xml:space="preserve"><value>Mantenha o botão de modo de audição premido</value></data>
+  <data name="Pairing.PrepareTitle" xml:space="preserve"><value>Prepare os AirPods</value></data>
   <data name="Pairing.PrepareCase" xml:space="preserve"><value>Mantenha os AirPods na caixa aberta. Toque duas vezes na frente ou mantenha o botão traseiro premido até a luz piscar a branco.</value></data>
   <data name="Pairing.DoubleTapCase" xml:space="preserve"><value>Mantenha os AirPods na caixa aberta. Toque duas vezes na frente até a luz piscar a branco.</value></data>
   <data name="Pairing.HoldSetupButton" xml:space="preserve"><value>Mantenha os AirPods na caixa aberta. Mantenha o botão de configuração premido até a luz piscar a branco.</value></data>
@@ -486,7 +491,7 @@
   <data name="Overlay_DriverRestartRequired" xml:space="preserve"><value>Reinicie o Windows para concluir a recuperação do controlador dos AirPods.</value></data>
   <data name="Overlay_DriverRecoveryFailed" xml:space="preserve"><value>Não foi possível recuperar o controlador dos AirPods. Experimente Reparar no NTPods.</value></data>
   <data name="HardwareChecks.Title" xml:space="preserve"><value>Verificações do hardware</value></data>
-  <data name="HardwareChecks.Description" xml:space="preserve"><value>Lê as verificações guardadas pelos AirPods. Não inicia um teste.</value></data>
+  <data name="HardwareChecks.Description" xml:space="preserve"><value>Atualizar lê os resultados guardados sem iniciar uma verificação.</value></data>
   <data name="HardwareChecks.Refresh" xml:space="preserve"><value>Atualizar</value></data>
   <data name="HardwareChecks.NotRead" xml:space="preserve"><value>Ainda não foram lidas verificações.</value></data>
   <data name="HardwareChecks.Left" xml:space="preserve"><value>Esquerdo</value></data>
@@ -562,4 +567,31 @@
   <data name="NearbyCase.InvalidResponse" xml:space="preserve"><value>A caixa devolveu informações ilegíveis. Tente novamente.</value></data>
   <data name="NearbyCase.RestoreUncertain" xml:space="preserve"><value>Não foi possível restaurar a ligação à caixa. Feche e volte a abrir a tampa antes de tentar novamente.</value></data>
   <data name="NearbyCase.Busy" xml:space="preserve"><value>Está a decorrer a leitura de outra caixa. Tente novamente dentro de instantes.</value></data>
+  <data name="HardwareChecks.Run" xml:space="preserve"><value>Iniciar uma verificação no estojo</value></data>
+  <data name="HardwareChecks.StopWaiting" xml:space="preserve"><value>Parar de esperar</value></data>
+  <data name="HardwareChecks.StopWaitingHelp" xml:space="preserve"><value>O NTPods deixa de esperar pelos resultados. Não interrompe a verificação nos AirPods.</value></data>
+  <data name="HardwareChecks.PutInCase" xml:space="preserve"><value>Coloque ambos os AirPods no estojo aberto, fora dos ouvidos.</value></data>
+  <data name="HardwareChecks.ConfirmTitle" xml:space="preserve"><value>Iniciar uma verificação no estojo?</value></data>
+  <data name="HardwareChecks.ConfirmBody" xml:space="preserve"><value>Mantenha ambos os AirPods no estojo aberto e fora dos ouvidos. Pause a música e as gravações e coloque o estojo numa superfície estável, num local silencioso. A verificação pode emitir varrimentos sonoros discretos. Aguarde que o NTPods peça para fechar a tampa e deixe-a fechada durante cerca de 30 segundos. Deixe os sons terminar antes de voltar a abri-la.</value></data>
+  <data name="HardwareChecks.CloseCase" xml:space="preserve"><value>Feche o estojo durante cerca de 30 segundos numa superfície estável, num local silencioso. Deixe os sons terminar antes de voltar a abri-lo.</value></data>
+  <data name="HardwareChecks.WaitForResults" xml:space="preserve"><value>Quando os sons terminarem, volte a abrir o estojo. O NTPods lerá os resultados guardados quando os AirPods voltarem a ligar-se.</value></data>
+  <data name="HardwareChecks.NewResults" xml:space="preserve"><value>Recebidos novos resultados de medição.</value></data>
+  <data name="HardwareChecks.CheckTimedOut" xml:space="preserve"><value>A espera terminou antes da atualização de ambos os resultados. Abra o estojo e atualize as verificações guardadas.</value></data>
+  <data name="HardwareChecks.StoppedWaiting" xml:space="preserve"><value>Espera interrompida. Os AirPods ainda podem concluir a verificação.</value></data>
+  <data name="HardwareChecks.BothUpdated" xml:space="preserve"><value>Resultados esquerdo e direito atualizados.</value></data>
+  <data name="HardwareChecks.LeftUpdated" xml:space="preserve"><value>O esquerdo foi atualizado; o direito ainda mostra um resultado guardado.</value></data>
+  <data name="HardwareChecks.RightUpdated" xml:space="preserve"><value>O direito foi atualizado; o esquerdo ainda mostra um resultado guardado.</value></data>
+  <data name="HardwareChecks.NoUpdates" xml:space="preserve"><value>Ainda não há novos resultados de medição.</value></data>
+  <data name="HardwareChecks.RequestTimedOut" xml:space="preserve"><value>Não foi recebida confirmação. A verificação pode ainda ser executada; abra o estojo antes de voltar a tentar.</value></data>
+  <data name="HardwareChecks.DeviceData" xml:space="preserve"><value>Dados do dispositivo</value></data>
+  <data name="HardwareChecks.DeviceDataHelp" xml:space="preserve"><value>Ler o modo de teste comunicado e a calibração de áudio guardada.</value></data>
+  <data name="HardwareChecks.ReadDeviceData" xml:space="preserve"><value>Ler dados do dispositivo</value></data>
+  <data name="HardwareChecks.DeviceDataNotRead" xml:space="preserve"><value>Ainda não foram lidos dados do dispositivo.</value></data>
+  <data name="HardwareChecks.DeviceDataTimedOut" xml:space="preserve"><value>A leitura dos dados excedeu o tempo limite. Volte a ligar os AirPods e tente novamente.</value></data>
+  <data name="HardwareChecks.TestModeRaw" xml:space="preserve"><value>Modo de teste (valor original): {0}</value></data>
+  <data name="HardwareChecks.SensitivityRaw" xml:space="preserve"><value>Sensibilidade de saída (valor original): {0}</value></data>
+  <data name="HardwareChecks.RawCurve" xml:space="preserve"><value>Curva de volume original</value></data>
+  <data name="HardwareChecks.RawDataHelp" xml:space="preserve"><value>Valores de volume guardados; não são bandas de frequência nem uma medição do nível sonoro.</value></data>
+  <data name="HardwareChecks.FirstUse" xml:space="preserve"><value>Primeira utilização (hora do dispositivo): {0}</value></data>
+  <data name="HardwareChecks.Preparing" xml:space="preserve"><value>A preparar a verificação. Mantenha o estojo aberto.</value></data>
 </root>

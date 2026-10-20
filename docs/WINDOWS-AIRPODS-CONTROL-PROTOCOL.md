@@ -405,7 +405,11 @@ session; an old client's Stop or disconnect cannot stop a newer session. Closing
 or collapsing the view, changing devices, leaving the page or losing the daemon
 ends the UI's session. Starting the finder temporarily permits connected scanning
 without changing the saved preference. Microphone capture or uplink pauses it.
-Advertisements never start audio.
+The finder never requests audio and suspends automatic case return while open.
+Outside the finder, a fresh report whose rotating address resolves with the
+selected pair's IRK can exercise one remembered
+[case return](WINDOWS-FEATURES.md#automatic-return). This is local connection
+policy, not a decoded Apple audio-ownership message.
 
 Apple's supported [Find My setup](https://support.apple.com/en-lamr/guide/airpods/dev8e8b93d71/web)
 requires initial pairing with an iPhone or iPad signed in to the Apple Account;
@@ -587,8 +591,9 @@ descriptor confirms the 18-byte report and BPM at byte 1; the confidence and
 status interpretations above still depend on observed records. SPL0's report
 framing is known, but its vendor-defined fields have no established decibel
 scale. A descriptor is not a live sample. NTPods recognizes the captured
-`devmotion6` and `HeartRate` dictionary/layout pairs to discover report service
-IDs; heart-rate activation still uses the separately tested IDs 84/19.
+`devmotion6`, `HeartRate` and `SPL0` dictionary/layout pairs to discover report
+service IDs; heart-rate activation still uses the separately tested IDs 84/19.
+SPL0 recognition does not start a stream or expose a sound-level reading.
 
 Descriptor restarts or mapping changes clear partial sensor data and queue
 recovery of user-enabled streams on the existing channel. Disabled sensors stay
@@ -609,6 +614,13 @@ but produced no samples during a 12-second listening window with both buds
 worn. Restoring `01 00 00 00 00` was confirmed. This setting alone did not
 start SPL0. Additional enable conditions, configuration and firmware support
 remain unresolved.
+
+The iOS 27.0.1 / 24A446 HearingTest consumer matches SPL0's vendor collection
+`0xFF00:0x60` and 57-byte input report 1. It reads eight little-endian Float32
+values at report offsets 9–40, applies `10 * log10(value)`, then interpolates
+adjacent log-power values into 16 bands. The physical reference, band frequencies
+and live acquisition conditions remain unverified. Missing, stale or nonpositive
+values cannot establish acceptable ambient noise.
 
 ## ATT settings
 
@@ -884,15 +896,67 @@ AAP receive work during the probe and does not restore the hearing-assistance
 settings or subscriptions afterward. Keep it disabled for baseline captures;
 its raw diagnostic output also needs review before sharing.
 
+### Hearing-test mode
+
+The iOS 27.0.1 / 24A446 HearingTest code writes `01` to enable and `00` to
+disable `A4120001-95C5-4D6F-9098-0F0B41457E0A`, using Write Without Response.
+It separately reads the characteristic until the expected state appears;
+completed writes alone do not prove the mode changed. Sustained operation sends
+`02` to the same characteristic every second, followed by a state read.
+States 0–4 are distinct native values; only 0/off and 1/enabled are verified
+here. Intermediate values have no established labels.
+
+The research-only `ProbeHearingTestMode` command discovers the UUID and write
+property, requires an initial off state, then verifies `0 → 1 → 0`. This silent
+cycle passed on Pro 3 / 9A348, with Hearing Aid and Media Assist off and playback
+and microphone use paused. Playback and normal volume were confirmed afterward.
+The command plays no tones and writes no hearing profile. Cancellation still
+attempts same-session disable; a timeout or changed connection cannot certify
+restoration. The normal build rejects this command.
+
+`A4120003` carries a separate 12-byte Write Without Response record:
+Float32 frequency in Hz at offset 0, Float32 original requested dB HL at offset
+4 and UInt32 side at offset 8 (1 left, 2 right), all little-endian. The firmware
+level is separate from the calibrated dBFS used to generate PCM. Native enable
+also blocks host handoff before the mode write and starts its heartbeat only
+after state 1. Cleanup stops the heartbeat before the disable write, then
+releases handoff blocking. This sustained sequence has not been verified on
+Windows. Neither tone metadata nor a successful mode check establishes acoustic
+calibration.
+
+The native category-volume request is 0.8125. Under the Bluetooth HAL's
+software-volume policy, its 17-point curve maps that knob value to −10 dB;
+the separate remote-volume path sends `trunc(127 × knob)`, or 103 for an
+unchanged 0.8125. Route/category limits can alter the knob upstream. The active
+HearingTest route's gain policy remains unverified, so neither a PCM multiplier
+of 0.8125 nor combined local/remote attenuation reproduces calibration by
+itself.
+
 ### Diagnostic and dosimetry records
 
 These records belong to service `7798082B-B7B7-45A6-9933-563492EFE04E`.
-The experimental **Hardware checks** card manually reads cached results on
-Pro 2 and Pro 3. It discovers `A4120002` by UUID on each request, then reads
-the returned handle while the microphone is idle. It sends no self-test,
-clock, subscription or hearing-mode writes. Results from a replaced connection
-are discarded. The card separates each ear's completion status and component
-flags from the time NTPods read them; it has no self-test button.
+The **Hardware checks** card reads saved results on Pro 2 and Pro 3. Refresh
+discovers `A4120002` by UUID and reads its handle while the microphone is idle;
+it sends no test, clock, subscription or hearing-mode writes. Replaced-session
+results are discarded. Measurement and first-use dates remain device times,
+separate from the time NTPods read them.
+
+**Read device data** reads the raw test-mode byte, dosimetry sensitivity and
+17-point volume curve in one bounded discovery. Missing characteristics remain
+unavailable; malformed lengths and non-finite floats reject the bundle. It does
+not write test mode or tone information, or convert the raw values into SPL.
+
+**Run in-case check** is restricted to the verified Pro 3 / 9A348 combination.
+It requires explicit confirmation, a recent report of both buds in the case,
+and idle playback and microphone use. After a fresh baseline read, it sends
+`31` once to the discovered write-request characteristic. A lost reply does
+not cause another write. The app asks the user to close the case, let any sweeps
+finish, then reopen it. It waits up to two minutes across same-pair reconnects
+and compares each ear's nonzero measurement timestamp with its own baseline.
+Both timestamps must change before it reports new results; an aborted
+measurement also counts as new data, not a health pass. **Stop waiting** ends
+host observation; no firmware cancellation command is established. This app
+flow remains unverified on hardware.
 
 The offline decoder also reads saved 71-byte records without connecting:
 
@@ -906,8 +970,9 @@ they are not a published protocol specification.
 
 | Characteristic UUID | Value format |
 | --- | --- |
-| `A4120001-95C5-4D6F-9098-0F0B41457E0A` | One observed byte; meaning unresolved |
+| `A4120001-95C5-4D6F-9098-0F0B41457E0A` | Hearing-test mode: `01` enable, `00` disable, `02` heartbeat; separate state readback |
 | `A4120002-95C5-4D6F-9098-0F0B41457E0A` | Hardware diagnostic status; observed version 8 is 71 bytes |
+| `A4120003-95C5-4D6F-9098-0F0B41457E0A` | Tone information: Float32 frequency, Float32 level, UInt32 side; 12 bytes LE |
 | `A4120004-95C5-4D6F-9098-0F0B41457E0A` | On-demand diagnostic request: ASCII `1` (`31`), Write Request |
 | `82F6BC0A-1BCA-4873-AFC9-EC5890E3469A` | Dosimetry Sensitivity: one little-endian float32, 4 bytes |
 | `D5F96AFA-2F2C-41BB-A7E6-F54ABE6235B4` | Dosimetry Volume Curve: 17 consecutive little-endian float32 values, 68 bytes; no header or count |

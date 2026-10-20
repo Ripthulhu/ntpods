@@ -6,6 +6,7 @@ description = "NTPods Windows daemon — owns the AAP driver + hi-res mic, serve
 
 [features]
 experimental-playback = []
+hearing-test-research = []
 
 [dependencies]
 ntpods-ipc = { path = "../ipc" }

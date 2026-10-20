@@ -56,7 +56,7 @@ $required = @(
     'driver-mic-acx\AudioCodec.sys', 'driver-mic-acx\audiocodec.cat', 'driver-mic-acx\AudioCodec.inf',
     'driver-audio\NTPodsAudio.sys', 'driver-audio\ntpodsaudio.cat', 'driver-audio\NTPodsAudio.inf',
     'tools\devcon.exe', 'tools\audio-binding.exe', 'audio-driver.ps1', 'ntpodsd.exe', 'avcodec-61.dll', 'avutil-59.dll', 'swresample-5.dll',
-    'ntpods-aac-encoder.exe', 'ntpods-eld-encoder.exe', 'fdk-aac.dll',
+    'ntpods-aac-encoder.exe', 'ntpods-eld-encoder.exe', 'ntpods-fdk-q31.dll',
     'winui\ntpods-winui.exe', 'fix-driver.ps1', 'rename-mic.ps1', 'bluetooth-host-identity.ps1'
 ) | ForEach-Object { Join-Path $here $_ }
 $missing = @($required | Where-Object { -not (Test-Path $_) })

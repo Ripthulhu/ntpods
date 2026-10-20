@@ -1,10 +1,11 @@
 //! Per-client named-pipe transport, bounded NDJSON framing and handle cleanup.
 
 use super::{
-    apply_command, log, publish_head_tracking, security, set_head_tracking, start_nearby_finder,
-    stop_nearby_finder, volume, wide, Ctx,
+    apply_command, log, probe_hearing_test_mode, publish_head_tracking, security,
+    set_head_tracking, start_nearby_finder, stop_nearby_finder, volume, wide, Ctx,
 };
 use ntpods_ipc::{Command, PIPE_CMDS, PIPE_EVENTS};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -76,6 +77,7 @@ fn client_reader(pipe: Arc<Pipe>, ctx: Ctx) {
     let mut acc = Vec::new();
     let mut head_tracking_owner = None;
     let mut nearby_finder_owner: Option<(String, u64)> = None;
+    let mut hearing_probe_owner: Option<Arc<AtomicBool>> = None;
     loop {
         let mut read = 0u32;
         let ok = unsafe {
@@ -95,6 +97,17 @@ fn client_reader(pipe: Arc<Pipe>, ctx: Ctx) {
         };
         for cmd in commands {
             match cmd {
+                Command::ProbeHearingTestMode {
+                    request_id,
+                    device_id,
+                    enable_check,
+                } => {
+                    if let Some(owner) = hearing_probe_owner.take() {
+                        owner.store(false, Ordering::Release);
+                    }
+                    hearing_probe_owner =
+                        probe_hearing_test_mode(&ctx, request_id, device_id, enable_check);
+                }
                 Command::SetHeadTracking { on } => {
                     head_tracking_owner = Some(set_head_tracking(&ctx, on));
                 }
@@ -125,6 +138,9 @@ fn client_reader(pipe: Arc<Pipe>, ctx: Ctx) {
     }
     if let Some((device_id, owner)) = nearby_finder_owner {
         stop_nearby_finder(&ctx, &device_id, owner);
+    }
+    if let Some(owner) = hearing_probe_owner {
+        owner.store(false, Ordering::Release);
     }
     // Dropping the final Arc closes the command pipe.
 }

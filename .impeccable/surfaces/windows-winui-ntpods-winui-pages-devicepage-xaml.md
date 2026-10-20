@@ -81,7 +81,10 @@ theme, including high contrast and reduced motion.
 
 Hardware checks use a collapsed expander and manual Refresh. Show saved per-ear
 results with neutral text and separate device timestamps from the time read.
-Cached flags do not establish a current fault.
+Cached flags do not establish a current fault. Keep raw device data in secondary
+details. Confirm sound-producing in-case requests before sending; show the next
+physical action and each ear's new-result progress. Stop waiting only ends host
+observation, so it must not claim to stop the firmware check.
 
 Keep backend behavior, localization, themes and error handling intact. Visual
 tests must use an isolated renderer and must not send commands to AirPods.

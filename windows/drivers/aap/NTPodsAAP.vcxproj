@@ -30,7 +30,8 @@
     <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
     <ConfigurationType>Driver</ConfigurationType>
     <DriverType>KMDF</DriverType>
-    <DriverTargetPlatform>Universal</DriverTargetPlatform>
+    <DriverTargetPlatform Condition="'$(NTPodsExperimentalPlayback)' != 'true'">Universal</DriverTargetPlatform>
+    <DriverTargetPlatform Condition="'$(NTPodsExperimentalPlayback)' == 'true'">Desktop</DriverTargetPlatform>
     <CharacterSet>Unicode</CharacterSet>
     <SpectreMitigation>false</SpectreMitigation>
     <SignMode>Off</SignMode>
@@ -42,7 +43,8 @@
     <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
     <ConfigurationType>Driver</ConfigurationType>
     <DriverType>KMDF</DriverType>
-    <DriverTargetPlatform>Universal</DriverTargetPlatform>
+    <DriverTargetPlatform Condition="'$(NTPodsExperimentalPlayback)' != 'true'">Universal</DriverTargetPlatform>
+    <DriverTargetPlatform Condition="'$(NTPodsExperimentalPlayback)' == 'true'">Desktop</DriverTargetPlatform>
     <CharacterSet>Unicode</CharacterSet>
     <SpectreMitigation>false</SpectreMitigation>
     <SignMode>Off</SignMode>
@@ -93,12 +95,16 @@
     <ClCompile>
       <PreprocessorDefinitions>NTPODS_EXPERIMENTAL_PLAYBACK=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
+    <Link>
+      <AdditionalDependencies>$(IntDir)btampm.lib;aux_klib.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="NTPodsAAP.h" />
     <ClInclude Include="Policy.h" />
     <ClInclude Include="Playback.h" />
     <ClInclude Include="PlaybackContract.h" />
+    <ClInclude Include="Mpm.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Driver.c" />
@@ -106,7 +112,14 @@
     <ClCompile Include="L2cap.c" />
     <ClCompile Include="Ioctl.c" />
     <ClCompile Include="Playback.c" Condition="'$(NTPodsExperimentalPlayback)' == 'true'" />
+    <ClCompile Include="Mpm.c" Condition="'$(NTPodsExperimentalPlayback)' == 'true'" />
+    <ClCompile Include="MpmVersion.c" Condition="'$(NTPodsExperimentalPlayback)' == 'true'" />
   </ItemGroup>
+
+  <Target Name="BuildMpmImportLibrary" BeforeTargets="Link" Condition="'$(NTPodsExperimentalPlayback)' == 'true'"
+          Inputs="$(ProjectDir)Mpm.def" Outputs="$(IntDir)btampm.lib">
+    <Exec Command="&quot;$(VCToolsInstallDir)bin\Hostx64\x64\lib.exe&quot; /nologo /machine:x64 /def:&quot;$(ProjectDir)Mpm.def&quot; /out:&quot;$(IntDir)btampm.lib&quot;" />
+  </Target>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

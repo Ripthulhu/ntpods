@@ -17,7 +17,7 @@ public sealed partial class MainWindow
     private readonly DispatcherTimer _pairingBatteryExpiry = new();
     private PairAirPodsDialog? _pairingDialog;
     private string? _pairedPromptAddress;
-    private ulong _pairedPromptAtMs;
+    private ulong _pairedPromptAttemptStartedAtMs;
     private bool _pairedPromptHeadphone;
     private bool _pairingPromptActive;
     private bool _pairingEligible;
@@ -130,7 +130,8 @@ public sealed partial class MainWindow
             _pairingLid.Clear();
             _pairingPromptActive = true;
             var prompt = GetConnectPrompt();
-            prompt.ShowPrompt(candidate.Name, token => PairDiscoveredDevice(discovery, candidate.Id, prompt, token),
+            prompt.ShowPrompt(candidate.Name, token => PairDiscoveredDevice(discovery, candidate.Id, prompt, token,
+                    (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()),
                 busyStatusKey: PairingInstructions.ForName(candidate.Name));
             UpdatePairingAvailability();
         }
@@ -175,6 +176,7 @@ public sealed partial class MainWindow
     private async Task<string?> PairNearbyDevice(ConnectPromptWindow prompt, ushort model, string instructions, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
+        ulong attemptStartedAtMs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         using var discovery = new BluetoothPairingDiscovery(DispatcherQueue);
         discovery.Changed += () => _pairingInvitations.Suppress(discovery.Candidates);
         discovery.Start(TimeSpan.FromSeconds(60));
@@ -193,25 +195,26 @@ public sealed partial class MainWindow
             return discovery.ErrorKey;
         }
         token.ThrowIfCancellationRequested();
-        return await PairDiscoveredDevice(discovery, id, prompt, token, model);
+        return await PairDiscoveredDevice(discovery, id, prompt, token, attemptStartedAtMs, model);
     }
 
     private async Task<string?> PairDiscoveredDevice(BluetoothPairingDiscovery discovery, string id,
-        ConnectPromptWindow prompt, CancellationToken token, ushort? model = null)
+        ConnectPromptWindow prompt, CancellationToken token, ulong attemptStartedAtMs, ushort? model = null)
     {
+        token.ThrowIfCancellationRequested();
         bool headphone = discovery.Candidates.FirstOrDefault(candidate => candidate.Id == id)?.Name
             .Contains("AirPods Max", StringComparison.OrdinalIgnoreCase) == true;
+        prompt.SetPairingStatus("Pairing.Pairing");
         var status = await discovery.PairAsync(id, token, requireAirPods: true, model: model);
         token.ThrowIfCancellationRequested();
         if (status is not (DevicePairingResultStatus.Paired or DevicePairingResultStatus.AlreadyPaired))
             return "Pairing.Failed";
-        ulong pairedAtMs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         if (discovery.AddressFor(id) is not { } address || PairingBatteryState.DeviceId(address) is not { } deviceId ||
             !_client.PairingCompleted(address))
             return "Pairing.HandoffUnavailable";
         token.ThrowIfCancellationRequested();
         _pairedPromptAddress = address;
-        _pairedPromptAtMs = pairedAtMs;
+        _pairedPromptAttemptStartedAtMs = attemptStartedAtMs;
         _pairedPromptHeadphone = headphone;
         NearbyPairingSucceeded?.Invoke(deviceId);
         prompt.MarkPaired();
@@ -225,7 +228,7 @@ public sealed partial class MainWindow
         if (_pairedPromptAddress is not { } address || _connectPrompt is not { PromptVisible: true } prompt)
             return;
         ulong now = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var levels = PairingBatteryState.Read(snapshot, address, _pairedPromptAtMs, now);
+        var levels = PairingBatteryState.Read(snapshot, address, _pairedPromptAttemptStartedAtMs, now);
         if (levels is not null) _pairedPromptHeadphone |= DeviceModels.Headphone(snapshot);
         _pairingBatteryExpiry.Stop();
         prompt.UpdatePairedBattery(levels?.Left, levels?.Right, levels?.Case,

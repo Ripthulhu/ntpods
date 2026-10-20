@@ -121,8 +121,10 @@ recipes, with pinned hashes. Dependency source archives are not bundled; see
 
 AAC-ELD playback uses a separate worker linked to FDK-AAC 2.0.3. The worker's
 original code is MIT-licensed; FDK retains its own license. Packages include
-`licenses/LICENSE-encoder.txt`, `licenses/NOTICE-FDK.txt` and the complete pinned
-source archive, `licenses/FDK-AAC-source.zip`. The GPL backend exchanges audio
+`licenses/LICENSE-encoder.txt`, `licenses/NOTICE-FDK.txt` and the complete modified
+source archive, `licenses/FDK-AAC-source.zip`. The pinned source uses FDK's existing
+32-bit PCM paths with a PCM-width ABI check; its dated modification notice is
+included in the source archive and library notice. The GPL backend exchanges audio
 with the worker through pipes and does not link FDK. This separation does not
 establish definitive GPL compatibility, and FDK grants no patent license.
 See [the encoder README](windows/playback/encoder/README.md) for the revision,

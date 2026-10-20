@@ -15,7 +15,6 @@ pub const DELAY_REPORT: u8 = 13;
 pub const DELAY_REPORTING: u8 = 8;
 pub const APPLE_ELD: [u8; 14] = [0x4c, 0, 0, 0, 1, 0x80, 0, 0x80, 0, 0x84, 0, 0x83, 0xe8, 0];
 pub const FRAME_SAMPLES: usize = 480;
-pub const PCM_BYTES: usize = FRAME_SAMPLES * 4;
 pub const MAX_AU: usize = 321;
 
 pub fn validate_eld_aus(count: usize) -> io::Result<()> {

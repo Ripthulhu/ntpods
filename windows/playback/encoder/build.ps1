@@ -27,6 +27,18 @@ if (Test-Path -LiteralPath $source) {
     Remove-Item -LiteralPath $source -Recurse -Force
 }
 Expand-Archive -LiteralPath $archive -DestinationPath $vendor -Force
+$pcmHeader = Join-Path $source 'libSYS/include/machine_type.h'
+$pcmOriginal = "typedef SHORT INT_PCM;`n#define MAXVAL_PCM MAXVAL_SGL`n#define MINVAL_PCM MINVAL_SGL`n#define WAV_BITS 16`n#define SAMPLE_BITS 16"
+$pcmWide = "typedef LONG INT_PCM;`n#define MAXVAL_PCM MAXVAL_DBL`n#define MINVAL_PCM MINVAL_DBL`n#define WAV_BITS 32`n#define SAMPLE_BITS 32"
+$header = [IO.File]::ReadAllText($pcmHeader).Replace("`r`n", "`n")
+if ($header.Split(@($pcmOriginal), [StringSplitOptions]::None).Count -ne 2) {
+    throw 'The pinned FDK PCM definition has changed.'
+}
+$notice = 'Third-Party Modified Version of the Fraunhofer FDK AAC Codec Library for Android. NTPods, 2026-10-20: enabled existing 32-bit PCM paths and added a PCM-width ABI check.'
+[IO.File]::WriteAllText($pcmHeader, "/* $notice */`n" + $header.Replace($pcmOriginal, $pcmWide), [Text.UTF8Encoding]::new($false))
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'pcm-abi.c') -Destination (Join-Path $source 'ntpods-pcm-abi.c') -Force
+Add-Content -LiteralPath (Join-Path $source 'CMakeLists.txt') -Value "`ntarget_sources(fdk-aac PRIVATE ntpods-pcm-abi.c)`nset_target_properties(fdk-aac PROPERTIES OUTPUT_NAME ntpods-fdk-q31)" -Encoding UTF8
+[IO.File]::WriteAllText((Join-Path $source 'NTPods-MODIFICATIONS.txt'), $notice + "`n", [Text.UTF8Encoding]::new($false))
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 $cmake = & $vswhere -latest -products '*' -version '[17.0,18.0)' -find 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe' | Select-Object -First 1
 if (-not $cmake) { throw 'Visual Studio 2022 CMake tools are required.' }
@@ -35,4 +47,18 @@ $build = Join-Path $PSScriptRoot 'build'
 if ($LASTEXITCODE) { throw "CMake configuration failed ($LASTEXITCODE)." }
 & $cmake --build $build --config Release --parallel
 if ($LASTEXITCODE) { throw "Encoder build failed ($LASTEXITCODE)." }
+# Preserve the verified archive's other entries and include the exact modified source.
+$sourceBundle = Join-Path $build 'FDK-AAC-source.zip'
+Copy-Item -LiteralPath $archive -Destination $sourceBundle -Force
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$zip = [IO.Compression.ZipFile]::Open($sourceBundle, [IO.Compression.ZipArchiveMode]::Update)
+try {
+    foreach ($relative in 'libSYS/include/machine_type.h', 'CMakeLists.txt', 'ntpods-pcm-abi.c', 'NTPods-MODIFICATIONS.txt') {
+        $entryName = "fdk-aac-$revision/$relative"
+        $entry = $zip.GetEntry($entryName)
+        if ($entry) { $entry.Delete() }
+        [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, (Join-Path $source $relative), $entryName) | Out-Null
+    }
+} finally { $zip.Dispose() }
+Set-Content -LiteralPath (Join-Path $build 'FDK-AAC-source.sha256') -Value (Get-FileHash -LiteralPath $sourceBundle -Algorithm SHA256).Hash -Encoding ASCII
 Write-Host "AAC-ELD encoder: $build\Release\ntpods-eld-encoder.exe"

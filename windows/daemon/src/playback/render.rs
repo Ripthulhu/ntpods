@@ -1,10 +1,11 @@
-use super::protocol::{invalid, PCM_BYTES};
-use std::cell::Cell;
+use super::{pcm::SampleFormat, protocol::invalid};
+use std::cell::{Cell, RefCell};
 use std::io;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle, Thread};
+use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_IO_PENDING, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
@@ -17,6 +18,8 @@ use windows_sys::Win32::System::IO::{
 };
 
 const WAIT_CHANGE: u32 = 0x0022_6414;
+const DIAGNOSTICS: u32 = 0x0022_6418;
+static DIAGNOSTICS_UNAVAILABLE_LOGGED: AtomicBool = AtomicBool::new(false);
 
 struct Handle(HANDLE);
 // Overlapped requests each own their buffers and event; Windows handles are thread-safe.
@@ -45,6 +48,78 @@ pub struct Render {
     event: Handle,
     address: u64,
     ready: Cell<bool>,
+    format: Cell<Option<SampleFormat>>,
+    diagnostics: RefCell<DiagnosticsTrace>,
+}
+
+#[derive(Default)]
+struct DiagnosticsTrace {
+    next: Option<Instant>,
+    deadline: Option<Instant>,
+    complete: bool,
+    disabled: bool,
+}
+
+impl DiagnosticsTrace {
+    fn begin(&mut self, now: Instant) {
+        self.deadline = Some(now + Duration::from_secs(30));
+        self.complete = false;
+    }
+
+    fn due(&mut self, now: Instant) -> bool {
+        if self.disabled || self.deadline.is_none() {
+            return false;
+        }
+        if self.deadline.is_some_and(|deadline| now >= deadline) {
+            self.deadline = None;
+            return false;
+        }
+        if self.next.is_some_and(|next| now < next) {
+            return false;
+        }
+        self.next = Some(now + Duration::from_secs(1));
+        if self.complete {
+            self.deadline = None;
+        }
+        true
+    }
+}
+
+#[derive(Debug)]
+struct Diagnostics {
+    generation: u32,
+    flags: u32,
+    level: i32,
+    times: [u64; 5],
+    counts: [u64; 9],
+}
+
+fn parse_diagnostics(data: &[u8], generation: u32) -> io::Result<Option<Diagnostics>> {
+    if data.len() != 128
+        || u32::from_le_bytes(data[..4].try_into().unwrap()) != 1
+        || u32::from_le_bytes(data[8..12].try_into().unwrap()) & !15 != 0
+    {
+        return Err(invalid("Invalid render diagnostics response"));
+    }
+    let level = i32::from_le_bytes(data[12..16].try_into().unwrap());
+    if !(-635 * 65536 / 10..=0).contains(&level) {
+        return Err(invalid("Invalid render diagnostics volume"));
+    }
+    let observed_generation = u32::from_le_bytes(data[4..8].try_into().unwrap());
+    if observed_generation != generation {
+        return Ok(None);
+    }
+    Ok(Some(Diagnostics {
+        generation: observed_generation,
+        flags: u32::from_le_bytes(data[8..12].try_into().unwrap()),
+        level,
+        times: std::array::from_fn(|index| {
+            u64::from_le_bytes(data[16 + index * 8..24 + index * 8].try_into().unwrap())
+        }),
+        counts: std::array::from_fn(|index| {
+            u64::from_le_bytes(data[56 + index * 8..64 + index * 8].try_into().unwrap())
+        }),
+    }))
 }
 
 #[derive(Debug)]
@@ -78,6 +153,8 @@ impl Render {
             event: Handle::event()?,
             address,
             ready: Cell::new(false),
+            format: Cell::new(None),
+            diagnostics: RefCell::new(DiagnosticsTrace::default()),
         };
         result.status()?;
         Ok(result)
@@ -110,7 +187,22 @@ impl Render {
         if self.ioctl(0x0022_6404, &[], &mut data)? != data.len() {
             return Err(invalid("Truncated playback driver status"));
         }
-        parse_status(&data, self.address, self.ready.get())
+        let status = parse_status(&data, self.address, self.ready.get())?;
+        let format = status_format(&data)?;
+        if self.format.get().is_some_and(|previous| previous != format) {
+            return Err(io::Error::new(
+                io::ErrorKind::ConnectionReset,
+                "Playback sample format changed",
+            ));
+        }
+        self.format.set(Some(format));
+        Ok(status)
+    }
+
+    pub fn format(&self) -> io::Result<SampleFormat> {
+        self.format
+            .get()
+            .ok_or_else(|| invalid("Playback format has not been checked"))
     }
 
     pub fn clock(&self) -> io::Result<ClockStatus> {
@@ -119,6 +211,40 @@ impl Render {
             return Err(invalid("Truncated playback clock response"));
         }
         parse_clock(&data)
+    }
+
+    pub fn begin_startup_diagnostics(&self) {
+        self.diagnostics.borrow_mut().begin(Instant::now());
+    }
+
+    pub fn finish_startup_diagnostics(&self) {
+        self.diagnostics.borrow_mut().complete = true;
+    }
+
+    pub fn trace_startup_diagnostics(&self, generation: u32) {
+        if !self.diagnostics.borrow_mut().due(Instant::now()) {
+            return;
+        }
+        let mut data = [0; 128];
+        let result = self
+            .ioctl(DIAGNOSTICS, &[], &mut data)
+            .and_then(|bytes| parse_diagnostics(&data[..bytes], generation));
+        match result {
+            Ok(Some(d)) => crate::log(&format!(
+                "playback startup diagnostics: generation={} initialized={} subscribed={} muted={} minimum={} level_16_16={} packets={} missing={} source_zero={} source_nonzero={} gated={} gate_uninitialized={} gate_unsubscribed={} gate_muted={} gate_minimum={} first_packet_hns={} initialized_hns={} subscribed_hns={} first_source_nonzero_hns={} first_forwarded_nonzero_hns={}",
+                d.generation, d.flags & 1 != 0, d.flags & 2 != 0, d.flags & 4 != 0,
+                d.flags & 8 != 0, d.level, d.counts[0], d.counts[1], d.counts[2], d.counts[3],
+                d.counts[4], d.counts[5], d.counts[6], d.counts[7], d.counts[8], d.times[0],
+                d.times[1], d.times[2], d.times[3], d.times[4],
+            )),
+            Ok(None) => {}, // A producer transition invalidated this sample.
+            Err(error) => {
+                self.diagnostics.borrow_mut().disabled = true;
+                if !DIAGNOSTICS_UNAVAILABLE_LOGGED.swap(true, Ordering::AcqRel) {
+                    crate::log(&format!("playback startup diagnostics unavailable: {error}"));
+                }
+            }
+        }
     }
 
     pub fn set_clock(&self, interval: u32, delta_ms: u32) -> io::Result<()> {
@@ -143,12 +269,13 @@ impl Render {
     }
 
     pub fn read(&self, maximum: usize) -> io::Result<Vec<u8>> {
-        if maximum == 0 || maximum > PCM_BYTES || maximum % 4 != 0 {
+        let format = self.format()?;
+        if maximum == 0 || maximum > format.read_bytes() || maximum % format.frame_bytes() != 0 {
             return Err(invalid("Invalid PCM read size"));
         }
         let mut pcm = vec![0; maximum];
         let bytes = self.ioctl(0x0022_6400, &[], &mut pcm)?;
-        if bytes % 4 != 0 {
+        if bytes % format.frame_bytes() != 0 {
             return Err(invalid("Partial stereo PCM frame"));
         }
         pcm.truncate(bytes);
@@ -361,13 +488,22 @@ fn parse_clock(data: &[u8; 64]) -> io::Result<ClockStatus> {
     })
 }
 
+fn status_format(data: &[u8; 48]) -> io::Result<SampleFormat> {
+    let value = |offset| u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+    match (value(0), value(4), value(8), value(12)) {
+        (3, 48_000, 2, 16) => Ok(SampleFormat::S16),
+        (4, 48_000, 2, 32) => Ok(SampleFormat::Float32),
+        _ => Err(invalid("Unsupported playback driver format")),
+    }
+}
+
 fn parse_status(data: &[u8; 48], address: u64, expected_ready: bool) -> io::Result<[u32; 4]> {
+    status_format(data)?;
     let values: Vec<_> = data
         .chunks_exact(4)
         .map(|v| u32::from_le_bytes(v.try_into().unwrap()))
         .collect();
-    if values[..4] != [3, 48_000, 2, 16]
-        || values[10] > 1
+    if values[10] > 1
         || values[11] > 1
         || u64::from_le_bytes(data[32..40].try_into().unwrap()) != address
     {
@@ -391,6 +527,90 @@ fn parse_status(data: &[u8; 48], address: u64, expected_ready: bool) -> io::Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostics_validate_abi_and_keep_prior_generation_counts_out_of_startup() {
+        let mut data = [0u8; 128];
+        data[..4].copy_from_slice(&1u32.to_le_bytes());
+        data[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+        data[8..12].copy_from_slice(&3u32.to_le_bytes());
+        data[12..16].copy_from_slice(&(-10i32 * 65536).to_le_bytes());
+        for index in 0..14 {
+            data[16 + index * 8..24 + index * 8]
+                .copy_from_slice(&(index as u64 + 100).to_le_bytes());
+        }
+        let parsed = parse_diagnostics(&data, u32::MAX).unwrap().unwrap();
+        assert_eq!(parsed.flags, 3);
+        assert_eq!(parsed.level, -10 * 65536);
+        assert_eq!(parsed.times, [100, 101, 102, 103, 104]);
+        assert_eq!(parsed.counts, [105, 106, 107, 108, 109, 110, 111, 112, 113]);
+        assert!(parse_diagnostics(&data, 0).unwrap().is_none());
+        for length in 0..data.len() {
+            assert!(parse_diagnostics(&data[..length], u32::MAX).is_err());
+        }
+        let mut trailing = data.to_vec();
+        trailing.push(0);
+        assert!(parse_diagnostics(&trailing, u32::MAX).is_err());
+        for (offset, value) in [
+            (0, 2u32),
+            (8, 16),
+            (12, 1),
+            (12, (-635i32 * 65536 / 10 - 1) as u32),
+        ] {
+            let mut malformed = data;
+            malformed[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+            assert!(parse_diagnostics(&malformed, u32::MAX).is_err());
+        }
+    }
+
+    #[test]
+    fn startup_diagnostics_are_bounded_and_restarts_do_not_bypass_one_second_rate_limit() {
+        let now = Instant::now();
+        let mut trace = DiagnosticsTrace::default();
+        assert!(!trace.due(now));
+        trace.begin(now);
+        assert!(trace.due(now));
+        assert!(!trace.due(now));
+        trace.begin(now + Duration::from_millis(200));
+        assert!(!trace.due(now + Duration::from_millis(999)));
+        assert!(trace.due(now + Duration::from_secs(1)));
+        trace.complete = true;
+        assert!(!trace.due(now + Duration::from_millis(1999)));
+        assert!(trace.due(now + Duration::from_secs(2)));
+        assert!(!trace.due(now + Duration::from_secs(3)));
+        trace.begin(now + Duration::from_secs(3));
+        assert!(!trace.due(now + Duration::from_secs(33)));
+        trace.begin(now + Duration::from_secs(34));
+        trace.disabled = true;
+        assert!(!trace.due(now + Duration::from_secs(34)));
+    }
+
+    #[test]
+    fn float_and_legacy_status_require_matching_version_and_format() {
+        for (version, bits, format) in [(3, 16, SampleFormat::S16), (4, 32, SampleFormat::Float32)]
+        {
+            let values = [version, 48_000, 2, bits, 1, 480, 0, u32::MAX, 42, 0, 1, 1];
+            let bytes: Vec<_> = values.into_iter().flat_map(u32::to_le_bytes).collect();
+            let mut data: [u8; 48] = bytes.try_into().unwrap();
+            assert_eq!(status_format(&data).unwrap(), format);
+            assert_eq!(
+                parse_status(&data, 42, true).unwrap(),
+                [1, 480, 0, u32::MAX]
+            );
+            for (offset, invalid_value) in [
+                (0, 2u32),
+                (0, 5),
+                (4, 44_100),
+                (8, 1),
+                (12, if bits == 16 { 32 } else { 16 }),
+            ] {
+                let saved: [u8; 4] = data[offset..offset + 4].try_into().unwrap();
+                data[offset..offset + 4].copy_from_slice(&invalid_value.to_le_bytes());
+                assert!(status_format(&data).is_err());
+                data[offset..offset + 4].copy_from_slice(&saved);
+            }
+        }
+    }
 
     #[test]
     fn notification_abi_rejects_invalid_replies_and_preserves_wrap() {

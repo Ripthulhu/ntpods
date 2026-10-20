@@ -61,6 +61,14 @@ Assert-Fails { [NTPodsSetupPipe]::Shutdown($PID, 20) }
     if (Get-NTPodsSetupHelper $process) { throw 'Unexpected helper arguments were accepted.' }
     $script:processCommand = '"C:\Program Files\NTPods\ntpodsd.exe" --handsfree-guard'
     if ((Get-NTPodsSetupHelper $process) -ne 'handsfree') { throw 'Hands-free guard was not recognized.' }
+    foreach ($target in '0', '1', '281474976710655') {
+        $script:processCommand = '"C:\Program Files\NTPods\ntpodsd.exe" --hfp-profile-guard ' + $target
+        if ((Get-NTPodsSetupHelper $process) -ne 'handsfree') { throw 'HFP profile guard was not recognized.' }
+    }
+    foreach ($arguments in '--hfp-profile-guard', '--hfp-profile-guard 1 extra', '--hfp-profile-guard -1', '--hfp-profile-guard 281474976710656') {
+        $script:processCommand = '"C:\Program Files\NTPods\ntpodsd.exe" ' + $arguments
+        if (Get-NTPodsSetupHelper $process) { throw 'Unexpected HFP guard arguments were accepted.' }
+    }
     foreach ($arguments in '--handsfree-guard extra', '--handsfree-guard=1', '--HANDSFREE-GUARD') {
         $script:processCommand = '"C:\Program Files\NTPods\ntpodsd.exe" ' + $arguments
         if (Get-NTPodsSetupHelper $process) { throw 'Unexpected guard arguments were accepted.' }
@@ -215,9 +223,11 @@ Assert-Fails { [NTPodsSetupPipe]::Shutdown($PID, 20) }
     $script:paths[$installKey] = [pscustomobject]@{ InstalledUserSid = $sid }
     $script:paths[$shellKey] = [pscustomobject]@{ 'Local AppData' = 'C:\TestProfile\AppData\Local' }
     Stop-NTPods # An older installation without a journal can continue.
-    $script:paths[$journal] = $true
-    Assert-Fails { Stop-NTPods } 'Start NTPods to restore its hands-free devices, then retry setup.'
-    $script:paths.Remove($journal)
+    foreach ($pendingJournal in $journal, 'C:\TestProfile\AppData\Local\NTPods\hfp-profile-restore.json') {
+        $script:paths[$pendingJournal] = $true
+        Assert-Fails { Stop-NTPods } 'Start NTPods to restore its hands-free devices, then retry setup.'
+        $script:paths.Remove($pendingJournal)
+    }
 
     $script:paths.Remove($installKey)
     $script:paths[$driverKey] = [pscustomobject]@{ AllowedUserSid = $sid }

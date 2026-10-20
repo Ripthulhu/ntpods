@@ -17,11 +17,13 @@ static_assert(sizeof(NTPODS_PLAYBACK_CLOCK_SET) == 16, "playback clock set size"
 static_assert(sizeof(NTPODS_PLAYBACK_CLOCK_SNAPSHOT) == 64, "playback clock snapshot size");
 static_assert(IOCTL_NTPODS_PLAYBACK_WAIT_CHANGE == 0x00226414u, "playback notification ABI");
 static_assert(sizeof(NTPODS_PLAYBACK_WAIT_CHANGE) == 8, "playback notification size");
+static_assert(IOCTL_NTPODS_PLAYBACK_DIAGNOSTICS == 0x00226418u, "playback diagnostics ABI");
 
 struct RENDER_CONTEXT {
     RenderProvider State;
     RenderClock Clock;
     RenderChanges Changes;
+    RenderDiagnostics Diagnostics;
     ULONGLONG QpcFrequency;
     KSPIN_LOCK Lock;
     WDFDEVICE Control;
@@ -47,6 +49,7 @@ static ULONGLONG RenderRealTime(RENDER_CONTEXT* context)
 static VOID RenderResetClock(RENDER_CONTEXT* context)
 {
     RenderClockReset(&context->Clock, RenderRealTime(context));
+    RenderDiagnosticReset(&context->Diagnostics, context->State.Ring.Generation);
 }
 
 NTSTATUS RenderPipeInit(WDFDEVICE Device)
@@ -147,20 +150,43 @@ VOID RenderPipeStopped(WDFDEVICE Device)
     RenderChangesComplete(request, sequence);
 }
 
-VOID RenderPipeWrite(WDFDEVICE Device, const void* Data, ULONG Length)
+VOID RenderPipeWrite(WDFDEVICE Device, const void* Data, ULONG Length, ULONG SourceFrameBytes)
 {
     auto context = RenderContext(Device);
     KIRQL irql;
     KeAcquireSpinLock(&context->Lock, &irql);
-    RenderProviderWrite(&context->State, Data, Length);
     WDFREQUEST request = nullptr;
-    if (context->State.Online && context->State.Open && context->State.Ready && context->State.Streams) {
-        RenderClockCommit(&context->Clock, RenderRealTime(context), Length / RENDER_FRAME_BYTES);
-        if (Length) request = RenderChangesAdvance(&context->Changes);
+    if (context->State.Online && context->State.Open && context->State.Ready && context->State.Streams &&
+        RenderRingWrite(&context->State.Ring, Data, Length, SourceFrameBytes)) {
+        RenderClockCommit(&context->Clock, RenderRealTime(context), Length / SourceFrameBytes);
+        request = RenderChangesAdvance(&context->Changes);
     }
     const auto sequence = context->Changes.Sequence;
     KeReleaseSpinLock(&context->Lock, irql);
     RenderChangesComplete(request, sequence);
+}
+
+VOID RenderPipeRecordVolume(WDFDEVICE Device, const RenderVolumeState* State)
+{
+    // Volume callbacks take their lock before this one; no path takes them in reverse.
+    auto context = RenderContext(Device);
+    KIRQL irql;
+    KeAcquireSpinLock(&context->Lock, &irql);
+    RenderDiagnosticVolume(&context->Diagnostics, State, RenderRealTime(context));
+    KeReleaseSpinLock(&context->Lock, irql);
+}
+
+VOID RenderPipeRecordPacket(WDFDEVICE Device, ULONG VolumeFlags, BOOLEAN Missing,
+    ULONG SubmittedBytes, BOOLEAN Nonzero)
+{
+    auto context = RenderContext(Device);
+    KIRQL irql;
+    KeAcquireSpinLock(&context->Lock, &irql);
+    if (context->State.Online && context->State.Open && context->State.Ready && context->State.Streams) {
+        RenderDiagnosticPacket(&context->Diagnostics, RenderRealTime(context), VolumeFlags,
+            Missing != FALSE, SubmittedBytes, Nonzero != FALSE);
+    }
+    KeReleaseSpinLock(&context->Lock, irql);
 }
 
 ULONGLONG RenderPipeAudioTime(WDFDEVICE Device, ULONGLONG RealTimeHns)
@@ -269,13 +295,15 @@ static VOID RenderIoControl(WDFQUEUE Queue, WDFREQUEST Request,
     const BOOLEAN provider = Code == IOCTL_NTPODS_PLAYBACK_SET_PROVIDER;
     const BOOLEAN setClock = Code == IOCTL_NTPODS_PLAYBACK_SET_CLOCK;
     const BOOLEAN queryClock = Code == IOCTL_NTPODS_PLAYBACK_QUERY_CLOCK;
-    if (!pcm && !statusRequest && !provider && !setClock && !queryClock) {
+    const BOOLEAN diagnostics = Code == IOCTL_NTPODS_PLAYBACK_DIAGNOSTICS;
+    if (!pcm && !statusRequest && !provider && !setClock && !queryClock && !diagnostics) {
         WdfRequestComplete(Request, STATUS_INVALID_DEVICE_REQUEST);
         return;
     }
     const BOOLEAN inputRequest = provider || setClock;
     const size_t inputSize = setClock ? sizeof(NTPODS_PLAYBACK_CLOCK_SET) : sizeof(NTPODS_PLAYBACK_PROVIDER);
-    const size_t outputSize = queryClock ? sizeof(NTPODS_PLAYBACK_CLOCK_SNAPSHOT) : sizeof(NTPODS_PLAYBACK_STATUS);
+    const size_t outputSize = diagnostics ? sizeof(RenderDiagnostics)
+        : queryClock ? sizeof(NTPODS_PLAYBACK_CLOCK_SNAPSHOT) : sizeof(NTPODS_PLAYBACK_STATUS);
     if (inputRequest ? (InputLength != inputSize || OutputLength)
                  : (InputLength || (pcm ? !RenderReadLengthValid(OutputLength)
                             : OutputLength != outputSize))) {
@@ -327,11 +355,14 @@ static VOID RenderIoControl(WDFQUEUE Queue, WDFREQUEST Request,
                 clock.DeltaMs, clock.ActualFrames, nominal, clock.DeadlineReal};
             RtlCopyMemory(buffer, &value, sizeof(value));
             bytes = sizeof(value);
+        } else if (diagnostics) {
+            RtlCopyMemory(buffer, &context->Diagnostics, sizeof(context->Diagnostics));
+            bytes = sizeof(context->Diagnostics);
         } else if (pcm) {
             bytes = RenderRingTake(&context->State.Ring, buffer, OutputLength);
         } else {
             const auto& state = context->State;
-            const NTPODS_PLAYBACK_STATUS value = {NTPODS_PLAYBACK_STATUS_VERSION, 48000, 2, 16,
+            const NTPODS_PLAYBACK_STATUS value = {NTPODS_PLAYBACK_STATUS_VERSION, 48000, 2, 32,
                 state.Online ? state.Streams : 0, state.Ring.Count / RENDER_FRAME_BYTES,
                 state.Ring.DroppedFrames, state.Ring.Generation, context->Address,
                 state.Ready ? 1u : 0u, state.Online ? 1u : 0u};

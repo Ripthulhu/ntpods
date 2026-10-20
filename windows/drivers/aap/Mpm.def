@@ -1,0 +1,8 @@
+LIBRARY btampm.sys
+EXPORTS
+    BtaMpmRegister
+    BtaMpmUnregister
+    BtaMpmConnectionRequest
+    BtaMpmUpdateConnectionStatus
+    BtaMpmUpdateSuspendStatus
+    BtaMpmUpdatePlayStatus

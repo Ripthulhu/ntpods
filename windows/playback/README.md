@@ -91,6 +91,12 @@ processing deadlines retry the stream after one second while keeping existing
 Windows audio clients connected. Failed cleanup stops playback until an explicit
 retry or reconnection.
 
+The Windows endpoint prefers 48 kHz stereo Float32 and also accepts PCM16.
+The driver retains float precision through the PCM bridge. AAC-LC accepts Float32;
+AAC-ELD converts directly to 32-bit fixed-point PCM in its matching FDK worker.
+The backend still supports
+older PCM16 playback drivers; those cannot preserve very quiet float signals.
+
 AAC uses 1024-sample blocks with LATM framing and the 90 kHz RTP clock specified
 by [RFC 6416](https://www.rfc-editor.org/rfc/rfc6416.html). AAC-ELD uses 480-sample
 blocks without SBR, one access unit per packet, a 48 kHz sample-count RTP clock,

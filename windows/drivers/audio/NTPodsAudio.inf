@@ -59,7 +59,7 @@ AddProperty=Audio.PacketConstraints
 [Audio.PacketConstraints]
 ; KSAUDIO_PACKETSIZE_CONSTRAINTS2: 4 ms minimum, RAW 5 ms packets.
 {9404F781-7191-409B-8B0B-80BF6EC229AE},2,0x00001003,,\
-40,9c,00,00,03,00,00,00,80,25,00,00,01,00,00,00,\
+40,9c,00,00,03,00,00,00,00,4b,00,00,01,00,00,00,\
 20,ea,90,9e,93,b4,d1,4f,a1,a8,7e,13,61,a9,56,cf,\
 00,00,00,00,50,c3,00,00
 [Audio.Interface.Properties]
@@ -67,6 +67,11 @@ HKR,,CLSID,,%Proxy.CLSID%
 HKR,,FriendlyName,,%Headphones%
 HKR,EP\0,%PKEY_AudioEndpoint_Association%,,%KSNODETYPE_ANY%
 HKR,EP\0,%PKEY_AudioEndpoint_Supports_EventDriven_Mode%,0x00010001,1
+; Serialized VT_BLOB containing stereo 48 kHz IEEE Float32 WAVEFORMATEXTENSIBLE.
+HKR,EP\0,%PKEY_AudioEngine_OEMFormat%,0x00000001,\
+41,00,00,00,28,00,00,00,fe,ff,02,00,80,bb,00,00,\
+00,dc,05,00,08,00,20,00,16,00,20,00,03,00,00,00,\
+03,00,00,00,00,00,10,00,80,00,00,aa,00,38,9b,71
 
 [SourceDisksNames]
 1=%Disk%,,,""
@@ -88,3 +93,4 @@ KSCATEGORY_BTH_VOLUME="{E630310C-1733-42BB-9847-7E45D1A27490}"
 KSNODETYPE_ANY="{00000000-0000-0000-0000-000000000000}"
 PKEY_AudioEndpoint_Association="{1DA5D803-D492-4EDD-8C23-E0C0FFEE7F0E},2"
 PKEY_AudioEndpoint_Supports_EventDriven_Mode="{1DA5D803-D492-4EDD-8C23-E0C0FFEE7F0E},7"
+PKEY_AudioEngine_OEMFormat="{E4870E26-3CC5-4CD2-BA46-CA0A9A70ED04},3"

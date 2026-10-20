@@ -156,7 +156,7 @@ public sealed partial class DeviceSettingsCard : UserControl
         toggle.Toggled += (_, _) =>
         {
             if (!_applying && DeviceSettingStatus.CanChange(_snapshot, id))
-                Client?.SetDeviceControl(id, DeviceSettingStatus.ToggleValue(id, toggle.IsOn));
+                Client?.SetDeviceControl(id, DeviceSettingStatus.ToggleValue(id, toggle.IsOn), _snapshot.DeviceId);
         };
         if (choice is not null) choice.SelectionChanged += (_, _) =>
         {
@@ -164,7 +164,7 @@ public sealed partial class DeviceSettingsCard : UserControl
                 DeviceSettingStatus.CanChoose(_snapshot, id))
             {
                 if (Client?.Send(new SetDeviceControlCmd
-                    { Id = id, Value = DeviceSettingStatus.ToggleValue(id, choice.SelectedIndex == 0) }) != true)
+                    { Id = id, Value = DeviceSettingStatus.ToggleValue(id, choice.SelectedIndex == 0), DeviceId = _snapshot.DeviceId }) != true)
                 {
                     Update(_snapshot);
                     return;
@@ -244,7 +244,7 @@ public sealed partial class DeviceSettingsCard : UserControl
             if (!dirty || owner != _snapshot.DeviceId || left.SelectedIndex < 0 || right.SelectedIndex < 0 ||
                 !DeviceSettingStatus.CanChoose(_snapshot, id) || Client is null) return;
             uint value = ((left.SelectedIndex == 0 ? 1u : 5u) << 8) | (right.SelectedIndex == 0 ? 1u : 5u);
-            if (!Client.Send(new SetDeviceControlCmd { Id = id, Value = value })) return;
+            if (!Client.Send(new SetDeviceControlCmd { Id = id, Value = value, DeviceId = _snapshot.DeviceId })) return;
             dirty = false;
             owner = null;
             baseline = null;
@@ -295,7 +295,7 @@ public sealed partial class DeviceSettingsCard : UserControl
         {
             if (_applying || choice.SelectedIndex < 0 || !DeviceSettingStatus.CanChoose(_snapshot, id)) return;
             uint value = values[choice.SelectedIndex];
-            if (Client?.Send(new SetDeviceControlCmd { Id = id, Value = value }) != true)
+            if (Client?.Send(new SetDeviceControlCmd { Id = id, Value = value, DeviceId = _snapshot.DeviceId }) != true)
             {
                 Update(_snapshot);
                 return;
@@ -357,7 +357,7 @@ public sealed partial class DeviceSettingsCard : UserControl
             uint mask = 0;
             for (int i = 0; i < options.Length; i++)
                 if (options[i].Visibility == Visibility.Visible && options[i].IsChecked == true) mask |= 1u << i;
-            if (!Client.Send(new SetDeviceControlCmd { Id = id, Value = mask })) return;
+            if (!Client.Send(new SetDeviceControlCmd { Id = id, Value = mask, DeviceId = _snapshot.DeviceId })) return;
             dirty = false;
             owner = null;
             baseline = null;
@@ -422,7 +422,7 @@ public sealed partial class DeviceSettingsCard : UserControl
             bool initialChoice = id == 0x40 && !DeviceSettingStatus.DisplayValue(_snapshot, id).HasValue;
             if (Client is null || !DeviceSettingStatus.CanChoose(_snapshot, id) ||
                 !(dirty && owner == _snapshot.DeviceId || initialChoice && !dirty)) return;
-            if (!Client.Send(new SetDeviceControlCmd { Id = id, Value = prefix | (uint)slider.Value })) return;
+            if (!Client.Send(new SetDeviceControlCmd { Id = id, Value = prefix | (uint)slider.Value, DeviceId = _snapshot.DeviceId })) return;
             dirty = false;
             owner = null;
             baseline = null;

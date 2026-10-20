@@ -12,18 +12,27 @@ Run from the repository root with Visual Studio 2022 C++ and CMake tools:
 python windows/playback/encoder/test.py
 ```
 
-The test encodes separate 440 Hz and 880 Hz tones, decodes through FDK, and checks
-format, pitch, channel separation and malformed input. It does not play audio or
+The test checks stereo tones, quiet Float32 signals, S16 compatibility, bitrate
+limits and malformed input through FDK's decoder. It does not play audio or
 open Bluetooth. This round trip uses the encoder library's own decoder.
 
 Build output and downloaded source stay in ignored `build` and `vendor` folders.
-The executable and `fdk-aac.dll` are in `build/Release`.
+The executable and `ntpods-fdk-q31.dll` are in `build/Release`.
 
 ## Pipe format
 
-Input is signed 16-bit little-endian PCM, left then right, at 48,000 Hz.
-Write complete blocks of 480 stereo frames (1,920 bytes). A partial final block
-is an error. Closing stdin flushes the encoder and closes stdout.
+Default input is signed 16-bit little-endian PCM, left then right, at 48,000 Hz.
+Write complete blocks of 480 stereo frames (1,920 bytes).
+With `--pcm-f32`, first write `NPF32001`, uint32 sample rate 48000, uint16
+channels 2 and uint16 block length 480, all little-endian. Follow with complete
+blocks of 480 stereo Float32 frames (3,840 bytes). The worker rejects a mismatched
+preamble, non-finite samples and partial blocks. Closing stdin flushes the encoder.
+
+Float32 samples convert directly to saturated 32-bit fixed-point PCM. S16 input
+is scaled exactly into the same representation. The matching FDK DLL exports a
+PCM-width check. Its distinct DLL name prevents either worker from loading the
+other PCM ABI. Replace the worker and DLL together; the wider DLL also changes
+FDK's decoder PCM ABI.
 
 Output starts with this header:
 
@@ -63,7 +72,14 @@ The build verifies the source archive's SHA-256:
 
 The worker's original code uses the [MIT license](LICENSE). FDK's license is
 retained in [NOTICE-FDK.txt](NOTICE-FDK.txt). Packages include both notices and
-the complete pinned FDK source archive in `licenses/FDK-AAC-source.zip`.
+the complete modified FDK source archive in `licenses/FDK-AAC-source.zip`.
+The build verifies the original archive, changes the five PCM definitions in
+`libSYS/include/machine_type.h` to use FDK's existing 32-bit paths, and includes
+`ntpods-pcm-abi.c` and a dated modification notice in the source archive.
+The source ZIP's hash receipt is checked during packaging. Wider input preserves
+signals lost by S16 conversion, but its floor depends on the signal: the round
+trip still loses a one-ear-only 8 kHz tone at -110 dBFS. It does not establish
+24-bit acoustic precision or calibrated hearing-test output.
 [FFmpeg identifies FDK's license as incompatible with GPL v2 and v3](https://ffmpeg.org/doxygen/trunk/md_LICENSE.html).
 The GPL backend communicates through pipes and does not link FDK. Separate
 processes do not by themselves establish GPL compatibility for a combined product;

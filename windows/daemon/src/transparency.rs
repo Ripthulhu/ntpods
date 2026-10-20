@@ -458,7 +458,7 @@ mod tests {
                 return Ok(vec![7, 1, 0, 0xff, 0xff]);
             }
             let start = u16::from_le_bytes([request[1], request[2]]);
-            let mut response = declaration(start + 1);
+            let mut response = declaration(start + 2);
             response[7] ^= 1;
             Ok(response)
         })

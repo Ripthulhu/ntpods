@@ -17,7 +17,11 @@ Earbuds show Left, Right and Case; headphones show one centered readout. These
 remain visible during listening-mode messages. A charging bolt requires a live
 reading. Missing values use an em dash; cached values dim and expose their age
 through tooltips and accessible help. When all known readings are stale and share
-an age, show one last-seen line; otherwise show cached ages under their cells. Each cell has a 28 DIP
+an age, show one last-seen line; otherwise show cached ages under their cells.
+Reserve one measured, single-line footer for either form, including when all readings
+are current or missing. A recently absent case keeps its percentage current for
+90 seconds from its original observation; this display grace never restores charging,
+nearby presence or audio ownership. Each cell has a 28 DIP
 ring beside a 17 DIP percentage, with its label below. Place the quiet status
 caption above the 20 DIP device name.
 
@@ -34,7 +38,10 @@ timer only for dismissal while idle, and update the native window region only
 when its rounded pixel bounds change.
 Finish a message push before showing the latest queued event. New notifications
 can reverse dismissal; resizing for content continues from the current height.
-Reserve a fixed 108 DIP action slot beside the device name. A paired nearby
+Reserve a fixed 108 DIP action slot beside the device name. Keep its labels
+measured while hidden, and let the slot grow vertically with text scaling.
+Reserve the full 100% readout width when choosing the battery-row layout.
+A paired nearby
 device shows Connect there, then progress or Retry without moving the artwork,
 name or battery row. Below 340 DIP use a 48 DIP icon button, preserving its
 accessible name. Use audio output readiness for Connected; a control-only

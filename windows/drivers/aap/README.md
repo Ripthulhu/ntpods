@@ -263,3 +263,48 @@ and remote disconnect cleanup.
 Build it with `cl /W4 /WX /EHsc /std:c++17` like the existing concurrency test.
 Codec playback has limited model coverage; congestion, driver stress and
 Driver Verifier still require hardware testing. See the validation reference above.
+
+### Windows profile coordination
+
+The backend enables Bluetooth multiprofile coordination after opening AVDTP and
+suspending its initial stream. The driver registers profile 1 with `btampm.sys`,
+reports the actual connection and requests explicit profile coordination. It
+does not register for automatic PnP connection requests. Callbacks cannot open
+channels or acquire audio ownership.
+
+This private ABI is guarded by Windows builds 26100 and 26200, the loaded `btampm.sys`
+10.0.26100.9444 image (PE timestamp `F7E78AD1`, image size `15000`, checksum
+`17FDC`, all hexadecimal), and an explicitly enabled Boot configuration for
+feature 62779942, which protects callback rundown. Unknown states return
+`STATUS_NOT_SUPPORTED` before registration. The experimental driver targets
+Desktop and links six private `btampm.sys` exports; their presence is a loader
+requirement, separate from the runtime guard. The backend retains its existing
+path with older drivers or an unsupported coordinator image.
+
+IOCTL `0x8000E054` uses packed little-endian words:
+
+| Direction | Layout |
+| --- | --- |
+| Input, 20 bytes | `u32 version=1, operation, signaling_generation, ack_sequence, actual_flags` |
+| Output, 16 bytes | `u32 version=1, signaling_generation, request_sequence, state_flags` |
+
+Operations are Query `0`, Enable `1`, Report `2` and Disable `3`. Query requires
+all remaining input words zero and never registers. Other operations must match
+the current signaling generation. Actual flags are applied policy suspension
+`1` and producer RUN `2`; suspension does not clear the producer's intent.
+State flags are enabled `1`, suspend requested `2` and request pending `4`.
+Unknown flags and malformed requests are rejected.
+
+Each suspend/resume callback advances a nonzero request sequence, including
+repeated values. Report acknowledges only the current pending sequence after
+the backend applies the policy; an older acknowledgement still reports actual
+state without completing a newer request. Sequences survive disable/re-enable
+on the same physical connection. Resume with an idle producer does not START.
+
+A coordinator disconnect closes the channels and latches
+`STATUS_CONNECTION_ABORTED` until a fresh signaling open; the backend must not
+automatically recover it as radio loss. Ordinary radio loss remains recoverable.
+Full close, handle cleanup and removal unregister callbacks before releasing
+their context. Failed closes retain their handles and cannot report a completed
+disconnect while a handle remains. Cold-start timing and coordinator behavior
+still require hardware validation.

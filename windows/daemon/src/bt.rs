@@ -356,10 +356,44 @@ pub fn request_audio_for_cleanup(mac: u64, intent: u64) -> Option<(u32, u32)> {
 
 fn request_audio_inner(mac: u64, intent: u64, cleanup: bool) -> Option<(u32, u32)> {
     let _gate = AUDIO_GATE.enter(&AUDIO_INTENT, cleanup)?;
-    if !AUDIO_INTENT.is_current(intent) {
+    request_audio_with(
+        &AUDIO_INTENT,
+        intent,
+        mac,
+        || {
+            #[cfg(feature = "experimental-playback")]
+            {
+                crate::playback::owns_sink(mac)
+            }
+            #[cfg(not(feature = "experimental-playback"))]
+            {
+                false
+            }
+        },
+        |connect| set_audio_services(mac, connect, false, intent),
+    )
+}
+
+fn request_audio_with(
+    requests: &AudioIntent,
+    intent: u64,
+    mac: u64,
+    native_owned: impl FnOnce() -> bool,
+    set_services: impl FnOnce(bool) -> (u32, u32),
+) -> Option<(u32, u32)> {
+    if !requests.is_current(intent) {
         return None;
     }
-    Some(set_audio_services(mac, intent & 1 != 0, false, intent))
+    if mac == 0 || mac > 0xffff_ffff_ffff {
+        return Some((87, 87));
+    }
+    if intent & 1 != 0 && native_owned() {
+        // AAP and native AVDTP open the link; enabling legacy HFP can block both.
+        return requests.is_current(intent).then_some((0, 0));
+    }
+    requests
+        .is_current(intent)
+        .then(|| set_services(intent & 1 != 0))
 }
 
 /// One serialized disable/enable transaction. Recovery observes user intent;
@@ -441,6 +475,89 @@ fn reset_audio_services_inner(mac: u64, sink_only: bool, intent: u64, cleanup: b
 mod audio_intent_tests {
     use super::{AudioGate, AudioIntent};
     use std::sync::{mpsc, Arc};
+
+    #[test]
+    fn native_connect_does_not_enable_legacy_profiles_but_disconnect_still_disables_them() {
+        let requests = AudioIntent::new();
+        let connect = requests.reserve(true).unwrap();
+        assert_eq!(
+            super::request_audio_with(
+                &requests,
+                connect,
+                1,
+                || true,
+                |_| panic!("native Connect must not enable HFP")
+            ),
+            Some((0, 0))
+        );
+        let disconnect = requests.reserve(false).unwrap();
+        assert_eq!(
+            super::request_audio_with(
+                &requests,
+                disconnect,
+                1,
+                || panic!("Disconnect does not query native ownership"),
+                |connect| {
+                    assert!(!connect);
+                    (0, 7)
+                }
+            ),
+            Some((0, 7))
+        );
+        assert_eq!(
+            super::request_audio_with(
+                &requests,
+                disconnect,
+                0,
+                || panic!("invalid address"),
+                |_| panic!("invalid address")
+            ),
+            Some((87, 87))
+        );
+    }
+
+    #[test]
+    fn native_ownership_lookup_cannot_acknowledge_a_superseded_connect() {
+        let requests = AudioIntent::new();
+        let connect = requests.reserve(true).unwrap();
+        assert_eq!(
+            super::request_audio_with(
+                &requests,
+                connect,
+                1,
+                || {
+                    requests.reserve(false).unwrap();
+                    true
+                },
+                |_| panic!("superseded native Connect")
+            ),
+            None
+        );
+        let connect = requests.reserve(true).unwrap();
+        assert_eq!(
+            super::request_audio_with(
+                &requests,
+                connect,
+                1,
+                || false,
+                |enabled| {
+                    assert!(enabled);
+                    (4, 9)
+                }
+            ),
+            Some((4, 9))
+        );
+        assert_eq!(
+            super::request_audio_with(
+                &requests,
+                connect.wrapping_sub(2),
+                1,
+                || panic!("stale Connect"),
+                |_| panic!("stale Connect")
+            ),
+            None
+        );
+    }
 
     #[test]
     fn playback_restore_requires_a_bounded_address_and_saved_audio_service() {

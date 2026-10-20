@@ -343,7 +343,7 @@ public sealed partial class NoiseControlCard : UserControl
         _timedOut = false;
         _requestTimeout.Stop();
         _requestTimeout.Start();
-        Client!.SetDeviceControl(id, value);
+        Client!.SetDeviceControl(id, value, _snapshot.DeviceId);
     }
 
     private void Request(byte id, uint value)

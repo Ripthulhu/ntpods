@@ -101,15 +101,21 @@ Normal applications use the Windows output endpoint.
 
 | Request | Input | Output |
 | --- | --- | --- |
-| `READ_PCM` (`0x00226400`) | None | Buffer: 4–1920 bytes, divisible by 4; returns 0 to capacity bytes of available 48 kHz stereo PCM16 |
+| `READ_PCM` (`0x00226400`) | None | Buffer: 8–3840 bytes, divisible by 8; returns available 48 kHz stereo IEEE Float32 frames |
 | `STATUS` (`0x00226404`) | None | Exactly 48 bytes |
 | `SET_PROVIDER` (`0x0022A408`) | Two DWORDs: version `1`, ready `0` or `1` | None |
 | `WAIT_CHANGE` (`0x00226414`) | Exactly two DWORDs: version `1`, last observed sequence | Exactly one DWORD: nonzero sequence |
 
-The version-3 status layout is eight DWORDs (version, sample rate, channels, bits
+The version-4 status layout is eight DWORDs (version, sample rate, channels, bits
 per sample, running streams, queued frames, dropped frames, generation), followed
 by a 64-bit Bluetooth address and two DWORDs (provider ready, device online).
-The backend checks the address before routing audio.
+The backend checks the address before routing audio. Version 4 specifies Float32,
+48 kHz stereo, with 32 bits per sample. The endpoint accepts Float32 and PCM16;
+PCM16 is converted exactly into the float ring. The backend also accepts the
+older version-3 PCM16 bridge, using four-byte frames and reads up to 1920 bytes.
+It rejects a format change while a provider handle is open.
+The render INF declares the shared-engine Float32 default through
+[`PKEY_AudioEngine_OEMFormat`](https://learn.microsoft.com/en-us/windows-hardware/drivers/audio/pkey-audioengine-oemformat).
 
 Every queue reset advances its generation; the backend must discard pending PCM
 and encoded audio when it changes. The ring holds at most 100 ms and drops oldest
@@ -126,7 +132,7 @@ Provider closure and device removal drain pending requests.
 
 The backend cancels and drains its overlapped wait before releasing its buffers
 or handle. Older drivers can reject this optional request without changing the
-version-3 status ABI; the backend then retains 1 ms polling. Runtime notification
+status ABI; the backend then retains 1 ms polling. Runtime notification
 failure uses the same fallback.
 
 The authoritative layouts are in [`RenderPipe.h`](Common/RenderPipe.h), with

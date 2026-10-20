@@ -3,6 +3,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Hosting;
+using NTPods.WinUI.Services;
 
 namespace NTPods.WinUI.Popup;
 
@@ -13,6 +14,7 @@ public sealed partial class ConnectPromptView
     private bool _pairedContent, _busyContent;
     private int _contentGeneration;
     private int _statusGeneration;
+    private string _headingRequested = "";
     private string _statusRequested = "";
     private string? _statusPending;
     private bool _statusTransitioning;
@@ -23,9 +25,12 @@ public sealed partial class ConnectPromptView
         SetOpacity(StatusContent, 1);
         SetOpacity(StatusText, 1);
         SetOpacity(OutgoingStatusText, 0);
+        SetOpacity(DeviceName, 1);
+        SetOpacity(OutgoingDeviceName, 0);
         SetOpacity(CompletedContent, 0);
         SetOpacity(ConnectLabel, 1);
         SetOpacity(ContinueLabel, 0);
+        SetOpacity(ContinueBackground, 0);
         SetOpacity(Progress, 0);
         UpdateContentInput();
         Unloaded += (_, _) => { SetPresentationActive(false); ReleasePresentation(); };
@@ -67,6 +72,7 @@ public sealed partial class ConnectPromptView
         Fade(CompletedContent, paired ? 1 : 0);
         Fade(ConnectLabel, !paired && !busy ? 1 : 0);
         Fade(ContinueLabel, paired ? 1 : 0);
+        Fade(ContinueBackground, paired ? 1 : 0);
         Fade(Progress, busy ? 1 : 0);
         batch.Completed += (_, _) =>
         {
@@ -113,14 +119,16 @@ public sealed partial class ConnectPromptView
         Progress.IsActive = _presentationActive && _busyContent;
     }
 
-    private void SetStatusText(string text)
+    private void SetPresentationText(string heading, string text)
     {
-        if (_statusRequested == text)
+        if (_statusRequested == text && _headingRequested == heading)
         {
-            if (!_statusTransitioning && StatusText.Text != text) FinishStatusTransition();
+            if (!_statusTransitioning && (StatusText.Text != text || DeviceName.Text != heading)) FinishStatusTransition();
             return;
         }
+        _headingRequested = heading;
         _statusRequested = text;
+        PreserveContentHeight();
         if (!_presentationActive || !_animationsEnabled || !IsLoaded || _pairedContent)
         {
             FinishStatusTransition();
@@ -132,32 +140,63 @@ public sealed partial class ConnectPromptView
 
     private void StartStatusTransition(string text)
     {
-        if (StatusText.Text == text) return;
-        OutgoingStatusText.Text = StatusText.Text;
-        StatusText.Text = text;
-        SetOpacity(OutgoingStatusText, 1);
-        SetOpacity(StatusText, 0);
+        PreserveContentHeight();
+        bool statusChanged = StatusText.Text != text;
+        bool headingChanged = DeviceName.Text != _headingRequested;
+        if (!statusChanged && !headingChanged) return;
+        if (statusChanged)
+        {
+            OutgoingStatusText.Text = StatusText.Text;
+            StatusText.Text = text;
+            SetOpacity(OutgoingStatusText, 1);
+            SetOpacity(StatusText, 0);
+        }
+        if (headingChanged)
+        {
+            OutgoingDeviceName.Text = DeviceName.Text;
+            DeviceName.Text = _headingRequested;
+            AutomationProperties.SetName(DeviceName, _pairedContent
+                ? $"{_deviceName}. {Localize.Get("ConnectPrompt_Paired")}" : DeviceName.Text);
+            SetOpacity(OutgoingDeviceName, 1);
+            SetOpacity(DeviceName, 0);
+        }
         _statusTransitioning = true;
         _statusPending = null;
         int generation = ++_statusGeneration;
         var compositor = ElementCompositionPreview.GetElementVisual(this).Compositor;
         var batch = compositor.CreateScopedBatch(CompositionBatchTypes.Animation);
-        Fade(OutgoingStatusText, 0);
-        Fade(StatusText, 1);
+        if (statusChanged)
+        {
+            Fade(OutgoingStatusText, 0);
+            Fade(StatusText, 1);
+        }
+        if (headingChanged)
+        {
+            Fade(OutgoingDeviceName, 0);
+            Fade(DeviceName, 1);
+        }
         batch.Completed += (_, _) =>
         {
             if (generation == _statusGeneration)
             {
                 _statusTransitioning = false;
                 OutgoingStatusText.Text = "";
+                OutgoingDeviceName.Text = "";
                 string? pending = _statusPending;
                 _statusPending = null;
-                if (pending is not null && !_pairedContent && _presentationActive && _animationsEnabled)
+                if (pending is not null && (!_pairedContent || DeviceName.Text != _headingRequested)
+                    && _presentationActive && _animationsEnabled)
                     StartStatusTransition(pending);
             }
             batch.Dispose();
         };
         batch.End();
+    }
+
+    private void PreserveContentHeight()
+    {
+        if (_presentationActive && IsLoaded)
+            ContentViewport.MinHeight = Math.Max(ContentViewport.MinHeight, ContentViewport.ActualHeight);
     }
 
     private void FinishStatusTransition()
@@ -166,8 +205,12 @@ public sealed partial class ConnectPromptView
         _statusTransitioning = false;
         _statusPending = null;
         StatusText.Text = _statusRequested;
+        DeviceName.Text = _headingRequested;
+        AutomationProperties.SetName(DeviceName, _pairedContent ? $"{_deviceName}. {Localize.Get("ConnectPrompt_Paired")}" : DeviceName.Text);
         OutgoingStatusText.Text = "";
-        foreach (var (element, opacity) in new (UIElement, float)[] { (StatusText, 1), (OutgoingStatusText, 0) })
+        OutgoingDeviceName.Text = "";
+        foreach (var (element, opacity) in new (UIElement, float)[]
+            { (StatusText, 1), (OutgoingStatusText, 0), (DeviceName, 1), (OutgoingDeviceName, 0) })
         {
             var visual = ElementCompositionPreview.GetElementVisual(element);
             visual.StopAnimation(nameof(visual.Opacity));
@@ -196,5 +239,7 @@ public sealed partial class ConnectPromptView
         AutomationProperties.SetLiveSetting(StatusText, _presentationActive && !_pairedContent ? AutomationLiveSetting.Polite : AutomationLiveSetting.Off);
         AutomationProperties.SetLiveSetting(PairedLabel, _presentationActive && _pairedContent ? AutomationLiveSetting.Polite : AutomationLiveSetting.Off);
         AutomationProperties.SetLiveSetting(BatteryRow, _presentationActive && _pairedContent ? AutomationLiveSetting.Polite : AutomationLiveSetting.Off);
+        AutomationProperties.SetName(DeviceName, _pairedContent
+            ? $"{_deviceName}. {Localize.Get("ConnectPrompt_Paired")}" : DeviceName.Text);
     }
 }

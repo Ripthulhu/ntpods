@@ -20,7 +20,7 @@ internal static class PairingBatteryState
             ? normalized.ToLowerInvariant() : null;
     }
 
-    public static PairingBatteryLevels? Read(Snapshot snapshot, string address, ulong pairedAtMs, ulong nowMs)
+    public static PairingBatteryLevels? Read(Snapshot snapshot, string address, ulong attemptStartedAtMs, ulong nowMs)
     {
         if (DeviceId(address) is not { } deviceId ||
             !string.Equals(deviceId, snapshot.DeviceId, StringComparison.OrdinalIgnoreCase))
@@ -30,7 +30,7 @@ internal static class PairingBatteryState
         byte? Fresh(BatteryPart part, BatteryObservation? observation)
         {
             if (observation is not { Live: true, Present: not false, TimestampMs: ulong at } ||
-                at <= pairedAtMs || at > nowMs || nowMs - at >= FreshMs ||
+                at <= attemptStartedAtMs || at > nowMs || nowMs - at >= FreshMs ||
                 !BatteryPresentation.IsLive(snapshot, part)) return null;
             ulong end = at + FreshMs;
             expiry = expiry is { } earlier ? Math.Min(earlier, end) : end;

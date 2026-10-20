@@ -5,13 +5,33 @@
                   HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled"
                   VerticalScrollBarVisibility="Auto">
         <StackPanel Padding="24,20,24,24" Spacing="12">
-            <Grid MinHeight="56">
+            <Grid MinHeight="64">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="40"/><ColumnDefinition Width="*"/><ColumnDefinition Width="40"/>
                 </Grid.ColumnDefinitions>
-                <TextBlock x:Name="DeviceName" Grid.Column="1" FontSize="24" FontWeight="SemiBold"
+                <Grid Grid.Column="1" Opacity="0" IsHitTestVisible="False"
+                      AutomationProperties.AccessibilityView="Raw">
+                    <TextBlock x:Name="ModelHeadingMeasure" FontSize="26" FontWeight="Bold"
+                               TextAlignment="Center" VerticalAlignment="Center" TextWrapping="Wrap"
+                               MaxLines="3" TextTrimming="CharacterEllipsis"
+                               AutomationProperties.AccessibilityView="Raw" />
+                    <TextBlock x:Name="SetupHeadingMeasure" FontSize="26" FontWeight="Bold"
+                               TextAlignment="Center" VerticalAlignment="Center" TextWrapping="Wrap"
+                               MaxLines="3" TextTrimming="CharacterEllipsis"
+                               AutomationProperties.AccessibilityView="Raw" />
+                    <TextBlock FontSize="26" FontWeight="Bold"
+                               Text="{Binding [Pairing_ConnectingTitle], Source={StaticResource Loc}}"
+                               TextAlignment="Center" VerticalAlignment="Center" TextWrapping="Wrap"
+                               MaxLines="3" TextTrimming="CharacterEllipsis"
+                               AutomationProperties.AccessibilityView="Raw" />
+                </Grid>
+                <TextBlock x:Name="OutgoingDeviceName" Grid.Column="1" FontSize="26" FontWeight="Bold"
                            TextAlignment="Center" VerticalAlignment="Center" TextWrapping="Wrap"
-                           MaxLines="2" TextTrimming="CharacterEllipsis"
+                           MaxLines="3" TextTrimming="CharacterEllipsis"
+                           AutomationProperties.AccessibilityView="Raw" />
+                <TextBlock x:Name="DeviceName" Grid.Column="1" FontSize="26" FontWeight="Bold"
+                           TextAlignment="Center" VerticalAlignment="Center" TextWrapping="Wrap"
+                           MaxLines="3" TextTrimming="CharacterEllipsis"
                            AutomationProperties.LiveSetting="Polite" />
                 <Button x:Name="CloseButton" Grid.Column="2" Width="40" Height="40" Padding="0"
                         Style="{StaticResource QuietButton}" VerticalAlignment="Top" Click="Close_Click"
@@ -32,7 +52,7 @@
                     </Grid>
                 </Viewbox>
             </Grid>
-            <Grid MinHeight="96">
+            <Grid x:Name="ContentViewport" MinHeight="96">
                 <Grid x:Name="StatusContent">
                     <TextBlock x:Name="OutgoingStatusText" FontSize="14" TextAlignment="Center" TextWrapping="Wrap"
                                VerticalAlignment="Center" Foreground="{ThemeResource AppleSecondaryBrush}"
@@ -97,17 +117,26 @@
                     </Grid>
                 </StackPanel>
             </Grid>
-            <Button x:Name="ConnectButton" Height="48" HorizontalAlignment="Stretch" CornerRadius="24"
-                    Style="{StaticResource AccentButtonStyle}" Click="Connect_Click"
+            <Button x:Name="ConnectButton" Height="48" HorizontalAlignment="Stretch" CornerRadius="12" Padding="0"
+                    HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch"
+                    Style="{StaticResource QuietButton}" Background="{ThemeResource AppleGroupBrush}"
+                    Foreground="{ThemeResource NTPodsAccentBrush}" Click="Connect_Click"
                     AutomationProperties.Name="{Binding [ConnectPrompt_Connect], Source={StaticResource Loc}}">
+                <Button.Resources>
+                    <SolidColorBrush x:Key="ButtonBackgroundDisabled" Color="{ThemeResource AppleGroupColor}" />
+                </Button.Resources>
                 <Grid>
+                    <Border x:Name="ContinueBackground" Background="{ThemeResource ApplePageBrush}" CornerRadius="12"
+                            IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw" />
                     <TextBlock x:Name="ConnectLabel" Text="{Binding [ConnectPrompt_Connect], Source={StaticResource Loc}}"
                                FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"
                                AutomationProperties.AccessibilityView="Raw" />
                     <TextBlock x:Name="ContinueLabel" Text="{Binding [ConnectPrompt_Continue], Source={StaticResource Loc}}"
                                FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"
+                               Foreground="{ThemeResource TextFillColorPrimaryBrush}"
                                AutomationProperties.AccessibilityView="Raw" />
                     <ProgressRing x:Name="Progress" Width="24" Height="24" IsActive="False"
+                                  Foreground="{ThemeResource AppleSecondaryBrush}"
                                   AutomationProperties.AccessibilityView="Raw" />
                 </Grid>
             </Button>

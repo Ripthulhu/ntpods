@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <ks.h>
 #include <ksmedia.h>
+#include <mmreg.h>
 #include <setupapi.h>
 #include "../Common/PacketConstraints.h"
 #include "../Common/MicTiming.h"
@@ -21,7 +22,8 @@ static void constraints_checks(ULONG alignment, ULONG maximum, unsigned frameByt
     const GUID raw = {STATIC_AUDIO_SIGNALPROCESSINGMODE_RAW};
     assert(constraints.MinPacketPeriodInHns == 40000);
     assert(constraints.PacketSizeFileAlignment == alignment);
-    assert(constraints.MaxPacketSizeInBytes == 9600 && maximum == 9600);
+    assert(constraints.MaxPacketSizeInBytes == maximum);
+    assert(maximum == (frameBytes == 8 ? 19200u : 9600u));
     assert(constraints.NumProcessingModeConstraints == 1);
     const auto& mode = constraints.ProcessingModeConstraints[0];
     assert(IsEqualGUID(mode.ProcessingMode, raw));
@@ -36,7 +38,7 @@ static void constraints_checks(ULONG alignment, ULONG maximum, unsigned frameByt
     assert((packetBytes & alignment) == 0);
     // Every advertised quantum up to the transport cap fits the existing engine.
     for (unsigned bytes = packetBytes; bytes <= maximum; bytes += packetBytes) {
-        assert(MicRtPacketLayoutValid(2, bytes));
+        assert(MicRtPacketLayoutValid(2, bytes, maximum));
     }
 }
 
@@ -83,6 +85,47 @@ static void inf_constraints_checks(const wchar_t* path, const wchar_t* interface
     SetupCloseInfFile(inf);
 }
 
+static void inf_render_default_checks(const wchar_t* path)
+{
+    HINF inf = SetupOpenInfFileW(path, nullptr, INF_STYLE_WIN4 | INF_STYLE_CACHE_IGNORE, nullptr);
+    assert(inf != INVALID_HANDLE_VALUE);
+    INFCONTEXT line;
+    assert(SetupFindFirstLineW(inf, L"Audio.Interface.Properties", nullptr, &line));
+    bool found = false;
+    do {
+        wchar_t key[80] = {}, subkey[32] = {};
+        assert(SetupGetStringFieldW(&line, 3, key, ARRAYSIZE(key), nullptr));
+        if (_wcsicmp(key, L"{E4870E26-3CC5-4CD2-BA46-CA0A9A70ED04},3") != 0) continue;
+        assert(!found);
+        found = true;
+        wchar_t root[8] = {};
+        assert(SetupGetStringFieldW(&line, 1, root, ARRAYSIZE(root), nullptr));
+        assert(wcscmp(root, L"HKR") == 0);
+        assert(SetupGetStringFieldW(&line, 2, subkey, ARRAYSIZE(subkey), nullptr));
+        assert(wcscmp(subkey, L"EP\\0") == 0);
+        int flags = 0;
+        assert(SetupGetIntField(&line, 4, &flags) && flags == 1);
+        unsigned char serialized[48] = {};
+        DWORD bytes = 0;
+        assert(SetupGetBinaryField(&line, 5, serialized, sizeof(serialized), &bytes));
+        assert(bytes == sizeof(serialized));
+        const unsigned char header[] = {65, 0, 0, 0, 40, 0, 0, 0};
+        assert(memcmp(serialized, header, sizeof(header)) == 0);
+        WAVEFORMATEXTENSIBLE format{};
+        static_assert(sizeof(format) == 40);
+        memcpy(&format, serialized + sizeof(header), sizeof(format));
+        assert(format.Format.wFormatTag == WAVE_FORMAT_EXTENSIBLE && format.Format.cbSize == 22);
+        assert(format.Format.nChannels == 2 && format.Format.nSamplesPerSec == 48000);
+        assert(format.Format.nBlockAlign == 8 && format.Format.nAvgBytesPerSec == 384000);
+        assert(format.Format.wBitsPerSample == 32 && format.Samples.wValidBitsPerSample == 32);
+        assert(format.dwChannelMask == 3);
+        const GUID subtype = {STATIC_KSDATAFORMAT_SUBTYPE_IEEE_FLOAT};
+        assert(IsEqualGUID(format.SubFormat, subtype));
+    } while (SetupFindNextLine(&line, &line));
+    assert(found);
+    SetupCloseInfFile(inf);
+}
+
 static void short_period_checks(unsigned milliseconds, unsigned frameBytes)
 {
     const unsigned frames = milliseconds * 48;
@@ -105,34 +148,48 @@ static void short_period_checks(unsigned milliseconds, unsigned frameBytes)
     assert(glitch == 10000);
     assert(MicPacketTimerDelay(2 * period + glitch, period + 10000, &glitch) == -static_cast<int64_t>(period));
 
-    std::vector<unsigned char> input(bytes), output(bytes);
+    std::vector<unsigned char> input(bytes);
     for (unsigned i = 0; i < bytes; ++i) input[i] = static_cast<unsigned char>(i);
-    if (frameBytes == 4) {
+    if (frameBytes == 4 || frameBytes == 8) {
+        std::vector<unsigned char> output(frames * RENDER_FRAME_BYTES);
         RenderRing ring = {};
         RenderPackets submitted = {};
-        assert(RenderSubmit(&submitted, 0, false, 0, 0, 0, bytes) == RenderSubmitResult::Accepted);
-        assert(RenderPacketLength(&submitted, 0, bytes) == bytes);
-        assert(RenderRingWrite(&ring, input.data(), bytes));
-        assert(RenderRingTake(&ring, output.data(), bytes) == bytes);
+        assert(RenderSubmit(&submitted, 0, false, 0, 0, 0, bytes, frameBytes) == RenderSubmitResult::Accepted);
+        assert(RenderPacketLength(&submitted, 0, bytes, frameBytes) == bytes);
+        assert(RenderRingWrite(&ring, input.data(), bytes, frameBytes));
+        assert(RenderRingTake(&ring, output.data(), output.size()) == output.size());
         assert(ring.Count == 0 && ring.DroppedFrames == 0);
+        if (frameBytes == 8) assert(input == output);
+        else for (unsigned sample = 0; sample < frames * 2; ++sample) {
+            const unsigned raw = input[sample * 2] | ((unsigned)input[sample * 2 + 1] << 8);
+            const int value = raw < 0x8000u ? (int)raw : (int)raw - 0x10000;
+            const float expected = (float)value / 32768.0f;
+            assert(memcmp(output.data() + sample * 4, &expected, sizeof(expected)) == 0);
+        }
     } else {
+        std::vector<unsigned char> output(bytes);
         MicRing ring = {};
         assert(MicRingWrite(&ring, input.data(), bytes, bytes));
         assert(MicRingTake(&ring, output.data(), bytes) == bytes);
         assert(ring.Count == 0);
+        assert(input == output);
     }
-    assert(input == output);
 }
 
 int wmain(int argc, wchar_t** argv)
 {
     assert(argc == 3);
-    constraints_checks(3u, RENDER_PACKET_MAX_BYTES, 4); // FILE_LONG_ALIGNMENT
+    inf_render_default_checks(argv[1]);
+    assert(!MicRtPacketLayoutValid(2, RENDER_PACKET_MAX_BYTES));
+    assert(MicRtPacketLayoutValid(2, RENDER_PACKET_MAX_BYTES, RENDER_PACKET_MAX_BYTES));
+    assert(!MicRtPacketLayoutValid(1, RENDER_PACKET_MAX_BYTES, RENDER_PACKET_MAX_BYTES));
+    constraints_checks(3u, RENDER_PACKET_MAX_BYTES, 8); // FILE_LONG_ALIGNMENT
     constraints_checks(1u, MIC_RT_MAX_PACKET_BYTES, 2); // FILE_WORD_ALIGNMENT
     inf_constraints_checks(argv[1], L"Audio.NT.Interfaces", L"Headphones0", 3u, RENDER_PACKET_MAX_BYTES);
     inf_constraints_checks(argv[2], L"Audio_Device.NT.Interfaces", L"Microphone0", 1u, MIC_RT_MAX_PACKET_BYTES);
     for (unsigned milliseconds : {4u, 5u, 10u}) {
         short_period_checks(milliseconds, 4);
+        short_period_checks(milliseconds, 8);
         short_period_checks(milliseconds, 2);
     }
     std::puts("ACX constraints: RAW 5 ms runtime and INF blobs, packet timing and PCM delivery passed");

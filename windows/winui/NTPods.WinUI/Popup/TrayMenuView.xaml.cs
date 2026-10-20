@@ -13,13 +13,14 @@ namespace NTPods.WinUI.Popup;
 /// Tray menu content; the host window handles positioning, dismissal and action callbacks.
 public sealed partial class TrayMenuView : UserControl
 {
-    public Action<byte>? OnAnc;
+    public Action<byte, string>? OnAnc;
     public Action? OnMute;
     public Action? OnOpen;
     public Action? OnBatteries;
     public Action? OnQuit;
     public Action? OnDismiss;
     private string? _imageUri;
+    private string _deviceId = "";
     private readonly DeviceArtworkState _artwork = new();
 
     public TrayMenuView()
@@ -30,6 +31,7 @@ public sealed partial class TrayMenuView : UserControl
     /// Fill the menu from the latest snapshot.
     public void Apply(Snapshot s)
     {
+        _deviceId = s.DeviceId;
         HeaderName.Text = string.IsNullOrWhiteSpace(s.DevName) ? "NTPods" : s.DevName;
 
         var model = _artwork.Update(s, AppSettings.LastModel, AppSettings.LastDeviceId);
@@ -102,10 +104,10 @@ public sealed partial class TrayMenuView : UserControl
         try { a?.Invoke(); } finally { OnDismiss?.Invoke(); }
     }
 
-    private void AncOff_Click(object s, RoutedEventArgs e) => Fire(() => OnAnc?.Invoke(1));
-    private void AncNc_Click(object s, RoutedEventArgs e) => Fire(() => OnAnc?.Invoke(2));
-    private void AncTrans_Click(object s, RoutedEventArgs e) => Fire(() => OnAnc?.Invoke(3));
-    private void AncAdaptive_Click(object s, RoutedEventArgs e) => Fire(() => OnAnc?.Invoke(4));
+    private void AncOff_Click(object s, RoutedEventArgs e) => Fire(() => OnAnc?.Invoke(1, _deviceId));
+    private void AncNc_Click(object s, RoutedEventArgs e) => Fire(() => OnAnc?.Invoke(2, _deviceId));
+    private void AncTrans_Click(object s, RoutedEventArgs e) => Fire(() => OnAnc?.Invoke(3, _deviceId));
+    private void AncAdaptive_Click(object s, RoutedEventArgs e) => Fire(() => OnAnc?.Invoke(4, _deviceId));
     private void Mute_Click(object s, RoutedEventArgs e) => Fire(() => OnMute?.Invoke());
     private void Open_Click(object s, RoutedEventArgs e) => Fire(() => OnOpen?.Invoke());
     private void Batteries_Click(object s, RoutedEventArgs e) => Fire(OnBatteries);

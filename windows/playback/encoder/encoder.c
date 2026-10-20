@@ -2,6 +2,7 @@
 #include <aacenc_lib.h>
 #include <fcntl.h>
 #include <io.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -9,6 +10,49 @@
 #include <avrt.h>
 
 enum { CHANNELS = 2, FRAME_SAMPLES = 480, PCM_SAMPLES = 960 };
+__declspec(dllimport) int ntpods_fdk_pcm_bits(void);
+
+static int parse_options(int argc, char **argv, unsigned *bitrate, int *variable, int *pcm_f32) {
+    *bitrate = 256000;
+    *variable = *pcm_f32 = 0;
+    int seen_rate = 0;
+    for (int index = 1; index < argc; ++index) {
+        if (!strcmp(argv[index], "--pcm-f32") && !*pcm_f32) {
+            *pcm_f32 = 1;
+        } else if (!strcmp(argv[index], "--vbr") && !seen_rate) {
+            seen_rate = *variable = 1;
+            *bitrate = 192000;
+        } else if (!strcmp(argv[index], "--bitrate") && !seen_rate && ++index < argc) {
+            if (strlen(argv[index]) != 6 || strspn(argv[index], "0123456789") != 6 ||
+                sscanf_s(argv[index], "%u", bitrate) != 1) return 0;
+            seen_rate = 1;
+        } else return 0;
+    }
+    return *bitrate >= 128000 && *bitrate <= 256000 && *bitrate % 1000 == 0;
+}
+
+static int read_pcm(INT_PCM *pcm, int pcm_f32) {
+    unsigned char bytes[PCM_SAMPLES * sizeof(float)];
+    const size_t size = PCM_SAMPLES * (pcm_f32 ? sizeof(float) : sizeof(int16_t));
+    const size_t count = fread(bytes, 1, size, stdin);
+    if (ferror(stdin) || (count && count != size)) return -1;
+    if (!count) return 0;
+    for (int index = 0; index < PCM_SAMPLES; ++index) {
+        if (pcm_f32) {
+            float sample;
+            memcpy(&sample, bytes + index * sizeof(float), sizeof(sample));
+            if (!isfinite(sample)) return -1;
+            const double scaled = round((double)sample * 2147483648.0);
+            pcm[index] = scaled >= 2147483647.0 ? INT32_MAX :
+                scaled <= -2147483648.0 ? INT32_MIN : (INT_PCM)scaled;
+        } else {
+            int16_t sample;
+            memcpy(&sample, bytes + index * sizeof(sample), sizeof(sample));
+            pcm[index] = (INT_PCM)sample * 65536;
+        }
+    }
+    return 1;
+}
 
 static int write_bytes(const void *data, size_t size) {
     return fwrite(data, 1, size, stdout) == size;
@@ -63,23 +107,23 @@ int main(int argc, char **argv) {
     int exit_code = 1;
     DWORD task_index = 0;
     HANDLE audio_task = NULL;
-    unsigned bitrate = 256000;
-    const int variable = argc == 2 && !strcmp(argv[1], "--vbr");
-    if (variable) {
-        bitrate = 192000;
-    } else if (argc != 1) {
-        if (argc != 3 || strcmp(argv[1], "--bitrate") || strlen(argv[2]) != 6 ||
-            strspn(argv[2], "0123456789") != 6 || sscanf_s(argv[2], "%u", &bitrate) != 1 ||
-            bitrate < 128000 || bitrate > 256000 || bitrate % 1000 != 0) {
-            fprintf(stderr, "Use --bitrate with 128000..256000 bits per second in 1000-bit steps, or --vbr.\n");
-            return 1;
-        }
+    unsigned bitrate;
+    int variable, pcm_f32;
+    if (!parse_options(argc, argv, &bitrate, &variable, &pcm_f32)) {
+        fprintf(stderr, "Use --bitrate with 128000..256000 bits per second in 1000-bit steps, or --vbr; optionally --pcm-f32.\n");
+        return 1;
     }
     const unsigned peak_bitrate = variable ? 256000 : bitrate;
-    if (sizeof(INT_PCM) != 2 || _setmode(_fileno(stdin), _O_BINARY) == -1 ||
+    if (sizeof(INT_PCM) != 4 || ntpods_fdk_pcm_bits() != 32 || _setmode(_fileno(stdin), _O_BINARY) == -1 ||
         _setmode(_fileno(stdout), _O_BINARY) == -1) {
         fprintf(stderr, "Cannot initialize PCM input and binary output.\n");
         return 1;
+    }
+    if (pcm_f32) {
+        const unsigned char expected[16] = {'N','P','F','3','2','0','0','1',0x80,0xbb,0,0,2,0,0xe0,1};
+        unsigned char preamble[sizeof(expected)];
+        if (fread(preamble, 1, sizeof(preamble), stdin) != sizeof(preamble) ||
+            memcmp(preamble, expected, sizeof(expected))) return 1;
     }
     if (aacEncOpen(&encoder, 0x01, CHANNELS) != AACENC_OK) {
         fprintf(stderr, "Cannot open AAC-ELD encoder.\n");
@@ -116,12 +160,12 @@ int main(int argc, char **argv) {
     const unsigned max_au = (peak_bitrate + 799) / 800 + 1;
     audio_task = AvSetMmThreadCharacteristicsW(L"Audio", &task_index);
     for (;;) {
-        size_t count = fread(pcm, 1, sizeof(pcm), stdin);
-        if (ferror(stdin) || (count && count != sizeof(pcm))) {
-            fprintf(stderr, "PCM input must contain complete 480-frame stereo blocks.\n");
+        const int status = read_pcm(pcm, pcm_f32);
+        if (status < 0) {
+            fprintf(stderr, "PCM input must contain complete 480-frame stereo blocks with finite samples.\n");
             goto cleanup;
         }
-        if (!count) break;
+        if (!status) break;
         if (encode(encoder, pcm, 0, max_au) < 0) goto cleanup;
     }
     for (int i = 0; i < 32; ++i) {

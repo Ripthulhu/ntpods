@@ -116,9 +116,9 @@
                     <Path Data="M 3,3 L 25,25" StrokeThickness="2" Stroke="{ThemeResource IslandForeground}" />
                 </Grid>
             </Grid>
-            <Button x:Name="ConnectButton" Grid.Column="2" Width="108" Height="48" Padding="8,0"
+            <Button x:Name="ConnectButton" Grid.Column="2" Width="108" MinHeight="48" Padding="8,10" Opacity="0"
                     Background="{ThemeResource IslandActionBackground}" Foreground="{ThemeResource IslandForeground}"
-                    BorderThickness="0" CornerRadius="24" Visibility="Collapsed" IsEnabled="False"
+                    BorderThickness="0" CornerRadius="24" IsEnabled="False" IsHitTestVisible="False" IsTabStop="False"
                     AutomationProperties.AccessibilityView="Raw" Click="ConnectButton_Click">
                 <Grid MinHeight="24">
                     <TextBlock x:Name="ConnectLabel" FontSize="14" FontWeight="SemiBold" TextAlignment="Center"
@@ -139,6 +139,9 @@
         <StackPanel x:Name="BatteryPanel" Grid.Row="1" Spacing="8">
             <Grid x:Name="BatteryRow" ColumnSpacing="12">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                <TextBlock x:Name="BatteryMeasure" Grid.ColumnSpan="3" Text="100%" FontSize="17" Opacity="0"
+                           HorizontalAlignment="Left" VerticalAlignment="Top" IsHitTestVisible="False"
+                           AutomationProperties.AccessibilityView="Raw" />
                 <StackPanel x:Name="LeftCell" Grid.Column="0" Spacing="4" HorizontalAlignment="Stretch">
                     <StackPanel x:Name="LeftReadout" Orientation="Horizontal" Spacing="6" HorizontalAlignment="Center">
                         <Grid Width="28" Height="28" VerticalAlignment="Center" AutomationProperties.AccessibilityView="Raw">
@@ -150,8 +153,6 @@
                         <TextBlock x:Name="LeftText" Text="—" FontSize="17" VerticalAlignment="Center" Foreground="{ThemeResource IslandForeground}" />
                     </StackPanel>
                     <TextBlock x:Name="LeftLabel" FontSize="12" TextAlignment="Center" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource IslandSecondary}" />
-                    <TextBlock x:Name="LeftFreshness" FontSize="11" TextAlignment="Center" TextWrapping="Wrap" Visibility="Collapsed"
-                               Foreground="{ThemeResource IslandSecondary}" AutomationProperties.AccessibilityView="Raw" />
                 </StackPanel>
                 <StackPanel x:Name="RightCell" Grid.Column="1" Spacing="4" HorizontalAlignment="Stretch">
                     <StackPanel x:Name="RightReadout" Orientation="Horizontal" Spacing="6" HorizontalAlignment="Center">
@@ -164,8 +165,6 @@
                         <TextBlock x:Name="RightText" Text="—" FontSize="17" VerticalAlignment="Center" Foreground="{ThemeResource IslandForeground}" />
                     </StackPanel>
                     <TextBlock x:Name="RightLabel" FontSize="12" TextAlignment="Center" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource IslandSecondary}" />
-                    <TextBlock x:Name="RightFreshness" FontSize="11" TextAlignment="Center" TextWrapping="Wrap" Visibility="Collapsed"
-                               Foreground="{ThemeResource IslandSecondary}" AutomationProperties.AccessibilityView="Raw" />
                 </StackPanel>
                 <StackPanel x:Name="CaseCell" Grid.Column="2" Spacing="4" HorizontalAlignment="Stretch">
                     <StackPanel x:Name="CaseReadout" Orientation="Horizontal" Spacing="6" HorizontalAlignment="Center">
@@ -178,12 +177,25 @@
                         <TextBlock x:Name="CaseText" Text="—" FontSize="17" VerticalAlignment="Center" Foreground="{ThemeResource IslandForeground}" />
                     </StackPanel>
                     <TextBlock x:Name="CaseLabel" FontSize="12" TextAlignment="Center" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource IslandSecondary}" />
-                    <TextBlock x:Name="CaseFreshness" FontSize="11" TextAlignment="Center" TextWrapping="Wrap" Visibility="Collapsed"
-                               Foreground="{ThemeResource IslandSecondary}" AutomationProperties.AccessibilityView="Raw" />
                 </StackPanel>
             </Grid>
-            <TextBlock x:Name="FreshnessText" FontSize="12" TextTrimming="CharacterEllipsis" Visibility="Collapsed"
-                       Foreground="{ThemeResource IslandSecondary}" HorizontalAlignment="Center" />
+            <Grid x:Name="FreshnessRow" ColumnSpacing="12" IsHitTestVisible="False">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                <TextBlock Grid.ColumnSpan="3" Text="Ag" FontSize="11" Opacity="0"
+                           AutomationProperties.AccessibilityView="Raw" />
+                <TextBlock x:Name="FreshnessText" Grid.ColumnSpan="3" FontSize="11" MaxLines="1"
+                           TextTrimming="CharacterEllipsis" TextAlignment="Center"
+                           Foreground="{ThemeResource IslandSecondary}" />
+                <TextBlock x:Name="LeftFreshness" Grid.Column="0" FontSize="11" MaxLines="1"
+                           TextTrimming="CharacterEllipsis" TextAlignment="Center"
+                           Foreground="{ThemeResource IslandSecondary}" AutomationProperties.AccessibilityView="Raw" />
+                <TextBlock x:Name="RightFreshness" Grid.Column="1" FontSize="11" MaxLines="1"
+                           TextTrimming="CharacterEllipsis" TextAlignment="Center"
+                           Foreground="{ThemeResource IslandSecondary}" AutomationProperties.AccessibilityView="Raw" />
+                <TextBlock x:Name="CaseFreshness" Grid.Column="2" FontSize="11" MaxLines="1"
+                           TextTrimming="CharacterEllipsis" TextAlignment="Center"
+                           Foreground="{ThemeResource IslandSecondary}" AutomationProperties.AccessibilityView="Raw" />
+            </Grid>
         </StackPanel>
         </Grid>
     </Grid>

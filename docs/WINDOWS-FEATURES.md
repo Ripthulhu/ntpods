@@ -80,10 +80,29 @@ shortcut to work. The shortcut requires Ctrl or Alt with a key; Windows-key
 combinations and F12 are unavailable.
 
 Stopping the stream runs playback recovery. An idle delay or Keep active avoids
-repeating that interruption between nearby recordings. With the native playback
-driver and a working NTPods microphone route, the app hides the pair's hands-free
-endpoints to reduce duplicate device choices. It restores them when that route
-is no longer available or NTPods exits.
+repeating that interruption between nearby recordings. With native playback and
+a supported HQ microphone route, NTPods disables the pair's legacy hands-free
+service before exposing playback. This removes its duplicate endpoints and avoids
+Windows waiting to combine the two audio profiles. NTPods restores a service it
+disabled on Disconnect, pair/driver change, microphone failure or app exit.
+Case sleep retains this isolation without opening an audio connection.
+Other pairs keep hands-free audio.
+
+## Automatic return
+
+After an explicitly selected native playback route becomes ready, NTPods can
+resume that pair once after both buds report being put in the case through AAP,
+or through an identity-verified BLE report with the lid closed. A fresh
+identity-verified lid-open report, or an in-ear report on a new paired control
+connection, triggers the return. It uses the same connection and cleanup path as
+Connect. Repeated advertisements do not start more attempts.
+
+This remembered intent lasts up to 24 hours while NTPods stays open. Disconnect,
+pair changes, a newly observed other host and app exit clear it. Missing case
+reports and ordinary out-of-range losses do not authorize a return. Phone use
+outside PC observation cannot be detected, so this policy is not proof of the
+current audio owner. Case-close/open return and clean playback passed on
+Pro 3 / 9A348 with Intel AX200. Long absences and phone handoff remain untested.
 
 ## Nearby batteries
 
@@ -99,8 +118,9 @@ it also pauses while Windows audio or AAP is connected. **Nearby battery updates
 permits scanning during playback; coexistence has only a short AX200 check with
 other Bluetooth devices disconnected.
 
-Reports from cased buds update batteries without requesting an audio connection.
-Windows can still connect independently when the lid opens. After 90 seconds
+Battery readings alone do not request audio. The automatic-return policy above
+can resume a previous PC session on verified case wake. Windows can also connect
+independently when the lid opens. After 90 seconds
 without another BLE report, readings become dated and charging indicators
 disappear. The timeout is NTPods' policy. Firmware and radio delivery determine
 how long the case reports; charger insertion with a sleeping, closed case did not
@@ -154,8 +174,12 @@ With experimental controls enabled, **Hardware checks → Refresh** reads the
 checks saved by Pro 2 or Pro 3 while the microphone is idle. It shows each ear's
 completion or abort status and any reported component flags. Refresh does not
 start a test or change hearing settings. Saved flags are not a current fault
-diagnosis, and the displayed device time may differ from this PC. The app has
-no self-test button; see the [record format](WINDOWS-AIRPODS-CONTROL-PROTOCOL.md#diagnostic-and-dosimetry-records).
+diagnosis, and the displayed device time may differ from this PC. **Read device
+data** also exposes raw test-mode and dosimetry records. **Run an in-case check**
+is limited to Pro 3 / 9A348, requires confirmation with both buds inside the
+open case, and waits for new results after a lid cycle. Stop waiting ends host
+observation only. This app flow remains unverified on hardware; see the
+[record format](WINDOWS-AIRPODS-CONTROL-PROTOCOL.md#diagnostic-and-dosimetry-records).
 
 Find My and firmware updates are not implemented. SPL0 sensor messages have no
 verified measurement scale and no UI. See the

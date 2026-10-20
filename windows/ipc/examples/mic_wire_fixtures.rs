@@ -202,16 +202,41 @@ fn snapshots() -> Vec<Snapshot> {
         hardware_diagnostics: (phase != "unavailable").then_some(ntpods_ipc::HardwareDiagnostics {
             read_at_unix_seconds: 1_700_000_100,
             left: ntpods_ipc::HardwareDiagnosticEar {
-                measured_at_unix_seconds: u64::MAX, general: 1, measurement: 0,
+                measured_at_unix_seconds: u64::MAX, first_use_unix_seconds: Some(u32::MAX), general: 1, measurement: 0,
                 component_failures: Some(1), unknown_bits: 0x10000,
             },
             right: ntpods_ipc::HardwareDiagnosticEar {
-                measured_at_unix_seconds: 0, general: 0, measurement: 0,
+                measured_at_unix_seconds: 0, first_use_unix_seconds: None, general: 0, measurement: 0,
                 component_failures: None, unknown_bits: 0,
             },
         }),
         hardware_diagnostics_pending: phase == "starting",
         hardware_diagnostics_error: (phase == "error").then(|| "Read failed.".into()),
+        hearing_metadata: (phase != "unavailable").then_some(ntpods_ipc::HearingMetadata {
+            read_at_unix_seconds: u64::MAX,
+            test_mode_raw: (phase != "waiting_for_ear").then_some(0xfe),
+            dosimetry_sensitivity_raw: (phase != "waiting_for_ear").then_some(-3.5),
+            dosimetry_volume_curve_raw: (phase != "waiting_for_ear")
+                .then(|| std::array::from_fn(|index| index as f32 * 0.25 - 2.0)),
+        }),
+        hearing_metadata_pending: phase == "starting",
+        hearing_metadata_error: (phase == "error").then(|| "Metadata read failed.".into()),
+        hardware_check: match phase {
+            "starting" => Some(("waiting_case_close", false, false)),
+            "capturing" => Some(("waiting_result", true, false)),
+            "stopping" => Some(("cancelled", false, true)),
+            "recovering" => Some(("timed_out", false, false)),
+            "error" => Some(("error", true, false)),
+            "waiting_for_ear" => Some(("completed", true, true)),
+            _ => None,
+        }.map(|(check_phase, left_updated, right_updated)| ntpods_ipc::HardwareCheckState {
+            request_id: u64::MAX,
+            phase: check_phase.into(),
+            left_updated,
+            right_updated,
+            error: (check_phase == "error").then(|| "Check failed.".into()),
+        }),
+        earbuds_in_case: match phase { "idle" => Some(true), "capturing" => Some(false), _ => None },
         loud_sound_reduction: match phase {
             "idle" => Some(true),
             "starting" | "error" => Some(false),
@@ -367,6 +392,11 @@ fn main() {
                 "hardware_diagnostics",
                 "hardware_diagnostics_pending",
                 "hardware_diagnostics_error",
+                "hearing_metadata",
+                "hearing_metadata_pending",
+                "hearing_metadata_error",
+                "hardware_check",
+                "earbuds_in_case",
                 "auto_pause",
                 "conversation_volume",
                 "heart_rate_enabled",
@@ -404,6 +434,8 @@ fn main() {
             assert!(old.hearing_aid_enabled.is_none() && old.hearing_aid_revision == 0);
             assert!(!old.hearing_aid_editable);
             assert!(old.hardware_diagnostics.is_none() && !old.hardware_diagnostics_pending && old.hardware_diagnostics_error.is_none());
+            assert!(old.hearing_metadata.is_none() && !old.hearing_metadata_pending && old.hearing_metadata_error.is_none());
+            assert!(old.hardware_check.is_none() && old.earbuds_in_case.is_none());
             assert!(
                 old.transparency.is_none()
                     && !old.transparency_pending
@@ -454,8 +486,8 @@ fn main() {
             let lines: Vec<_> = text.lines().collect();
             assert_eq!(
                 lines.len(),
-                states.len() + 59,
-                "C# states, legacy state, fifty-six commands and two lid events expected"
+                states.len() + 81,
+                "C# states, legacy state, seventy-eight commands and two lid events expected"
             );
             for (line, expected) in lines.iter().zip(&states) {
                 let Event::State(actual) = from_line::<Event>(line).expect("C# event must parse")
@@ -493,6 +525,8 @@ fn main() {
             assert!(legacy.hearing_aid_enabled.is_none() && legacy.hearing_aid_revision == 0);
             assert!(!legacy.hearing_aid_editable);
             assert!(legacy.hardware_diagnostics.is_none() && !legacy.hardware_diagnostics_pending && legacy.hardware_diagnostics_error.is_none());
+            assert!(legacy.hearing_metadata.is_none() && !legacy.hearing_metadata_pending && legacy.hearing_metadata_error.is_none());
+            assert!(legacy.hardware_check.is_none() && legacy.earbuds_in_case.is_none());
             assert!(
                 legacy.transparency.is_none()
                     && !legacy.transparency_pending
@@ -521,18 +555,19 @@ fn main() {
                     && legacy.battery_source.is_empty()
             );
             assert!(matches!(
-                from_line::<Event>(lines[lines.len() - 2]),
+                from_line::<Event>(lines[lines.len() - 5]),
                 Some(Event::PairingNearby {
                     model: 0x2720,
                     lid_open: true
                 })
             ));
             assert!(matches!(
-                from_line::<Event>(lines.last().unwrap()),
+                from_line::<Event>(lines[lines.len() - 4]),
                 Some(Event::PairedLid { device_id, lid_open: false, sequence: 2 })
                     if device_id == "001122334455"
             ));
-            let commands = &lines[states.len() + 1..lines.len() - 2];
+            // New command fixtures follow the existing lid events to preserve command indices.
+            let commands = &lines[states.len() + 1..lines.len() - 5];
             for (line, expected_auto) in commands[..2].iter().zip([false, true]) {
                 let Command::SetMicMode { auto, manual } = from_line::<Command>(line).unwrap()
                 else {
@@ -548,7 +583,8 @@ fn main() {
                 from_line::<Command>(commands[2]),
                 Some(Command::SetDeviceControl {
                     id: 0x24,
-                    value: 0x0200
+                    value: 0x0200,
+                    device_id: None
                 })
             ));
             assert!(matches!(
@@ -718,7 +754,27 @@ fn main() {
                 Some(Command::StartNearbyFinder { device_id }) if device_id == "001122334455"));
             assert!(matches!(from_line::<Command>(commands[54]),
                 Some(Command::StopNearbyFinder { device_id }) if device_id == "001122334455"));
-            assert!(matches!(from_line::<Command>(commands.last().unwrap()), Some(Command::GetHardwareDiagnostics)));
+            assert!(matches!(
+                from_line::<Command>(commands[55]),
+                Some(Command::GetHardwareDiagnostics)
+            ));
+            assert!(matches!(
+                from_line::<Command>(commands[56]),
+                Some(Command::SetAnc {
+                    mode: 3,
+                    device_id: None
+                })
+            ));
+            assert!(matches!(from_line::<Command>(commands[57]),
+                Some(Command::SetAnc { mode: 3, device_id: Some(id) }) if id == "001122334455"));
+            assert!(matches!(from_line::<Command>(commands[58]),
+                Some(Command::SetDeviceControl { id: 0x2E, value: 50, device_id: Some(id) }) if id == "001122334455"));
+            for invalid_target in &commands[59..] {
+                assert!(
+                    from_line::<Command>(invalid_target).is_none(),
+                    "{invalid_target}"
+                );
+            }
             assert_eq!(
                 modes,
                 [
@@ -733,6 +789,25 @@ fn main() {
                 r#"{"cmd":"pairing_completed","address":42}"#,
             ] {
                 assert!(from_line::<Command>(malformed).is_none());
+            }
+            assert!(matches!(from_line::<Command>(lines[lines.len() - 3]),
+                Some(Command::GetHearingMetadata { device_id }) if device_id == "001122334455"));
+            assert!(matches!(from_line::<Command>(lines[lines.len() - 2]),
+                Some(Command::StartHardwareCheck { request_id: u64::MAX, device_id, buds_in_case_confirmed: true })
+                if device_id == "001122334455"));
+            assert!(matches!(from_line::<Command>(lines[lines.len() - 1]),
+                Some(Command::CancelHardwareCheck { request_id: u64::MAX, device_id })
+                if device_id == "001122334455"));
+            for malformed in [
+                r#"{"cmd":"get_hearing_metadata"}"#,
+                r#"{"cmd":"get_hearing_metadata","device_id":null}"#,
+                r#"{"cmd":"start_hardware_check","request_id":1,"device_id":"001122334455"}"#,
+                r#"{"cmd":"start_hardware_check","request_id":1,"device_id":"001122334455","buds_in_case_confirmed":1}"#,
+                r#"{"cmd":"start_hardware_check","request_id":-1,"device_id":"001122334455","buds_in_case_confirmed":true}"#,
+                r#"{"cmd":"cancel_hardware_check","request_id":1}"#,
+                r#"{"cmd":"cancel_hardware_check","request_id":"1","device_id":"001122334455"}"#,
+            ] {
+                assert!(from_line::<Command>(malformed).is_none(), "{malformed}");
             }
             println!("Rust: C# state, microphone and device-setting command roundtrips passed");
         }

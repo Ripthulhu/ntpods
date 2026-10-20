@@ -1,3 +1,8 @@
+Third-Party Modified Version of the Fraunhofer FDK AAC Codec Library for Android
+NTPods, 2026-10-20: enabled existing 32-bit PCM paths and added a PCM-width ABI check.
+The complete modified source is included in FDK-AAC-source.zip.
+
+Original license:
 Software License for The Fraunhofer FDK AAC Codec Library for Android
 
 © Copyright  1995 - 2018 Fraunhofer-Gesellschaft zur Förderung der angewandten

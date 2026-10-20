@@ -86,10 +86,27 @@ internal static class PairingChecks
               PairingInstructions.InitialGesture("ConnectPrompt_Nearby", "Pairing.Pairing") is null &&
               PairingInstructions.InitialGesture("Pairing.Nearby", "Pairing.Pairing") is null,
             "Preparation appears only on an initial pairing card, never on reconnect or generic progress.");
+        check(PairingInstructions.HeadingKey(false, "Pairing.DoubleTapCase", "Pairing.DoubleTapCase") is null &&
+              PairingInstructions.HeadingKey(false, "Pairing.Failed", "Pairing.DoubleTapCase") is null,
+            "Nearby and retry cards keep the advertised device name as their heading.");
+        foreach (var (instructions, title) in new[]
+        {
+            ("Pairing.DoubleTapCase", "Pairing.DoubleTapTitle"),
+            ("Pairing.HoldSetupButton", "Pairing.HoldSetupTitle"),
+            ("Pairing.HoldNoiseControl", "Pairing.HoldNoiseTitle"),
+            ("Pairing.PrepareCase", "Pairing.PrepareTitle"),
+        })
+            check(PairingInstructions.HeadingKey(true, instructions, null) == title &&
+                  PairingInstructions.HeadingKey(true, "Pairing.MultipleFound", instructions) == title,
+                "Waiting for discovery keeps the model's setup heading through status updates.");
+        check(PairingInstructions.HeadingKey(true, "Pairing.Pairing", "Pairing.DoubleTapCase") == "Pairing.ConnectingTitle" &&
+              PairingInstructions.HeadingKey(true, "Pairing.Searching", null) is null,
+            "Only an actual pairing status gets Connecting; unknown discovery cannot guess a setup gesture.");
         CheckRetries(check).GetAwaiter().GetResult();
         CheckAutomaticSelection(check);
         CheckCandidateChanges(check);
         CheckPairedBattery(check);
+        CheckAttemptBattery(check);
         check(!PairingBatteryLayout.Split(0, 0, false, false) &&
               PairingBatteryLayout.Split(0, 0, true, false) &&
               PairingBatteryLayout.Split(null, 92, false, false) &&
@@ -324,7 +341,7 @@ internal static class PairingChecks
         var levels = PairingBatteryState.Read(snapshot, "01:23:45:67:89:ab", 2000, 5000);
         check(levels is { Left: 0, Right: null, Case: 77, LeftCharging: true, RightCharging: false,
                 CaseCharging: true, NextExpiryMs: 92100 },
-            "A real zero stays visible; pre-bond readings remain unknown and valid parts expire separately.");
+            "A real zero stays visible; readings at or before the attempt remain unknown and valid parts expire separately.");
         snapshot.BatteryFreshness.Left.TimestampMs = 1000;
         snapshot.BatteryFreshness.Case.Live = false;
         levels = PairingBatteryState.Read(snapshot, "0123456789ab", 2000, 5000);
@@ -348,10 +365,48 @@ internal static class PairingChecks
         snapshot.BatteryFreshness.Headphone.TimestampMs = 2000;
         levels = PairingBatteryState.Read(snapshot, "0123456789ab", 2000, 5000);
         check(levels is { Headphone: null, HeadphoneCharging: false },
-            "An AirPods Max reading from before the bond must remain unavailable.");
+            "An AirPods Max reading at the attempt boundary must remain unavailable.");
         snapshot.BatteryFreshness.Headphone.TimestampMs = 2300;
         levels = PairingBatteryState.Read(snapshot, "0123456789ab", 2000, 92300);
         check(levels is { Headphone: null, HeadphoneCharging: false },
             "An AirPods Max reading must expire after 90 seconds without hiding the card.");
+    }
+
+    private static void CheckAttemptBattery(Action<bool, string> check)
+    {
+        const ulong attemptStartedAtMs = 1000;
+        const ulong bondCompletedAtMs = 5000;
+        var snapshot = new Snapshot
+        {
+            DeviceId = "0123456789ab", BatterySource = "ble", BatteryLive = true,
+            Battery = new Battery { Left = 73, LeftCharging = true, Right = 74, Case = 75 },
+            BatteryFreshness = new BatteryFreshness
+            {
+                Left = new BatteryObservation { TimestampMs = 2000, Live = true, Present = true },
+                Right = new BatteryObservation { TimestampMs = attemptStartedAtMs, Live = true, Present = true },
+                Case = new BatteryObservation { TimestampMs = attemptStartedAtMs - 1, Live = true, Present = true },
+            },
+        };
+        var levels = PairingBatteryState.Read(snapshot, "01:23:45:67:89:ab", attemptStartedAtMs, bondCompletedAtMs);
+        check(levels is { Left: 73, LeftCharging: true, Right: null, Case: null, NextExpiryMs: 92000 },
+            "A verified same-pair reading during the attempt is eligible when bonding finishes; equal and older observations are not.");
+        check(PairingBatteryState.Read(snapshot, "01:23:45:67:89:ac", attemptStartedAtMs, bondCompletedAtMs) is null,
+            "An observation during pairing cannot supply another pair's completed card.");
+        levels = PairingBatteryState.Read(snapshot, "0123456789ab", 3000, bondCompletedAtMs);
+        check(levels is { Left: null, Right: null, Case: null },
+            "A retry's new attempt floor rejects readings from the earlier attempt.");
+        check(PairingBatteryState.Read(snapshot, "0123456789ab", attemptStartedAtMs, 92000) is { Left: null, LeftCharging: false },
+            "A reading accepted during pairing still expires at its original 90-second boundary.");
+        snapshot.BatteryFreshness.Left.TimestampMs = bondCompletedAtMs + 1;
+        check(PairingBatteryState.Read(snapshot, "0123456789ab", attemptStartedAtMs, bondCompletedAtMs) is { Left: null },
+            "A future-dated reading cannot enter the completed card.");
+        snapshot.BatteryFreshness.Left.TimestampMs = 2000;
+        snapshot.BatteryFreshness.Left.Present = false;
+        check(PairingBatteryState.Read(snapshot, "0123456789ab", attemptStartedAtMs, bondCompletedAtMs) is { Left: null, LeftCharging: false },
+            "An explicitly absent component does not gain pairing-card freshness from the earlier attempt floor.");
+        snapshot.BatteryFreshness.Left.Present = true;
+        snapshot.BatterySource = "unknown";
+        check(PairingBatteryState.Read(snapshot, "0123456789ab", attemptStartedAtMs, bondCompletedAtMs) is { Left: null, LeftCharging: false },
+            "Public or unrecognized battery sources cannot supply completed-card readings.");
     }
 }

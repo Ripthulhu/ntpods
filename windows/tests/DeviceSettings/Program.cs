@@ -21,6 +21,7 @@ TransparencyChecks.Run(Check);
 HearingAidChecks.Run(Check);
 HardwareDiagnosticsChecks.Run(Check);
 IslandTakeoverChecks.Run(Check);
+IslandBatteryChecks.Run(Check);
 NearbyFinderChecks.Run(Check);
 DultCaseChecks.Run(Check);
 CaseInformationChecks.Run(Check);
@@ -104,6 +105,20 @@ Check(!DeviceSettingStatus.CanChoose(unreported, 0x1F), "Unreported tone volume 
 Check(DeviceSettingStatus.ToggleValue(0x0A, true) == 2 && DeviceSettingStatus.ToggleValue(0x0A, false) == 1 &&
     DeviceSettingStatus.ToggleValue(0x31, true) == 1 && DeviceSettingStatus.ToggleValue(0x31, false) == 2,
     "Ear detection uses its own enabled/disabled values; other toggles keep the usual mapping.");
+var earDetection = new Snapshot { AutoPause = true, DeviceControls = new() { [0x0A] = 1 } };
+earDetection.DeviceControlsRequested[0x0A] = 2;
+Check(DeviceSettingStatus.DisplayValue(earDetection, 0x0A) == 1,
+    "Confirmed ear detection stays off despite host auto-pause or an older enabled choice.");
+earDetection.DeviceControlsPending[0x0A] = 2;
+Check(DeviceSettingStatus.DisplayValue(earDetection, 0x0A) == 2 && earDetection.DeviceControls[0x0A] == 1,
+    "A pending ear detection choice previews enabled without replacing the report.");
+earDetection.DeviceControlsPending.Clear();
+earDetection.DeviceControls.Clear();
+Check(DeviceSettingStatus.DisplayValue(earDetection, 0x0A) == 2,
+    "An unreported ear detection choice remains visible separately from confirmation.");
+earDetection.DeviceControlsRequested.Clear();
+Check(DeviceSettingStatus.DisplayValue(earDetection, 0x0A) is null,
+    "Host auto-pause must not invent an ear detection setting.");
 unreported.DeviceControlsRequested[0x31] = 1;
 Check(!DeviceSettingStatus.Available(unreported, 0x31) && DeviceSettingStatus.DisplayValue(unreported, 0x31) == 1 &&
     DeviceSettingStatus.Text(unreported, 0x31) == Localize.Get("DeviceSetting.Sent"),

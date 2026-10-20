@@ -280,13 +280,13 @@ fn require_reply(actual: u32, minimum: u32) -> io::Result<()> {
 
 #[cfg(feature = "experimental-playback")]
 fn playback_error(error: io::Error) -> io::Error {
-    use windows_sys::Win32::Foundation::ERROR_DEVICE_NOT_CONNECTED;
+    use windows_sys::Win32::Foundation::{ERROR_CONNECTION_ABORTED, ERROR_DEVICE_NOT_CONNECTED};
 
-    // Rust does not classify the profile driver's disconnected-channel status.
-    if error.raw_os_error() == Some(ERROR_DEVICE_NOT_CONNECTED as i32) {
-        io::Error::new(io::ErrorKind::NotConnected, error)
-    } else {
-        error
+    // Rust leaves these driver statuses unclassified; ownership loss must not retry.
+    match error.raw_os_error().map(|code| code as u32) {
+        Some(ERROR_DEVICE_NOT_CONNECTED) => io::Error::new(io::ErrorKind::NotConnected, error),
+        Some(ERROR_CONNECTION_ABORTED) => io::Error::new(io::ErrorKind::ConnectionAborted, error),
+        _ => error,
     }
 }
 
@@ -298,7 +298,7 @@ impl Driver {
         input: &[u8],
         output: &mut [u8],
     ) -> io::Result<usize> {
-        if !(0x810..=0x814).contains(&function) {
+        if !(0x810..=0x815).contains(&function) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Invalid playback operation",
@@ -310,6 +310,7 @@ impl Driver {
             0x813 if input.len() == 12 => {
                 u32::from_le_bytes(input[8..12].try_into().unwrap()).min(10_000) + 1_000
             }
+            0x815 if input.len() == 20 && input[4..8] != [0; 4] => 20_000,
             _ => 2_000,
         };
         Ok(ioctl_with_timeout(
@@ -584,22 +585,29 @@ mod tests {
     #[cfg(feature = "experimental-playback")]
     #[test]
     fn playback_disconnect_is_classified_without_losing_the_windows_error() {
-        use windows_sys::Win32::Foundation::ERROR_DEVICE_NOT_CONNECTED;
+        use windows_sys::Win32::Foundation::{
+            ERROR_CONNECTION_ABORTED, ERROR_DEVICE_NOT_CONNECTED,
+        };
 
-        let original = io::Error::from_raw_os_error(ERROR_DEVICE_NOT_CONNECTED as i32);
-        let message = original.to_string();
-        let error = playback_error(original);
-        assert_eq!(error.kind(), io::ErrorKind::NotConnected);
-        assert_eq!(error.to_string(), message);
-        assert_eq!(
-            error
-                .get_ref()
-                .unwrap()
-                .downcast_ref::<io::Error>()
-                .unwrap()
-                .raw_os_error(),
-            Some(ERROR_DEVICE_NOT_CONNECTED as i32)
-        );
+        for (code, expected) in [
+            (ERROR_DEVICE_NOT_CONNECTED, io::ErrorKind::NotConnected),
+            (ERROR_CONNECTION_ABORTED, io::ErrorKind::ConnectionAborted),
+        ] {
+            let original = io::Error::from_raw_os_error(code as i32);
+            let message = original.to_string();
+            let error = playback_error(original);
+            assert_eq!(error.kind(), expected);
+            assert_eq!(error.to_string(), message);
+            assert_eq!(
+                error
+                    .get_ref()
+                    .unwrap()
+                    .downcast_ref::<io::Error>()
+                    .unwrap()
+                    .raw_os_error(),
+                Some(code as i32)
+            );
+        }
     }
 
     #[cfg(feature = "experimental-playback")]

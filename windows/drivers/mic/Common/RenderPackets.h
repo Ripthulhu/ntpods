@@ -16,11 +16,13 @@ static inline void RenderResetPackets(RenderPackets* packets)
 }
 
 static inline RenderSubmitResult RenderSubmit(RenderPackets* packets, unsigned current,
-    bool running, unsigned packet, unsigned flags, unsigned eosLength, unsigned packetSize)
+    bool running, unsigned packet, unsigned flags, unsigned eosLength, unsigned packetSize,
+    unsigned sourceFrameBytes = 4)
 {
     if (packets->EndOfStream) return RenderSubmitResult::Ended;
-    if (!packetSize || packetSize > RENDER_PACKET_MAX_BYTES || packetSize % 4 ||
-        (flags & ~0x200u) || ((flags & 0x200u) && (eosLength > packetSize || eosLength % 4))) {
+    if ((sourceFrameBytes != 4 && sourceFrameBytes != 8) || !packetSize ||
+        packetSize % sourceFrameBytes || packetSize / sourceFrameBytes > RENDER_PACKET_MAX_BYTES / RENDER_FRAME_BYTES ||
+        (flags & ~0x200u) || ((flags & 0x200u) && (eosLength > packetSize || eosLength % sourceFrameBytes))) {
         return RenderSubmitResult::Invalid;
     }
     const int delta = (int)(packet - current);
@@ -35,11 +37,13 @@ static inline RenderSubmitResult RenderSubmit(RenderPackets* packets, unsigned c
 }
 
 // Consume the matching generation only; a missed packet must not replay old audio.
-static inline unsigned RenderPacketLength(RenderPackets* packets, unsigned current, unsigned packetSize)
+static inline unsigned RenderPacketLength(RenderPackets* packets, unsigned current, unsigned packetSize,
+    unsigned sourceFrameBytes = 4)
 {
+    if (sourceFrameBytes != 4 && sourceFrameBytes != 8) return 0;
     const unsigned index = current % 2;
     if (!packets->Ready[index] || packets->Number[index] != current) return 0;
     packets->Ready[index] = false;
     const unsigned length = packets->Length[index];
-    return length <= packetSize && length % RENDER_FRAME_BYTES == 0 ? length : 0;
+    return length <= packetSize && length % sourceFrameBytes == 0 ? length : 0;
 }

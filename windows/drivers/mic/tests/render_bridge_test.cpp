@@ -2,6 +2,7 @@
 #include "../Common/RenderProvider.h"
 #include "../Common/MicTiming.h"
 #include "../Common/RenderClock.h"
+#include "../Common/RenderVolume.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -11,6 +12,99 @@
 #include <random>
 #include <vector>
 
+static uint32_t float_oracle(unsigned sample)
+{
+    const int value = sample < 0x8000u ? (int)sample : (int)sample - 0x10000;
+    const float converted = (float)value / 32768.0f;
+    uint32_t bits;
+    memcpy(&bits, &converted, sizeof(bits));
+    return bits;
+}
+
+static void conversion_checks()
+{
+    assert(RENDER_FRAME_BYTES == 8 && RENDER_READ_MAX_BYTES == 480 * 8);
+    assert(RENDER_RING_BYTES == 4800 * 8 && RENDER_PACKET_MAX_BYTES == 2400 * 8);
+    for (unsigned sample = 0; sample <= 0xffffu; ++sample)
+        assert(RenderS16FloatBits((uint16_t)sample) == float_oracle(sample));
+    assert(RenderS16FloatBits(0) == 0);
+    assert(RenderS16FloatBits(1) == 0x38000000u);
+    assert(RenderS16FloatBits(0xffff) == 0xb8000000u);
+    assert(RenderS16FloatBits(0x7fff) == 0x3f7ffe00u);
+    assert(RenderS16FloatBits(0x8000) == 0xbf800000u);
+
+    RenderRing ring = {};
+    // An unaligned source and a wrapped destination must preserve channel order.
+    const unsigned char input[] = {0xff, 0x01, 0x00, 0xff, 0xff, 0xff, 0x7f, 0x00, 0x80};
+    ring.Head = ring.Tail = RENDER_RING_BYTES - 8;
+    assert(RenderRingWrite(&ring, input + 1, 8, 4));
+    uint32_t output[4] = {};
+    assert(RenderRingTake(&ring, output, sizeof(output)) == sizeof(output));
+    const uint32_t expected[] = {0x38000000u, 0xb8000000u, 0x3f7ffe00u, 0xbf800000u};
+    assert(std::equal(std::begin(output), std::end(output), std::begin(expected)));
+
+    // FLOAT32 samples below the S16 floor, subnormals and negative zero are bytes.
+    const uint32_t quiet[] = {0x00000001u, 0x80000000u, 0x30000000u, 0xb0000000u};
+    assert(RenderRingWrite(&ring, quiet, sizeof(quiet), 8));
+    assert(RenderRingTake(&ring, output, sizeof(output)) == sizeof(output));
+    assert(memcmp(output, quiet, sizeof(output)) == 0);
+    assert(RenderRingWrite(&ring, input + 1, 8, 4));
+    assert(RenderRingWrite(&ring, quiet, sizeof(quiet), 8));
+    assert(ring.Count == 32);
+    assert(RenderRingTake(&ring, output, sizeof(output)) == sizeof(output));
+    assert(memcmp(output, expected, sizeof(output)) == 0);
+    assert(RenderRingTake(&ring, output, sizeof(output)) == sizeof(output));
+    assert(memcmp(output, quiet, sizeof(output)) == 0);
+    for (unsigned frameBytes : {0u, 2u, 16u})
+        assert(!RenderRingWrite(&ring, input, 8, frameBytes));
+    assert(!RenderRingWrite(&ring, input, 6, 4));
+    assert(!RenderRingWrite(&ring, input, 12, 8));
+    assert(ring.Count == 0);
+
+    std::vector<uint16_t> maximum(RENDER_PACKET_MAX_BYTES / 4, 1);
+    assert(RenderRingWrite(&ring, maximum.data(), (unsigned)maximum.size() * 2, 4));
+    assert(RenderRingWrite(&ring, maximum.data(), (unsigned)maximum.size() * 2, 4));
+    assert(ring.Count == RENDER_RING_BYTES);
+    assert(!RenderRingWrite(&ring, maximum.data(), (unsigned)maximum.size() * 2 + 4, 4));
+    assert(RenderRingWrite(&ring, input + 1, 4, 4));
+    assert(ring.DroppedFrames == 1 && ring.Count == RENDER_RING_BYTES);
+}
+
+static void gated_packet_checks()
+{
+    for (unsigned frameBytes : {4u, 8u}) {
+        for (unsigned scenario = 0; scenario < 6; ++scenario) {
+            const uint16_t s16[] = {1, 0xffff, 0x7fff, 0x8000};
+            const uint32_t f32[] = {0x00000001u, 0x80000000u, 0x30000000u, 0xb0000000u};
+            unsigned char packet[16] = {};
+            const unsigned length = 2 * frameBytes;
+            memcpy(packet, frameBytes == 4 ? (const void*)s16 : (const void*)f32, length);
+            RenderPackets submitted = {};
+            if (scenario != 4)
+                assert(RenderSubmit(&submitted, 0, false, 0, 0, 0, length, frameBytes) == RenderSubmitResult::Accepted);
+            RenderVolumeState volume;
+            RenderAssignVolume(&volume, -6 * 65536, true);
+            volume.Subscribed = true;
+            if (scenario == 0) volume.Initialized = false;
+            if (scenario == 1) volume.Subscribed = false;
+            if (scenario == 3) RenderAssignMute(&volume, true);
+            if (scenario == 5) RenderVolumeDisconnect(&volume);
+            const unsigned available = RenderPacketLength(&submitted, 0, length, frameBytes);
+            const unsigned valid = RenderVolumeSilent(&volume) ? 0 : available;
+            memset(packet + valid, 0, length - valid);
+            RenderRing ring = {};
+            assert(RenderRingWrite(&ring, packet, length, frameBytes));
+            uint32_t output[4] = {};
+            assert(RenderRingTake(&ring, output, sizeof(output)) == sizeof(output));
+            for (unsigned channel = 0; channel < 4; ++channel) {
+                const uint32_t expected = scenario != 2 ? 0 : frameBytes == 4
+                    ? float_oracle(s16[channel]) : f32[channel];
+                assert(output[channel] == expected);
+            }
+        }
+    }
+}
+
 static void ring_checks()
 {
     struct Guarded {
@@ -19,7 +113,7 @@ static void ring_checks()
         uint64_t after = 0x8877665544332211ull;
     } guarded;
     auto& ring = guarded.ring;
-    std::deque<uint32_t> expected;
+    std::deque<uint64_t> expected;
     std::mt19937 random(382);
     unsigned sample = 0, dropped = 0;
     for (unsigned step = 0; step < 20000; ++step) {
@@ -28,14 +122,14 @@ static void ring_checks()
             expected.clear();
             assert(std::all_of(ring.Data, ring.Data + sizeof(ring.Data), [](auto x) { return x == 0; }));
         } else if (random() % 3 != 0) {
-            std::vector<uint32_t> data(1 + random() % (RENDER_PACKET_MAX_BYTES / 4));
+            std::vector<uint64_t> data(1 + random() % (RENDER_PACKET_MAX_BYTES / 8));
             for (auto& frame : data) frame = ++sample;
-            assert(RenderRingWrite(&ring, data.data(), (unsigned)data.size() * 4));
+            assert(RenderRingWrite(&ring, data.data(), (unsigned)data.size() * 8));
             expected.insert(expected.end(), data.begin(), data.end());
-            while (expected.size() > RENDER_RING_BYTES / 4) { expected.pop_front(); ++dropped; }
+            while (expected.size() > RENDER_RING_BYTES / 8) { expected.pop_front(); ++dropped; }
         } else {
-            std::vector<uint32_t> output(1 + random() % (RENDER_READ_MAX_BYTES / 4), 0xfefefefe);
-            const unsigned count = RenderRingTake(&ring, output.data(), output.size() * 4) / 4;
+            std::vector<uint64_t> output(1 + random() % (RENDER_READ_MAX_BYTES / 8), 0xfefefefe);
+            const unsigned count = RenderRingTake(&ring, output.data(), output.size() * 8) / 8;
             assert(count == (std::min)(expected.size(), output.size()));
             for (unsigned index = 0; index < count; ++index) {
                 assert(output[index] == expected.front());
@@ -43,15 +137,15 @@ static void ring_checks()
             }
             for (size_t index = count; index < output.size(); ++index) assert(output[index] == 0xfefefefe);
         }
-        assert(ring.Count == expected.size() * 4);
+        assert(ring.Count == expected.size() * 8);
         assert(ring.DroppedFrames == dropped);
         assert(guarded.before == 0x1122334455667788ull && guarded.after == 0x8877665544332211ull);
     }
     for (size_t length = 0; length <= RENDER_READ_MAX_BYTES + 8; ++length) {
-        assert(RenderReadLengthValid(length) == (length != 0 && length <= RENDER_READ_MAX_BYTES && length % 4 == 0));
+        assert(RenderReadLengthValid(length) == (length != 0 && length <= RENDER_READ_MAX_BYTES && length % 8 == 0));
     }
     assert(!RenderReadLengthValid(std::numeric_limits<size_t>::max()));
-    uint32_t output;
+    uint64_t output;
     assert(!RenderRingWrite(&ring, &output, 2));
     assert(!RenderRingWrite(&ring, &output, RENDER_PACKET_MAX_BYTES + 4));
     assert(RenderRingTake(&ring, &output, 3) == 0);
@@ -89,12 +183,26 @@ static void packet_checks()
     assert(RenderPacketLength(&packets, 0, 1920) == 0);
     assert(RenderSubmit(&packets, 0, false, 0, 0, 0, 1920) == Result::Accepted);
     assert(RenderPacketLength(&packets, 0, 1920) == 1920);
+    RenderResetPackets(&packets);
+    assert(RenderSubmit(&packets, 0, false, 0, 0x200, 4, 1920, 4) == Result::Accepted);
+    assert(RenderPacketLength(&packets, 0, 1920, 4) == 4);
+    RenderResetPackets(&packets);
+    assert(RenderSubmit(&packets, 0, false, 0, 0x200, 4, 3840, 8) == Result::Invalid);
+    assert(RenderSubmit(&packets, 0, false, 0, 0x200, 8, 3840, 8) == Result::Accepted);
+    assert(RenderPacketLength(&packets, 0, 3840, 8) == 8);
+    RenderResetPackets(&packets);
+    assert(RenderSubmit(&packets, 0, false, 0, 0, 0, 9604, 4) == Result::Invalid);
+    assert(RenderSubmit(&packets, 0, false, 0, 0, 0, 19200, 8) == Result::Accepted);
+    RenderResetPackets(&packets);
+    assert(RenderSubmit(&packets, 0, false, 0, 0, 0, 19208, 8) == Result::Invalid);
+    assert(RenderSubmit(&packets, 0, false, 0, 0, 0, 3840, 0) == Result::Invalid);
+    assert(RenderPacketLength(&packets, 0, 3840, 0) == 0);
 }
 
 static void pause_restart_generation_checks()
 {
     RenderRing ring = {};
-    uint32_t oldPacket[480], newPacket[480], output[480];
+    uint64_t oldPacket[480], newPacket[480], output[480];
     std::fill(std::begin(oldPacket), std::end(oldPacket), 0x11112222u);
     std::fill(std::begin(newPacket), std::end(newPacket), 0x33334444u);
     assert(RenderRingWrite(&ring, oldPacket, sizeof(oldPacket)));
@@ -120,10 +228,10 @@ static void pause_restart_generation_checks()
 
 static void stereo_clock_checks()
 {
-    const unsigned bytesPerSecond = 48000 * 4;
-    const unsigned packetBytes = 480 * 4;
+    const unsigned bytesPerSecond = 48000 * 8;
+    const unsigned packetBytes = 480 * 8;
     RenderRing ring = {};
-    uint32_t packet[480], output[480];
+    uint64_t packet[480], output[480];
     unsigned totalFrames = 0;
     for (unsigned tick = 0; tick < 6000; ++tick) {
         for (unsigned i = 0; i < 480; ++i) packet[i] = tick * 480 + i;
@@ -132,18 +240,18 @@ static void stereo_clock_checks()
         assert(std::equal(std::begin(packet), std::end(packet), std::begin(output)));
         totalFrames += 480;
         const auto elapsed = MicBytesToHns((uint64_t)(tick + 1) * packetBytes, bytesPerSecond);
-        assert(MicPositionBytes(0, elapsed, 0, bytesPerSecond) / 4 == totalFrames);
+        assert(MicPositionBytes(0, elapsed, 0, bytesPerSecond) / 8 == totalFrames);
     }
     assert(totalFrames == 60 * 48000 && ring.Count == 0 && ring.DroppedFrames == 0);
     assert(MicBytesToHns(packetBytes, bytesPerSecond) == 100000);
-    assert(MicPositionBytes(19200, 200000, 100000, bytesPerSecond) == 21120);
+    assert(MicPositionBytes(38400, 200000, 100000, bytesPerSecond) == 42240);
 }
 
 static void provider_checks()
 {
     RenderProvider first = {}, second = {};
-    const uint32_t sample = 0x1234abcd;
-    uint32_t output = 0;
+    const uint64_t sample = 0x1234abcd;
+    uint64_t output = 0;
     RenderProviderOnline(&first, true);
     RenderProviderOnline(&second, true);
     first.Streams = second.Streams = 1;
@@ -290,7 +398,7 @@ static void clock_expiry_and_delay_checks()
     RenderClockCommit(&clock, epoch + 1000000, 480);
     assert(clock.Phase == RenderClockActive && clock.ActualFrames == 480 && clock.NominalFrames == 4800);
     const auto virtualNow = RenderClockNow(&clock, epoch + 1000000);
-    uint64_t glitch = 17;
+    unsigned long long glitch = 17;
     assert(RenderClockTimerDelay(&clock, epoch + 1000000, virtualNow - 300, &glitch) == -1);
     assert(glitch == 317);
     assert(RenderClockTimerDelay(&clock, epoch + 1000000, virtualNow + 100000, &glitch) < 0);
@@ -327,7 +435,7 @@ static void shared_clock_queue_checks()
     for (unsigned interval : {9u, 11u}) {
         RenderClock clock = {};
         RenderRing ring = {};
-        uint32_t packet[480] = {}, output[480] = {};
+        uint64_t packet[480] = {}, output[480] = {};
         RenderClockReset(&clock, 0);
         uint64_t producerDue = 100000, consumerDue = 500000;
         unsigned produced = 0, consumed = 0;
@@ -355,6 +463,8 @@ static void shared_clock_queue_checks()
 
 int main()
 {
+    conversion_checks();
+    gated_packet_checks();
     ring_checks();
     packet_checks();
     pause_restart_generation_checks();

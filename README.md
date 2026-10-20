@@ -98,10 +98,11 @@ connected during uninstall to restore their saved driver, or Windows playback
 when no prior binding was saved; see the
 [playback test guide](windows/playback/TESTING.md).
 
-With NTPods playback ready and **Use NTPods microphone** enabled, the matching
-Windows hands-free microphone and speaker are hidden from audio device lists.
-They return when the microphone feature is turned off or NTPods exits. Models
-without high-quality microphone support keep their hands-free devices.
+With native playback and a supported high-quality microphone, NTPods disables
+the pair's legacy hands-free profile to avoid Windows' audio startup delay.
+It stays disabled through case sleep and while the NTPods microphone switch is
+off. Disconnecting in NTPods or quitting restores changes made by the app.
+Models without high-quality microphone support keep their hands-free devices.
 Restart Discord if its device list still shows an old entry.
 
 ## Contributing

@@ -54,6 +54,8 @@ function Get-NTPodsSetupHelper($process) {
     if ($process.Path -ne $path) { return $null }
     $executable = [regex]::Escape($path)
     if ($info.CommandLine -cmatch ('^(?i:"' + $executable + '"|' + $executable + ')\s+--handsfree-guard\s*$')) { return 'handsfree' }
+    if ($info.CommandLine -cmatch ('^(?i:"' + $executable + '"|' + $executable + ')\s+--hfp-profile-guard\s+(?<target>[0-9]{1,15})\s*$') -and
+        [uint64]$Matches.target -le 281474976710655) { return 'handsfree' }
     if ($info.CommandLine -cmatch ('^(?i:"' + $executable + '"|' + $executable + ')\s+--run-helper\s+(?:rename-mic|fix-driver)\s*$')) { return 'task' }
     return $null
 }
@@ -85,9 +87,11 @@ function Assert-NTPodsHandsfreeRestored {
     }
     if ($localAppData -notmatch '^[A-Za-z]:\\' -or $localAppData -match '[\x00-\x1f<>"|?*%]' -or $localAppData.Substring(2).Contains(':') -or
         [IO.Path]::GetFullPath($localAppData).TrimEnd('\') -ine $localAppData.TrimEnd('\')) { throw $unresolved }
-    $journal = Join-Path $localAppData 'NTPods\handsfree-restore.json'
-    if (Test-Path -LiteralPath $journal -ErrorAction Stop) {
-        throw 'Start NTPods to restore its hands-free devices, then retry setup.'
+    foreach ($name in 'handsfree-restore.json', 'hfp-profile-restore.json') {
+        $journal = Join-Path $localAppData ('NTPods\' + $name)
+        if (Test-Path -LiteralPath $journal -ErrorAction Stop) {
+            throw 'Start NTPods to restore its hands-free devices, then retry setup.'
+        }
     }
 }
 

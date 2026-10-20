@@ -335,9 +335,9 @@ pub fn parse_eq(data: &[u8]) -> Option<ntpods_ipc::Equalizer> {
     super::device_settings::valid_equalizer(eq).then_some(eq)
 }
 
-/// Boolean feature toggle: 0x01 = on, 0x02 = off (matches the AirPods encoding).
+/// Boolean feature toggle; Ear Detection reverses the usual 1=on, 2=off encoding.
 pub fn feature_command(id: u8, on: bool) -> [u8; 11] {
-    control_command(id, if on { 0x01 } else { 0x02 })
+    device_control_command(id, super::device_settings::toggle_value(id, on))
 }
 
 /// If `data` is a control-command status for `id` (opcode 0x09), return its value byte.
@@ -351,14 +351,9 @@ pub fn parse_control_value(data: &[u8], id: u8) -> Option<u8> {
 
 /// Boolean status is confirmed only by a complete control record with value 1/2.
 pub fn parse_feature_status(data: &[u8], id: u8) -> Option<bool> {
-    if data.len() < 11 || data[5] != 0 {
-        return None;
-    }
-    match parse_control_value(data, id)? {
-        1 => Some(true),
-        2 => Some(false),
-        _ => None,
-    }
+    let (reported_id, value) = parse_device_control(data)?;
+    (reported_id == id && super::device_settings::is_toggle(id))
+        .then(|| value == super::device_settings::toggle_value(id, true))
 }
 
 /// Parse a rename packet the app sends over the proxy: `[HEADER, 0x1A, 0x00,
@@ -1013,6 +1008,32 @@ mod tests {
         reply = enabled;
         reply[4] = 0x58;
         assert_eq!(parse_feature_status(&reply, 0x28), None);
+        for offset in 8..11 {
+            reply = enabled;
+            reply[offset] = 1;
+            assert_eq!(parse_feature_status(&reply, 0x28), None);
+        }
+        let mut extra = enabled.to_vec();
+        extra.push(0);
+        assert_eq!(parse_feature_status(&extra, 0x28), None);
+        assert_eq!(
+            parse_feature_status(&device_control_command(0x2E, 1), 0x2E),
+            None
+        );
+    }
+
+    #[test]
+    fn feature_helpers_preserve_the_ear_detection_encoding() {
+        for (id, on, value) in [
+            (0x0A, true, 2),
+            (0x0A, false, 1),
+            (0x28, true, 1),
+            (0x28, false, 2),
+        ] {
+            let record = feature_command(id, on);
+            assert_eq!(record, [4, 0, 4, 0, 9, 0, id, value, 0, 0, 0]);
+            assert_eq!(parse_feature_status(&record, id), Some(on));
+        }
     }
 
     #[test]

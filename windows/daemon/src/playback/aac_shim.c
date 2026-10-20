@@ -1,12 +1,14 @@
 #include <libavcodec/avcodec.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/opt.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define AAC_SAMPLES 1024
 #define AAC_PCM_BYTES (AAC_SAMPLES * 4)
+#define AAC_F32_PCM_BYTES (AAC_SAMPLES * 8)
 #define AAC_MAX_AU 1357
 #define AAC_MAX_CONFIG 64
 
@@ -79,6 +81,15 @@ int ntpods_aac_config(void *handle, uint8_t *out, int capacity) {
     return encoder->ctx->extradata_size;
 }
 
+static int send_frame(AacEnc *encoder) {
+    encoder->frame->pts = encoder->samples;
+    int result = avcodec_send_frame(encoder->ctx, encoder->frame);
+    if (result == AVERROR(EAGAIN)) return 1;
+    if (result < 0) return -1;
+    encoder->samples += AAC_SAMPLES;
+    return 0;
+}
+
 // Return 1 when the caller must read queued output before retrying this input.
 int ntpods_aac_write(void *handle, const uint8_t *pcm, int length) {
     AacEnc *encoder = handle;
@@ -94,12 +105,30 @@ int ntpods_aac_write(void *handle, const uint8_t *pcm, int length) {
             out[sample] = (float)value / 32768.0f;
         }
     }
-    encoder->frame->pts = encoder->samples;
-    int result = avcodec_send_frame(encoder->ctx, encoder->frame);
-    if (result == AVERROR(EAGAIN)) return 1;
-    if (result < 0) return -1;
-    encoder->samples += AAC_SAMPLES;
-    return 0;
+    return send_frame(encoder);
+}
+
+int ntpods_aac_write_f32(void *handle, const uint8_t *pcm, int length) {
+    AacEnc *encoder = handle;
+    if (!encoder || !pcm || length != AAC_F32_PCM_BYTES || sizeof(float) != 4 ||
+        encoder->samples > INT64_MAX - AAC_SAMPLES) return -1;
+    float input[AAC_SAMPLES * 2];
+    for (int sample = 0; sample < AAC_SAMPLES * 2; ++sample) {
+        const uint8_t *bytes = pcm + sample * 4;
+        const uint32_t bits = bytes[0] | ((uint32_t)bytes[1] << 8) |
+            ((uint32_t)bytes[2] << 16) | ((uint32_t)bytes[3] << 24);
+        memcpy(&input[sample], &bits, sizeof(bits));
+        if (!isfinite(input[sample])) return -1;
+        if (input[sample] < -1.0f) input[sample] = -1.0f;
+        if (input[sample] > 1.0f) input[sample] = 1.0f;
+    }
+    if (av_frame_make_writable(encoder->frame) < 0) return -1;
+    for (int channel = 0; channel < 2; ++channel) {
+        float *out = (float *)encoder->frame->data[channel];
+        for (int sample = 0; sample < AAC_SAMPLES; ++sample)
+            out[sample] = input[sample * 2 + channel];
+    }
+    return send_frame(encoder);
 }
 
 int ntpods_aac_read(void *handle, uint8_t *out, int capacity) {

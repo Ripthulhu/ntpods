@@ -18,6 +18,17 @@ typedef uint64_t LP_PLAYBACK_U64;
 #define LP_PLAYBACK_CHANNELS 2u
 #define LP_PLAYBACK_MAX_PACKET 8192u
 
+#define LP_PLAYBACK_MPM_VERSION 1u
+#define LP_PLAYBACK_MPM_QUERY 0u
+#define LP_PLAYBACK_MPM_ENABLE 1u
+#define LP_PLAYBACK_MPM_REPORT 2u
+#define LP_PLAYBACK_MPM_DISABLE 3u
+#define LP_PLAYBACK_MPM_ACTUAL_SUSPENDED 1u
+#define LP_PLAYBACK_MPM_ACTUAL_PRODUCER_PLAYING 2u
+#define LP_PLAYBACK_MPM_STATE_ENABLED 1u
+#define LP_PLAYBACK_MPM_STATE_SUSPEND_REQUESTED 2u
+#define LP_PLAYBACK_MPM_STATE_REQUEST_PENDING 4u
+
 #pragma pack(push, 1)
 typedef struct _LP_PLAYBACK_OPEN_INPUT {
     LP_PLAYBACK_U32 Version;
@@ -61,6 +72,22 @@ typedef struct _LP_PLAYBACK_STATUS_OUTPUT {
     LP_PLAYBACK_U32 MediaTransmitMtu;
     LP_PLAYBACK_U64 Address;
 } LP_PLAYBACK_STATUS_OUTPUT;
+
+/* Suspension is the applied coordinator policy, independent of producer RUN. */
+typedef struct _LP_PLAYBACK_MPM_INPUT {
+    LP_PLAYBACK_U32 Version;
+    LP_PLAYBACK_U32 Operation;
+    LP_PLAYBACK_U32 SignalingGeneration;
+    LP_PLAYBACK_U32 AckSequence;
+    LP_PLAYBACK_U32 ActualFlags;
+} LP_PLAYBACK_MPM_INPUT;
+
+typedef struct _LP_PLAYBACK_MPM_OUTPUT {
+    LP_PLAYBACK_U32 Version;
+    LP_PLAYBACK_U32 SignalingGeneration;
+    LP_PLAYBACK_U32 RequestSequence;
+    LP_PLAYBACK_U32 StateFlags;
+} LP_PLAYBACK_MPM_OUTPUT;
 #pragma pack(pop)
 
 static int LpPlaybackValidHeader(LP_PLAYBACK_U32 version, LP_PLAYBACK_U32 channel)

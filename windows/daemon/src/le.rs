@@ -1,5 +1,5 @@
 //! Passive Apple advertisements. The caller verifies the paired device's IRK
-//! before using its signal or battery data. Advertisements never request audio.
+//! before using its signal, battery data or case-wake reports.
 //!
 //! Scanning is PASSIVE (listen only, no scan requests) and only runs while
 //! `should_scan` permits it. Connected scanning requires an explicit setting

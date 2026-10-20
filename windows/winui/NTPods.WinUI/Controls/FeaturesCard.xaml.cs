@@ -113,19 +113,19 @@ public sealed partial class FeaturesCard : UserControl
     private void ConvAwareness_Toggled(object sender, RoutedEventArgs e)
     {
         if (_applying) return;
-        Client?.SetDeviceControl(Feature.ConversationalAwareness, ConvAwarenessSwitch.IsOn ? 1u : 2u);
+        Client?.SetDeviceControl(Feature.ConversationalAwareness, ConvAwarenessSwitch.IsOn ? 1u : 2u, _deviceId);
     }
 
     private void AdaptiveVolume_Toggled(object sender, RoutedEventArgs e)
     {
         if (_applying) return;
-        Client?.SetDeviceControl(Feature.AdaptiveVolume, AdaptiveVolumeSwitch.IsOn ? 1u : 2u);
+        Client?.SetDeviceControl(Feature.AdaptiveVolume, AdaptiveVolumeSwitch.IsOn ? 1u : 2u, _deviceId);
     }
 
     private void AllowOff_Toggled(object sender, RoutedEventArgs e)
     {
         if (_applying) return;
-        Client?.SetDeviceControl(Feature.AllowOff, AllowOffSwitch.IsOn ? 1u : 2u);
+        Client?.SetDeviceControl(Feature.AllowOff, AllowOffSwitch.IsOn ? 1u : 2u, _deviceId);
     }
 
     private void ConversationVolume_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)

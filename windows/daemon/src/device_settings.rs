@@ -144,6 +144,21 @@ pub fn is_toggle(id: u8) -> bool {
     )
 }
 
+pub fn toggle_value(id: u8, on: bool) -> u32 {
+    // Ear Detection reverses the other toggles' 1=on, 2=off encoding.
+    if id == 0x0A {
+        if on {
+            2
+        } else {
+            1
+        }
+    } else if on {
+        1
+    } else {
+        2
+    }
+}
+
 pub fn valid_control(id: u8, value: u32) -> bool {
     if is_toggle(id) {
         return matches!(value, 1 | 2);
@@ -212,6 +227,10 @@ impl PendingSettings {
         state.hardware_diagnostics = None;
         state.hardware_diagnostics_pending = false;
         state.hardware_diagnostics_error = None;
+        state.hearing_metadata = None;
+        state.hearing_metadata_pending = false;
+        state.hearing_metadata_error = None;
+        state.earbuds_in_case = None;
         state.transparency = None;
         state.transparency_pending = false;
         state.transparency_error = None;
@@ -474,6 +493,135 @@ mod tests {
             model: "A3063".into(),
             firmware: "9A348".into(),
             ..Default::default()
+        }
+    }
+
+    #[test]
+    fn toggle_values_use_the_control_specific_wire_encoding() {
+        for id in (0..=255).filter(|id| is_toggle(*id)) {
+            for on in [false, true] {
+                let expected = if on == (id == 0x0A) { 2 } else { 1 };
+                assert_eq!(toggle_value(id, on), expected);
+                assert_eq!(
+                    crate::aap::device_control_command(id, toggle_value(id, on)),
+                    [4, 0, 4, 0, 9, 0, id, expected as u8, 0, 0, 0]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_control_records_preserve_confirmed_and_requested_state() {
+        for (id, baseline, requested) in [(0x2E, 50, 25), (0x0A, 2, 1), (0x28, 1, 2), (0x34, 1, 2)]
+        {
+            for with_request in [false, true] {
+                let mut pending = PendingSettings::default();
+                let mut state = pro_three();
+                pending.confirm_control(&mut state, id, baseline);
+                if with_request {
+                    let token = pending.begin_control(&mut state, id, requested, false);
+                    pending.finish_control(&mut state, id, requested, token, true);
+                }
+                let before = state.clone();
+                let report_count = pending.token(id).report;
+                let record = [4, 0, 4, 0, 9, 0, id, baseline as u8, 0, 0, 0];
+                let mut malformed: Vec<Vec<u8>> = (0..record.len())
+                    .map(|length| record[..length].to_vec())
+                    .collect();
+                let mut extra = record.to_vec();
+                extra.push(0);
+                malformed.push(extra);
+                let mut invalid_values = vec![
+                    0xFF,
+                    baseline | 0x100,
+                    baseline | 0x10000,
+                    baseline | 0x1000000,
+                    if id == 0x2E { 101 } else { 3 },
+                ];
+                if id != 0x2E {
+                    invalid_values.push(0);
+                }
+                for value in invalid_values {
+                    let mut packet = record;
+                    packet[7..].copy_from_slice(&value.to_le_bytes());
+                    malformed.push(packet.to_vec());
+                    assert!(!pending.confirm_control(&mut state, id, value));
+                    assert_eq!(state, before);
+                    assert_eq!(pending.token(id).report, report_count);
+                }
+                if id == 0x2E {
+                    assert!(malformed.contains(&vec![4, 0, 4, 0, 9, 0, 0x2E, 0xFF, 0, 0, 0]));
+                }
+                for packet in malformed {
+                    let decoded = crate::aap::parse_device_control(&packet);
+                    if let Some((id, value)) = decoded {
+                        pending.confirm_control(&mut state, id, value);
+                    }
+                    assert_eq!(state, before, "packet={packet:02x?}");
+                    assert_eq!(
+                        pending.token(id).report,
+                        report_count,
+                        "packet={packet:02x?}"
+                    );
+                    assert!(decoded.is_none(), "packet={packet:02x?}");
+                }
+                let recovery = [4, 0, 4, 0, 9, 0, id, requested as u8, 0, 0, 0];
+                let (id, value) = crate::aap::parse_device_control(&recovery).unwrap();
+                assert!(pending.confirm_control(&mut state, id, value));
+                assert_eq!(state.device_controls.get(&id), Some(&requested));
+                assert!(!state.device_controls_pending.contains_key(&id));
+                assert!(!state.device_controls_requested.contains_key(&id));
+                assert!(state.adaptive_strength_requested.is_none());
+                assert!(state.allow_off_requested.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn valid_control_reports_retire_only_the_requests_they_acknowledge() {
+        for (id, baseline, requested) in [(0x0A, 2, 1), (0x28, 1, 2), (0x2E, 50, 25), (0x34, 1, 2)]
+        {
+            let mut pending = PendingSettings::default();
+            let mut state = pro_three();
+            pending.confirm_control(&mut state, id, baseline);
+            let token = pending.begin_control(&mut state, id, requested, false);
+            pending.finish_control(&mut state, id, requested, token, true);
+            let report = [4, 0, 4, 0, 9, 0, id, baseline as u8, 0, 0, 0];
+            let (id, value) = crate::aap::parse_device_control(&report).unwrap();
+            let changed = pending.confirm_control(&mut state, id, value);
+            assert_eq!(state.device_controls.get(&id), Some(&baseline));
+            if id == 0x0A {
+                assert!(!changed);
+                assert_eq!(state.device_controls_pending.get(&id), Some(&requested));
+                let report = [4, 0, 4, 0, 9, 0, id, requested as u8, 0, 0, 0];
+                let (id, value) = crate::aap::parse_device_control(&report).unwrap();
+                assert!(pending.confirm_control(&mut state, id, value));
+                assert!(!state.device_controls_pending.contains_key(&id));
+            } else {
+                assert!(changed);
+                assert!(state.device_controls_requested.is_empty());
+                assert!(state.adaptive_strength_requested.is_none());
+                assert!(state.allow_off_requested.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn ear_detection_writes_and_reports_preserve_the_host_auto_pause_choice() {
+        for auto_pause in [false, true] {
+            let mut pending = PendingSettings::default();
+            let mut state = Snapshot {
+                auto_pause,
+                ..pro_three()
+            };
+            pending.confirm_control(&mut state, 0x0A, 2);
+            let token = pending.begin_control(&mut state, 0x0A, 1, false);
+            pending.finish_control(&mut state, 0x0A, 1, token, true);
+            assert_eq!(state.auto_pause, auto_pause);
+            pending.confirm_control(&mut state, 0x0A, 2);
+            assert_eq!(state.auto_pause, auto_pause);
+            pending.confirm_control(&mut state, 0x0A, 1);
+            assert_eq!(state.auto_pause, auto_pause);
         }
     }
 
@@ -1015,9 +1163,19 @@ mod tests {
         });
         state.transparency_pending = true;
         state.transparency_error = Some("Previous pair's request failed.".into());
-        let ear = ntpods_ipc::HardwareDiagnosticEar { measured_at_unix_seconds: 1,
-            general: 0, measurement: 0, component_failures: Some(0), unknown_bits: 0 };
-        state.hardware_diagnostics = Some(ntpods_ipc::HardwareDiagnostics { read_at_unix_seconds: 2, left: ear, right: ear });
+        let ear = ntpods_ipc::HardwareDiagnosticEar {
+            measured_at_unix_seconds: 1,
+            first_use_unix_seconds: None,
+            general: 0,
+            measurement: 0,
+            component_failures: Some(0),
+            unknown_bits: 0,
+        };
+        state.hardware_diagnostics = Some(ntpods_ipc::HardwareDiagnostics {
+            read_at_unix_seconds: 2,
+            left: ear,
+            right: ear,
+        });
         state.hardware_diagnostics_pending = true;
         state.hardware_diagnostics_error = Some("Previous pair.".into());
         pending.reset(&mut state);
@@ -1025,7 +1183,11 @@ mod tests {
         assert!(state.device_controls.is_empty() && state.device_controls_pending.is_empty());
         assert!(state.transparency.is_none() && !state.transparency_pending);
         assert!(state.transparency_error.is_none());
-        assert!(state.hardware_diagnostics.is_none() && !state.hardware_diagnostics_pending && state.hardware_diagnostics_error.is_none());
+        assert!(
+            state.hardware_diagnostics.is_none()
+                && !state.hardware_diagnostics_pending
+                && state.hardware_diagnostics_error.is_none()
+        );
         assert!(
             state.auto_pause,
             "device reconnect must not change the host preference"

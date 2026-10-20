@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use windows::core::{Error, Result, HRESULT};
 use windows::Win32::Foundation::{ERROR_CANCELLED, ERROR_NOT_FOUND, E_FAIL};
 use windows::Win32::Media::Audio::{
@@ -85,6 +85,7 @@ impl Drop for Format {
 impl EnginePeriod {
     pub(super) fn acquire(address: u64, cancelled: impl FnMut() -> bool) -> Result<Self> {
         unsafe {
+            let started = Instant::now();
             CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
             let apartment = Apartment(PhantomData);
             let endpoint = wait_for_endpoint(
@@ -92,7 +93,9 @@ impl EnginePeriod {
                 cancelled,
                 std::thread::sleep,
             )?;
+            let endpoint_ms = started.elapsed().as_millis();
             let client: IAudioClient3 = endpoint.Activate(CLSCTX_ALL, None)?;
+            let activated_ms = started.elapsed().as_millis();
             client.SetClientProperties(&AudioClientProperties {
                 cbSize: std::mem::size_of::<AudioClientProperties>() as u32,
                 eCategory: AudioCategory_Media,
@@ -118,6 +121,7 @@ impl EnginePeriod {
                 maximum,
             )
             .ok_or_else(|| Error::new(E_FAIL, "A compatible 5 ms audio period is unavailable"))?;
+            let queried_ms = started.elapsed().as_millis();
             // Starting this client would keep Bluetooth playback active when music is paused.
             client.InitializeSharedAudioStream(0, frames, format.0, None)?;
             let (actual_rate, actual_frames) = current_period(&client)?;
@@ -128,7 +132,10 @@ impl EnginePeriod {
                 ));
             }
             crate::log(&format!(
-                "playback: Windows shared period={actual_frames} frames at {actual_rate} Hz (unstarted client)"
+                "playback: Windows shared period={actual_frames} frames at {actual_rate} Hz (unstarted client), endpoint_ms={endpoint_ms} activate_ms={} query_ms={} initialize_ms={}",
+                activated_ms.saturating_sub(endpoint_ms),
+                queried_ms.saturating_sub(activated_ms),
+                started.elapsed().as_millis().saturating_sub(queried_ms),
             ));
             Ok(Self {
                 _client: client,

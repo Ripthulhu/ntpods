@@ -49,6 +49,11 @@ VOID LpStopChannels(PDEVICE_CONTEXT Ctx)
 {
     InterlockedExchange(&Ctx->Stopping, 1);
     if (Ctx->OperationLock == NULL) return;
+#if NTPODS_EXPERIMENTAL_PLAYBACK
+    /* Unregister drains callbacks; none may wait behind our OperationLock. */
+    LpMpmDisable(Ctx);
+    if (Ctx->Playback.DisconnectWork) WdfWorkItemFlush(Ctx->Playback.DisconnectWork);
+#endif
     /* In-flight BRBs notice Stopping before we acquire their operation lock. */
     WdfWaitLockAcquire(Ctx->OperationLock, NULL);
 #if NTPODS_EXPERIMENTAL_PLAYBACK

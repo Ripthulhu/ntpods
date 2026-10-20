@@ -3,8 +3,28 @@ use std::time::{Duration, Instant};
 
 const SAMPLE_RATE: u64 = 48_000;
 const SAMPLE_BYTES: usize = 4;
+#[cfg(test)]
 pub const MAX_READ_BYTES: usize = 1_920;
-const MAX_FRAME_BYTES: usize = 1_024 * SAMPLE_BYTES;
+const MAX_FRAME_BYTES: usize = 1_024 * 8;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SampleFormat {
+    S16,
+    Float32,
+}
+
+impl SampleFormat {
+    pub fn frame_bytes(self) -> usize {
+        match self {
+            Self::S16 => 4,
+            Self::Float32 => 8,
+        }
+    }
+
+    pub fn read_bytes(self) -> usize {
+        480 * self.frame_bytes()
+    }
+}
 
 fn frame_bytes(samples: usize) -> io::Result<usize> {
     match samples {
@@ -20,19 +40,26 @@ pub struct FrameAssembler {
     bytes: [u8; MAX_FRAME_BYTES],
     used: usize,
     frame_bytes: usize,
+    format: SampleFormat,
 }
 
 impl FrameAssembler {
+    #[cfg(test)]
     pub fn new(samples_per_frame: usize) -> io::Result<Self> {
+        Self::new_with_format(samples_per_frame, SampleFormat::S16)
+    }
+
+    pub fn new_with_format(samples_per_frame: usize, format: SampleFormat) -> io::Result<Self> {
         Ok(Self {
             bytes: [0; MAX_FRAME_BYTES],
             used: 0,
-            frame_bytes: frame_bytes(samples_per_frame)?,
+            frame_bytes: frame_bytes(samples_per_frame)? / SAMPLE_BYTES * format.frame_bytes(),
+            format,
         })
     }
 
     pub fn read_limit(&self) -> usize {
-        (self.frame_bytes - self.used).min(MAX_READ_BYTES)
+        (self.frame_bytes - self.used).min(self.format.read_bytes())
     }
 
     pub fn read_available(
@@ -41,7 +68,7 @@ impl FrameAssembler {
         mut current: impl FnMut() -> io::Result<bool>,
     ) -> io::Result<Option<Vec<u8>>> {
         // Drain one due frame without sleeping between already available pieces.
-        for _ in 0..self.frame_bytes.div_ceil(MAX_READ_BYTES) {
+        for _ in 0..self.frame_bytes.div_ceil(self.format.read_bytes()) {
             let data = read(self.read_limit())?;
             if !current()? {
                 self.reset();
@@ -58,7 +85,9 @@ impl FrameAssembler {
     }
 
     pub fn push(&mut self, bytes: &[u8]) -> io::Result<Option<Vec<u8>>> {
-        if bytes.len() % SAMPLE_BYTES != 0 || bytes.len() > self.frame_bytes - self.used {
+        if bytes.len() % self.format.frame_bytes() != 0
+            || bytes.len() > self.frame_bytes - self.used
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "Invalid stereo PCM block",
@@ -154,6 +183,51 @@ impl FrameClock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn float_frames_preserve_quiet_samples_and_respect_the_read_limit() {
+        for samples in [480, 1_024] {
+            let mut pcm = FrameAssembler::new_with_format(samples, SampleFormat::Float32).unwrap();
+            let expected: Vec<_> = (0..samples * 2)
+                .flat_map(|n| (if n % 2 == 0 { 1.0e-7f32 } else { -1.0e-7f32 }).to_le_bytes())
+                .collect();
+            let mut offset = 0;
+            let mut reads = Vec::new();
+            let frame = pcm
+                .read_available(
+                    |limit| {
+                        reads.push(limit);
+                        let next = expected[offset..offset + limit].to_vec();
+                        offset += limit;
+                        Ok(next)
+                    },
+                    || Ok(true),
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(frame, expected);
+            assert_eq!(
+                reads,
+                if samples == 480 {
+                    vec![3_840]
+                } else {
+                    vec![3_840, 3_840, 512]
+                }
+            );
+            assert_eq!(pcm.read_limit(), 3_840);
+            assert!(pcm.push(&[0; 4]).is_err());
+            assert!(pcm.push(&[0; 8]).unwrap().is_none());
+            assert!(pcm
+                .read_available(|limit| Ok(vec![7; limit]), || Ok(false))
+                .unwrap()
+                .is_none());
+            let recovered = pcm
+                .read_available(|limit| Ok(vec![0; limit]), || Ok(true))
+                .unwrap()
+                .unwrap();
+            assert_eq!(recovered, vec![0; samples * 8]);
+        }
+    }
 
     #[test]
     fn waits_follow_the_next_frame_without_losing_fractional_aac_time() {

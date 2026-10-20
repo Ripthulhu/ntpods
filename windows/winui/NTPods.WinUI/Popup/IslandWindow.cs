@@ -17,6 +17,8 @@ public sealed class IslandWindow : Window
     private readonly UISettings _uiSettings = new();
     private readonly Stopwatch _clock = Stopwatch.StartNew();
     private readonly DispatcherQueueTimer _dismissTimer;
+    private readonly DispatcherQueueTimer _batteryExpiry;
+    private Snapshot? _snapshot;
     private bool _rendering;
     private (int Left, int Width, int Height, int Diameter)? _lastRegion;
     private int _width;
@@ -39,6 +41,12 @@ public sealed class IslandWindow : Window
         _dismissTimer = DispatcherQueue.CreateTimer();
         _dismissTimer.IsRepeating = false;
         _dismissTimer.Tick += (_, _) => AdvanceFrame();
+        _batteryExpiry = DispatcherQueue.CreateTimer();
+        _batteryExpiry.IsRepeating = false;
+        _batteryExpiry.Tick += (_, _) =>
+        {
+            if (_snapshot is { } snapshot) UpdateSnapshot(snapshot);
+        };
         _view.Loaded += (_, _) =>
         {
             if (!_motion.Visible) return;
@@ -50,6 +58,7 @@ public sealed class IslandWindow : Window
         {
             _closed = true;
             _dismissTimer.Stop();
+            _batteryExpiry.Stop();
             StopRendering();
             if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
                 _uiSettings.AnimationsEnabledChanged -= OnAnimationsEnabledChanged;
@@ -64,6 +73,7 @@ public sealed class IslandWindow : Window
             _frozen = false;
             _holdConnect = false;
             double now = _clock.Elapsed.TotalMilliseconds;
+            _snapshot = snapshot;
             _view.Apply(snapshot, now, _motion.Visible && !_motion.Closing && _uiSettings.AnimationsEnabled);
             _motion.Pin(false, now);
             Show();
@@ -79,6 +89,7 @@ public sealed class IslandWindow : Window
             _frozen = false;
             _holdConnect = false;
             _motion.Pin(false, _clock.Elapsed.TotalMilliseconds);
+            _snapshot = snapshot ?? new Snapshot { Model = model ?? "" };
             _view.ApplyMessage(title, body, snapshot, model, _clock.Elapsed.TotalMilliseconds,
                 _motion.Visible && !_motion.Closing && _uiSettings.AnimationsEnabled);
             Show();
@@ -114,6 +125,7 @@ public sealed class IslandWindow : Window
         try
         {
             _frozen = true;
+            _batteryExpiry.Stop();
             _holdConnect = false;
             double now = _clock.Elapsed.TotalMilliseconds;
             _motion.Pin(false, now);
@@ -131,10 +143,12 @@ public sealed class IslandWindow : Window
         try
         {
             double now = _clock.Elapsed.TotalMilliseconds;
+            _snapshot = snapshot;
             _view.UpdateSnapshot(snapshot, now, _uiSettings.AnimationsEnabled);
             _motion.Pin(_view.IsConnecting || _holdConnect && _view.IsNearbyConnection, now);
             Prepare();
             AdvanceFrame();
+            ArmBatteryExpiry();
         }
         catch { Hide(); }
     }
@@ -160,6 +174,16 @@ public sealed class IslandWindow : Window
         Render(_clock.Elapsed.TotalMilliseconds);
         AppWindow.Show(false);
         ScheduleFrame(_clock.Elapsed.TotalMilliseconds);
+        ArmBatteryExpiry();
+    }
+
+    private void ArmBatteryExpiry()
+    {
+        _batteryExpiry.Stop();
+        if (_closed || _frozen || !_motion.Visible || _motion.Closing ||
+            _view.BatteryDisplayExpiresAt is not { } expires) return;
+        _batteryExpiry.Interval = TimeSpan.FromMilliseconds(Math.Max(1, (expires - DateTimeOffset.UtcNow).TotalMilliseconds));
+        _batteryExpiry.Start();
     }
 
     private void Prepare()
@@ -261,6 +285,8 @@ public sealed class IslandWindow : Window
     private void Hide()
     {
         _dismissTimer.Stop();
+        _batteryExpiry.Stop();
+        _snapshot = null;
         StopRendering();
         _motion.Hide();
         // Reuse the window: closing themed WinUI content here has crashed XAML teardown.

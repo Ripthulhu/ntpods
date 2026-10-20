@@ -1,12 +1,89 @@
 import math
+import hashlib
 from pathlib import Path
 import random
 import struct
 import subprocess
 import tempfile
+import zipfile
 
 ROOT = Path(__file__).resolve().parent
 BUILD = ROOT / "build" / "Release"
+FLOAT_PREAMBLE = b"NPF32001" + struct.pack("<IHH", 48000, 2, 480)
+
+
+def encode_float(samples, *arguments):
+    result = subprocess.run([BUILD / "ntpods-eld-encoder.exe", "--pcm-f32", *arguments],
+                            input=FLOAT_PREAMBLE + struct.pack("<" + "f" * len(samples), *samples),
+                            capture_output=True, timeout=30, check=True)
+    assert not result.stderr, result.stderr.decode(errors="replace")
+    parse_stream(result.stdout)
+    return result.stdout
+
+
+def check_float_precision(pcm):
+    integers = struct.unpack("<" + "h" * (len(pcm) // 2), pcm)
+    for arguments in ((), ("--vbr",), ("--bitrate", "128000")):
+        legacy = subprocess.run([BUILD / "ntpods-eld-encoder.exe", *arguments], input=pcm,
+                                capture_output=True, timeout=30, check=True).stdout
+        assert encode_float([value / 32768 for value in integers], *arguments) == legacy
+    for frequency in (250, 1000, 4000, 8000):
+        for level in (-100, -110):
+            amplitude = 10 ** (level / 20)
+            samples = [amplitude * math.sin(math.tau * frequency * index / 48000 + side * 0.73)
+                       for index in range(48000) for side in (0, 1)]
+            values = decode(encode_float(samples))
+            section = values[0::2][12000:36000]
+            measured = spectral_amplitude(section, frequency)
+            power = sum(value * value for value in section) / len(section)
+            assert 0.1 * amplitude < measured < 3 * amplitude, (frequency, level, measured)
+            assert measured * measured / (2 * power) > 0.5, (frequency, level, power)
+    assert not any(decode(subprocess.run(
+        [BUILD / "ntpods-eld-encoder.exe"], input=bytes(48000 * 4),
+        capture_output=True, timeout=30, check=True).stdout))
+    for frequency in (250, 1000, 4000, 8000):
+        samples = [value for index in range(48000)
+                   for value in (1e-5 * math.sin(math.tau * frequency * index / 48000), 0)]
+        section = decode(encode_float(samples))[0::2][12000:36000]
+        assert spectral_amplitude(section, frequency) > 1e-6
+    # ELD's content-dependent floor still removes this one-ear-only signal.
+    samples = [value for index in range(48000)
+               for value in (10 ** (-110 / 20) * math.sin(math.tau * 8000 * index / 48000), 0)]
+    assert not any(decode(encode_float(samples)))
+    for value in (math.nan, math.inf, -math.inf):
+        bad = FLOAT_PREAMBLE + struct.pack("<960f", value, *([0] * 959))
+        result = subprocess.run([BUILD / "ntpods-eld-encoder.exe", "--pcm-f32"],
+                                input=bad, capture_output=True, timeout=10)
+        assert result.returncode != 0 and b"finite samples" in result.stderr
+    for bad in (b"", FLOAT_PREAMBLE[:-1], FLOAT_PREAMBLE.replace(b"NPF", b"BAD"),
+                b"NPF32001" + struct.pack("<IHH", 48000, 2, 1024),
+                FLOAT_PREAMBLE + bytes(3839), FLOAT_PREAMBLE + bytes(3841)):
+        result = subprocess.run([BUILD / "ntpods-eld-encoder.exe", "--pcm-f32"],
+                                input=bad, capture_output=True, timeout=10)
+        assert result.returncode != 0
+    # Conversion saturates finite out-of-range input before the Q31 cast.
+    limits = [-2, -1, 1, 2, 3.4028234663852886e38, -3.4028234663852886e38]
+    values = (limits * 160)
+    clamped = [max(-1, min(1, value)) for value in values]
+    assert encode_float(values) == encode_float(clamped)
+    bundle = ROOT / "build" / "FDK-AAC-source.zip"
+    assert hashlib.sha256(bundle.read_bytes()).hexdigest() == (
+        ROOT / "build" / "FDK-AAC-source.sha256").read_text().strip().lower()
+    with zipfile.ZipFile(bundle) as source:
+        prefix = "fdk-aac-cac04476081a23c870fed05c36228cd02c5e7c3d/"
+        header = source.read(prefix + "libSYS/include/machine_type.h")
+        assert b"typedef LONG INT_PCM;" in header and b"#define SAMPLE_BITS 32" in header
+        assert source.read(prefix + "ntpods-pcm-abi.c") == (ROOT / "pcm-abi.c").read_bytes()
+        assert b"target_sources(fdk-aac PRIVATE ntpods-pcm-abi.c)" in source.read(prefix + "CMakeLists.txt")
+        assert b"OUTPUT_NAME ntpods-fdk-q31" in source.read(prefix + "CMakeLists.txt")
+        assert b"2026-10-20" in source.read(prefix + "NTPods-MODIFICATIONS.txt")
+        original = ROOT / "vendor" / "fdk-aac-cac04476081a23c870fed05c36228cd02c5e7c3d.zip"
+        with zipfile.ZipFile(original) as upstream:
+            assert set(source.namelist()) == set(upstream.namelist()) | {
+                prefix + "ntpods-pcm-abi.c", prefix + "NTPods-MODIFICATIONS.txt"}
+            for name in upstream.namelist():
+                if name not in {prefix + "libSYS/include/machine_type.h", prefix + "CMakeLists.txt"}:
+                    assert source.read(name) == upstream.read(name), name
 
 
 def parse_stream(data):
@@ -54,6 +131,7 @@ def run():
     process = subprocess.run([BUILD / "ntpods-eld-encoder.exe"], input=pcm,
                              capture_output=True, timeout=30, check=True)
     assert not process.stderr, process.stderr.decode(errors="replace")
+    check_float_precision(pcm)
     asc, sizes = parse_stream(process.stdout)
     assert 300 <= len(sizes) <= 332
     variable = subprocess.run([BUILD / "ntpods-eld-encoder.exe", "--vbr"], input=pcm,
@@ -132,9 +210,14 @@ def run():
         rejected = subprocess.run([BUILD / "ntpods-eld-encoder.exe", *arguments],
                                   input=b"", capture_output=True, timeout=10)
         assert rejected.returncode != 0 and not rejected.stdout
+    for arguments in (["--pcm-f32", "--pcm-f32"], ["--vbr", "--vbr"],
+                      ["--bitrate", "192000", "--bitrate", "192000"]):
+        rejected = subprocess.run([BUILD / "ntpods-eld-encoder.exe", *arguments],
+                                  input=b"", capture_output=True, timeout=10)
+        assert rejected.returncode != 0 and not rejected.stdout
     print(f"PASS: ASC {asc.hex()}, {len(sizes)} AUs, peak {max(sizes)} bytes; "
           f"noise peak {max(stress_sizes)} bytes; 48 kHz stereo pitch, "
-          "channel separation, all 129 bitrate budgets, noise/transients and truncated input; "
+          "channel separation, all 129 bitrate budgets, noise/transients, Float32 precision and truncated input; "
           f"VBR tones {variable_tone_rate / 1000:.1f}, noise {variable_noise_rate / 1000:.1f} kbps, "
           f"peak {max(variable_stress_sizes)} bytes.")
 

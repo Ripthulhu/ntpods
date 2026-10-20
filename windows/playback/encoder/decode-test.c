@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <string.h>
 
+__declspec(dllimport) int ntpods_fdk_pcm_bits(void);
+
 static int read_u16(FILE *file) {
     unsigned char bytes[2];
     return fread(bytes, 1, 2, file) == 2 ? bytes[0] | bytes[1] << 8 : -1;
@@ -16,6 +18,7 @@ int main(int argc, char **argv) {
     int result = 1, frames = 0;
     unsigned char magic[8], asc[64], au[321];
     INT_PCM pcm[4096];
+    if (sizeof(INT_PCM) != 4 || ntpods_fdk_pcm_bits() != 32) goto cleanup;
     if (!input || !output || fread(magic, 1, 8, input) != 8 ||
         memcmp(magic, "NPELD001", 8) || read_u16(input) != 480) goto cleanup;
     int asc_size = read_u16(input);
@@ -43,7 +46,7 @@ int main(int argc, char **argv) {
             goto cleanup;
         }
         float interleaved[960];
-        for (int i = 0; i < 960; ++i) interleaved[i] = pcm[i] / 32768.0f;
+        for (int i = 0; i < 960; ++i) interleaved[i] = (float)(pcm[i] / 2147483648.0);
         if (fwrite(interleaved, 1, sizeof(interleaved), output) != sizeof(interleaved)) goto cleanup;
         ++frames;
     }

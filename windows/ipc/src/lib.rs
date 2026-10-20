@@ -47,6 +47,8 @@ impl Default for PlaybackBitrate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HardwareDiagnosticEar {
     pub measured_at_unix_seconds: u64,
+    #[serde(default)]
+    pub first_use_unix_seconds: Option<u32>,
     pub general: u8,
     pub measurement: u8,
     /// Present only for a supported model with a dated, completed check.
@@ -59,6 +61,29 @@ pub struct HardwareDiagnostics {
     pub read_at_unix_seconds: u64,
     pub left: HardwareDiagnosticEar,
     pub right: HardwareDiagnosticEar,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct HearingMetadata {
+    pub read_at_unix_seconds: u64,
+    pub test_mode_raw: Option<u8>,
+    pub dosimetry_sensitivity_raw: Option<f32>,
+    pub dosimetry_volume_curve_raw: Option<[f32; 17]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HardwareCheckState {
+    pub request_id: u64,
+    pub phase: String,
+    pub left_updated: bool,
+    pub right_updated: bool,
+    pub error: Option<String>,
+}
+
+impl HardwareCheckState {
+    pub fn is_active(&self) -> bool {
+        matches!(self.phase.as_str(), "waiting_case_close" | "waiting_result")
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -327,6 +352,16 @@ pub struct Snapshot {
     pub hardware_diagnostics_pending: bool,
     #[serde(default)]
     pub hardware_diagnostics_error: Option<String>,
+    #[serde(default)]
+    pub hearing_metadata: Option<HearingMetadata>,
+    #[serde(default)]
+    pub hearing_metadata_pending: bool,
+    #[serde(default)]
+    pub hearing_metadata_error: Option<String>,
+    #[serde(default)]
+    pub hardware_check: Option<HardwareCheckState>,
+    #[serde(default)]
+    pub earbuds_in_case: Option<bool>,
     /// ATT handle 0x1B, independently confirmed; absent until a successful read.
     #[serde(default)]
     pub loud_sound_reduction: Option<bool>,
@@ -440,6 +475,20 @@ where
     Ok(percent)
 }
 
+fn deserialize_command_device_id<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // Only omission means legacy targeting; an invalid explicit target must fail closed.
+    let id = String::deserialize(deserializer)?;
+    if id.len() != 12 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(serde::de::Error::custom(
+            "device ID must be twelve hexadecimal digits",
+        ));
+    }
+    Ok(Some(id))
+}
+
 fn deserialize_adaptive_strength_requested<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -524,6 +573,11 @@ impl Default for Snapshot {
             hardware_diagnostics: None,
             hardware_diagnostics_pending: false,
             hardware_diagnostics_error: None,
+            hearing_metadata: None,
+            hearing_metadata_pending: false,
+            hearing_metadata_error: None,
+            hardware_check: None,
+            earbuds_in_case: None,
             loud_sound_reduction: None,
             loud_sound_reduction_pending: false,
             loud_sound_reduction_error: None,
@@ -606,6 +660,12 @@ pub enum Command {
     /// Set noise-control mode (1..=4).
     SetAnc {
         mode: u8,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "deserialize_command_device_id"
+        )]
+        device_id: Option<String>,
     },
     /// Set the hi-res mic mode (auto-enable and/or manual override).
     SetMicMode {
@@ -654,6 +714,12 @@ pub enum Command {
     SetDeviceControl {
         id: u8,
         value: u32,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "deserialize_command_device_id"
+        )]
+        device_id: Option<String>,
     },
     SetEq {
         mode: u8,
@@ -710,6 +776,24 @@ pub enum Command {
     GetHearingAid,
     /// Read the last saved hardware checks; never starts a self-test.
     GetHardwareDiagnostics,
+    GetHearingMetadata {
+        device_id: String,
+    },
+    StartHardwareCheck {
+        request_id: u64,
+        device_id: String,
+        buds_in_case_confirmed: bool,
+    },
+    CancelHardwareCheck {
+        request_id: u64,
+        device_id: String,
+    },
+    /// Research builds only: read the mode, or briefly enable it and verify restoration.
+    ProbeHearingTestMode {
+        request_id: u64,
+        device_id: String,
+        enable_check: bool,
+    },
     /// Toggle the stored fitting without editing its audiogram or adjustments.
     SetHearingAidMode {
         request_id: u64,
@@ -761,6 +845,17 @@ pub enum Command {
     Shutdown,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HearingTestModeProbeResult {
+    pub initial_state: Option<u8>,
+    pub enabled_state: Option<u8>,
+    pub final_state: Option<u8>,
+    pub enable_sent: bool,
+    pub disable_sent: bool,
+    pub restoration_verified: bool,
+    pub error: Option<String>,
+}
+
 /// Daemon → client.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
@@ -792,6 +887,12 @@ pub enum Event {
         ok: bool,
         message: String,
     },
+    HearingTestModeProbe {
+        request_id: u64,
+        device_id: String,
+        enable_check: bool,
+        result: HearingTestModeProbeResult,
+    },
 }
 
 /// Which UI a client is.
@@ -817,6 +918,44 @@ pub fn from_line<T: for<'de> Deserialize<'de>>(line: &str) -> Option<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hearing_test_probe_preserves_readback_and_partial_cleanup_failure() {
+        for result in [
+            HearingTestModeProbeResult {
+                initial_state: Some(0),
+                enabled_state: Some(1),
+                final_state: Some(0),
+                enable_sent: true,
+                disable_sent: true,
+                restoration_verified: true,
+                error: None,
+            },
+            HearingTestModeProbeResult {
+                initial_state: Some(0),
+                enable_sent: true,
+                disable_sent: true,
+                error: Some("Restoration could not be verified.".into()),
+                ..Default::default()
+            },
+        ] {
+            let event = Event::HearingTestModeProbe {
+                request_id: 17,
+                device_id: "001122334455".into(),
+                enable_check: true,
+                result: result.clone(),
+            };
+            let decoded = from_line::<Event>(&to_line(&event)).unwrap();
+            assert!(
+                matches!(decoded, Event::HearingTestModeProbe { request_id: 17, enable_check: true, result: actual, .. } if actual == result)
+            );
+        }
+        assert!(from_line::<Command>(
+            r#"{"cmd":"probe_hearing_test_mode","request_id":17,"device_id":"001122334455"}"#
+        )
+        .is_none());
+        assert!(from_line::<Command>(r#"{"cmd":"probe_hearing_test_mode","request_id":17,"device_id":"001122334455","enable_check":1}"#).is_none());
+    }
 
     #[test]
     fn pairing_invitation_contains_only_the_public_model_and_lid_hint() {
@@ -874,6 +1013,58 @@ mod tests {
             r#"{"event":"paired_lid","device_id":"001122334455","lid_open":true,"sequence":-1}"#,
         ] {
             assert!(from_line::<Event>(malformed).is_none());
+        }
+    }
+
+    #[test]
+    fn device_controls_preserve_legacy_targeting_and_reject_invalid_explicit_targets() {
+        for legacy in [
+            Command::SetAnc {
+                mode: 3,
+                device_id: None,
+            },
+            Command::SetDeviceControl {
+                id: 0x2E,
+                value: 50,
+                device_id: None,
+            },
+        ] {
+            let line = to_line(&legacy);
+            assert!(!line.contains("device_id"));
+            match from_line::<Command>(&line).unwrap() {
+                Command::SetAnc { device_id, .. } | Command::SetDeviceControl { device_id, .. } => {
+                    assert!(device_id.is_none())
+                }
+                _ => panic!("wrong command"),
+            }
+            let mut command: serde_json::Value = serde_json::from_str(&line).unwrap();
+            for target in ["001122334455", "aabbccddeeff", "AABBCCDDEEFF"] {
+                command["device_id"] = target.into();
+                let parsed = from_line::<Command>(&command.to_string()).unwrap();
+                match parsed {
+                    Command::SetAnc { device_id, .. }
+                    | Command::SetDeviceControl { device_id, .. } => {
+                        assert_eq!(device_id.as_deref(), Some(target))
+                    }
+                    _ => panic!("wrong command"),
+                }
+            }
+            for malformed in [
+                "\"\"",
+                "\"not-a-device\"",
+                "\"00112233445g\"",
+                "null",
+                "42",
+                "true",
+                "[]",
+                "{}",
+            ] {
+                command["device_id"] = serde_json::from_str(malformed).unwrap();
+                assert!(
+                    from_line::<Command>(&command.to_string()).is_none(),
+                    "{command}"
+                );
+            }
         }
     }
 

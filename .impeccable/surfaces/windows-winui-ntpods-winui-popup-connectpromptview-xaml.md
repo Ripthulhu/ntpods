@@ -8,12 +8,18 @@ related_targets: ["windows/winui/NTPods.WinUI/Popup/ConnectPromptWindow.cs", "wi
 # AirPods pairing card
 
 Mode: Operate. Show one white card at the bottom of the primary monitor with
-dark text and a blue action in both app themes. High contrast uses Windows
+dark text and a blue-text Connect action in both app themes. Use a quiet gray
+Continue action after pairing. High contrast uses Windows
 system colors. Keep the title, bundled model artwork, status and action in the
 same card through nearby, setup, connecting, retry and paired states.
 Show the pairing gesture and "Then tap Connect" on the first nearby card,
 before discovery starts. Use the advertised model when known; keep the generic
-gesture for a name-only Classic invitation.
+gesture for a name-only Classic invitation. Keep the model name as the nearby
+and paired heading. While waiting for pairing mode, show its setup gesture as
+the heading; change it to Connecting after selecting the endpoint. Transition
+headings with the retained card content and keep their layout stable. Reserve
+the maximum phase-heading height and retain the measured body height for that
+invitation so shorter progress or paired content cannot shrink the card.
 
 Slide the complete card as one sheet. A new lid-open invitation can reverse its
 exit; reduced motion shows or hides it immediately. Automatic invitations do
@@ -35,7 +41,8 @@ content to input and accessibility. These transitions do not replace the outer
 card slide.
 
 After pairing, show Paired and fresh readings from the exact paired device:
-AirPods and case, or one headphone reading. Unknown or stale parts show an em
+AirPods and case, or one headphone reading. Accept only identity-verified readings
+newer than the current explicit Connect attempt. Unknown or stale parts show an em
 dash. Keep the card until Continue, close or lid-close; do not expire the
 successful state.
 

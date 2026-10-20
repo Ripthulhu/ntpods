@@ -50,9 +50,11 @@ function Prepare-NTPodsAppTransaction([string]$root, [string]$transactionId) {
         $acl.SetSecurityDescriptorSddlForm('O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FRFX;;;BU)')
         New-DirectoryWithSecurity $staged $acl
         if ($hadInstall) { Copy-NTPodsAppEntry $dest $staged }
-        foreach ($name in 'ntpodsd.exe', 'avcodec-61.dll', 'avutil-59.dll', 'swresample-5.dll', 'ntpods-aac-encoder.exe', 'ntpods-eld-encoder.exe', 'fdk-aac.dll', 'fix-driver.ps1', 'rename-mic.ps1', 'setup-common.ps1', 'audio-driver.ps1', 'restore-playback.ps1', 'stop-ntpods.ps1', 'msi-setup.ps1', 'uninstall.ps1', 'bluetooth-host-identity.ps1', 'winui', 'tools', 'licenses') {
+        foreach ($name in 'ntpodsd.exe', 'avcodec-61.dll', 'avutil-59.dll', 'swresample-5.dll', 'ntpods-aac-encoder.exe', 'ntpods-eld-encoder.exe', 'ntpods-fdk-q31.dll', 'fix-driver.ps1', 'rename-mic.ps1', 'setup-common.ps1', 'audio-driver.ps1', 'restore-playback.ps1', 'stop-ntpods.ps1', 'msi-setup.ps1', 'uninstall.ps1', 'bluetooth-host-identity.ps1', 'winui', 'tools', 'licenses') {
             Copy-NTPodsAppEntry (Join-Path $root $name) (Join-Path $staged $name)
         }
+        $oldFdk = Join-Path $staged 'fdk-aac.dll'
+        if (Test-Path -LiteralPath $oldFdk) { Remove-Item -LiteralPath $oldFdk -Force -ErrorAction Stop }
         @(Get-InstallTree $staged) | Where-Object { -not $_.PSIsContainer } | Unblock-File
     } catch {
         $failure = $_

@@ -1,5 +1,5 @@
 use super::protocol::*;
-use super::{aac_protocol, codec::Mode};
+use super::{aac_protocol, codec::Mode, coordination};
 use crate::driver::Driver;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,6 +26,7 @@ pub struct Session {
     cancel: Arc<AtomicBool>,
     closing: bool,
     interrupted: Box<dyn Fn() -> bool>,
+    coordination: Option<coordination::Coordinator>,
     pub mtu: usize,
     pub bitrate: u32,
     pub variable: bool,
@@ -81,6 +82,7 @@ impl Session {
             cancel,
             closing: false,
             interrupted: Box::new(interrupted),
+            coordination: None,
             mtu: 0,
             bitrate: 0,
             variable: false,
@@ -113,7 +115,8 @@ impl Session {
                 }
                 Ok(())
             },
-        )?;
+        )
+        .map_err(initial_signaling_error)?;
         let mut endpoints = sinks(&session.request(DISCOVER, &[])?)?.into_iter();
         let deadline = Instant::now() + Duration::from_secs(15);
         let selected = select_configuration(
@@ -359,7 +362,7 @@ impl Session {
         ))
     }
 
-    fn check_cancelled(&self) -> io::Result<()> {
+    pub(super) fn check_cancelled(&self) -> io::Result<()> {
         if !self.closing && (self.cancel.load(Ordering::Acquire) || (self.interrupted)()) {
             Err(io::Error::new(
                 io::ErrorKind::Interrupted,
@@ -423,7 +426,7 @@ impl Session {
     }
 
     pub fn poll(&mut self) -> io::Result<bool> {
-        drain_signaling(|| {
+        let drained = drain_signaling(|| {
             self.check_cancelled()?;
             let data = self.receive(1)?;
             if data.is_empty() {
@@ -431,7 +434,55 @@ impl Session {
             }
             self.peer_command(&data)?;
             Ok(true)
-        })
+        })?;
+        if let Some(coordinator) = &mut self.coordination {
+            coordinator.poll(&self.driver)?;
+        }
+        Ok(drained)
+    }
+
+    pub fn enable_coordination(&mut self) -> io::Result<()> {
+        self.check_cancelled()?;
+        self.coordination = coordination::Coordinator::enable(&self.driver)?;
+        crate::log(if self.coordination.is_some() {
+            "playback: Windows Bluetooth profile coordination enabled"
+        } else {
+            "playback: Windows Bluetooth profile coordination unavailable"
+        });
+        self.check_cancelled()
+    }
+
+    pub fn coordination_request(&self) -> Option<coordination::Request> {
+        self.coordination.as_ref()?.pending()
+    }
+
+    pub fn coordination_suspended(&self) -> bool {
+        self.coordination
+            .as_ref()
+            .is_some_and(|coordinator| coordinator.suspended())
+    }
+
+    pub fn coordination_allows_playback(&self) -> bool {
+        self.coordination
+            .as_ref()
+            .is_none_or(|coordinator| coordinator.allows_playback())
+    }
+
+    pub fn report_coordination(
+        &mut self,
+        applied_policy_suspended: bool,
+        producer_playing: bool,
+        acknowledge: u32,
+    ) -> io::Result<()> {
+        if let Some(coordinator) = &mut self.coordination {
+            coordinator.report(
+                &self.driver,
+                applied_policy_suspended,
+                producer_playing,
+                acknowledge,
+            )?;
+        }
+        Ok(())
     }
 
     pub fn media(&mut self, packet: &[u8]) -> io::Result<()> {
@@ -632,11 +683,44 @@ fn eld_bitrate_limit(mtu: usize, aus: usize) -> io::Result<u32> {
     Ok(au_budget.saturating_sub(1).min(320) as u32 * 800)
 }
 
+#[derive(Debug)]
+struct InitialSignalingRejected(io::Error);
+
+impl std::fmt::Display for InitialSignalingRejected {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "Initial playback channel was rejected: {}",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for InitialSignalingRejected {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+fn initial_signaling_error(error: io::Error) -> io::Error {
+    if error.raw_os_error() == Some(ERROR_REQ_NOT_ACCEP as i32) {
+        io::Error::other(InitialSignalingRejected(error))
+    } else {
+        error
+    }
+}
+
+pub fn initial_signaling_rejected(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|error| error.is::<InitialSignalingRejected>())
+}
+
 fn open_signaling_with_retry(
     mut open: impl FnMut() -> io::Result<usize>,
     mut wait: impl FnMut(Duration) -> io::Result<()>,
 ) -> io::Result<usize> {
-    // Retry before any signaling or endpoint ownership; later failures need explicit recovery.
+    // Exhaust short retries before asking the control owner for one full session repair.
     let mut retries = 0;
     loop {
         match open() {
@@ -663,6 +747,13 @@ impl Drop for Session {
     fn drop(&mut self) {
         self.closing = true;
         let _ = self.suspend();
+        if let Some(coordinator) = self.coordination.take() {
+            if let Err(error) = coordinator.disable(&self.driver) {
+                crate::log(&format!(
+                    "playback: profile coordination cleanup failed: {error}"
+                ));
+            }
+        }
         if self.seid != 0 && !self.peer_ended {
             let signal = if matches!(self.state, StreamState::Open | StreamState::Streaming) {
                 CLOSE
@@ -1048,6 +1139,26 @@ mod tests {
         assert_eq!(attempted, Mode::Aac);
         assert_eq!(selected.mode, attempted);
         assert_eq!(selected.bitrate, 128000);
+    }
+
+    #[test]
+    fn only_initial_channel_limit_can_request_control_session_repair() {
+        let initial = initial_signaling_error(io::Error::from_raw_os_error(71));
+        assert!(initial_signaling_rejected(&initial));
+        assert!(!initial_signaling_rejected(&io::Error::from_raw_os_error(
+            71
+        )));
+        assert!(!initial_signaling_rejected(&io::Error::other(
+            initial.to_string()
+        )));
+        for code in [5, 995, 1167, 1460] {
+            let error = initial_signaling_error(io::Error::from_raw_os_error(code));
+            assert!(!initial_signaling_rejected(&error));
+            assert_eq!(error.raw_os_error(), Some(code));
+        }
+        let interrupted = initial_signaling_error(io::Error::from(io::ErrorKind::Interrupted));
+        assert_eq!(interrupted.kind(), io::ErrorKind::Interrupted);
+        assert!(!initial_signaling_rejected(&interrupted));
     }
 
     #[test]

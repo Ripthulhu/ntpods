@@ -24,6 +24,8 @@
 #define FALSE false
 #define RtlZeroMemory(p, n) std::memset(p, 0, n)
 #define RtlCopyMemory(p, s, n) std::memcpy(p, s, n)
+#define NTAPI
+#define __declspec(x)
 using ULONG = uint32_t;
 using LONG = int32_t;
 using USHORT = uint16_t;
@@ -40,7 +42,8 @@ constexpr NTSTATUS STATUS_SUCCESS = 0, STATUS_INVALID_PARAMETER = -1,
     STATUS_INSUFFICIENT_RESOURCES = -4, STATUS_DEVICE_PROTOCOL_ERROR = -5,
     STATUS_INVALID_BUFFER_SIZE = -6, STATUS_TIMEOUT = -7, STATUS_IO_TIMEOUT = -8,
     STATUS_DATA_ERROR = -9, STATUS_CANCELLED = -10, STATUS_INVALID_DEVICE_REQUEST = -11,
-    STATUS_DEVICE_BUSY = -12;
+    STATUS_DEVICE_BUSY = -12, STATUS_NOT_SUPPORTED = -13,
+    STATUS_CONNECTION_ABORTED = -14;
 constexpr ULONG BRB_L2CA_CLOSE_CHANNEL = 1, BRB_L2CA_OPEN_CHANNEL = 2,
     BRB_L2CA_ACL_TRANSFER = 3, CF_ROLE_EITHER = 1, CF_LINK_AUTHENTICATED = 2,
     CF_LINK_ENCRYPTED = 4, CFG_MTU = 1, CFG_FLUSHTO = 2, L2CAP_INFINITE_FLUSHTO = 0xffff,
@@ -96,6 +99,7 @@ using EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL = void(Queue*, Request*, size_t, size_t
 #define FILE_WRITE_DATA 2u
 #define CTL_CODE(d,f,m,a) (((d)<<16)|((a)<<14)|((f)<<2)|(m))
 #include "../Playback.h"
+#include "../Mpm.h"
 struct BthInterface {
     PBRB (*BthAllocateBrb)(ULONG, ULONG);
     void (*BthFreeBrb)(PBRB);
@@ -116,7 +120,19 @@ static PDEVICE_CONTEXT DeviceGetContext(WDFDEVICE d) { return d; }
 static WDFDEVICE WdfIoQueueGetDevice(WDFQUEUE q) { return q->device; }
 static PVOID WdfWorkItemGetParentObject(WDFWORKITEM w) { return w->device; }
 static void WdfWorkItemEnqueue(WDFWORKITEM w) { w->queued = true; }
-static void WdfWaitLockAcquire(WDFWAITLOCK l, PVOID) { l->lock(); }
+static std::atomic<WDFWAITLOCK> pausedWaitLock{nullptr};
+static std::mutex waitHookMutex;
+static std::condition_variable waitHookChanged;
+static bool waitPaused, releaseWait;
+static void WdfWaitLockAcquire(WDFWAITLOCK l, PVOID) {
+    auto expected = l;
+    if (pausedWaitLock.compare_exchange_strong(expected, nullptr)) {
+        std::unique_lock<std::mutex> lock(waitHookMutex);
+        waitPaused = true; waitHookChanged.notify_all();
+        waitHookChanged.wait(lock, [] { return releaseWait; });
+    }
+    l->lock();
+}
 static void WdfWaitLockRelease(WDFWAITLOCK l) { l->unlock(); }
 static void WdfSpinLockAcquire(WDFWAITLOCK l) { l->lock(); }
 static void WdfSpinLockRelease(WDFWAITLOCK l) { l->unlock(); }
@@ -206,7 +222,62 @@ static NTSTATUS LpSubmitBrbSync(PDEVICE_CONTEXT, PBRB brb, WDFREQUEST r)
     }
     return STATUS_SUCCESS;
 }
+
+static bool mpmSupported = true;
+static NTSTATUS mpmRegisterStatus = STATUS_SUCCESS;
+static NTSTATUS mpmSuspendStatus = STATUS_SUCCESS, mpmPlayStatus = STATUS_SUCCESS;
+static bool mpmEarlyConnect;
+static NTSTATUS mpmEarlyConnectStatus;
+static unsigned mpmRegisterCalls, mpmUnregisterCalls, mpmConnectCalls;
+static LP_MPM_CALLBACK mpmConnectionCallback, mpmSuspendCallback;
+static PVOID mpmCallbackContext;
+static int mpmHandle;
+struct MpmUpdate { ULONG value, completion; };
+static std::vector<MpmUpdate> mpmConnectionUpdates, mpmSuspendUpdates;
+static std::vector<ULONG> mpmPlayUpdates;
+BOOLEAN LpMpmSupported(VOID) { return mpmSupported; }
+NTSTATUS NTAPI BtaMpmRegister(BTH_ADDR address, ULONG profile,
+    LP_MPM_CALLBACK connection, LP_MPM_CALLBACK suspend,
+    LP_MPM_CALLBACK, LP_MPM_CALLBACK, PVOID context, PVOID* handle)
+{
+    ++mpmRegisterCalls;
+    assert(address == static_cast<PDEVICE_CONTEXT>(context)->DeviceAddress && profile == 1);
+    assert(connection && suspend);
+    if (!NT_SUCCESS(mpmRegisterStatus)) return mpmRegisterStatus;
+    mpmConnectionCallback = connection; mpmSuspendCallback = suspend;
+    mpmCallbackContext = context;
+    if (mpmEarlyConnect) mpmEarlyConnectStatus = connection(context, 1);
+    *handle = &mpmHandle;
+    return STATUS_SUCCESS;
+}
+NTSTATUS NTAPI BtaMpmUnregister(PVOID handle) {
+    assert(handle == &mpmHandle); ++mpmUnregisterCalls;
+    auto& state = static_cast<PDEVICE_CONTEXT>(mpmCallbackContext)->Playback.Mpm;
+    const auto sequence = state.RequestSequence;
+    assert(state.Closing && !state.Enabled);
+    assert(mpmConnectionCallback(mpmCallbackContext, 1) == STATUS_CANCELLED);
+    assert(mpmSuspendCallback(mpmCallbackContext, 1) == STATUS_SUCCESS);
+    assert(state.RequestSequence == sequence);
+    return STATUS_SUCCESS;
+}
+NTSTATUS NTAPI BtaMpmConnectionRequest(PVOID handle, ULONG connect, ULONG automatic) {
+    assert(handle == &mpmHandle && connect == 1 && automatic == 0);
+    ++mpmConnectCalls; return STATUS_SUCCESS;
+}
+NTSTATUS NTAPI BtaMpmUpdateConnectionStatus(PVOID handle, ULONG connected, ULONG completion) {
+    assert(handle == &mpmHandle); mpmConnectionUpdates.push_back({connected, completion});
+    return STATUS_SUCCESS;
+}
+NTSTATUS NTAPI BtaMpmUpdateSuspendStatus(PVOID handle, ULONG suspended, ULONG completion) {
+    assert(handle == &mpmHandle); mpmSuspendUpdates.push_back({suspended, completion});
+    return mpmSuspendStatus;
+}
+NTSTATUS NTAPI BtaMpmUpdatePlayStatus(PVOID handle, ULONG playing) {
+    assert(handle == &mpmHandle); mpmPlayUpdates.push_back(playing);
+    return mpmPlayStatus;
+}
 #include "../Playback.c"
+#include "../Mpm.c"
 
 template<typename T> static void payload(Request& r, const T& value) {
     r.input.resize(sizeof(value)); std::memcpy(r.input.data(), &value, sizeof(value));
@@ -226,6 +297,240 @@ static void closeMedia(PDEVICE_CONTEXT c) {
     Request r; payload(r, LP_PLAYBACK_CLOSE_INPUT{2, 1});
     submit(c, r, IOCTL_LP_PLAYBACK_CLOSE);
     assert(r.status == STATUS_SUCCESS && r.count == 0 && !c->Playback.Channels[1].Handle);
+}
+static LP_PLAYBACK_MPM_OUTPUT mpmControl(PDEVICE_CONTEXT c, ULONG operation,
+    ULONG flags = 0, ULONG ack = 0, NTSTATUS expected = STATUS_SUCCESS)
+{
+    Request r;
+    payload(r, LP_PLAYBACK_MPM_INPUT{LP_PLAYBACK_MPM_VERSION, operation,
+        operation == LP_PLAYBACK_MPM_QUERY ? 0u : c->Playback.Channels[0].Generation, ack, flags});
+    r.output.resize(sizeof(LP_PLAYBACK_MPM_OUTPUT));
+    submit(c, r, IOCTL_LP_PLAYBACK_MPM);
+    assert(r.status == expected);
+    LP_PLAYBACK_MPM_OUTPUT output{};
+    if (NT_SUCCESS(r.status)) {
+        assert(r.count == sizeof(output));
+        std::memcpy(&output, r.output.data(), sizeof(output));
+        assert(output.Version == LP_PLAYBACK_MPM_VERSION);
+    } else {
+        assert(r.count == 0);
+    }
+    return output;
+}
+static void abortedMediaOpen(PDEVICE_CONTEXT c)
+{
+    const auto opens = openCalls.load();
+    Request r; payload(r, LP_PLAYBACK_OPEN_INPUT_V2{{2, 1, c->DeviceAddress}, 60});
+    r.output.resize(16); submit(c, r, IOCTL_LP_PLAYBACK_OPEN);
+    assert(r.status == STATUS_CONNECTION_ABORTED && r.count == 0 && openCalls == opens);
+}
+static void mpmContract(PDEVICE_CONTEXT c)
+{
+    assert(mpmRegisterCalls == 0 && mpmConnectCalls == 0 && mpmUnregisterCalls == 0);
+    auto query = mpmControl(c, LP_PLAYBACK_MPM_QUERY);
+    assert(query.StateFlags == 0 && query.RequestSequence == 0);
+    assert(query.SignalingGeneration == c->Playback.Channels[0].Generation);
+    mpmControl(c, LP_PLAYBACK_MPM_ENABLE, 0, 0, STATUS_DEVICE_NOT_CONNECTED);
+    open(c, 0); open(c, 1);
+    auto signaling = c->Playback.Channels[0].Handle;
+    const auto opens = openCalls.load(), closes = closeCalls.load();
+    LP_PLAYBACK_MPM_INPUT valid{1, LP_PLAYBACK_MPM_ENABLE, c->Playback.Channels[0].Generation, 0, 0};
+    for (auto input : {LP_PLAYBACK_MPM_INPUT{0, 1, valid.SignalingGeneration, 0, 0},
+         {2, 1, valid.SignalingGeneration, 0, 0}, {1, 4, valid.SignalingGeneration, 0, 0},
+         {1, 1, valid.SignalingGeneration, 1, 0}, {1, 1, valid.SignalingGeneration, 0, 4},
+         {1, 0, 1, 0, 0}, {1, 0, 0, 1, 0}, {1, 0, 0, 0, 1},
+         {1, 3, valid.SignalingGeneration, 1, 0}, {1, 3, valid.SignalingGeneration, 0, 1}}) {
+        Request bad; payload(bad, input); bad.output.resize(16);
+        submit(c, bad, IOCTL_LP_PLAYBACK_MPM);
+        assert(bad.status == STATUS_INVALID_PARAMETER && bad.count == 0);
+    }
+    for (size_t bytes : {0u, 1u, 19u, 21u, 24u}) {
+        Request bad; payload(bad, valid); bad.input.resize(bytes); bad.output.resize(16);
+        submit(c, bad, IOCTL_LP_PLAYBACK_MPM);
+        assert(bad.status == STATUS_INVALID_PARAMETER && bad.count == 0);
+    }
+    for (size_t bytes : {0u, 15u, 17u, 20u}) {
+        Request bad; payload(bad, valid); bad.output.resize(bytes);
+        submit(c, bad, IOCTL_LP_PLAYBACK_MPM);
+        assert(bad.status == STATUS_INVALID_PARAMETER && bad.count == 0);
+    }
+    c->Playback.Mpm.Supported = false;
+    mpmControl(c, LP_PLAYBACK_MPM_ENABLE, 0, 0, STATUS_NOT_SUPPORTED);
+    assert(mpmRegisterCalls == 0 && c->Playback.Channels[0].Handle == signaling);
+    c->Playback.Mpm.Supported = true;
+    mpmRegisterStatus = STATUS_INSUFFICIENT_RESOURCES;
+    mpmControl(c, LP_PLAYBACK_MPM_ENABLE, 0, 0, mpmRegisterStatus);
+    assert(mpmRegisterCalls == 1 && mpmUnregisterCalls == 0 && !c->Playback.Mpm.Enabled);
+    mpmRegisterStatus = STATUS_SUCCESS;
+    mpmSuspendStatus = STATUS_INSUFFICIENT_RESOURCES;
+    mpmControl(c, LP_PLAYBACK_MPM_ENABLE, 0, 0, mpmSuspendStatus);
+    assert(mpmRegisterCalls == 2 && mpmUnregisterCalls == 1 && !c->Playback.Mpm.Enabled);
+    mpmSuspendStatus = STATUS_SUCCESS;
+    mpmPlayStatus = STATUS_INSUFFICIENT_RESOURCES;
+    mpmControl(c, LP_PLAYBACK_MPM_ENABLE, 0, 0, mpmPlayStatus);
+    assert(mpmRegisterCalls == 3 && mpmUnregisterCalls == 2 && !c->Playback.Mpm.Enabled);
+    mpmPlayStatus = STATUS_SUCCESS;
+    Request cancelledEnable; cancelledEnable.cancelOnCheck = 3;
+    payload(cancelledEnable, valid); cancelledEnable.output.resize(16);
+    submit(c, cancelledEnable, IOCTL_LP_PLAYBACK_MPM);
+    assert(cancelledEnable.status == STATUS_CANCELLED && cancelledEnable.count == 0);
+    assert(!c->Playback.Mpm.Enabled && c->Playback.Channels[0].Handle == signaling);
+    assert(mpmRegisterCalls == 4 && mpmUnregisterCalls == 3);
+    const auto registrations = mpmRegisterCalls, unregistrations = mpmUnregisterCalls, connects = mpmConnectCalls;
+    mpmEarlyConnect = true;
+    auto state = mpmControl(c, LP_PLAYBACK_MPM_ENABLE);
+    mpmEarlyConnect = false;
+    assert(mpmEarlyConnectStatus == STATUS_SUCCESS);
+    assert(state.StateFlags == LP_PLAYBACK_MPM_STATE_ENABLED && mpmRegisterCalls == registrations + 1 && mpmConnectCalls == connects + 1);
+    assert(mpmConnectionUpdates.back().value == 1 && mpmConnectionUpdates.back().completion == 1);
+    mpmControl(c, LP_PLAYBACK_MPM_ENABLE);
+    Request cancelledAgain; cancelledAgain.cancelOnCheck = 3;
+    payload(cancelledAgain, valid); cancelledAgain.output.resize(16);
+    submit(c, cancelledAgain, IOCTL_LP_PLAYBACK_MPM);
+    assert(cancelledAgain.status == STATUS_CANCELLED && cancelledAgain.count == 0 && c->Playback.Mpm.Enabled);
+    assert(mpmRegisterCalls == registrations + 1 && mpmConnectCalls == connects + 1 && mpmUnregisterCalls == unregistrations);
+    assert(mpmConnectionCallback(mpmCallbackContext, 1) == STATUS_SUCCESS);
+    assert(mpmConnectionUpdates.back().value == 1 && mpmConnectionUpdates.back().completion == 1);
+    c->Playback.Channels[0].Connected = false;
+    assert(mpmConnectionCallback(mpmCallbackContext, 1) == STATUS_SUCCESS);
+    assert(mpmConnectionUpdates.back().value == 0 && mpmConnectionUpdates.back().completion == 1);
+    assert(!c->Playback.Aborted && !c->Playback.Channels[0].Connected);
+    c->Playback.Channels[0].Connected = true;
+    assert(mpmConnectionCallback(mpmCallbackContext, 1) == STATUS_SUCCESS);
+    assert(openCalls == opens && closeCalls == closes);
+
+    assert(mpmSuspendCallback(mpmCallbackContext, 1) == STATUS_SUCCESS);
+    state = mpmControl(c, LP_PLAYBACK_MPM_QUERY);
+    auto suspendSequence = state.RequestSequence;
+    assert(suspendSequence != 0 && state.StateFlags == 7);
+    mpmSuspendStatus = STATUS_INSUFFICIENT_RESOURCES;
+    mpmControl(c, LP_PLAYBACK_MPM_REPORT, 3, suspendSequence, mpmSuspendStatus);
+    state = mpmControl(c, LP_PLAYBACK_MPM_QUERY);
+    assert(state.RequestSequence == suspendSequence && (state.StateFlags & LP_PLAYBACK_MPM_STATE_REQUEST_PENDING));
+    mpmSuspendStatus = STATUS_SUCCESS;
+    state = mpmControl(c, LP_PLAYBACK_MPM_REPORT, 3, suspendSequence);
+    assert(state.StateFlags == 3 && mpmSuspendUpdates.back().value == 1 && mpmSuspendUpdates.back().completion == 1);
+    assert(mpmPlayUpdates.back() == 1);
+    assert(mpmSuspendCallback(mpmCallbackContext, 0) == STATUS_SUCCESS);
+    state = mpmControl(c, LP_PLAYBACK_MPM_REPORT, 3, suspendSequence);
+    const auto resumeSequence = state.RequestSequence;
+    assert(resumeSequence != suspendSequence && state.StateFlags == 5);
+    const auto updates = mpmSuspendUpdates.size();
+    Request stale; payload(stale, LP_PLAYBACK_MPM_INPUT{1, LP_PLAYBACK_MPM_REPORT,
+        valid.SignalingGeneration - 1, resumeSequence, 0}); stale.output.resize(16);
+    submit(c, stale, IOCTL_LP_PLAYBACK_MPM);
+    assert(stale.status == STATUS_DEVICE_NOT_CONNECTED && stale.count == 0 && mpmSuspendUpdates.size() == updates);
+    assert(c->Playback.Mpm.ActualFlags == 3 && c->Playback.Mpm.RequestPending);
+    state = mpmControl(c, LP_PLAYBACK_MPM_REPORT, 0, resumeSequence);
+    assert(state.StateFlags == 1 && mpmSuspendUpdates.back().value == 0 && mpmSuspendUpdates.back().completion == 1);
+    assert(mpmPlayUpdates.back() == 0 && openCalls == opens && closeCalls == closes);
+
+    mpmPlayStatus = STATUS_INSUFFICIENT_RESOURCES;
+    mpmControl(c, LP_PLAYBACK_MPM_REPORT, 2, 0, mpmPlayStatus);
+    const auto playCalls = mpmPlayUpdates.size();
+    mpmPlayStatus = STATUS_SUCCESS;
+    mpmControl(c, LP_PLAYBACK_MPM_REPORT, 2);
+    assert(mpmPlayUpdates.size() == playCalls + 1 && mpmPlayUpdates.back() == 1);
+    mpmControl(c, LP_PLAYBACK_MPM_REPORT, 0);
+    assert(mpmSuspendUpdates.back().value == 0 && !c->Playback.Mpm.RequestPending);
+    assert(openCalls == opens && closeCalls == closes);
+
+    assert(mpmConnectionCallback(mpmCallbackContext, 0) == STATUS_SUCCESS);
+    assert(c->Playback.Aborted && c->Playback.WorkQueued && c->Playback.DisconnectWork->queued);
+    abortedMediaOpen(c);
+    mpmControl(c, LP_PLAYBACK_MPM_QUERY, 0, 0, STATUS_CONNECTION_ABORTED);
+    mpmControl(c, LP_PLAYBACK_MPM_REPORT, 0, 0, STATUS_CONNECTION_ABORTED);
+    mpmControl(c, LP_PLAYBACK_MPM_ENABLE, 0, 0, STATUS_CONNECTION_ABORTED);
+    const auto transfers = transferCalls.load();
+    Request blocked; payload(blocked, LP_PLAYBACK_SEND_INPUT{1, 0}); blocked.input.resize(12);
+    submit(c, blocked, IOCTL_LP_PLAYBACK_SEND);
+    assert(blocked.status == STATUS_CONNECTION_ABORTED && transferCalls == transfers);
+    LpPlaybackDisconnected(c->Playback.DisconnectWork);
+    assert(!c->Playback.Channels[0].Connected && !c->Playback.Channels[1].Handle);
+    assert(mpmConnectionUpdates.back().value == 0 && mpmConnectionUpdates.back().completion == 1);
+    assert(mpmUnregisterCalls == unregistrations + 1 && !c->Playback.Mpm.Enabled);
+    abortedMediaOpen(c);
+    mpmControl(c, LP_PLAYBACK_MPM_QUERY, 0, 0, STATUS_CONNECTION_ABORTED);
+    mpmControl(c, LP_PLAYBACK_MPM_REPORT, 0, 0, STATUS_CONNECTION_ABORTED);
+    open(c, 0);
+    assert(!c->Playback.Aborted);
+    mpmControl(c, LP_PLAYBACK_MPM_ENABLE);
+    const auto newGeneration = c->Playback.Channels[0].Generation;
+    const auto connectionCalls = mpmConnectionUpdates.size();
+    LpMpmDisconnected(c, valid.SignalingGeneration);
+    assert(c->Playback.Channels[0].Generation == newGeneration && c->Playback.Mpm.Enabled);
+    assert(mpmConnectionUpdates.size() == connectionCalls && mpmUnregisterCalls == unregistrations + 1);
+    mpmControl(c, LP_PLAYBACK_MPM_DISABLE);
+    assert(mpmUnregisterCalls == unregistrations + 2 && c->Playback.Channels[0].Connected);
+    mpmControl(c, LP_PLAYBACK_MPM_ENABLE);
+    assert(mpmSuspendCallback(mpmCallbackContext, 1) == STATUS_SUCCESS);
+    state = mpmControl(c, LP_PLAYBACK_MPM_REPORT, 0, resumeSequence);
+    assert(state.RequestSequence != resumeSequence && state.StateFlags == 7);
+    mpmControl(c, LP_PLAYBACK_MPM_REPORT, 0, state.RequestSequence);
+    mpmControl(c, LP_PLAYBACK_MPM_DISABLE);
+    assert(mpmUnregisterCalls == unregistrations + 3 && c->Playback.Channels[0].Connected);
+    open(c, 1);
+    mpmControl(c, LP_PLAYBACK_MPM_ENABLE);
+    INDICATION_PARAMETERS lost{c->Playback.Channels[0].Handle, {{false}}};
+    LpPlaybackIndication(&c->Playback.Channels[0], IndicationRemoteDisconnect, &lost);
+    assert(lost.Parameters.Disconnect.CloseNow && !c->Playback.Aborted && c->Playback.WorkQueued);
+    LpPlaybackDisconnected(c->Playback.DisconnectWork);
+    assert(mpmConnectionUpdates.back().value == 0 && mpmConnectionUpdates.back().completion == 0);
+    assert(!c->Playback.Aborted && !c->Playback.Mpm.Enabled);
+    open(c, 0); open(c, 1);
+    mpmControl(c, LP_PLAYBACK_MPM_ENABLE);
+    INDICATION_PARAMETERS policyAfterLoss{c->Playback.Channels[0].Handle, {{false}}};
+    LpPlaybackIndication(&c->Playback.Channels[0], IndicationRemoteDisconnect, &policyAfterLoss);
+    assert(!c->Playback.Aborted && c->Playback.WorkQueued);
+    assert(mpmConnectionCallback(mpmCallbackContext, 0) == STATUS_SUCCESS);
+    assert(c->Playback.Aborted);
+    LpPlaybackDisconnected(c->Playback.DisconnectWork);
+    assert(mpmConnectionUpdates.back().value == 0 && mpmConnectionUpdates.back().completion == 1);
+    mpmControl(c, LP_PLAYBACK_MPM_QUERY, 0, 0, STATUS_CONNECTION_ABORTED);
+    open(c, 0); open(c, 1);
+    mpmControl(c, LP_PLAYBACK_MPM_ENABLE);
+    assert(mpmConnectionCallback(mpmCallbackContext, 0) == STATUS_SUCCESS);
+    failClose = true;
+    LpPlaybackDisconnected(c->Playback.DisconnectWork);
+    failClose = false;
+    assert(c->Playback.Aborted && c->Playback.Channels[0].Handle);
+    assert(mpmConnectionUpdates.back().value == 1 && mpmConnectionUpdates.back().completion == 0);
+    assert(!c->Playback.Mpm.Enabled);
+    failClose = true;
+    Request failedMediaClose; payload(failedMediaClose, LP_PLAYBACK_CLOSE_INPUT{2, 1});
+    submit(c, failedMediaClose, IOCTL_LP_PLAYBACK_CLOSE);
+    failClose = false;
+    assert(failedMediaClose.status == STATUS_CONNECTION_ABORTED && failedMediaClose.count == 0);
+    assert(c->Playback.Channels[1].Handle && c->Playback.Aborted);
+    Request close; submit(c, close, IOCTL_LP_PLAYBACK_CLOSE);
+    assert(close.status == STATUS_SUCCESS);
+}
+static void mpmCloseEnableRace(PDEVICE_CONTEXT c)
+{
+    open(c, 0);
+    mpmControl(c, LP_PLAYBACK_MPM_ENABLE);
+    const auto registrations = mpmRegisterCalls;
+    Request enable;
+    payload(enable, LP_PLAYBACK_MPM_INPUT{1, LP_PLAYBACK_MPM_ENABLE,
+        c->Playback.Channels[0].Generation, 0, 0}); enable.output.resize(16);
+    waitPaused = releaseWait = false;
+    pausedWaitLock = c->OperationLock;
+    Request close;
+    auto closing = std::async(std::launch::async, [&] { submit(c, close, IOCTL_LP_PLAYBACK_CLOSE); });
+    {
+        std::unique_lock<std::mutex> lock(waitHookMutex);
+        assert(waitHookChanged.wait_for(lock, std::chrono::seconds(2), [] { return waitPaused; }));
+    }
+    assert(!c->Playback.Mpm.Lock->try_lock());
+    auto enabling = std::async(std::launch::async, [&] { submit(c, enable, IOCTL_LP_PLAYBACK_MPM); });
+    assert(enabling.wait_for(std::chrono::milliseconds(20)) == std::future_status::timeout);
+    {
+        std::lock_guard<std::mutex> lock(waitHookMutex);
+        releaseWait = true; waitHookChanged.notify_all();
+    }
+    closing.get(); enabling.get();
+    assert(close.status == STATUS_SUCCESS && enable.status == STATUS_DEVICE_NOT_CONNECTED);
+    assert(mpmRegisterCalls == registrations && !c->Playback.Mpm.Enabled && !c->Playback.Channels[0].Connected);
 }
 static void flushOptions(PDEVICE_CONTEXT c) {
     open(c, 0);
@@ -368,7 +673,11 @@ int main()
     static_assert(sizeof(LP_PLAYBACK_OPEN_INPUT) == 16 && sizeof(LP_PLAYBACK_OPEN_OUTPUT) == 16);
     static_assert(sizeof(LP_PLAYBACK_OPEN_INPUT_V2) == 20 && sizeof(LP_PLAYBACK_CLOSE_INPUT) == 8);
     static_assert(sizeof(LP_PLAYBACK_RECEIVE_INPUT) == 12 && sizeof(LP_PLAYBACK_STATUS_OUTPUT) == 28);
-    static_assert(IOCTL_LP_PLAYBACK_OPEN == 0x8000e040 && IOCTL_LP_PLAYBACK_STATUS == 0x8000e050);
+    static_assert(sizeof(LP_PLAYBACK_MPM_INPUT) == 20 && sizeof(LP_PLAYBACK_MPM_OUTPUT) == 16);
+    static_assert(offsetof(LP_PLAYBACK_MPM_INPUT, ActualFlags) == 16 &&
+        offsetof(LP_PLAYBACK_MPM_OUTPUT, StateFlags) == 12);
+    static_assert(IOCTL_LP_PLAYBACK_OPEN == 0x8000e040 && IOCTL_LP_PLAYBACK_STATUS == 0x8000e050 &&
+        IOCTL_LP_PLAYBACK_MPM == 0x8000e054);
     assert(LpIsAllowedUserSid(L"S-1-5-21-1-2-3-1001", 19));
     assert(LpValidPacketLength(8192) && !LpValidPacketLength(8193));
     assert(!LpPlaybackValidPeer(0x1000000000000ULL, 0x1000000000000ULL, 1));
@@ -434,9 +743,12 @@ int main()
     LpPlaybackDisconnected(c.Playback.DisconnectWork);
     assert(!c.Playback.Channels[1].Handle && c.Playback.WorkQueued == 0);
     flushOptions(&c);
+    mpmContract(&c);
+    mpmCloseEnableRace(&c);
     c.Stopping = 1; Request stopped; stopped.output.resize(28); submit(&c,stopped,IOCTL_LP_PLAYBACK_STATUS);
     assert(stopped.status == STATUS_DEVICE_NOT_READY);
     for (auto& channel : c.Playback.Channels) { delete channel.SendLock; delete channel.ReceiveLock; }
+    delete c.Playback.Mpm.Lock;
     delete c.Playback.Queue; delete c.Playback.DisconnectWork;
-    std::puts("Playback transport: boundaries, concurrent I/O and teardown passed.");
+    std::puts("Playback transport: boundaries, concurrent I/O, coordinator policy and teardown passed.");
 }

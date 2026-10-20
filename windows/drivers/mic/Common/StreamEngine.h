@@ -1,4 +1,5 @@
 #pragma once
+#include "MicTiming.h"
 
 #define HNSTIME_PER_MILLISECOND 10000
 
@@ -152,7 +153,8 @@ public:
     PAGED_CODE_SEG
     CStreamEngine(
         _In_    ACXSTREAM       Stream, 
-        _In_    ACXDATAFORMAT   StreamFormat
+        _In_    ACXDATAFORMAT   StreamFormat,
+        _In_    ULONG           MaximumPacketBytes = MIC_RT_MAX_PACKET_BYTES
         );
 
     virtual
@@ -164,6 +166,7 @@ protected:
     PVOID               m_Packets[MAX_PACKET_COUNT];
     ULONG               m_PacketsCount;
     ULONG               m_PacketSize;
+    const ULONG         m_MaximumPacketBytes;
     ULONG               m_FirstPacketOffset;
     WDFTIMER            m_NotificationTimer;
     ACX_STREAM_STATE    m_CurrentState;

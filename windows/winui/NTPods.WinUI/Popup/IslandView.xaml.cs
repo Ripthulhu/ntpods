@@ -30,6 +30,7 @@ public sealed partial class IslandView : UserControl
     public bool IsNearbyConnection => _connectionMessage && _nearby;
     public bool IsConnecting => IsNearbyConnection && _action.State == IslandConnectState.Connecting;
     public IslandConnectState ConnectState => _action.State;
+    public DateTimeOffset? BatteryDisplayExpiresAt { get; private set; }
     public bool CanConnect => !_closing && IsNearbyConnection && _action.CanConnect;
     public event Action? ConnectRequested;
 
@@ -82,8 +83,10 @@ public sealed partial class IslandView : UserControl
         UpdateSnapshot(snapshot ?? new Snapshot { Model = model ?? "" }, now, animate);
     }
 
-    public void UpdateSnapshot(Snapshot s, double now, bool animate)
+    public void UpdateSnapshot(Snapshot s, double now, bool animate, DateTimeOffset? utcNow = null)
     {
+        var batteryNow = utcNow ?? DateTimeOffset.UtcNow;
+        BatteryDisplayExpiresAt = IslandBatteryPresentation.CaseGraceExpiresAt(s, batteryNow);
         _animate = animate;
         SetImage(s);
         if (_connectionMessage)
@@ -103,25 +106,26 @@ public sealed partial class IslandView : UserControl
         CaseLabel.Text = Localize.Get("BatteryCaseLabel_Text");
         RightCell.Visibility = CaseCell.Visibility = headphone ? Visibility.Collapsed : Visibility.Visible;
         Grid.SetColumnSpan(LeftCell, headphone ? 3 : 1);
+        Grid.SetColumnSpan(LeftFreshness, headphone ? 3 : 1);
         LeftCell.HorizontalAlignment = headphone ? HorizontalAlignment.Center : HorizontalAlignment.Stretch;
         SetBattery(0, LeftRing, LeftText, LeftBolt, LeftCell, LeftLabel.Text,
-            s, headphone ? BatteryPart.Headphone : BatteryPart.Left, now, animate);
-        SetBattery(1, RightRing, RightText, RightBolt, RightCell, RightLabel.Text, s, BatteryPart.Right, now, animate);
-        SetBattery(2, CaseRing, CaseText, CaseBolt, CaseCell, CaseLabel.Text, s, BatteryPart.Case, now, animate);
-        string freshness = BatteryPresentation.SharedFreshnessText(s, headphone);
+            s, headphone ? BatteryPart.Headphone : BatteryPart.Left, now, animate, batteryNow);
+        SetBattery(1, RightRing, RightText, RightBolt, RightCell, RightLabel.Text, s, BatteryPart.Right, now, animate, batteryNow);
+        SetBattery(2, CaseRing, CaseText, CaseBolt, CaseCell, CaseLabel.Text, s, BatteryPart.Case, now, animate, batteryNow);
+        string freshness = IslandBatteryPresentation.SharedFreshnessText(s, headphone, batteryNow);
         FreshnessText.Text = freshness;
-        FreshnessText.Visibility = freshness.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
-        SetFreshness(LeftFreshness, s, headphone ? BatteryPart.Headphone : BatteryPart.Left, freshness);
-        SetFreshness(RightFreshness, s, BatteryPart.Right, freshness);
-        SetFreshness(CaseFreshness, s, BatteryPart.Case, freshness);
+        SetFreshness(LeftFreshness, s, headphone ? BatteryPart.Headphone : BatteryPart.Left, freshness, batteryNow);
+        SetFreshness(RightFreshness, s, BatteryPart.Right, freshness, batteryNow, headphone);
+        SetFreshness(CaseFreshness, s, BatteryPart.Case, freshness, batteryNow, headphone);
         RefreshDescription();
     }
 
-    private static void SetFreshness(TextBlock text, Snapshot snapshot, BatteryPart part, string shared)
+    private static void SetFreshness(TextBlock text, Snapshot snapshot, BatteryPart part, string shared,
+        DateTimeOffset utcNow, bool hidden = false)
     {
-        text.Text = shared.Length == 0 && BatteryPresentation.Reading(snapshot, part).HasValue
-            && !BatteryPresentation.IsLive(snapshot, part) ? BatteryPresentation.FreshnessText(snapshot, part) : "";
-        text.Visibility = text.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        text.Text = !hidden && shared.Length == 0 && BatteryPresentation.Reading(snapshot, part).HasValue
+            && !IslandBatteryPresentation.IsCurrentForDisplay(snapshot, part, utcNow)
+            ? IslandBatteryPresentation.FreshnessText(snapshot, part, utcNow) : "";
     }
 
     public void SetConnectState(IslandConnectState state, double now, bool animate)
@@ -161,20 +165,20 @@ public sealed partial class IslandView : UserControl
     }
 
     private void SetBattery(int index, ProgressRing ring, TextBlock text, FrameworkElement bolt, FrameworkElement cell,
-        string label, Snapshot snapshot, BatteryPart part, double now, bool animate)
+        string label, Snapshot snapshot, BatteryPart part, double now, bool animate, DateTimeOffset utcNow)
     {
         byte? value = BatteryPresentation.Reading(snapshot, part);
-        bool live = BatteryPresentation.IsLive(snapshot, part);
+        bool current = IslandBatteryPresentation.IsCurrentForDisplay(snapshot, part, utcNow);
         bool charging = BatteryPresentation.IsCharging(snapshot, part);
-        string freshness = BatteryPresentation.FreshnessText(snapshot, part);
+        string freshness = IslandBatteryPresentation.FreshnessText(snapshot, part, utcNow);
         _gauges[index].Set(value, now, animate);
-        text.Opacity = live ? 1 : 0.60;
+        text.Opacity = current ? 1 : 0.60;
         AutomationProperties.SetHelpText(cell, freshness);
         ToolTipService.SetToolTip(cell, string.IsNullOrEmpty(freshness) ? null : freshness);
         text.Text = value.HasValue ? $"{value}%" : "—";
-        bolt.Visibility = live && value.HasValue && charging ? Visibility.Visible : Visibility.Collapsed;
+        bolt.Visibility = value.HasValue && charging ? Visibility.Visible : Visibility.Collapsed;
         string prefix = index == 0 ? "Left" : index == 1 ? "Right" : "Case";
-        VisualStateManager.GoToState(this, prefix + (!live ? "Cached" : value is <= 25 ? "Low" : "Normal"), false);
+        VisualStateManager.GoToState(this, prefix + (!current ? "Cached" : value is <= 25 ? "Low" : "Normal"), false);
         AutomationProperties.SetName(cell, $"{label}, {text.Text}" + (bolt.Visibility == Visibility.Visible ? ", " + Localize.Get("Battery_Charging") : ""));
         ring.Value = _gauges[index].Value;
     }
@@ -222,19 +226,16 @@ public sealed partial class IslandView : UserControl
             RenderAction();
         }
         double available = (width - Payload.Padding.Left - Payload.Padding.Right - 2 * BatteryRow.ColumnSpacing) / 3;
-        foreach (var (readout, text) in new[] { (LeftReadout, LeftText), (RightReadout, RightText), (CaseReadout, CaseText) })
-        {
-            text.Measure(new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
-            readout.Orientation = RightCell.Visibility == Visibility.Visible && text.DesiredSize.Width + 34 > available
-                ? Orientation.Vertical : Orientation.Horizontal;
-        }
+        BatteryMeasure.Measure(new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
+        var orientation = RightCell.Visibility == Visibility.Visible && BatteryMeasure.DesiredSize.Width + 34 > available
+            ? Orientation.Vertical : Orientation.Horizontal;
+        LeftReadout.Orientation = RightReadout.Orientation = CaseReadout.Orientation = orientation;
         return base.MeasureOverride(availableSize);
     }
 
     private void RenderAction()
     {
         double opacity = _action.Visibility;
-        ConnectButton.Visibility = opacity > 0 ? Visibility.Visible : Visibility.Collapsed;
         ConnectButton.Opacity = opacity;
         MessageIcons.Opacity = 1 - opacity;
         ConnectButton.IsEnabled = _action.CanConnect;

@@ -81,11 +81,11 @@ public sealed class DaemonClient : IDisposable
 
     private static byte[] Encode(object command) => Encoding.UTF8.GetBytes(Wire.ToLine(command));
     public void RequestState() => Send(new GetStateCmd());
-    public void SetAnc(byte mode) => Send(new SetAncCmd { Mode = mode });
+    public void SetAnc(byte mode, string? deviceId = null) => Send(new SetAncCmd { Mode = mode, DeviceId = deviceId });
     public void SetMicMode(bool auto, bool manual) => Send(new SetMicModeCmd { Auto = auto, Manual = manual });
     public void SetFeature(byte feature, bool on) => Send(new SetFeatureCmd { Feature = feature, On = on });
     public void SetControl(byte id, byte value) => Send(new SetControlCmd { Id = id, Value = value });
-    public void SetDeviceControl(byte id, uint value) => Send(new SetDeviceControlCmd { Id = id, Value = value });
+    public void SetDeviceControl(byte id, uint value, string? deviceId = null) => Send(new SetDeviceControlCmd { Id = id, Value = value, DeviceId = deviceId });
     public void SetEq(Equalizer eq) => Send(new SetEqCmd { Mode = eq.Mode, Low = eq.Low, Mid = eq.Mid, High = eq.High });
     public void SetAutoPause(bool on) => Send(new SetAutoPauseCmd { On = on });
     public void RefreshDeviceSettings() => Send(new RefreshDeviceSettingsCmd());

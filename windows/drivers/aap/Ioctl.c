@@ -62,7 +62,8 @@ VOID LpEvtIoDispatch(WDFQUEUE Queue, WDFREQUEST Request, size_t OutputBufferLeng
 #if NTPODS_EXPERIMENTAL_PLAYBACK
     else if (IoControlCode == IOCTL_LP_PLAYBACK_SEND ||
              IoControlCode == IOCTL_LP_PLAYBACK_RECEIVE ||
-             IoControlCode == IOCTL_LP_PLAYBACK_STATUS) destination = ctx->Playback.Queue;
+             IoControlCode == IOCTL_LP_PLAYBACK_STATUS ||
+             IoControlCode == IOCTL_LP_PLAYBACK_MPM) destination = ctx->Playback.Queue;
 #endif
     status = WdfRequestForwardToIoQueue(Request, destination);
     if (!NT_SUCCESS(status)) WdfRequestComplete(Request, status);

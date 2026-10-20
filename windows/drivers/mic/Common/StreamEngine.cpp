@@ -38,10 +38,12 @@ _Use_decl_annotations_
 PAGED_CODE_SEG
 CStreamEngine::CStreamEngine(
     _In_ ACXSTREAM Stream,
-    _In_ ACXDATAFORMAT StreamFormat
+    _In_ ACXDATAFORMAT StreamFormat,
+    _In_ ULONG MaximumPacketBytes
 )
     : m_PacketsCount(0),
     m_PacketSize(0),
+    m_MaximumPacketBytes(MaximumPacketBytes),
     m_FirstPacketOffset(0),
     m_NotificationTimer(NULL),
     m_CurrentState(AcxStreamStateStop),
@@ -91,7 +93,7 @@ CStreamEngine::AllocateRtPackets(
     *Packets = NULL;
     // shortcut: only two event-driven packets are supported; timer-driven capture needs page-aligned incremental filling.
     if (PacketCount == 1) return STATUS_NOT_SUPPORTED;
-    if (!MicRtPacketLayoutValid(PacketCount, PacketSize))
+    if (!MicRtPacketLayoutValid(PacketCount, PacketSize, m_MaximumPacketBytes))
     {
         status = STATUS_INVALID_PARAMETER;
         goto exit;
@@ -403,7 +405,7 @@ CStreamEngine::Run()
         status = STATUS_INVALID_STATE_TRANSITION;
         goto exit;
     }
-    if (!MicRtPacketLayoutValid(m_PacketsCount, m_PacketSize) || bytesPerSecond == 0)
+    if (!MicRtPacketLayoutValid(m_PacketsCount, m_PacketSize, m_MaximumPacketBytes) || bytesPerSecond == 0)
     {
         KeReleaseSpinLock(&m_PacketLock, irql);
         status = STATUS_INVALID_DEVICE_STATE;

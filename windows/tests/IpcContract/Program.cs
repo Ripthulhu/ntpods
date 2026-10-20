@@ -93,6 +93,16 @@ for (var index = 0; index < lines.Length - 2; ++index)
         s.HardwareDiagnosticsPending == (raw.RootElement.TryGetProperty("hardware_diagnostics_pending", out var diagnosticPending) && diagnosticPending.GetBoolean()) &&
         s.HardwareDiagnosticsError == (raw.RootElement.TryGetProperty("hardware_diagnostics_error", out var diagnosticError) && diagnosticError.ValueKind != JsonValueKind.Null
             ? diagnosticError.GetString() : null), "Saved diagnostics must retain their full-width dates and separate read status.");
+    var expectedMetadata = raw.RootElement.TryGetProperty("hearing_metadata", out var metadata) && metadata.ValueKind != JsonValueKind.Null
+        ? metadata.Deserialize<HearingMetadata>() : null;
+    Check((s.HearingMetadata is null ? expectedMetadata is null : s.HearingMetadata.SameValues(expectedMetadata)) &&
+        s.HearingMetadataPending == (raw.RootElement.TryGetProperty("hearing_metadata_pending", out var metadataPending) && metadataPending.GetBoolean()) &&
+        s.HearingMetadataError == (raw.RootElement.TryGetProperty("hearing_metadata_error", out var metadataError) && metadataError.ValueKind != JsonValueKind.Null
+            ? metadataError.GetString() : null), "Raw hearing metadata and its read status must survive IPC without inventing calibration units.");
+    Check(s.HardwareCheck == (raw.RootElement.TryGetProperty("hardware_check", out var hardwareCheck) && hardwareCheck.ValueKind != JsonValueKind.Null
+            ? hardwareCheck.Deserialize<HardwareCheckState>() : null) &&
+        s.EarbudsInCase == (raw.RootElement.TryGetProperty("earbuds_in_case", out var inCase) && inCase.ValueKind != JsonValueKind.Null
+            ? inCase.GetBoolean() : (bool?)null), "Hardware-check progress and unknown case presence must survive IPC independently.");
     if (index < phases.Length)
     {
         var phase = phases[index];
@@ -110,6 +120,9 @@ for (var index = 0; index < lines.Length - 2; ++index)
         Check(s.BatteryFreshness is { Left.Present: true, Right.Present: true, Case.Present: false, Headphone.Present: null },
             "Explicit component presence must remain separate from cached battery readings across IPC.");
         Check(s.MicState == phase, $"Lifecycle state changed: {phase}");
+        if (phase != "unavailable")
+            Check(s.HardwareDiagnostics?.Left.FirstUseUnixSeconds == uint.MaxValue && s.HardwareDiagnostics.Right.FirstUseUnixSeconds is null,
+                "First-use timestamps must preserve the full unsigned width and independent unknown ears.");
         Check(s.MicCaptureActive == (phase is "starting" or "capturing" or "error" or "waiting_for_ear"), $"Capture-client flag wrong: {phase}");
         Check(s.MicUplinkActive == (phase is "starting" or "capturing" or "stopping" or "recovering"), $"Physical-uplink flag wrong: {phase}");
         Check(s.MicRecording == (phase == "capturing"), $"Recording flag wrong: {phase}");
@@ -161,6 +174,9 @@ for (var index = 0; index < lines.Length - 2; ++index)
             "Older snapshots must leave Transparency settings unknown.");
         Check(s.HardwareDiagnostics is null && !s.HardwareDiagnosticsPending && s.HardwareDiagnosticsError is null,
             "Older snapshots must leave hardware checks unknown.");
+        Check(s.HearingMetadata is null && !s.HearingMetadataPending && s.HearingMetadataError is null &&
+            s.HardwareCheck is null && s.EarbudsInCase is null,
+            "Older snapshots must not invent readable hearing metadata, an active check or case presence.");
         Check(s.HearingAidEnabled is null && s.HearingAidRevision == 0,
             "Older snapshots must not manufacture a hearing-assistance report.");
         Check(s.HearingAidSettings is null && !s.HearingAidEditable && !s.HearingAidPending && s.HearingAidError is null,
@@ -364,6 +380,102 @@ foreach (string key in new[] { "general", "measurement" })
     diagnosticOutOfRange["hardware_diagnostics"]!["left"]![key] = 8;
     Check(Wire.ParseEvent(diagnosticOutOfRange.ToJsonString()) is null, "Unknown status encodings must not exceed their three-bit fields.");
 }
+var oldDiagnostic = diagnosticFixture.DeepClone();
+foreach (string ear in new[] { "left", "right" })
+    oldDiagnostic["hardware_diagnostics"]![ear]!.AsObject().Remove("first_use_unix_seconds");
+Check(Wire.ParseEvent(oldDiagnostic.ToJsonString()) is DaemonEvent.State { Snapshot.HardwareDiagnostics: { Left.FirstUseUnixSeconds: null, Right.FirstUseUnixSeconds: null } },
+    "Saved checks from older daemons must keep first-use time unknown.");
+foreach (string value in new[] { "-1", "4294967296", "1.5", "true", "\"1\"" })
+{
+    var invalid = diagnosticFixture.DeepClone();
+    invalid["hardware_diagnostics"]!["left"]!["first_use_unix_seconds"] = JsonNode.Parse(value);
+    Check(Wire.ParseEvent(invalid.ToJsonString()) is null, "First-use time must fit an unsigned 32-bit integer or be null.");
+}
+
+var metadataState = new JsonObject { ["event"] = "state", ["hearing_metadata"] = JsonSerializer.SerializeToNode(new HearingMetadata {
+    ReadAtUnixSeconds = ulong.MaxValue, TestModeRaw = byte.MaxValue, DosimetrySensitivityRaw = -3.5f,
+    DosimetryVolumeCurveRaw = Enumerable.Range(0, 17).Select(index => index * 0.25f - 2).ToArray()
+}) };
+Check(Wire.ParseEvent(metadataState.ToJsonString()) is DaemonEvent.State { Snapshot.HearingMetadata: { TestModeRaw: byte.MaxValue, ReadAtUnixSeconds: ulong.MaxValue } },
+    "Unknown raw mode bytes and full-width read times must remain visible without assigning meanings.");
+foreach (string key in metadataState["hearing_metadata"]!.AsObject().Select(pair => pair.Key).ToArray())
+{
+    var missing = metadataState.DeepClone();
+    missing["hearing_metadata"]!.AsObject().Remove(key);
+    Check(Wire.ParseEvent(missing.ToJsonString()) is null, "A supplied metadata object must include every nullable evidence field.");
+}
+foreach (string key in new[] { "test_mode_raw", "dosimetry_sensitivity_raw", "dosimetry_volume_curve_raw" })
+{
+    var absent = metadataState.DeepClone();
+    absent["hearing_metadata"]![key] = null;
+    Check(Wire.ParseEvent(absent.ToJsonString()) is DaemonEvent.State, "An unavailable metadata characteristic must stay null independently.");
+}
+foreach (string value in new[] { "-1", "256", "1.5", "true", "\"1\"" })
+{
+    var invalid = metadataState.DeepClone();
+    invalid["hearing_metadata"]!["test_mode_raw"] = JsonNode.Parse(value);
+    Check(Wire.ParseEvent(invalid.ToJsonString()) is null, "Raw mode states must fit a byte without coercion.");
+}
+foreach (string value in new[] { "1e40", "-1e40", "\"NaN\"", "true", "[]" })
+{
+    var invalid = metadataState.DeepClone();
+    invalid["hearing_metadata"]!["dosimetry_sensitivity_raw"] = JsonNode.Parse(value);
+    Check(Wire.ParseEvent(invalid.ToJsonString()) is null, "Raw sensitivity must remain a finite Float32 or null.");
+}
+foreach (int length in new[] { 0, 16, 18 })
+{
+    var invalid = metadataState.DeepClone();
+    invalid["hearing_metadata"]!["dosimetry_volume_curve_raw"] = JsonSerializer.SerializeToNode(new float[length]);
+    Check(Wire.ParseEvent(invalid.ToJsonString()) is null, "A supplied volume curve must contain exactly 17 values.");
+}
+foreach (string value in new[] { "null", "1e40", "-1e40", "\"NaN\"", "true" })
+{
+    var invalid = metadataState.DeepClone();
+    invalid["hearing_metadata"]!["dosimetry_volume_curve_raw"]![8] = JsonNode.Parse(value);
+    Check(Wire.ParseEvent(invalid.ToJsonString()) is null, "Every raw curve entry must be a finite Float32.");
+}
+Check(!new HearingMetadata { DosimetrySensitivityRaw = float.NaN }.IsValid &&
+    !new HearingMetadata { DosimetryVolumeCurveRaw = Enumerable.Repeat(float.PositiveInfinity, 17).ToArray() }.IsValid,
+    "Programmatic non-finite values must also fail validation.");
+foreach (string key in new[] { "hearing_metadata", "hearing_metadata_pending", "hearing_metadata_error", "hardware_check", "earbuds_in_case" })
+    Check(Wire.ParseEvent("{\"event\":\"state\",\"" + key + "\":1}") is null,
+        "Malformed metadata, check status and case presence must not become defaults.");
+
+var checkState = new JsonObject { ["event"] = "state", ["hardware_check"] = JsonSerializer.SerializeToNode(new HardwareCheckState {
+    RequestId = ulong.MaxValue, Phase = "waiting_case_close", LeftUpdated = false, RightUpdated = false, Error = null
+}) };
+foreach (string key in checkState["hardware_check"]!.AsObject().Select(pair => pair.Key).ToArray())
+{
+    var missing = checkState.DeepClone();
+    missing["hardware_check"]!.AsObject().Remove(key);
+    Check(Wire.ParseEvent(missing.ToJsonString()) is null, "Partial hardware-check progress must not invent acknowledgements or outcomes.");
+}
+foreach (string phase in new[] { "waiting_case_close", "waiting_result", "completed", "timed_out", "cancelled", "error" })
+{
+    var valid = checkState.DeepClone();
+    valid["hardware_check"]!["phase"] = phase;
+    valid["hardware_check"]!["left_updated"] = phase == "completed";
+    valid["hardware_check"]!["right_updated"] = phase == "completed";
+    valid["hardware_check"]!["error"] = phase == "error" ? "Read failed." : null;
+    Check(Wire.ParseEvent(valid.ToJsonString()) is DaemonEvent.State, "Known hardware-check phases must retain their outcome and request identity.");
+}
+foreach (var (key, value) in new[] { ("request_id", "0"), ("request_id", "-1"), ("request_id", "\"1\""),
+    ("phase", "null"), ("phase", "\"running\""), ("left_updated", "null"), ("right_updated", "1"),
+    ("error", "\"unexpected error\""), ("left_updated", "true"), ("phase", "\"completed\""), ("phase", "\"error\"") })
+{
+    var invalid = checkState.DeepClone();
+    invalid["hardware_check"]![key] = JsonNode.Parse(value);
+    Check(Wire.ParseEvent(invalid.ToJsonString()) is null, "Inconsistent, unknown or malformed hardware-check status must fail closed.");
+}
+foreach (string phase in new[] { "waiting_result", "timed_out", "cancelled", "error" })
+{
+    var invalid = checkState.DeepClone();
+    invalid["hardware_check"]!["phase"] = phase;
+    invalid["hardware_check"]!["left_updated"] = true;
+    invalid["hardware_check"]!["right_updated"] = true;
+    invalid["hardware_check"]!["error"] = phase == "error" ? "Read failed." : null;
+    Check(Wire.ParseEvent(invalid.ToJsonString()) is null, "Both fresh ears require the completed phase.");
+}
 var hearingState = new JsonObject { ["event"] = "state", ["hearing_aid_settings"] = JsonSerializer.SerializeToNode(Hearing()) };
 Check(Wire.ParseEvent(hearingState.ToJsonString()) is DaemonEvent.State { Snapshot.HearingAidSettings: { } hearingRoundtrip } &&
     hearingRoundtrip.SameValues(Hearing()), "Asymmetric hearing curves and tuning must survive C# parsing.");
@@ -503,6 +615,40 @@ foreach (bool on in new[] { false, true })
 output.Add(Wire.ToLine(new StartNearbyFinderCmd { DeviceId = "001122334455" }).TrimEnd('\n'));
 output.Add(Wire.ToLine(new StopNearbyFinderCmd { DeviceId = "001122334455" }).TrimEnd('\n'));
 output.Add(Wire.ToLine(new GetHardwareDiagnosticsCmd()).TrimEnd('\n'));
+Check(Wire.ToLine(new SetAncCmd { Mode = 3 }) == "{\"cmd\":\"set_anc\",\"mode\":3}\n" &&
+    Wire.ToLine(new SetDeviceControlCmd { Id = 0x2E, Value = 50 }) == "{\"cmd\":\"set_device_control\",\"id\":46,\"value\":50}\n",
+    "Legacy control callers must keep omitting an unspecified device target.");
+output.Add(Wire.ToLine(new SetAncCmd { Mode = 3 }).TrimEnd('\n'));
+foreach (object command in new object[] {
+    new SetAncCmd { Mode = 3, DeviceId = "001122334455" },
+    new SetDeviceControlCmd { Id = 0x2E, Value = 50, DeviceId = "001122334455" }
+})
+{
+    string line = Wire.ToLine(command);
+    using var targeted = JsonDocument.Parse(line);
+    Check(targeted.RootElement.GetProperty("device_id").GetString() == "001122334455",
+        "A control action must retain the exact device displayed when it was requested.");
+    output.Add(line.TrimEnd('\n'));
+}
+foreach (string target in new[] { "", "not-a-device", "00112233445g" })
+foreach (object command in new object[] {
+    new SetAncCmd { Mode = 3, DeviceId = target },
+    new SetDeviceControlCmd { Id = 0x2E, Value = 50, DeviceId = target }
+})
+{
+    string line = Wire.ToLine(command);
+    using var invalid = JsonDocument.Parse(line);
+    Check(invalid.RootElement.GetProperty("device_id").GetString() == target,
+        "An invalid explicit target must remain explicit so the daemon can reject it.");
+    output.Add(line.TrimEnd('\n'));
+}
+foreach (string target in new[] { "null", "42", "true", "[]", "{}" })
+foreach (object command in new object[] { new SetAncCmd { Mode = 3 }, new SetDeviceControlCmd { Id = 0x2E, Value = 50 } })
+{
+    var invalid = JsonNode.Parse(Wire.ToLine(command))!.AsObject();
+    invalid["device_id"] = JsonNode.Parse(target);
+    output.Add(invalid.ToJsonString());
+}
 Check(Wire.ParseEvent(lines[^2]) is DaemonEvent.PairingNearby(0x2720, true),
     "Nearby invitations must retain the public model hint and lid state.");
 Check(Wire.ParseEvent("{\"event\":\"pairing_nearby\",\"model\":10016,\"lid_open\":false}")
@@ -528,6 +674,42 @@ foreach (string malformedLid in new[] {
     "{\"event\":\"paired_lid\",\"device_id\":\"00112233445g\",\"lid_open\":true,\"sequence\":1}",
 }) Check(Wire.ParseEvent(malformedLid) is null, "Malformed paired lid edges must not reach the island.");
 output.Add(JsonSerializer.Serialize(new { @event = "paired_lid", device_id = "001122334455", lid_open = false, sequence = 2UL }));
+var modeProbe = JsonNode.Parse("""
+    {"event":"hearing_test_mode_probe","request_id":17,"device_id":"001122334455","enable_check":true,
+     "result":{"initial_state":0,"enabled_state":1,"final_state":0,"enable_sent":true,"disable_sent":true,"restoration_verified":true,"error":null}}
+    """)!.AsObject();
+Check(Wire.ParseEvent(modeProbe.ToJsonString()) is DaemonEvent.HearingTestModeProbe { Result.RestorationVerified: true },
+    "A verified mode restoration must remain distinct from a completed write.");
+foreach (var field in new[] { "enable_sent", "disable_sent", "restoration_verified" })
+{
+    var missing = modeProbe.DeepClone().AsObject();
+    missing["result"]!.AsObject().Remove(field);
+    Check(Wire.ParseEvent(missing.ToJsonString()) is null, "Missing restoration evidence must fail closed.");
+}
+foreach (var (field, value) in new[] { ("initial_state", 6), ("enabled_state", 256), ("final_state", 1) })
+{
+    var invalid = modeProbe.DeepClone().AsObject();
+    invalid["result"]![field] = value;
+    Check(Wire.ParseEvent(invalid.ToJsonString()) is null, "Invalid or inconsistent mode readback must fail closed.");
+}
+var partialProbe = modeProbe.DeepClone().AsObject();
+partialProbe["result"]!["final_state"] = null;
+partialProbe["result"]!["restoration_verified"] = false;
+partialProbe["result"]!["error"] = "Restoration readback timed out.";
+Check(Wire.ParseEvent(partialProbe.ToJsonString()) is DaemonEvent.HearingTestModeProbe { Result.RestorationVerified: false },
+    "A failed restoration must retain its partial evidence.");
+partialProbe["result"]!["enable_sent"] = false;
+Check(Wire.ParseEvent(partialProbe.ToJsonString()) is DaemonEvent.HearingTestModeProbe { Result.DisableSent: true, Result.EnableSent: false },
+    "An ambiguous enable-send failure can still attempt a same-session disable.");
+foreach (JsonNode? malformedProbeId in new JsonNode?[] { null, JsonValue.Create("17"), JsonValue.Create(-1) })
+{
+    var invalid = modeProbe.DeepClone().AsObject();
+    invalid["request_id"] = malformedProbeId;
+    Check(Wire.ParseEvent(invalid.ToJsonString()) is null, "Malformed probe IDs must not throw or match another request.");
+}
+output.Add(Wire.ToLine(new GetHearingMetadataCmd { DeviceId = "001122334455" }).TrimEnd('\n'));
+output.Add(Wire.ToLine(new StartHardwareCheckCmd { RequestId = ulong.MaxValue, DeviceId = "001122334455", BudsInCaseConfirmed = true }).TrimEnd('\n'));
+output.Add(Wire.ToLine(new CancelHardwareCheckCmd { RequestId = ulong.MaxValue, DeviceId = "001122334455" }).TrimEnd('\n'));
 File.WriteAllLines(args[1], output);
 Console.WriteLine($"C#: {lines.Length} production/legacy events, VBR/Transparency roundtrips and malformed-input checks passed");
 

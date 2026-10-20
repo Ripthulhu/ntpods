@@ -225,34 +225,43 @@ pub fn toggle_mute(address: Option<u64>) -> Option<String> {
 
 /// Includes apps without an SMTC session, but excludes notification sounds.
 pub fn any_render_active(address: Option<u64>) -> bool {
+    render_activity(address).unwrap_or(false)
+}
+
+pub fn render_activity(address: Option<u64>) -> windows::core::Result<bool> {
     unsafe {
-        let Ok(device) = output_device_for(address) else {
-            return false;
-        };
-        let Ok(manager) = device.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) else {
-            return false;
-        };
-        let Ok(sessions) = manager.GetSessionEnumerator() else {
-            return false;
-        };
-        let count = sessions.GetCount().unwrap_or(0);
-        for i in 0..count {
-            let Ok(session) = sessions.GetSession(i) else {
-                continue;
-            };
-            if session.GetState() != Ok(AudioSessionStateActive) {
-                continue;
+        let device = output_device_for(address)?;
+        let manager = device.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None)?;
+        let sessions = manager.GetSessionEnumerator()?;
+        let count = sessions.GetCount()?;
+        active_sessions((0..count).map(|i| {
+            let session = sessions.GetSession(i)?;
+            if session.GetState()? != AudioSessionStateActive {
+                return Ok(false);
             }
             // Skip the system-sounds session (tier 3).
             if let Ok(s2) = session.cast::<IAudioSessionControl2>() {
                 if !is_application_session(s2.IsSystemSoundsSession()) {
-                    continue;
+                    return Ok(false);
                 }
             }
-            return true;
-        }
-        false
+            Ok(true)
+        }))
     }
+}
+
+fn active_sessions(
+    sessions: impl IntoIterator<Item = windows::core::Result<bool>>,
+) -> windows::core::Result<bool> {
+    let mut unavailable = None;
+    for active in sessions {
+        match active {
+            Ok(true) => return Ok(true),
+            Ok(false) => {}
+            Err(error) => unavailable = Some(error),
+        }
+    }
+    unavailable.map_or(Ok(false), Err)
 }
 
 fn is_application_session(result: windows::core::HRESULT) -> bool {
@@ -545,6 +554,17 @@ fn override_duck<E: DuckVolume>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn activity_errors_cannot_hide_known_playback_or_prove_idle() {
+        use windows::Win32::Foundation::E_FAIL;
+        assert_eq!(
+            super::active_sessions([Err(E_FAIL.into()), Ok(true)]).unwrap(),
+            true
+        );
+        assert!(super::active_sessions([Ok(false), Err(E_FAIL.into())]).is_err());
+        assert!(!super::active_sessions([Ok(false), Ok(false)]).unwrap());
+    }
+
     use super::*;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;

@@ -171,11 +171,17 @@ const HR_DESCRIPTOR: &[u8] = &[
     0x08, 0x81, 0x02, 0x06, 0x0a, 0xff, 0x09, 0x12, 0x95, 0x04, 0x75, 0x08, 0x81, 0x02, 0x85, 0x02,
     0x06, 0x0a, 0xff, 0x09, 0x13, 0x96, 0x58, 0x02, 0x75, 0x08, 0x81, 0x02, 0xc0, 0xc0,
 ];
+const SPL0_DESCRIPTOR: &[u8] = &[
+    0x06, 0x00, 0xff, 0x09, 0x60, 0xa1, 0x01, 0x85, 0x01, 0x06, 0x36, 0xff, 0x09, 0x01, 0x76, 0xc0,
+    0x01, 0x95, 0x01, 0x81, 0x02, 0x85, 0x01, 0x06, 0x36, 0xff, 0x09, 0x01, 0x75, 0x60, 0xb1, 0x02,
+    0xc0,
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Sensor {
     Motion,
     HeartRate,
+    SoundLevel,
 }
 
 fn description(data: &[u8]) -> Option<Sensor> {
@@ -243,6 +249,7 @@ fn description(data: &[u8]) -> Option<Sensor> {
     match (name?, maximum?, descriptor?) {
         (b"devmotion6", 191, MOTION_DESCRIPTOR) => Some(Sensor::Motion),
         (b"HeartRate", 601, HR_DESCRIPTOR) => Some(Sensor::HeartRate),
+        (b"SPL0", 57, SPL0_DESCRIPTOR) => Some(Sensor::SoundLevel),
         _ => None,
     }
 }
@@ -251,6 +258,7 @@ fn description(data: &[u8]) -> Option<Sensor> {
 pub struct Discovery {
     pub motion: Option<MotionService>,
     pub heart_rate: Option<u8>,
+    pub sound_level: Option<u8>,
     pub generation: u64,
     frames: Frames,
     last_sequence: Option<u64>,
@@ -307,29 +315,40 @@ impl Discovery {
             let restarted = sequence == 1 && self.last_sequence.is_some_and(|old| old > 1);
             let mut motion = if restarted { None } else { self.motion };
             let mut heart_rate = if restarted { None } else { self.heart_rate };
+            let mut sound_level = if restarted { None } else { self.sound_level };
             for (service, sensor) in announcements {
                 match sensor {
                     Sensor::Motion => {
-                        if heart_rate == Some(service) {
+                        if heart_rate == Some(service) || sound_level == Some(service) {
                             return;
                         }
                         motion = Some(MotionService { id: service });
                     }
                     Sensor::HeartRate => {
-                        if motion.is_some_and(|s| s.id == service) {
+                        if motion.is_some_and(|s| s.id == service) || sound_level == Some(service) {
                             return;
                         }
                         heart_rate = Some(service);
+                    }
+                    Sensor::SoundLevel => {
+                        if motion.is_some_and(|s| s.id == service) || heart_rate == Some(service) {
+                            return;
+                        }
+                        sound_level = Some(service);
                     }
                 }
             }
             if restarted {
                 self.generation = self.generation.wrapping_add(1);
             }
-            changed |= restarted || self.motion != motion || self.heart_rate != heart_rate;
+            changed |= restarted
+                || self.motion != motion
+                || self.heart_rate != heart_rate
+                || self.sound_level != sound_level;
             self.last_sequence = Some(sequence);
             self.motion = motion;
             self.heart_rate = heart_rate;
+            self.sound_level = sound_level;
         });
         changed
     }
@@ -416,6 +435,34 @@ mod tests {
         assert!(!discovery.feed(&motion));
         assert!(discovery.feed(&hr));
         assert_eq!(discovery.heart_rate, Some(20));
+    }
+
+    #[test]
+    fn sound_level_requires_its_exact_descriptor_and_current_generation() {
+        let spl0 = dictionary(b"SPL0\0", SPL0_DESCRIPTOR, 57);
+        assert_eq!(description(&spl0), Some(Sensor::SoundLevel));
+        assert!(description(&dictionary(b"SPL0\0", SPL0_DESCRIPTOR, 56)).is_none());
+        assert!(description(&dictionary(b"HeartRate\0", SPL0_DESCRIPTOR, 57)).is_none());
+        let mut changed = SPL0_DESCRIPTOR.to_vec();
+        changed[19] ^= 1;
+        assert!(description(&dictionary(b"SPL0\0", &changed, 57)).is_none());
+        for split in 0..spl0.len() {
+            assert!(description(&spl0[..split]).is_none());
+        }
+        let frame = announcement(3, 27, &spl0);
+        for split in 0..frame.len() {
+            let mut discovery = Discovery::default();
+            assert!(!discovery.feed(&frame[..split]));
+            assert!(discovery.feed(&frame[split..]));
+            assert_eq!(discovery.sound_level, Some(27));
+            assert!(!discovery.feed(&frame));
+            let hr = dictionary(b"HeartRate\0", HR_DESCRIPTOR, 601);
+            assert!(!discovery.feed(&announcement(4, 27, &hr)));
+            assert_eq!(discovery.heart_rate, None);
+            assert!(discovery.feed(&announcement(1, 20, &hr)));
+            assert_eq!(discovery.sound_level, None);
+            assert_eq!(discovery.heart_rate, Some(20));
+        }
     }
 
     #[test]

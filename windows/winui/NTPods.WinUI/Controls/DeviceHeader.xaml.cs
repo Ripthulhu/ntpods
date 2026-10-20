@@ -109,7 +109,7 @@ public sealed partial class DeviceHeader : UserControl
     private void Connect_Click(object sender, RoutedEventArgs e)
     {
         if (_linkStale) Client?.RepairConnection();
-        else Client?.Connect();
+        else Client?.Connect(_deviceId);
     }
     private void Disconnect_Click(object sender, RoutedEventArgs e) => Client?.Disconnect();
     private void Repair_Click(object sender, RoutedEventArgs e) => Client?.RepairConnection();

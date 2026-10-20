@@ -21,6 +21,8 @@
                                Foreground="{ThemeResource AppleSecondaryBrush}" />
                     <TextBlock x:Name="LeftTime" FontSize="13" TextWrapping="Wrap"
                                Foreground="{ThemeResource AppleSecondaryBrush}" />
+                    <TextBlock x:Name="LeftFirstUse" FontSize="13" TextWrapping="Wrap"
+                               Foreground="{ThemeResource AppleSecondaryBrush}" />
                 </StackPanel>
                 <Border Style="{StaticResource InsetDivider}" Margin="0" />
                 <StackPanel Spacing="4">
@@ -30,6 +32,8 @@
                                Foreground="{ThemeResource AppleSecondaryBrush}" />
                     <TextBlock x:Name="RightTime" FontSize="13" TextWrapping="Wrap"
                                Foreground="{ThemeResource AppleSecondaryBrush}" />
+                    <TextBlock x:Name="RightFirstUse" FontSize="13" TextWrapping="Wrap"
+                               Foreground="{ThemeResource AppleSecondaryBrush}" />
                 </StackPanel>
                 <TextBlock x:Name="ReadTime" FontSize="13" TextWrapping="Wrap"
                            Foreground="{ThemeResource AppleSecondaryBrush}" />
@@ -37,6 +41,46 @@
                            FontSize="13" TextWrapping="Wrap" Foreground="{ThemeResource AppleSecondaryBrush}" />
             </StackPanel>
             <TextBlock x:Name="ErrorText" FontSize="13" TextWrapping="Wrap" Visibility="Collapsed"
+                       Foreground="{ThemeResource SystemFillColorCriticalBrush}" AutomationProperties.LiveSetting="Polite" />
+            <Button x:Name="RunButton" HorizontalAlignment="Stretch" Click="Run_Click" Visibility="Collapsed">
+                <TextBlock x:Name="RunLabel" TextWrapping="Wrap" />
+            </Button>
+            <StackPanel x:Name="CheckSteps" Spacing="8" Visibility="Collapsed">
+                <TextBlock x:Name="CheckInstruction" FontSize="13" TextWrapping="Wrap"
+                           AutomationProperties.LiveSetting="Polite" />
+                <TextBlock x:Name="CheckProgress" FontSize="13" TextWrapping="Wrap"
+                           Foreground="{ThemeResource AppleSecondaryBrush}" />
+            </StackPanel>
+            <Border Style="{StaticResource InsetDivider}" Margin="0" />
+            <StackPanel Spacing="8">
+                <TextBlock Text="{Binding [HardwareChecks_DeviceData], Source={StaticResource Loc}}" FontSize="16" />
+                <TextBlock Text="{Binding [HardwareChecks_DeviceDataHelp], Source={StaticResource Loc}}"
+                           FontSize="13" TextWrapping="Wrap" Foreground="{ThemeResource AppleSecondaryBrush}" />
+            </StackPanel>
+            <Button x:Name="MetadataReadButton" HorizontalAlignment="Stretch" Click="ReadMetadata_Click">
+                <TextBlock Text="{Binding [HardwareChecks_ReadDeviceData], Source={StaticResource Loc}}" TextWrapping="Wrap" />
+            </Button>
+            <TextBlock x:Name="MetadataEmpty" Text="{Binding [HardwareChecks_DeviceDataNotRead], Source={StaticResource Loc}}"
+                       FontSize="13" TextWrapping="Wrap" Foreground="{ThemeResource AppleSecondaryBrush}" />
+            <StackPanel x:Name="MetadataResults" Spacing="8" Visibility="Collapsed">
+                <TextBlock x:Name="ModeValue" FontSize="13" TextWrapping="Wrap" />
+                <TextBlock x:Name="SensitivityValue" FontSize="13" TextWrapping="Wrap" />
+                <Expander x:Name="CurveDetails" Background="Transparent" BorderThickness="0"
+                          HorizontalContentAlignment="Stretch">
+                    <Expander.Header>
+                        <TextBlock Text="{Binding [HardwareChecks_RawCurve], Source={StaticResource Loc}}"
+                                   FontSize="16" TextWrapping="Wrap" />
+                    </Expander.Header>
+                    <StackPanel Spacing="8">
+                        <TextBlock Text="{Binding [HardwareChecks_RawDataHelp], Source={StaticResource Loc}}"
+                                   FontSize="13" TextWrapping="Wrap" Foreground="{ThemeResource AppleSecondaryBrush}" />
+                        <TextBlock x:Name="CurveValues" FontSize="13" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+                    </StackPanel>
+                </Expander>
+                <TextBlock x:Name="MetadataReadTime" FontSize="13" TextWrapping="Wrap"
+                           Foreground="{ThemeResource AppleSecondaryBrush}" />
+            </StackPanel>
+            <TextBlock x:Name="MetadataError" FontSize="13" TextWrapping="Wrap" Visibility="Collapsed"
                        Foreground="{ThemeResource SystemFillColorCriticalBrush}" AutomationProperties.LiveSetting="Polite" />
         </StackPanel>
     </Expander>

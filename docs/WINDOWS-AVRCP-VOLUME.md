@@ -104,6 +104,44 @@ volume curve.
 
 ## Startup and lifetime
 
+On a supported coordinator image, the AAP playback driver opts into Windows'
+Bluetooth multiprofile coordinator after NTPods opens its AVDTP session. It
+reports the real connection and asks Windows to coordinate the remaining
+profiles, including AVRCP. Registration is
+explicit: a nearby advertisement or coordinator callback cannot open audio.
+See the [driver contract](../windows/drivers/aap/README.md#windows-profile-coordination).
+
+PCM stays silent until the volume bridge is initialized and subscribed. Starting
+AVDTP does not prove this bridge is ready. Startup diagnostics report the first
+nonzero PCM frame separately. The wait includes any silence supplied by the
+source and is not an acoustic latency measurement.
+
+Windows can also hold the render endpoint unavailable for its 20-second Bluetooth
+endpoint-unification timeout while waiting for the legacy hands-free endpoint.
+On Pro 3 / 9A348 with Intel AX200, disabling only that pair's HFP service reduced
+the wait for the first Windows producer from about 20.8 seconds to 259 ms; the
+listener confirmed prompt, clean playback. This measures stream startup, not
+acoustic latency.
+
+For a supported HQ microphone and native playback route, NTPods disables HFP
+before making the render provider ready. A separate helper saves the original
+service state and checks Windows' readback. It restores only changes NTPods owns
+on explicit Disconnect, pair/driver change, replacement-microphone failure or
+parent exit. Temporary case sleep retains isolation without requesting audio.
+A saved journal also permits recovery after a helper crash. An already-disabled
+service stays disabled. The Windows
+endpoint-unification timeout is left unchanged.
+
+The optional read-only render diagnostics request (`0x00226418`, version 1,
+128 bytes) separates missing submissions, source-zero packets and packets
+silenced by volume initialization, subscription, mute or minimum level. It
+records the first source and forwarded nonzero packet and volume-bridge
+transitions in QPC-derived 100 ns units. Packet counters reset with the render
+generation; valid bridge transition times survive provider restarts. The
+backend samples it at most once per second during the first 30 seconds of a
+start and stops after a final nonzero sample. Old drivers skip this optional
+trace. No PCM is saved, and the trace does not change gain or bypass silence.
+
 `StartCategory2Controllers` starts the volume-notification controller and then
 creates `VolumeController` without waiting for a remote interim response. Its
 state machine proceeds through local AudioSink arrival, interface arrival and

@@ -27,6 +27,13 @@ cover connection, device settings, audio, sensors and shutdown. Events include
 full state snapshots, command results, overlays, nearby invitations and head movement. Change both
 definitions together and run [`test-ipc.ps1`](../../tests/test-ipc.ps1).
 
+`SetAnc` and `SetDeviceControl` accept an optional `device_id`: the selected
+pair's twelve hexadecimal address digits. The app sends the identity shown by
+the control. The daemon ignores the action if selection has changed, checking
+under the same lock as pair selection. Omitted targets retain legacy current-pair
+behavior; empty, malformed or null targets are rejected. Deploy the app and daemon
+together: older daemons ignore the added target field.
+
 ## Connection lifecycle
 
 `PairingNearby` carries the public advertisement's 16-bit model hint and
@@ -52,6 +59,18 @@ connection. Automatic discovery cannot replace this target; a later `Connect`,
 `RepairConnection` or `Disconnect` cancels the pending handoff.
 
 ## Implementation
+
+`GetHearingMetadata` requires the selected `device_id`. Its optional snapshot
+record preserves the test-mode byte, raw sensitivity and 17 raw curve values;
+pending/error fields are separate from the last complete read.
+
+`StartHardwareCheck` requires `request_id`, the selected `device_id` and
+`buds_in_case_confirmed`. The daemon also checks model/firmware, a fresh in-case
+report and idle audio before its single request write. `hardware_check` carries
+the phase and independent per-ear timestamp changes. A job survives radio loss
+for the same pair, but cannot write to another selection. `CancelHardwareCheck`
+stops waiting for that exact job; it does not cancel the firmware check.
+`earbuds_in_case` is unknown after disconnect, a stale link or an expired report.
 
 - [`ipc_server.rs`](../../daemon/src/ipc_server.rs): pipe access, framing and
   per-client I/O.
