@@ -79,9 +79,12 @@ pub fn apply(ctx: &Ctx, command: &Command) -> bool {
     else {
         return false;
     };
+    let routing = matches!(opcode, 1 | 2 | 4);
+    let _actions = routing.then(|| ctx.companion_actions.lock().unwrap());
     let mut state = ctx.state.lock().unwrap();
     let d = &mut state.dongle;
     let mut queued = ctx.dongle.queued.lock().unwrap();
+    let mut accepted = false;
     if !d.present
         || d.ambiguous
         || *session == 0
@@ -91,6 +94,8 @@ pub fn apply(ctx: &Ctx, command: &Command) -> bool {
         d.error = Some("stale".into());
     } else if d.pending || queued.is_some() || super::dongle_health::busy(ctx) {
         d.error = Some("busy".into());
+    } else if let Err(reason) = protocol::validate_command(d, *generation, *opcode, *argument) {
+        d.error = Some(reason.into());
     } else {
         *queued = Some(Request {
             session: *session,
@@ -100,9 +105,13 @@ pub fn apply(ctx: &Ctx, command: &Command) -> bool {
         });
         d.pending = true;
         d.error = None;
+        accepted = true;
     }
     drop(queued);
     drop(state);
+    if accepted && routing {
+        super::companion::local_override(ctx, command);
+    }
     ctx.push_state();
     true
 }

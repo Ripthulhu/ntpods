@@ -2,6 +2,11 @@
 <UserControl x:Class="NTPods.WinUI.Controls.DongleCard"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <UserControl.Resources>
+        <Style x:Key="StaleBatteryReading" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{ThemeResource AppleSecondaryBrush}" />
+        </Style>
+    </UserControl.Resources>
     <StackPanel Spacing="16">
     <Border Style="{StaticResource Card}">
         <StackPanel Spacing="16">

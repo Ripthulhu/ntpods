@@ -38,6 +38,11 @@ fn now_ms() -> i64 {
 }
 
 impl HrDb {
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Self {
+        Self { tx: None }
+    }
+
     /// Open the database and start its writer; log errors without disabling the sensor.
     pub fn open(log: fn(&str)) -> HrDb {
         let path = match std::env::var("LOCALAPPDATA") {

@@ -1,5 +1,5 @@
 //! Auto-pause through SMTC, with local Plexamp control for its keyboard-only player.
-//! Ear removal pauses the current media session without changing its A2DP profile.
+//! Ear removal pauses only a player using the selected AirPods output.
 //! Resume applies only to the session and pause owned by NTPods.
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -92,13 +92,6 @@ impl PausedPlayback {
     }
 }
 
-pub fn pause_playing(address: Option<u64>) -> Option<PausedPlayback> {
-    if is_playing() {
-        return pause_playing_session().map(PausedPlayback::Session);
-    }
-    crate::plexamp::pause(address).map(PausedPlayback::Plexamp)
-}
-
 #[derive(Default)]
 struct PauseClaim(AtomicU8);
 
@@ -122,17 +115,7 @@ impl PauseClaim {
     }
 }
 
-pub fn pause_playing_session() -> Option<PausedSession> {
-    let manager = SessionManager::RequestAsync().ok()?.get().ok()?;
-    let session = manager.GetCurrentSession().ok()?;
-    pause_session(manager, session, false)
-}
-
-fn pause_session(
-    manager: SessionManager,
-    session: Session,
-    confirm: bool,
-) -> Option<PausedSession> {
+fn pause_session(manager: SessionManager, session: Session) -> Option<PausedSession> {
     if session.GetPlaybackInfo().ok()?.PlaybackStatus().ok()? != PlaybackStatus::Playing {
         return None;
     }
@@ -164,14 +147,10 @@ fn pause_session(
         });
     paused.media_changed = Some(paused.session.MediaPropertiesChanged(&media_handler).ok()?);
     let operation = paused.session.TryPauseAsync().ok()?;
-    if !(if confirm {
-        bounded_result(operation)?
-    } else {
-        operation.get().ok()?
-    }) {
+    if !bounded_result(operation)? {
         return None;
     }
-    if confirm {
+    {
         let deadline = Instant::now() + Duration::from_millis(750);
         loop {
             if paused
@@ -263,6 +242,12 @@ pub struct SelectedPause {
     resume_requested: bool,
 }
 
+#[cfg(test)]
+thread_local! {
+    static TEST_PAUSE_START: std::cell::RefCell<Option<Box<dyn FnOnce(Option<u64>) -> SelectedPause>>> =
+        std::cell::RefCell::new(None);
+}
+
 impl SelectedPause {
     pub fn start(address: u64) -> Self {
         Self::start_output(Some(address))
@@ -273,21 +258,35 @@ impl SelectedPause {
     }
 
     fn start_output(address: Option<u64>) -> Self {
+        #[cfg(test)]
+        if let Some(start) = TEST_PAUSE_START.with(|factory| factory.borrow_mut().take()) {
+            return start(address);
+        }
         let (send_receipt, receipts) = mpsc::channel();
         let (commands, receive_command) = mpsc::channel();
         let cancelled = Arc::new(AtomicBool::new(false));
         let worker_cancelled = cancelled.clone();
         std::thread::spawn(move || {
             init();
-            let route_ready = || address.map_or_else(
-                || crate::volume::default_dongle_output().is_ok(),
-                |address| crate::volume::output_device_for(Some(address)).is_ok(),
-            );
-            let owns_player = |player: &str| address.map_or_else(
-                || crate::volume::player_owns_dongle_output(player),
-                |address| crate::volume::player_owns_output(address, player),
-            );
-            let active = if route_ready() { crate::volume::render_activity(address) } else { Err(windows::core::Error::from(windows::Win32::Foundation::E_FAIL)) };
+            let route_ready = || {
+                address.map_or_else(
+                    || crate::volume::default_dongle_output().is_ok(),
+                    |address| crate::volume::output_device_for(Some(address)).is_ok(),
+                )
+            };
+            let owns_player = |player: &str| {
+                address.map_or_else(
+                    || crate::volume::player_owns_dongle_output(player),
+                    |address| crate::volume::player_owns_output(address, player),
+                )
+            };
+            let active = if route_ready() {
+                crate::volume::render_activity(address)
+            } else {
+                Err(windows::core::Error::from(
+                    windows::Win32::Foundation::E_FAIL,
+                ))
+            };
             let playback = match active {
                 Ok(false) => None,
                 Ok(true) if !worker_cancelled.load(Ordering::Acquire) => {
@@ -311,12 +310,10 @@ impl SelectedPause {
                         {
                             return None;
                         }
-                        pause_session(manager, session, true).map(PausedPlayback::Session)
+                        pause_session(manager, session).map(PausedPlayback::Session)
                     })()
                     .or_else(|| {
-                        if worker_cancelled.load(Ordering::Acquire)
-                            || !owns_player("Plexamp.exe")
-                        {
+                        if worker_cancelled.load(Ordering::Acquire) || !owns_player("Plexamp.exe") {
                             return None;
                         }
                         crate::plexamp::pause(address).map(PausedPlayback::Plexamp)
@@ -405,6 +402,138 @@ impl Drop for SelectedPause {
 #[cfg(test)]
 mod tests {
     use super::{AutoPausePolicy, PauseClaim};
+
+    #[test]
+    fn native_ear_path_refuses_an_unrelated_output_and_resumes_only_its_owned_player() {
+        use super::*;
+        const SELECTED: u64 = 0x001122334455;
+        for player_output in [SELECTED + 1, SELECTED] {
+            let ctx = crate::Ctx::for_test();
+            ctx.mac.store(SELECTED, Ordering::Release);
+            {
+                let mut state = ctx.state.lock().unwrap();
+                state.connected = true;
+                state.audio_output_ready = true;
+                state.device_id = format!("{SELECTED:012x}");
+            }
+            let (receipt, receipts) = mpsc::channel();
+            let (commands, receive) = mpsc::channel();
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let worker_cancelled = cancelled.clone();
+            TEST_PAUSE_START.with(|factory| {
+                *factory.borrow_mut() = Some(Box::new(move |address| {
+                    assert_eq!(address, Some(SELECTED));
+                    receipt
+                        .send(if address == Some(player_output) {
+                            PauseReceipt::Paused
+                        } else {
+                            PauseReceipt::Failed
+                        })
+                        .unwrap();
+                    SelectedPause {
+                        receipts,
+                        commands,
+                        cancelled: worker_cancelled,
+                        resume_requested: false,
+                    }
+                }))
+            });
+            let mut paused = None;
+            crate::native_ear_media(&ctx, SELECTED, &mut paused, [true; 2], [false, true]);
+            assert!(TEST_PAUSE_START.with(|factory| factory.borrow().is_none()));
+            crate::native_ear_media(&ctx, SELECTED, &mut paused, [false, true], [true; 2]);
+            if player_output == SELECTED {
+                let SelectedPauseCommand::Resume(permission) = receive.try_recv().unwrap() else {
+                    panic!("Expected owned resume");
+                };
+                assert!(paused.is_some());
+                assert!(resume_owned(&cancelled, permission, || true));
+            } else {
+                assert!(paused.is_none());
+                assert!(!matches!(
+                    receive.try_recv(),
+                    Ok(SelectedPauseCommand::Resume(_))
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn native_ear_resume_is_revoked_by_a_new_route_or_policy() {
+        use super::*;
+        for change in ["route", "policy", "request"] {
+            let ctx = crate::Ctx::for_test();
+            ctx.mac.store(0x001122334455, Ordering::Release);
+            {
+                let mut state = ctx.state.lock().unwrap();
+                state.connected = true;
+                state.audio_output_ready = true;
+            }
+            let (_receipt, receipts) = mpsc::channel();
+            let (commands, receive) = mpsc::channel();
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let mut paused = Some((
+                0,
+                ctx.connect_requested.snapshot(),
+                crate::bt::playback_intent(),
+                SelectedPause {
+                    receipts,
+                    commands,
+                    cancelled: cancelled.clone(),
+                    resume_requested: false,
+                },
+            ));
+            crate::native_ear_media(&ctx, ctx.mac(), &mut paused, [false, true], [true; 2]);
+            let SelectedPauseCommand::Resume(permission) = receive.try_recv().unwrap() else {
+                panic!("Expected queued resume");
+            };
+            if change == "policy" {
+                ctx.auto_pause.lock().unwrap().set_enabled(false);
+                ctx.auto_pause.lock().unwrap().set_enabled(true);
+            } else if change == "route" {
+                ctx.state.lock().unwrap().audio_output_ready = false;
+            } else {
+                ctx.connect_requested.store(true, Ordering::Release);
+            }
+            assert!(!resume_owned(&cancelled, permission, || panic!(
+                "Stale route must not play"
+            )));
+        }
+    }
+
+    #[test]
+    fn native_ear_pause_cannot_be_rebound_to_a_new_connection_request() {
+        use super::*;
+        let ctx = crate::Ctx::for_test();
+        ctx.mac.store(0x001122334455, Ordering::Release);
+        {
+            let mut state = ctx.state.lock().unwrap();
+            state.connected = true;
+            state.audio_output_ready = true;
+        }
+        let (_receipt, receipts) = mpsc::channel();
+        let (commands, receive) = mpsc::channel();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let mut paused = Some((
+            0,
+            ctx.connect_requested.snapshot(),
+            crate::bt::playback_intent(),
+            SelectedPause {
+                receipts,
+                commands,
+                cancelled: cancelled.clone(),
+                resume_requested: false,
+            },
+        ));
+        ctx.connect_requested.store(true, Ordering::Release);
+        crate::native_ear_media(&ctx, ctx.mac(), &mut paused, [false, true], [true; 2]);
+        assert!(paused.is_none());
+        assert!(cancelled.load(Ordering::Acquire));
+        assert!(!matches!(
+            receive.try_recv(),
+            Ok(SelectedPauseCommand::Resume(_))
+        ));
+    }
 
     #[test]
     #[ignore = "Requires a running Windows media player; does not change playback"]

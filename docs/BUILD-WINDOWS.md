@@ -100,6 +100,8 @@ If you deselect drivers during a major MSI upgrade, their installed packages and
 Bluetooth identity also stay in place, with ownership retained for full uninstall.
 To remove them while keeping the app, remove the driver feature through the
 installed MSI's **Modify** option before upgrading.
+MSI manages the installation kind, account SID and driver ownership in its
+registry transaction, restoring their previous values if an upgrade fails.
 
 For the PC's Bluetooth adapter, select **Direct Bluetooth drivers (Test Mode)**
 in the MSI or run `install.ps1 -Drivers`. This requires a test setup already

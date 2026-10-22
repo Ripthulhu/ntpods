@@ -143,6 +143,11 @@ pub fn valid(key: &str, value: &Value) -> bool {
 }
 
 impl Store {
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Self {
+        Self::load_at(None, false)
+    }
+
     pub fn load() -> Self {
         Self::load_at(path().ok(), true)
     }

@@ -74,6 +74,8 @@ and visibility changes without restarting motion on every snapshot. Keep the
 decoded image visible while replacement artwork loads, and keep cached readings
 tied to the correct pair. Dim unavailable artwork independently of stale battery
 values. Earbuds use three readouts; headphones use one centered readout.
+Use the secondary theme brush at full opacity for stale USB battery text so
+it remains readable in light, dark and Windows high-contrast appearances.
 
 Pair AirPods is available in the header menu and empty state without the daemon.
 Automatic pairing uses the bottom connection card with the advertised model or discovered name,

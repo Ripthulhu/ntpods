@@ -69,7 +69,6 @@ try {
                     }
                 }
                 if (($driverActions -join ',') -cne $expected) { throw "Wrong privileged actions for $action with Drivers=$Drivers`: $driverActions" }
-                if ($action -eq 'install' -and $metadata['ownsDrivers'] -ne [int]$Drivers) { throw 'Fresh MSI driver ownership disagrees with installation.' }
             }
         }
         $Drivers = $true
@@ -83,7 +82,7 @@ try {
         $PreserveDriverOwnership = $true
         $driverActions = [Collections.Generic.List[string]]::new()
         & $branches.install
-        if ($driverActions.Count -ne 0 -or $metadata['ownsDrivers'] -ne 1) { throw 'App-only conversion changed drivers or forgot their uninstall owner.' }
+        if ($driverActions.Count -ne 0) { throw 'App-only conversion changed drivers.' }
         $driverActions = [Collections.Generic.List[string]]::new()
         & $branches['finish-remove-drivers']
         if (($driverActions -join ',') -cne 'identity:Restore,remove,tasks:remove') { throw 'Removing the direct Bluetooth feature left its identity or tasks installed.' }

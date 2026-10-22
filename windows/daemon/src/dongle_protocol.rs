@@ -72,11 +72,30 @@ pub fn command(
     opcode: u8,
     argument: u8,
 ) -> Result<[u8; SIZE], &'static str> {
-    if generation != report.state.generation {
+    validate_command(&report.state, generation, opcode, argument)?;
+    if sequence == 0 {
+        return Err("unsupported");
+    }
+    let mut bytes = [0; SIZE];
+    bytes[..7].copy_from_slice(&HEADER);
+    bytes[7] = opcode;
+    bytes[8..12].copy_from_slice(&generation.to_le_bytes());
+    bytes[12..18].copy_from_slice(&report.address);
+    bytes[18..22].copy_from_slice(&sequence.to_le_bytes());
+    bytes[22] = argument;
+    Ok(bytes)
+}
+
+pub fn validate_command(
+    state: &DongleState,
+    generation: u32,
+    opcode: u8,
+    argument: u8,
+) -> Result<(), &'static str> {
+    if generation != state.generation {
         return Err("stale");
     }
-    if sequence == 0
-        || !(1..=4).contains(&opcode)
+    if !(1..=4).contains(&opcode)
         || (opcode == 3 && !matches!(argument, 2 | 3))
         || (opcode != 3 && argument != 0)
     {
@@ -87,27 +106,16 @@ pub fn command(
         3 => 2,
         _ => 4,
     };
-    if report.state.capabilities & capability == 0 {
+    if state.capabilities & capability == 0 {
         return Err("unsupported");
     }
-    if opcode == 3 && !report.state.controls_ready {
+    if opcode == 3 && !state.controls_ready {
         return Err("disconnected");
     }
-    if opcode == 2
-        && (report.state.usb_playback
-            || report.state.microphone_active
-            || report.state.phone_connected)
-    {
+    if opcode == 2 && (state.usb_playback || state.microphone_active || state.phone_connected) {
         return Err("busy");
     }
-    let mut bytes = [0; SIZE];
-    bytes[..7].copy_from_slice(&HEADER);
-    bytes[7] = opcode;
-    bytes[8..12].copy_from_slice(&generation.to_le_bytes());
-    bytes[12..18].copy_from_slice(&report.address);
-    bytes[18..22].copy_from_slice(&sequence.to_le_bytes());
-    bytes[22] = argument;
-    Ok(bytes)
+    Ok(())
 }
 
 pub fn receipt(report: &Report, sequence: u32, opcode: u8) -> Option<Result<(), &'static str>> {

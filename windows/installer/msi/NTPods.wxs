@@ -27,6 +27,9 @@
     <Property Id="EXISTINGINSTALL" Secure="yes">
       <RegistrySearch Id="ExistingInstall" Root="HKLM" Key="Software\NTPods" Name="InstallKind" Type="raw" />
     </Property>
+    <Property Id="INSTALLEDUSERSID" Secure="yes">
+      <RegistrySearch Id="InstalledUser" Root="HKLM" Key="Software\NTPods" Name="InstalledUserSid" Type="raw" />
+    </Property>
     <Property Id="OWNEDDRIVERS" Secure="yes">
       <RegistrySearch Id="DriverOwnership" Root="HKLM" Key="Software\NTPods" Name="DirectBluetoothDrivers" Type="raw" />
     </Property>
@@ -70,6 +73,13 @@
       </Files>
     </ComponentGroup>
 
+    <!-- MSI restores these values on rollback, including a failed ZIP conversion. -->
+    <Component Id="InstallMetadata" Directory="INSTALLFOLDER" Guid="A7DD1024-3DBA-4C90-9E2D-92C36F4464A5">
+      <RegistryValue Root="HKLM" Key="Software\NTPods" Name="InstallKind" Type="string" Value="msi" KeyPath="yes" />
+      <RegistryValue Root="HKLM" Key="Software\NTPods" Name="InstalledUserSid" Type="string" Value="[UserSID]" />
+      <RegistryValue Root="HKLM" Key="Software\NTPods" Name="DirectBluetoothDrivers" Type="integer" Value="[InstallDriverOwnership]" />
+    </Component>
+
     <Component Id="StartMenuShortcut" Directory="ProgramMenuFolder" Guid="3B8E4C21-7D5A-4F0E-A1C6-2D9B8E5F7A13">
       <Shortcut Id="StartMenuNTPods" Name="NTPods" Description="AirPods on Windows"
                 Target="[INSTALLFOLDER]winui\ntpods-winui.exe" WorkingDirectory="WinuiDir" Icon="NTPodsIcon" />
@@ -105,6 +115,7 @@
              Description="The app and a Start menu entry. USB dongles use Windows' built-in USB drivers and do not require Test Mode.">
       <ComponentGroupRef Id="AppFiles" />
       <ComponentRef Id="StartMenuShortcut" />
+      <ComponentRef Id="InstallMetadata" />
 
       <Feature Id="Drivers" Title="Direct Bluetooth drivers (Test Mode)" Level="2" AllowAdvertise="no"
                Description="Optional: use the PC's Bluetooth adapter. Installs test-signed AirPods control and audio drivers and changes the PC's Bluetooth vendor identity. USB dongles do not need this.">
@@ -150,6 +161,9 @@
                  Condition="(&amp;Drivers=3) AND NOT (APPONLYUPGRADE=1 AND WIX_UPGRADE_DETECTED)" />
     <SetProperty Action="SetDriverRemoveArgs" Id="DriverRemoveArgs" Sequence="execute" After="SetDriverInstallArgs" Value="-Drivers"
                  Condition="OwnsDrivers=1" />
+    <SetProperty Action="SetInstallOwnershipDefault" Id="InstallDriverOwnership" Sequence="execute" After="SetDriverRemoveArgs" Value="0" />
+    <SetProperty Action="SetInstallOwnership" Id="InstallDriverOwnership" Sequence="execute" After="SetInstallOwnershipDefault" Value="1"
+                 Condition="(&amp;Drivers=3) OR OwnsDrivers=1" />
 
     <SetProperty Action="SetMicAcx" Id="MICDRIVER" Sequence="execute" Before="SetNTPodsInstallDrv"
                  Condition="&amp;MicAcx=3" Value="acx" />
@@ -170,7 +184,7 @@
     <SetProperty Id="NTPodsRemoveDriversCommit" Sequence="execute" Before="NTPodsRemoveDriversCommit" Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]msi-setup.ps1&quot; -Action finish-remove-drivers -TransactionId &quot;[DriverTransaction]&quot;" />
     <SetProperty Id="NTPodsUninstall" Sequence="execute" Before="NTPodsUninstall" Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]msi-setup.ps1&quot; -Action uninstall -TransactionId &quot;[DriverTransaction]&quot; -UserSid [UserSID] -LocalAppData &quot;[LocalAppDataFolder].&quot; -AppData &quot;[AppDataFolder].&quot;" />
     <SetProperty Id="NTPodsIdentityRemoveRollback" Sequence="execute" Before="NTPodsIdentityRemoveRollback" Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]msi-setup.ps1&quot; -Action undo-remove -TransactionId &quot;[DriverTransaction]&quot;" />
-    <SetProperty Id="NTPodsIdentityRemoveCommit" Sequence="execute" Before="NTPodsIdentityRemoveCommit" Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[CommonAppDataFolder]NTPods\identity-removal\msi-setup.ps1&quot; -Action finish-remove -TransactionId &quot;[DriverTransaction]&quot; [DriverRemoveArgs]" />
+    <SetProperty Id="NTPodsIdentityRemoveCommit" Sequence="execute" Before="NTPodsIdentityRemoveCommit" Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[CommonAppDataFolder]NTPods\identity-removal\msi-setup.ps1&quot; -Action finish-remove -TransactionId &quot;[DriverTransaction]&quot; -UserSid &quot;[INSTALLEDUSERSID]&quot; [DriverRemoveArgs]" />
 
     <CustomAction Id="NTPodsInstall" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec"
                   Execute="deferred" Impersonate="no" Return="check" />

@@ -47,6 +47,7 @@ fn log(_: &str) {}
 struct Ctx {
     dongle: Arc<dongle::Controller>,
     dongle_health: Arc<dongle_health::Controller>,
+    companion_actions: Arc<Mutex<()>>,
     state: Arc<Mutex<Snapshot>>,
     auto_pause: Arc<Mutex<media::AutoPausePolicy>>,
     shutting_down: Arc<AtomicBool>,
@@ -76,6 +77,10 @@ mod diagnostic_controls {
     pub fn in_case(_: [crate::aap::EarStatus; 2]) -> Option<bool> {
         None
     }
+}
+
+mod companion {
+    pub fn local_override(_: &super::Ctx, _: &ntpods_ipc::Command) {}
 }
 
 mod media {
@@ -140,6 +145,7 @@ struct Hardware {
     usb_playback: bool,
     input: u8,
     audio_error: bool,
+    stop_status_error: bool,
     ears: [u8; 2],
     revision: u32,
     ear_reads: usize,
@@ -168,6 +174,7 @@ impl Hardware {
             usb_playback: true,
             input: 1,
             audio_error: false,
+            stop_status_error: false,
             ears: [0, 0],
             revision: 1,
             ear_reads: 0,
@@ -265,7 +272,17 @@ mod dongle_hid {
         }
         pub fn read_feature(&self, id: u8) -> std::io::Result<[u8; 64]> {
             assert_eq!(id, 3);
-            let h = self.hardware.lock().unwrap();
+            let mut h = self.hardware.lock().unwrap();
+            if h.stop_status_error
+                && h.op == 7
+                && h.request == [7]
+                && h.reply[21] == 3
+                && h.features.last() == Some(&7)
+                && h.features.contains(&8)
+            {
+                h.stop_status_error = false;
+                return Err(std::io::Error::other("Simulated post-Stop status error"));
+            }
             if h.audio_error && h.op == 7 && h.request == [9] && h.reply[21] == 3 {
                 return Err(std::io::Error::other("Simulated USB error"));
             }
@@ -330,6 +347,7 @@ impl Fixture {
         let ctx = Ctx {
             dongle: Arc::default(),
             dongle_health: Arc::default(),
+            companion_actions: Arc::default(),
             state: Arc::new(Mutex::new(Snapshot::default())),
             auto_pause: Arc::new(Mutex::new(media::AutoPausePolicy)),
             shutting_down: Arc::default(),
@@ -556,6 +574,50 @@ fn regression_usb_shutdown_stops_finder_and_keeps_normal_commands_blocked() {
     assert!(dongle_rpc::Session::open_local(fixture.ctx.clone(), d.session, d.generation).is_err());
     until(|| fixture.hardware.lock().unwrap().features.contains(&8));
     assert!(!fixture.hardware.lock().unwrap().finder);
+}
+
+#[test]
+fn regression_old_stop_status_failure_cannot_stop_a_new_finder_owner() {
+    let fixture = Fixture::new();
+    let d = fixture.ctx.state.lock().unwrap().dongle.clone();
+    let finder = format!("dongle-finder:{}:{}", d.session, d.pair_token);
+    let first = dongle_health::start_finder(&fixture.ctx, &finder).unwrap();
+    until(|| {
+        fixture
+            .ctx
+            .state
+            .lock()
+            .unwrap()
+            .dongle
+            .health
+            .nearby_finder
+            .active
+    });
+    let transaction = fixture.ctx.dongle.rpc.lock().unwrap();
+    fixture.hardware.lock().unwrap().stop_status_error = true;
+    assert!(dongle_health::stop_finder(&fixture.ctx, &finder, first));
+    let second = dongle_health::start_finder(&fixture.ctx, &finder).unwrap();
+    assert_ne!(first, second);
+    drop(transaction);
+    until(|| {
+        fixture
+            .hardware
+            .lock()
+            .unwrap()
+            .features
+            .iter()
+            .filter(|op| **op == 6)
+            .count()
+            == 2
+    });
+    let reads = fixture.hardware.lock().unwrap().ear_reads;
+    until(|| fixture.hardware.lock().unwrap().ear_reads >= reads + 2);
+    let h = fixture.hardware.lock().unwrap();
+    assert!(!h.stop_status_error);
+    assert_eq!(h.features.iter().filter(|op| **op == 8).count(), 1);
+    assert!(h.finder);
+    drop(h);
+    assert!(dongle_health::stop_finder(&fixture.ctx, &finder, second));
 }
 
 #[test]

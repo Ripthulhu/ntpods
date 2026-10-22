@@ -1349,7 +1349,12 @@ pub fn start(ctx: Ctx) {
                     },
                 ) {
                     Ok(()) => (),
-                    Err(_) => ctx.dongle_health.finder_stop.store(true, Ordering::Release),
+                    Err(_) => {
+                        let selected = ctx.dongle_health.finder_target.lock().unwrap();
+                        if selected.is_none() {
+                            ctx.dongle_health.finder_stop.store(true, Ordering::Release);
+                        }
+                    }
                 }
             }
             if !d.connected

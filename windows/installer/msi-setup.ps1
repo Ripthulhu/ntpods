@@ -11,6 +11,7 @@ param(
     [string]$LocalAppData,
     [string]$AppData,
     [switch]$Drivers,
+    # Accepted for cached MSI command lines; MSI's Registry table now owns this value.
     [switch]$PreserveDriverOwnership,
     [switch]$PreserveExisting,
     [string]$TransactionId,
@@ -37,9 +38,6 @@ try {
             if (-not $PreserveExisting) {
                 if ($Drivers) { Unregister-NTPodsTasks }
                 if ($UserSid) { Assert-UserSid $UserSid; Remove-RunValues $UserSid 'NTPods', 'NTPods Daemon' }
-                foreach ($name in 'InstalledUserSid', 'InstallKind', 'DirectBluetoothDrivers') {
-                    Remove-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\NTPods' -Name $name -ErrorAction SilentlyContinue
-                }
             }
         }
         'commit' {
@@ -65,12 +63,6 @@ try {
                 Register-NTPodsTasks $PSScriptRoot $UserSid
                 & (Join-Path $PSScriptRoot 'bluetooth-host-identity.ps1') -Action Install -TransactionId $TransactionId
             }
-            New-Item -Path 'HKLM:\SOFTWARE\NTPods' -Force | Out-Null
-            Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\NTPods' -Name InstalledUserSid -Value $UserSid
-            Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\NTPods' -Name InstallKind -Value 'msi'
-            # Feature deselection during a major app-only upgrade leaves the
-            # installed packages intact; retain their eventual uninstall owner.
-            Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\NTPods' -Name DirectBluetoothDrivers -Value ([int]($Drivers -or $PreserveDriverOwnership)) -Type DWord
             Set-StartupMode $UserSid $StartupMode $PSScriptRoot
             # The unelevated app creates its own user-data directory.
         }
@@ -98,7 +90,8 @@ try {
                 Unregister-NTPodsTasks
             }
             # The app's own "Start with Windows" setting writes these too.
-            $installedSid = (Get-ItemProperty 'HKLM:\SOFTWARE\NTPods' -ErrorAction SilentlyContinue).InstalledUserSid
+            # MSI removes its registry component before this commit helper runs.
+            $installedSid = if ($UserSid) { $UserSid } else { (Get-ItemProperty 'HKLM:\SOFTWARE\NTPods' -ErrorAction SilentlyContinue).InstalledUserSid }
             if ($installedSid) { Assert-UserSid $installedSid; Remove-RunValues $installedSid 'NTPods', 'NTPods Daemon' }
             Remove-ItemProperty 'HKLM:\SOFTWARE\NTPods' -Name InstalledUserSid -ErrorAction SilentlyContinue
             Remove-ItemProperty 'HKLM:\SOFTWARE\NTPods' -Name InstallKind -ErrorAction SilentlyContinue

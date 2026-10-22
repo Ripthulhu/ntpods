@@ -54,6 +54,19 @@ try {
     foreach ($row in (Read-Table 'SELECT `Action`, `Type`, `Source`, `Target` FROM `CustomAction`' 4)) {
         $actions[$row[0]] = @{ Type = [int]$row[1]; Property = $row[2]; Value = $row[3] }
     }
+    $metadata = @(Read-Table 'SELECT `Root`, `Key`, `Name`, `Value`, `Component_` FROM `Registry`' 5 | Where-Object { $_[4] -eq 'InstallMetadata' })
+    $expectedMetadata = @{ InstallKind = 'msi'; InstalledUserSid = '[UserSID]'; DirectBluetoothDrivers = '#[InstallDriverOwnership]' }
+    if ($metadata.Count -ne $expectedMetadata.Count) { throw 'MSI must own all installation metadata in one rollback-managed component.' }
+    foreach ($row in $metadata) {
+        if ($row[0] -ne '2' -or $row[1] -cne 'Software\NTPods' -or
+            -not $expectedMetadata.ContainsKey($row[2]) -or $row[3] -cne $expectedMetadata[$row[2]]) { throw 'Incorrect transactional installation metadata.' }
+    }
+    if (-not @(Read-Table 'SELECT `Feature_`, `Component_` FROM `FeatureComponents`' 2 | Where-Object { $_[0] -eq 'Main' -and $_[1] -eq 'InstallMetadata' }).Count) {
+        throw 'App-only installation must include transactional ownership metadata.'
+    }
+    if ($actions.SetNTPodsIdentityRemoveCommit.Value -notmatch '-UserSid "\[INSTALLEDUSERSID\]"') {
+        throw 'Uninstall must retain the owner SID after MSI removes its metadata.'
+    }
     if ($actions.NTPodsStop.Type -band 64) { throw 'MSI must stop on graceful-shutdown failure.' }
     if ($actions.RequireDriverTestMode.Type -ne 19 -or
         $sequence.RequireDriverTestMode.Order -le $sequence.CostFinalize.Order -or
@@ -97,6 +110,17 @@ try {
     if ($session.EvaluateCondition('&Startup=3') -eq 1) { throw 'New installations unexpectedly enable startup by default.' }
     foreach ($feature in 'Drivers', 'MicAcx') {
         if ($session.EvaluateCondition("&$feature=3") -eq 1) { throw "New app-only installations select $feature by default." }
+    }
+    foreach ($owner in '', '1') {
+        foreach ($feature in 2, 3) {
+            Set-Property 'OwnsDrivers' $owner
+            $session.GetType().InvokeMember('FeatureRequestState', 'SetProperty', $null, $session, @('Drivers', $feature))
+            Set-Property 'InstallDriverOwnership' 'stale'
+            Invoke-SafeAction 'SetInstallOwnershipDefault'
+            if ($session.EvaluateCondition($sequence.SetInstallOwnership.Condition) -eq 1) { Invoke-SafeAction 'SetInstallOwnership' }
+            $expected = if ($owner -eq '1' -or $feature -eq 3) { '1' } else { '0' }
+            if ($session.Property('InstallDriverOwnership') -cne $expected) { throw 'MSI lost fresh or preserved driver ownership.' }
+        }
     }
     Set-Property 'INSTALLFOLDER' 'C:\Program Files\NTPods\'
     Invoke-SafeAction 'SetStartupExpectedApp'

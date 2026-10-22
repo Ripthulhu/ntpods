@@ -27,6 +27,8 @@ mod dongle_protocol;
 mod dongle_rpc;
 mod dongle_features;
 mod dongle_health;
+#[cfg(test)]
+mod session_tests;
 mod eld;
 mod gatt;
 mod handsfree;
@@ -3175,6 +3177,63 @@ fn disconnect_device(ctx: &Ctx) {
     }
 }
 
+fn native_media_route(ctx: &Ctx, address: u64) -> bool {
+    let state = ctx.state.lock().unwrap();
+    ctx.mac() == address
+        && state.connected
+        && !state.link_stale
+        && state.audio_output_ready
+        && !ctx.shutting_down.load(Ordering::Acquire)
+        && (state.playback_mode == ipc::PlaybackMode::Windows || ctx.connect_requested.explicit())
+}
+
+fn native_ear_media(
+    ctx: &Ctx,
+    address: u64,
+    paused: &mut Option<(u64, u64, u64, media::SelectedPause)>,
+    previous: [bool; 2],
+    current: [bool; 2],
+) {
+    if paused.as_ref().is_some_and(|(_, request, intent, ticket)| {
+        !ctx.connect_requested.is_current(*request)
+            || bt::playback_intent() != *intent
+            || matches!(ticket.poll(), Some(media::PauseReceipt::Quiet
+                | media::PauseReceipt::Failed | media::PauseReceipt::Resumed(_)))
+    }) {
+        *paused = None;
+    }
+    let policy = ctx.auto_pause.lock().unwrap();
+    let Some(permission) = policy.permission(native_media_route(ctx, address)) else {
+        *paused = None;
+        return;
+    };
+    if current == [true; 2] {
+        if let Some((recorded, request, intent, ticket)) = paused.as_mut() {
+            if *recorded == permission {
+                let recorded = *recorded;
+                let current = ctx.clone();
+                let request = *request;
+                let intent = *intent;
+                ticket.resume(move || {
+                    let route = native_media_route(&current, address)
+                        && current.connect_requested.is_current(request)
+                        && bt::playback_intent() == intent;
+                    current.auto_pause.lock().unwrap().permission(route) == Some(recorded)
+                });
+            } else {
+                *paused = None;
+            }
+        }
+    } else if previous.into_iter().any(|wearing| wearing) && paused.is_none() {
+        *paused = Some((
+            permission,
+            ctx.connect_requested.snapshot(),
+            bt::playback_intent(),
+            media::SelectedPause::start(address),
+        ));
+    }
+}
+
 fn apply_command(ctx: &Ctx, cmd: Command) {
     // Commands may contain personal settings; do not log payloads.
     if ctx.shutting_down.load(Ordering::Acquire) {
@@ -4820,7 +4879,7 @@ fn run_receiver(ctx: Ctx) {
         let head_worker =
             HeadTrackingWorker::start(ctx.clone(), driver.clone(), mic_ears.allows_capture());
 
-        let mut we_paused: Option<(u64, media::PausedPlayback)> = None;
+        let mut we_paused: Option<(u64, u64, u64, media::SelectedPause)> = None;
         let mut prev_ear = [false; 2]; // last [primary, secondary] in-ear state
         let mut last_status = Instant::now();
         let mut heartbeat = Instant::now();
@@ -4851,13 +4910,14 @@ fn run_receiver(ctx: Ctx) {
             {
                 break;
             }
-            let local_media_route = {
-                let state = ctx.state.lock().unwrap();
-                state.audio_output_ready
-                    && (state.playback_mode == ipc::PlaybackMode::Windows
-                        || ctx.connect_requested.explicit())
-            };
-            if !local_media_route {
+            if !native_media_route(&ctx, mac)
+                || we_paused.as_ref().is_some_and(|(_, request, intent, ticket)| {
+                    !ctx.connect_requested.is_current(*request)
+                        || bt::playback_intent() != *intent
+                        || matches!(ticket.poll(), Some(media::PauseReceipt::Quiet
+                            | media::PauseReceipt::Failed | media::PauseReceipt::Resumed(_)))
+                })
+            {
                 we_paused = None;
             }
             #[cfg(feature = "experimental-playback")]
@@ -5442,31 +5502,7 @@ fn run_receiver(ctx: Ctx) {
                                     }
                                     log("mic: ear state changed; decoder and queued PCM reset");
                                 }
-                                let all_in = new_ear[0] && new_ear[1];
-                                let was_wearing = prev_ear[0] || prev_ear[1];
-                                // Serialize with disabling, so no resume can run after it returns.
-                                let policy = ctx.auto_pause.lock().unwrap();
-                                if let Some(permission) = policy.permission(local_media_route) {
-                                    if all_in {
-                                        if let Some((recorded, paused)) = we_paused.take() {
-                                            if recorded == permission {
-                                                let resumed = paused.resume();
-                                                log(&format!(
-                                                    "media: automatic resume submitted={resumed}"
-                                                ));
-                                            }
-                                        }
-                                    } else if was_wearing {
-                                        if let Some(paused) =
-                                            media::pause_playing(ctx.volume_target())
-                                        {
-                                            we_paused = Some((permission, paused));
-                                            log("media: automatic pause confirmed");
-                                        }
-                                    }
-                                } else {
-                                    we_paused = None;
-                                }
+                                native_ear_media(&ctx, mac, &mut we_paused, prev_ear, new_ear);
                                 prev_ear = new_ear;
                             }
                         }

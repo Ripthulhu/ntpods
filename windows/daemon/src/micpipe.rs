@@ -162,6 +162,8 @@ impl MicPipe {
 
 /// Serializes mic access and reopens the handle after enumeration delays or driver removal.
 pub struct MicPipeCell {
+    #[cfg(test)]
+    device_free: bool,
     inner: Mutex<Option<MicPipe>>,
     enabled: AtomicBool,
     feature_enabled: AtomicBool,
@@ -170,9 +172,23 @@ pub struct MicPipeCell {
 }
 
 impl MicPipeCell {
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Self {
+        Self {
+            device_free: true,
+            inner: Mutex::new(None),
+            enabled: AtomicBool::new(false),
+            feature_enabled: AtomicBool::new(false),
+            capture_active: AtomicBool::new(false),
+            permission_revision: AtomicU64::new(0),
+        }
+    }
+
     /// Attempt the first open; later access retries if the device is unavailable.
     pub fn new() -> MicPipeCell {
         MicPipeCell {
+            #[cfg(test)]
+            device_free: false,
             inner: Mutex::new(MicPipe::open()),
             enabled: AtomicBool::new(false),
             feature_enabled: AtomicBool::new(true),
@@ -187,6 +203,10 @@ impl MicPipeCell {
 
     /// Whether a pipe is currently open (reopening if it was closed).
     pub fn is_open(&self) -> bool {
+        #[cfg(test)]
+        if self.device_free {
+            return false;
+        }
         let mut g = self.lock();
         if g.is_none() {
             *g = MicPipe::open();
@@ -312,6 +332,7 @@ mod tests {
 
     fn disconnected_test_pipe() -> MicPipeCell {
         MicPipeCell {
+            device_free: true,
             inner: Mutex::new(None),
             enabled: AtomicBool::new(true),
             feature_enabled: AtomicBool::new(true),

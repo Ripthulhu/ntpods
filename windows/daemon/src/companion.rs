@@ -207,6 +207,7 @@ pub fn serializes(command: &Command) -> bool {
             | Command::SetPlaybackBitrate { .. }
             | Command::SetPlaybackLink { .. }
             | Command::SetPlaybackGameMode { .. }
+            | Command::DongleControl { opcode: 1 | 2 | 4, .. }
     )
 }
 
@@ -2643,6 +2644,68 @@ mod tests {
     }
     fn parsed(frame: &Frame) -> Frame {
         Frame::parse(&serde_json::to_vec(frame).unwrap(), DEVICE, Some(SID)).unwrap()
+    }
+
+    #[test]
+    fn accepted_dongle_reconnect_supersedes_the_older_phone_release() {
+        let ctx = Ctx::for_test();
+        ctx.mac.store(DEVICE, Ordering::Release);
+        {
+            let mut state = ctx.companion.lock().unwrap();
+            state.generation = 9;
+            state.authorization = 3;
+        }
+        ctx.state.lock().unwrap().dongle = ntpods_ipc::DongleState {
+            present: true,
+            selected: true,
+            session: 7,
+            generation: 1,
+            capabilities: 7,
+            ..Default::default()
+        };
+        let mut pending = transfer(Phase::PhoneRelease);
+        pending.target = CompanionTarget::Pc;
+        pending.request = ctx.connect_requested.snapshot();
+        pending.audio_intent = bt::playback_intent();
+        assert!(pending.current(&ctx, &link()));
+        crate::apply_command(&ctx, Command::DongleControl {
+            session: 7, generation: 1, opcode: 1, argument: 0,
+        });
+        assert!(ctx.state.lock().unwrap().dongle.pending);
+        let release = result_frame(&link(), SID, &pending.tx, "release", Ok(()));
+        assert!(pending.accepts_result(&release));
+        assert!(!pending.current(&ctx, &link()));
+        assert_eq!(acquire_pc(&ctx, &link(), &mut pending), Err("superseded"));
+        assert_eq!(ctx.connect_requested.snapshot(), pending.request);
+        assert_eq!(bt::playback_intent(), pending.audio_intent);
+    }
+
+    #[test]
+    fn rejected_dongle_routes_and_anc_do_not_cancel_a_companion_transfer() {
+        for (opcode, argument, generation, capabilities, pending) in [
+            (1, 0, 2, 7, false),
+            (1, 1, 1, 7, false),
+            (1, 0, 1, 0, false),
+            (1, 0, 1, 7, true),
+            (3, 2, 1, 7, false),
+        ] {
+            let ctx = Ctx::for_test();
+            ctx.state.lock().unwrap().dongle = ntpods_ipc::DongleState {
+                present: true,
+                selected: true,
+                controls_ready: true,
+                session: 7,
+                generation: 1,
+                capabilities,
+                pending,
+                ..Default::default()
+            };
+            let before = ctx.companion.lock().unwrap().generation;
+            crate::apply_command(&ctx, Command::DongleControl {
+                session: 7, generation, opcode, argument,
+            });
+            assert_eq!(ctx.companion.lock().unwrap().generation, before);
+        }
     }
 
     #[test]
