@@ -101,6 +101,43 @@ pub fn apply_control_choices(
     changed
 }
 
+/// A synchronized choice is a fallback only; reports and in-flight local writes win.
+pub fn project_control_choice(
+    state: &mut Snapshot,
+    pending: &PendingSettings,
+    id: u8,
+    value: Option<u32>,
+) -> bool {
+    if pending.in_flight.contains(&id) || state.device_controls_pending.contains_key(&id) {
+        return false;
+    }
+    if let Some(value) = value {
+        if !crate::device_models::unreported_choice(state, id, value) {
+            return false;
+        }
+        state.device_controls_requested.insert(id, value) != Some(value)
+    } else {
+        state.device_controls_requested.remove(&id).is_some()
+    }
+}
+
+pub fn project_allow_off_choice(
+    state: &mut Snapshot,
+    pending: &PendingSettings,
+    value: Option<bool>,
+) -> bool {
+    if !supports_silent_allow_off(&state.model)
+        || pending.in_flight.contains(&0x34)
+        || state.device_controls_pending.contains_key(&0x34)
+        || state.device_controls.contains_key(&0x34)
+    {
+        return false;
+    }
+    let changed = state.allow_off_requested != value;
+    state.allow_off_requested = value;
+    changed
+}
+
 pub fn supports_silent_allow_off(model: &str) -> bool {
     matches!(model, "A3063" | "A3064" | "A3065")
 }

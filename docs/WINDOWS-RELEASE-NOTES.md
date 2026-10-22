@@ -1,6 +1,6 @@
 > [!WARNING]
-> **Test Mode (test signing) is required. Enabling it on your everyday or work PC
-> is a bad idea.** Use a dedicated test PC.
+> **The optional direct Bluetooth drivers require Test Mode (test signing).**
+> USB dongles do not. Use a dedicated test PC for these experimental drivers.
 >
 > These experimental kernel drivers are not Microsoft production-signed. Setup
 > signs them locally with a test certificate. Test Mode weakens Windows' normal
@@ -12,13 +12,21 @@
 
 Use **NTPods.msi** for the setup wizard. **NTPods-Windows.zip** contains the same
 app and drivers with `install.ps1` for manual installation from an administrator
-PowerShell. Both require Windows 11 22H2 or newer, x64, and Test Mode already
-enabled. Neither installer changes Secure Boot, Memory Integrity or Test Mode.
+PowerShell. Both require Windows 11 22H2 or newer, x64. New installations default
+to app-only for USB dongles, using Microsoft's built-in USB drivers without
+Test Mode. For the PC's Bluetooth adapter, select **Direct Bluetooth drivers
+(Test Mode)** in the MSI or run `install.ps1 -Drivers` with Test Mode already
+enabled. MSI upgrades preserve the installed feature selection; ZIP updates
+without `-Drivers` leave existing drivers untouched. Neither installer changes
+Secure Boot, Memory Integrity or Test Mode.
+Choosing app-only during a major MSI upgrade also retains existing drivers;
+full uninstall still removes them. To remove drivers while keeping the app,
+use the installed MSI's **Modify** option before upgrading.
 After removing the drivers, turn Test Mode off and restore any Secure Boot
 setting you changed. See
 [Microsoft's test-signing documentation](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/the-testsigning-boot-configuration-option).
 
-Setup configures an Apple Bluetooth identity for AirPods features such as Custom
+Direct Bluetooth setup configures an Apple Bluetooth identity for AirPods features such as Custom
 Transparency. This changes the PC's identity to all Bluetooth devices and needs
 a Windows restart when first applied. Setup saves the original values and
 restores them on uninstall. See the
@@ -26,7 +34,7 @@ restores them on uninstall. See the
 
 ## Playback
 
-The packages replace the playback driver for AirPods 1–4, Pro 1–3 and the original
+The optional drivers replace the playback driver for AirPods 1–4, Pro 1–3 and the original
 Max (Lightning and USB-C). AAC and AAC-ELD share the paired AirPods output.
 Initial driver replacement may require
 selecting that output again; later codec changes keep it.

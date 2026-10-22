@@ -347,8 +347,8 @@
   <data name="NoiseControl.RequestTimeout" xml:space="preserve"><value>The AirPods did not confirm this change. Refresh device settings and try again.</value></data>
   <data name="NoiseControl.OffUnavailable" xml:space="preserve"><value>AirPods report Off, but the Off control is unavailable. Refresh device settings.</value></data>
   <data name="ConversationVolume_Title" xml:space="preserve"><value>Volume while speaking</value></data>
-  <data name="ConversationVolume_Help" xml:space="preserve"><value>Maximum playback volume on this PC while you speak.</value></data>
-  <data name="ConversationVolume_Error" xml:space="preserve"><value>Could not confirm the volume. Try again.</value></data>
+  <data name="ConversationVolume_Help" xml:space="preserve"><value>Playback behavior on this PC while you speak.</value></data>
+  <data name="ConversationVolume_Error" xml:space="preserve"><value>Couldn’t save the conversation settings. Try again.</value></data>
   <data name="Action_Close" xml:space="preserve"><value>Close</value></data>
   <data name="Shutdown.Closing" xml:space="preserve"><value>NTPods · Restoring audio before closing…</value></data>
   <data name="Shutdown.FailedTitle" xml:space="preserve"><value>Could not confirm shutdown</value></data>
@@ -435,7 +435,7 @@
   <data name="Playback.BitrateCodec" xml:space="preserve"><value>Bitrate settings apply to {0}.</value></data>
   <data name="Playback.Variable" xml:space="preserve"><value>Variable (experimental)</value></data>
   <data name="Playback.VariableHelp" xml:space="preserve"><value>AAC-ELD variable bitrate, up to 256 kbps.</value></data>
-  <data name="Playback.PeakBitrate" xml:space="preserve"><value>Maximum bitrate: {0} kbps.</value></data>
+  <data name="Playback.PeakBitrate" xml:space="preserve"><value>Negotiated bitrate limit: {0} kbps.</value></data>
   <data name="Transparency.Title" xml:space="preserve"><value>Custom Transparency</value></data>
   <data name="Transparency.Help" xml:space="preserve"><value>Experimental. Adjusts outside sound in Transparency mode. Read the current settings before editing.</value></data>
   <data name="Transparency.Enable" xml:space="preserve"><value>Use custom settings</value></data>
@@ -598,4 +598,68 @@
   <data name="HardwareChecks.RawDataHelp" xml:space="preserve"><value>Stored volume values, not frequency bands or a sound-level measurement.</value></data>
   <data name="HardwareChecks.FirstUse" xml:space="preserve"><value>First used (device time): {0}</value></data>
   <data name="HardwareChecks.Preparing" xml:space="preserve"><value>Preparing the check. Keep the case open.</value></data>
+  <data name="Playback_LinkLimit" xml:space="preserve"><value>Wi-Fi coexistence</value></data>
+  <data name="Playback_LinkOff" xml:space="preserve"><value>Off</value></data>
+  <data name="Playback_LinkAutomatic" xml:space="preserve"><value>Automatic</value></data>
+  <data name="Playback_LinkCustom" xml:space="preserve"><value>Custom</value></data>
+  <data name="Playback_LinkKbps" xml:space="preserve"><value>Frame limit (kbps)</value></data>
+  <data name="Playback_LinkApply" xml:space="preserve"><value>Apply frame limit</value></data>
+  <data name="Playback_LinkRequiresVariable" xml:space="preserve"><value>Your choice is saved and applies only with Variable bitrate.</value></data>
+  <data name="Playback_LinkHelp" xml:space="preserve"><value>Off keeps the normal frame budget. Changing this setting briefly restarts playback.</value></data>
+  <data name="Playback_LinkAutomaticHelp" xml:space="preserve"><value>Uses a smaller frame budget while this PC is connected to 2.4 GHz Wi-Fi.</value></data>
+  <data name="Playback_LinkCustomHelp" xml:space="preserve"><value>Limits each compressed frame, not the average bitrate. Lower limits leave less room for audio detail. Changes briefly restart playback.</value></data>
+  <data name="Playback_GameMode" xml:space="preserve"><value>Game Mode</value></data>
+  <data name="Playback_GameModeHelp" xml:space="preserve"><value>Uses a smaller playback buffer on supported AirPods. Changes may briefly interrupt audio.</value></data>
+  <data name="Companion.Title" xml:space="preserve"><value>Listen on</value></data>
+  <data name="Companion.Phone" xml:space="preserve"><value>Phone</value></data>
+  <data name="Companion.ThisPC" xml:space="preserve"><value>This PC</value></data>
+  <data name="Companion.Help" xml:space="preserve"><value>Choose where to connect your AirPods.</value></data>
+  <data name="Companion.Pending" xml:space="preserve"><value>Switching devices…</value></data>
+  <data name="Companion.Unavailable" xml:space="preserve"><value>Open the linked phone app to switch devices.</value></data>
+  <data name="Companion.Busy" xml:space="preserve"><value>Stop the microphone or call before switching.</value></data>
+  <data name="Companion.Failed" xml:space="preserve"><value>Couldn’t confirm the switch. Choose a device to try again.</value></data>
+  <data name="CompanionSettings.Title" xml:space="preserve"><value>Shared settings</value></data>
+  <data name="CompanionSettings.Calls" xml:space="preserve"><value>Take calls on phone</value></data>
+  <data name="CompanionSettings.CallsHelp" xml:space="preserve"><value>Enable this here and in LibrePods. Incoming calls can move the AirPods from this PC to your phone.</value></data>
+  <data name="CompanionSettings.Return" xml:space="preserve"><value>Return to PC after calls</value></data>
+  <data name="CompanionSettings.ReturnHelp" xml:space="preserve"><value>Return only if the call interrupted this PC. Resume the same player only if NTPods paused it.</value></data>
+  <data name="CompanionSettings.Popups" xml:space="preserve"><value>Connection popups</value></data>
+  <data name="CompanionSettings.BatteryCache" xml:space="preserve"><value>Keep disconnected battery levels</value></data>
+  <data name="CompanionSettings.SaveFailed" xml:space="preserve"><value>Couldn’t save the setting. Try again.</value></data>
+  <data name="ConversationPolicy.Mode" xml:space="preserve"><value>Conversation volume behavior</value></data>
+  <data name="ConversationPolicy.Absolute" xml:space="preserve"><value>Limit volume</value></data>
+  <data name="ConversationPolicy.Relative" xml:space="preserve"><value>Reduce original volume</value></data>
+  <data name="ConversationPolicy.Second" xml:space="preserve"><value>Second-stage volume</value></data>
+  <data name="ConversationPolicy.Pause" xml:space="preserve"><value>Pause media while speaking</value></data>
+  <data name="CompanionSettings.Unavailable" xml:space="preserve"><value>Shared settings are unavailable.</value></data>
+  <data name="Dongle_Title" xml:space="preserve"><value>AirPods Dongle</value></data>
+  <data name="Dongle_OutputHelp" xml:space="preserve"><value>Choose “AirPods Dongle” as your Windows sound output.</value></data>
+  <data name="Dongle_Reconnect" xml:space="preserve"><value>Reconnect AirPods</value></data>
+  <data name="Dongle_Pair" xml:space="preserve"><value>Pair AirPods…</value></data>
+  <data name="Dongle_Phone" xml:space="preserve"><value>Pair phone</value></data>
+  <data name="Dongle_PhoneWaiting" xml:space="preserve"><value>Select AirPods Dongle in your phone’s Bluetooth settings.</value></data>
+  <data name="Dongle_Connected" xml:space="preserve"><value>AirPods connected over USB</value></data>
+  <data name="Dongle_NotConnected" xml:space="preserve"><value>AirPods not connected</value></data>
+  <data name="Dongle_NativeHelp" xml:space="preserve"><value>Automatic PC Bluetooth connection is paused while the dongle is plugged in. Connect in the device header still uses PC Bluetooth.</value></data>
+  <data name="Dongle_PairHelp" xml:space="preserve"><value>Pause USB playback and recording, and disconnect the phone. Put the AirPods in pairing mode before continuing.</value></data>
+  <data name="Dongle_BatteryAge" xml:space="preserve"><value>Last report: {0} seconds ago</value></data>
+  <data name="Dongle_Unknown" xml:space="preserve"><value>No battery report yet.</value></data>
+  <data name="Dongle_Multiple" xml:space="preserve"><value>Unplug the other AirPods dongles to choose this one.</value></data>
+  <data name="Dongle_Busy" xml:space="preserve"><value>The dongle is busy. Wait or pause playback, then try again.</value></data>
+  <data name="Dongle_Stale" xml:space="preserve"><value>The connection changed. Try again.</value></data>
+  <data name="Dongle_Timeout" xml:space="preserve"><value>The dongle did not confirm the request. Check its connection before trying again.</value></data>
+  <data name="Dongle_Unsupported" xml:space="preserve"><value>Update the dongle firmware to use these controls.</value></data>
+  <data name="Dongle_Error" xml:space="preserve"><value>Check the dongle’s USB connection.</value></data>
+  <data name="Dongle_ReplaceConfirm" xml:space="preserve"><value>This replaces the AirPods pairing saved in the dongle’s current slot. Put the new AirPods in pairing mode, then choose Pair.</value></data>
+  <data name="Dongle_PairAction" xml:space="preserve"><value>Pair</value></data>
+  <data name="Dongle_Cancel" xml:space="preserve"><value>Cancel</value></data>
+  <data name="Dongle_PairNative" xml:space="preserve"><value>Pair using PC Bluetooth</value></data>
+  <data name="Dongle_Diagnostics" xml:space="preserve"><value>Connection diagnostics</value></data>
+  <data name="Dongle_ReadDiagnostics" xml:space="preserve"><value>Refresh</value></data>
+  <data name="Dongle_Queue" xml:space="preserve"><value>Audio buffer: {0} / {1} frames (peak {2})</value></data>
+  <data name="Dongle_Memory" xml:space="preserve"><value>Available memory: {0} KiB of {1} KiB</value></data>
+  <data name="Dongle_Encoding" xml:space="preserve"><value>Encoding: {0} µs (peak {1} µs)</value></data>
+  <data name="Dongle_Drops" xml:space="preserve"><value>Buffer underflow: {0} frames; dropped: {1}</value></data>
+  <data name="Dongle_Recovery" xml:space="preserve"><value>Send failures: {0}; recoveries: {1}</value></data>
+  <data name="Dongle_CountersHelp" xml:space="preserve"><value>Counters are measured since the dongle started. Encoding time is not listening latency.</value></data>
 </root>

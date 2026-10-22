@@ -45,6 +45,21 @@ individual frames can vary by one byte. Variable mode changes bitrate with the
 content and has passed short Pro 3 checks. Codec and bitrate changes restart
 the Bluetooth stream without removing the Windows output.
 
+AAC-ELD Variable mode also offers **Wi-Fi coexistence**: Off keeps the normal
+frame budget; Automatic selects a smaller budget during a verified 2.4 GHz Wi-Fi
+connection; Custom accepts a 128–256 kbps frame limit. The limit is not an average
+bitrate. Lower limits reduce encoding headroom. The saved choice stays inactive
+during AAC or fixed-bitrate playback. See [frame limits](../../docs/WINDOWS-AUDIO-LATENCY.md#saved-frame-limits).
+
+Every stream start includes 100 ms of encoded silence while retaining the source
+audio for ordered playback. This smooths startup and adds 100 ms of source delay;
+it is not a selectable quality mode. Packet grouping is managed internally.
+
+**Game Mode** is enabled by default and saves your choice across restarts.
+On supported AirPods it requests a smaller playback buffer while the microphone
+is idle. Turning it off restores the normal buffer policy; changing it may
+briefly interrupt audio. The 60 ms receiver target is not end-to-end latency.
+
 A failed stream supplies silence and offers Retry. Closing or crashing the
 backend also stops playback. It cannot fall back to Microsoft's driver while
 NTPods owns the AudioSink. Keep supported pairs connected during uninstall so
@@ -120,7 +135,7 @@ their reported delay. This is separate from measured Windows-to-sound latency.
 Receiver reports stay in IPC and diagnostics. The ACX hardware-latency callback
 returns zero: publishing the remote delay there can prevent Windows from
 initializing playback. It is not an end-to-end latency estimate.
-The [automatic receiver-buffer policy](../../docs/WINDOWS-AUDIO-LATENCY.md#automatic-receiver-buffer-policy)
+With Game Mode enabled, the [receiver-buffer policy](../../docs/WINDOWS-AUDIO-LATENCY.md#automatic-receiver-buffer-policy)
 requests 60 ms for gaming-capable AAC-ELD devices and Pro 3, with a coordinated host-clock adjustment
 and media flush timeout. It restores a chosen 150 ms target for microphone use,
 pause and playback changes. Other models without capability evidence retain their receiver settings.
@@ -130,9 +145,11 @@ capture/recovery, with unchanged volume. See
 [validation](../../docs/WINDOWS-VALIDATION.md#playback-latency-investigation)
 for conditions and limits; other models and acoustic latency were not retested.
 The [packet and source-reserve overrides](../../docs/WINDOWS-AUDIO-LATENCY.md#packet-and-source-reserve-overrides)
-allow comparison with two-frame packets and a 50 ms reserve for a test session.
-They also provide timestamp and source-identifier comparisons without changing
-codec selection or volume.
+allow comparison with two- or three-frame packets and a 50 ms reserve for a test
+session. These leave saved settings unchanged and need hardware checks before
+becoming defaults. Frame limits use the saved Wi-Fi coexistence controls above;
+startup priming is always enabled. Timestamp and
+source-identifier comparisons also preserve codec selection and volume.
 
 Automated checks cover packet validation, cancellation, per-device PCM isolation,
 buffer limits, bitrate settings, and encoder pitch/stereo output. AAC round trips

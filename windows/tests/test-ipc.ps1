@@ -17,6 +17,18 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'C# IPC contract checks failed.' }
     & $cargo run --quiet --locked --manifest-path $manifest --example mic_wire_fixtures -- check $csharpEvents
     if ($LASTEXITCODE -ne 0) { throw 'Rust/C# IPC roundtrip checks failed.' }
+    & $cargo run --quiet --locked --manifest-path $manifest --example companion_preferences_fixtures -- emit $rustEvents
+    if ($LASTEXITCODE -ne 0) { throw 'Rust preference fixture generation failed.' }
+    & $dotnet run --project $project --configuration Release -- --preferences $rustEvents $csharpEvents
+    if ($LASTEXITCODE -ne 0) { throw 'C# preference contract checks failed.' }
+    & $cargo run --quiet --locked --manifest-path $manifest --example companion_preferences_fixtures -- check $csharpEvents
+    if ($LASTEXITCODE -ne 0) { throw 'Rust/C# preference roundtrip checks failed.' }
+    & $cargo run --quiet --locked --manifest-path $manifest --example dongle_wire_fixtures -- emit $rustEvents
+    if ($LASTEXITCODE -ne 0) { throw 'Rust dongle fixture generation failed.' }
+    & $dotnet run --project $project --configuration Release -- --dongle $rustEvents $csharpEvents
+    if ($LASTEXITCODE -ne 0) { throw 'C# dongle contract checks failed.' }
+    & $cargo run --quiet --locked --manifest-path $manifest --example dongle_wire_fixtures -- check $csharpEvents
+    if ($LASTEXITCODE -ne 0) { throw 'Rust/C# dongle roundtrip checks failed.' }
 } finally {
     $resolved = [IO.Path]::GetFullPath($runDirectory)
     $prefix = $tempRoot + [IO.Path]::DirectorySeparatorChar + 'ntpods-ipc-tests-'

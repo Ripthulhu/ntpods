@@ -86,9 +86,17 @@ LpEvtIoDeviceControl(
     size_t          sz;
 
 #if NTPODS_EXPERIMENTAL_PLAYBACK
-    if (IoControlCode == IOCTL_LP_PLAYBACK_OPEN || IoControlCode == IOCTL_LP_PLAYBACK_CLOSE) {
+    if (IoControlCode == IOCTL_LP_PLAYBACK_OPEN || IoControlCode == IOCTL_LP_PLAYBACK_CLOSE ||
+        IoControlCode == IOCTL_LP_PLAYBACK_LISTEN) {
         LpEvtPlaybackIoctl(Queue, Request, OutputBufferLength, InputBufferLength, IoControlCode);
         return;
+    }
+    if (IoControlCode == IOCTL_LP_DISCONNECT) {
+        status = LpPlaybackDisarm(ctx);
+        if (!NT_SUCCESS(status)) {
+            WdfRequestCompleteWithInformation(Request, status, 0);
+            return;
+        }
     }
 #endif
     WdfWaitLockAcquire(ctx->OperationLock, NULL);

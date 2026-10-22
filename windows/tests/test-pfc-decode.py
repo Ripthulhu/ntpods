@@ -68,11 +68,19 @@ body = (bytes.fromhex("01 00 05 00 40 00 00 04") + bytes(12)
 request = len(body).to_bytes(2, "little") + body
 echo = decode(request, "echo-request")
 assert echo["extended_features_internal"] == "0010000000000001"
+assert echo["ulla_gate_bit36"] is False
 assert echo["cid"] == 64 and echo["mtu"] == 1024
 assert echo["profile_mask"] == 0 and echo["sdp_database_state"] == 0
 assert echo["tail"] == "deadbeef"
 response = b"\x02" + body[1:]
 assert decode(response, "echo-response")["tail"] == "deadbeef"
+# Captured Pro 3 and Intel Mac words; ULLA uses bit 36, not low-word bit 4.
+for high, low, expected in ((0x087c7c1b, 0, True), (0x004d040d, 0, False), (0, 0x10, False)):
+    candidate = response[:30] + high.to_bytes(4, "little") + low.to_bytes(4, "little") + response[38:]
+    parsed_response = decode(candidate, "echo-response")
+    assert parsed_response["ulla_gate_bit36"] is expected
+    request_body = b"\x01" + candidate[1:]
+    assert decode(len(request_body).to_bytes(2, "little") + request_body, "echo-request")["ulla_gate_bit36"] is expected
 rejects(request, "echo-response")
 rejects(request + b"\x00", "echo-request")
 rejects(response, "echo-request")

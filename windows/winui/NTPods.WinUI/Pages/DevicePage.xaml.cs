@@ -1,5 +1,6 @@
 using NTPods.WinUI.Ipc;
 using NTPods.WinUI.Services;
+using NTPods.WinUI.Controls;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 
@@ -27,9 +28,11 @@ public sealed partial class DevicePage : UserControl
         {
             _client = value;
             Header.Client = value;
+            DongleCard.Client = value;
             VolumeCard.Client = value;
             EqualizerCard.Client = value;
             DeviceSettingsCard.Client = value;
+            CompanionCard.Client = value;
             NoiseControlCard.Client = value;
             FeaturesCard.Client = value;
             MicCard.Client = value;
@@ -46,10 +49,12 @@ public sealed partial class DevicePage : UserControl
     public DevicePage()
     {
         InitializeComponent();
+        CompanionCard.LocalBusy = () => DeviceSettingsCard.PlaybackPending;
+        DeviceSettingsCard.PlaybackPendingChanged += CompanionCard.RefreshLocalBusy;
         Header.SettingsRequested += () => SettingsRequested?.Invoke();
         Header.PairingRequested += () => PairingRequested?.Invoke();
         _scrollbars = new AutoHideScrollbars(PageScrollViewer);
-        _sections = new SectionTransitions(this, DeviceRoot, DeviceSections, VolumeSections, ExtraSections);
+        _sections = new SectionTransitions(this, DeviceRoot, DeviceSections, VolumeSections, ExtraSections, HealthSections);
         // Hearing assistance remains an opt-in for supported models.
         ApplyExperimentalVisibility();
         Unloaded += async (_, _) => await StopNearbyCaseInformationAsync();
@@ -68,9 +73,13 @@ public sealed partial class DevicePage : UserControl
     /// Show/hide every experimental card from the single experimental opt-in.
     private void ApplyExperimentalVisibility()
     {
-        var vis = AppSettings.EnableExperimental && DeviceModels.Find(_snapshot.Model).HearingAid ? Visibility.Visible : Visibility.Collapsed;
+        var health = DongleHealthPresentation.Project(_snapshot);
+        var vis = AppSettings.EnableExperimental && DeviceModels.Find(health.Model).HearingAid ? Visibility.Visible : Visibility.Collapsed;
         HearingAidCard.Visibility = vis;
-        HardwareDiagnosticsCard.Visibility = vis;
+        HardwareDiagnosticsCard.Visibility = DongleHealthPresentation.ShowDiagnostics(health, AppSettings.EnableExperimental)
+            ? Visibility.Visible : Visibility.Collapsed;
+        HealthSections.Visibility = vis == Visibility.Visible || HardwareDiagnosticsCard.Visibility == Visibility.Visible
+            ? Visibility.Visible : Visibility.Collapsed;
         TransparencyCard.Visibility = AppSettings.EnableExperimental && DeviceModels.Find(_snapshot.Model).CustomTransparency
             ? Visibility.Visible : Visibility.Collapsed;
     }
@@ -84,11 +93,22 @@ public sealed partial class DevicePage : UserControl
         if (s.DeviceId != _snapshot.DeviceId || !DeviceModels.HeadTracking(s))
             HeadTrackingCard.Stop(notifyDevice: s.DeviceId == _snapshot.DeviceId);
         _snapshot = s;
+        var health = DongleHealthPresentation.Project(s);
+        string healthTarget = health.DeviceId;
+        Func<object, bool>? route = DongleHealthPresentation.UsesDongle(s)
+            ? command => DongleHealthPresentation.Route(_snapshot, healthTarget, command) is { } routed && _client?.Send(routed) == true
+            : null;
+        HearingAidCard.SendCommand = HardwareDiagnosticsCard.SendCommand = route;
+        DeviceSettingsCard.SendCommand = FeaturesCard.SendCommand = NoiseControlCard.SendCommand = route;
+        bool dongle = DongleHealthPresentation.UsesDongle(s);
+        DongleCard.Update(s.Dongle);
+        DeviceBody.Visibility = !dongle || s.Dongle.Selected ? Visibility.Visible : Visibility.Collapsed;
         PairFirstButton.Visibility = string.IsNullOrEmpty(s.DeviceId) ? Visibility.Visible : Visibility.Collapsed;
-        NearbyFinderCard.Visibility = string.IsNullOrEmpty(s.DeviceId) ? Visibility.Collapsed : Visibility.Visible;
+        PairFirstButton.Content = Localize.Get(s.Dongle.Present || s.Dongle.Ambiguous ? "Dongle_PairNative" : "Pairing_Title");
+        NearbyFinderCard.Visibility = string.IsNullOrEmpty(DongleHealthPresentation.FinderProject(s).DeviceId) ? Visibility.Collapsed : Visibility.Visible;
         NearbyCaseCard.Visibility = !string.IsNullOrEmpty(s.DeviceId) && CaseInformationPresentation.CasePnpProduct(s.Model).HasValue
             ? Visibility.Visible : Visibility.Collapsed;
-        NoiseControlCard.Visibility = DeviceModels.Listening(s) ? Visibility.Visible : Visibility.Collapsed;
+        NoiseControlCard.Visibility = DeviceModels.Listening(health) ? Visibility.Visible : Visibility.Collapsed;
         EqualizerCard.Visibility = DeviceModels.CustomEq(s) ? Visibility.Visible : Visibility.Collapsed;
         HeartRateCard.Visibility = profile.HeartRate || s.HeartRateEnabled ? Visibility.Visible : Visibility.Collapsed;
         HeadTrackingCard.Visibility = DeviceModels.HeadTracking(s) ? Visibility.Visible : Visibility.Collapsed;
@@ -97,36 +117,47 @@ public sealed partial class DevicePage : UserControl
         ApplyExperimentalVisibility();
         Header.Update(s);
         BatteryCard.Update(s);
+        CompanionCard.Update(s);
         VolumeCard.Update(s);
         EqualizerCard.Update(s);
-        DeviceSettingsCard.Update(s);
-        NoiseControlCard.Update(s);
-        bool featuresChanged = FeaturesCard.Update(s);
+        DeviceSettingsCard.Update(health);
+        NoiseControlCard.Update(health);
+        bool featuresChanged = FeaturesCard.Update(health);
         MicCard.Update(s);
         MultipointCard.Update(s);
         HeartRateCard.Update(s);
         HeadTrackingCard.Update(s);
-        HearingAidCard.Update(s);
+        HearingAidCard.Update(health);
         TransparencyCard.Update(s);
-        HardwareDiagnosticsCard.Update(s);
-        NearbyFinderCard.Update(s);
+        HardwareDiagnosticsCard.Update(health);
+        NearbyFinderCard.Update(DongleHealthPresentation.FinderProject(s));
         NearbyCaseCard.Update(s);
         ReadCaseAfterPairing();
 
-        bool on = s.Connected;
+        if (dongle)
+        {
+            BatteryCard.Visibility = CompanionCard.Visibility = VolumeSections.Visibility = MicCard.Visibility = Visibility.Collapsed;
+            HeartRateCard.Visibility = HeadTrackingCard.Visibility = MultipointCard.Visibility = NearbyCaseCard.Visibility = Visibility.Collapsed;
+        }
+        else
+        {
+            BatteryCard.Visibility = VolumeSections.Visibility = Visibility.Visible;
+        }
+        bool on = health.Connected;
         VolumeCard.IsEnabled = on;
         NoiseControlCard.IsEnabled = on;
         // The microphone permission is local; it must remain possible to turn
         // it off after the AirPods disconnect or the capture driver disappears.
         MicCard.IsEnabled = true;
         HeartRateCard.IsEnabled = _client?.IsReady == true && (profile.HeartRate || s.HeartRateEnabled);
-        HearingAidCard.IsEnabled = on;
+        HearingAidCard.IsEnabled = health.Connected;
         _sections.AnimateChanges(changed || featuresChanged);
     }
 
     /// The events pipe dropped — surface it in the header.
     public void ShowWaitingForDaemon()
     {
+        DongleCard.Disconnected();
         NearbyFinderCard.ResetSession();
         _ = StopNearbyCaseInformationAsync();
         Header.ShowWaitingForDaemon();
@@ -182,6 +213,25 @@ public sealed partial class DevicePage : UserControl
         NearbyCaseCard.SetDaemonReady(ready);
         DeviceBody.IsEnabled = ready;
         Header.SetDaemonReady(ready);
+    }
+
+    public void SetCompanionSession(ulong epoch, bool ready) => CompanionCard.SetCompanionSession(epoch, ready);
+    public void UpdateCompanionStatus(CompanionStatus status, long receivedAtMs)
+    {
+        _sections.Capture();
+        CompanionCard.UpdateCompanionStatus(status, receivedAtMs);
+        _sections.AnimateChanges();
+    }
+    public void CompleteCompanion(DaemonEvent.CommandResult result, ulong epoch)
+    {
+        CompanionCard.CompleteCompanion(result, epoch);
+        FeaturesCard.CompletePreference(result);
+    }
+    public void UpdateCompanionPreferences(CompanionPreferences preferences)
+    {
+        CompanionCard.UpdatePreferences(preferences);
+        FeaturesCard.UpdatePreferences(preferences);
+        BatteryCard.Update(_snapshot);
     }
 
     public void FocusActions() => Header.FocusActions();

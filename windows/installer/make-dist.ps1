@@ -154,3 +154,4 @@ $size = '{0:N0} MB' -f ((Get-ChildItem $Out -Recurse -File | Measure-Object Leng
 $count = (Get-ChildItem $Out -Recurse -File).Count
 Write-Host "==> Done: $count files, $size" -ForegroundColor Green
 Write-Host "    Install with (elevated):  cd '$Out'; powershell -ExecutionPolicy Bypass -File .\install.ps1" -ForegroundColor DarkGray
+Write-Host '    USB dongles need no extra drivers. Add -Drivers only for direct Bluetooth (requires Test Mode).' -ForegroundColor DarkGray

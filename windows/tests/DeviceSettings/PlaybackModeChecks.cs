@@ -52,5 +52,25 @@ internal static class PlaybackModeChecks
         request.Update(legacy);
         check(request.Requested is null, "Older backend mode reports must still acknowledge requests.");
         Console.WriteLine("Playback preference and fallback controls checks passed.");
+        foreach (string mode in new[] { "off", "automatic", "manual" })
+        foreach (ushort kbps in new ushort[] { 128, 174, 256 })
+            check(PlaybackLinkSettings.FromInput(mode, kbps) == new PlaybackLinkSettings { Mode = mode, Kbps = kbps },
+                "Frame policy choices must preserve their exact bounded values.");
+        foreach (double kbps in new[] { double.NaN, double.PositiveInfinity, 0, 127, 174.5, 257, 65536 })
+            check(PlaybackLinkSettings.FromInput("manual", kbps) is null, "Invalid or incomplete frame limits must never be sent.");
+        check(PlaybackLinkSettings.FromInput("unknown", 174) is null, "Unknown frame policies must be rejected.");
+        check(Wire.ParseEvent("{\"event\":\"state\"}") is DaemonEvent.State { Snapshot.PlaybackLink: null },
+            "A legacy daemon must not gain an enabled frame-policy control.");
+        check(Wire.ParseEvent("{\"event\":\"state\"}") is DaemonEvent.State { Snapshot.PlaybackGameMode: null },
+            "A legacy daemon must not gain an enabled Game Mode control.");
+        foreach (string value in new[] { "false", "true" })
+            check(Wire.ParseEvent("{\"event\":\"state\",\"playback_game_mode\":" + value + "}") is DaemonEvent.State state &&
+                state.Snapshot.PlaybackGameMode == bool.Parse(value), "Game Mode must preserve the saved boolean.");
+        foreach (string value in new[] { "1", "\"false\"", "{}", "[]" })
+            check(Wire.ParseEvent("{\"event\":\"state\",\"playback_game_mode\":" + value + "}") is null,
+                "Malformed Game Mode values must be rejected.");
+        foreach (string link in new[] { "{}", "{\"mode\":\"unknown\",\"kbps\":174}", "{\"mode\":\"manual\",\"kbps\":127}", "{\"mode\":\"automatic\",\"kbps\":257}", "{\"mode\":\"off\",\"kbps\":null}" })
+            check(Wire.ParseEvent("{\"event\":\"state\",\"playback_link\":" + link + "}") is null,
+                "Malformed frame policies must fail closed.");
     }
 }

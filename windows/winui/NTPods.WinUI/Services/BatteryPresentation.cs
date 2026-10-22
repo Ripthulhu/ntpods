@@ -17,8 +17,7 @@ internal static class BatteryPresentation
         return lowest;
     }
 
-    public static bool HasData(Snapshot snapshot) => LowestReading(snapshot.Battery.Left,
-        snapshot.Battery.Right, snapshot.Battery.Case, snapshot.Battery.Headphone) is not null;
+    public static bool HasData(Snapshot snapshot) => Enum.GetValues<BatteryPart>().Any(part => Reading(snapshot, part).HasValue);
 
     // Older daemons did not carry freshness metadata. New sources always own their
     // live flag, independently of the audio connection and its cached readings.
@@ -29,11 +28,16 @@ internal static class BatteryPresentation
         _ => false,
     };
 
-    public static byte? Reading(Snapshot s, BatteryPart part) => Present(part switch
+    private static byte? RawReading(Snapshot s, BatteryPart part) => Present(part switch
     {
         BatteryPart.Left => s.Battery.Left, BatteryPart.Right => s.Battery.Right,
         BatteryPart.Case => s.Battery.Case, _ => s.Battery.Headphone,
     });
+
+    public static byte? Reading(Snapshot s, BatteryPart part) => Reading(s, part, AppSettings.CacheDisconnectedBattery(s.DeviceId));
+    internal static byte? Reading(Snapshot s, BatteryPart part, bool retainDisconnected) =>
+        !retainDisconnected && (Observation(s, part)?.Present == false || !s.Connected && !IsLive(s, part))
+            ? null : RawReading(s, part);
 
     private static BatteryObservation? Observation(Snapshot s, BatteryPart part) => part switch
     {
@@ -41,7 +45,7 @@ internal static class BatteryPresentation
         BatteryPart.Case => s.BatteryFreshness?.Case, _ => s.BatteryFreshness?.Headphone,
     };
 
-    public static bool IsLive(Snapshot s, BatteryPart part) => Reading(s, part).HasValue && IsLive(s)
+    public static bool IsLive(Snapshot s, BatteryPart part) => RawReading(s, part).HasValue && IsLive(s)
         && (s.BatteryFreshness is null || Observation(s, part) is { Live: true, TimestampMs: not null, Present: not false });
 
     public static bool ArtworkIsAvailable(Snapshot s, BatteryPart part) =>

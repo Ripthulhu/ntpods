@@ -18,8 +18,10 @@ pub const FRAME_SAMPLES: usize = 480;
 pub const MAX_AU: usize = 321;
 
 pub fn validate_eld_aus(count: usize) -> io::Result<()> {
-    if !matches!(count, 1 | 2) {
-        return Err(invalid("AAC-ELD packets must contain one or two frames"));
+    if !matches!(count, 1 | 2 | 3) {
+        return Err(invalid(
+            "AAC-ELD packets must contain one, two or three frames",
+        ));
     }
     Ok(())
 }
@@ -666,7 +668,7 @@ mod tests {
 
     #[test]
     fn packet_framing_wrap_and_mtu_are_checked_before_state_changes() {
-        for count in [1, 2] {
+        for count in [1, 2, 3] {
             let units = vec![vec![0xaa; MAX_AU]; count];
             let mut writer = Packetizer {
                 sequence: u16::MAX,
@@ -674,10 +676,10 @@ mod tests {
                 ssrc: 0x11223344,
             };
             assert!(writer.packet(&[], 1234, 1023).is_err());
-            assert!(writer.packet(&vec![vec![0; 1]; 3], 1234, 1023).is_err());
+            assert!(writer.packet(&vec![vec![0; 1]; 4], 1234, 1023).is_err());
             assert!(writer.packet(&[vec![]], 1234, 1023).is_err());
             assert!(writer.packet(&[vec![0; MAX_AU + 1]], 1234, 1023).is_err());
-            let mtu = if count == 1 { 337 } else { 662 };
+            let mtu = 12 + count * (4 + MAX_AU);
             assert!(writer.packet(&units, 1234, mtu - 1).is_err());
             let packet = writer.packet(&units, 1234, mtu).unwrap();
             let mut expected = vec![
@@ -685,8 +687,8 @@ mod tests {
                 0x41,
             ];
             expected.extend_from_slice(&[0xaa; MAX_AU]);
-            if count == 2 {
-                expected.extend_from_slice(&[0xb0, 0, 0x11, 0x41]);
+            for index in 1..count {
+                expected.extend_from_slice(&[0xb0, index as u8 - 1, 0x11, 0x41]);
                 expected.extend_from_slice(&[0xaa; MAX_AU]);
             }
             assert_eq!(packet, expected);

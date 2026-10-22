@@ -7,7 +7,7 @@ AirPods. See the [model list](WINDOWS-MODEL-SUPPORT.md) for capability gates and
 | Area | Controls |
 | --- | --- |
 | Sound | Noise cancellation, Transparency, Adaptive strength, Conversation Awareness, personalized volume and native three-band EQ |
-| Playback and microphone | AAC/AAC-ELD codec and bitrate, ear detection, sleep detection and microphone side |
+| Playback and microphone | AAC/AAC-ELD codec and bitrate, Game Mode, Wi-Fi coexistence, ear detection, sleep detection and microphone side |
 | Microphone | Automatic, Keep active, Manual Start/Stop and a keyboard shortcut |
 | Stems | Press-and-hold actions, noise-mode cycle, volume swipe, press speed, hold/swipe duration and stored call gestures |
 | Accessibility and charging | One-bud ANC, tone and case volume, case sounds, optimized charging and experimental Loud Sound Reduction |
@@ -15,8 +15,12 @@ AirPods. See the [model list](WINDOWS-MODEL-SUPPORT.md) for capability gates and
 | Hardware checks | Saved per-ear self-check results on Pro 2 and Pro 3 |
 
 Automatic pause is a local NTPods preference. It resumes only the same media
-session that NTPods paused. Editing an AirPods call or assistant preference does
-not connect that gesture to Discord, Windows call controls or a Windows assistant.
+session that NTPods paused. Plexamp uses its local control interface when it does
+not expose a Windows media session; Remote Control must be enabled in Plexamp.
+NTPods requires Plexamp audio on the selected output and leaves it paused if the
+track changes, playback is restarted manually, or another Windows media session starts playing.
+Editing an AirPods call or assistant preference does not connect that gesture to
+Discord, Windows call controls or a Windows assistant.
 
 ## Confirmed and requested settings
 
@@ -80,13 +84,11 @@ shortcut to work. The shortcut requires Ctrl or Alt with a key; Windows-key
 combinations and F12 are unavailable.
 
 Stopping the stream runs playback recovery. An idle delay or Keep active avoids
-repeating that interruption between nearby recordings. With native playback and
-a supported HQ microphone route, NTPods disables the pair's legacy hands-free
-service before exposing playback. This removes its duplicate endpoints and avoids
-Windows waiting to combine the two audio profiles. NTPods restores a service it
-disabled on Disconnect, pair/driver change, microphone failure or app exit.
-Case sleep retains this isolation without opening an audio connection.
-Other pairs keep hands-free audio.
+repeating that interruption between nearby recordings. NTPods leaves Windows'
+hands-free service and audio endpoints available. Disable unwanted legacy audio
+entries manually in the Sound control panel; keep the NTPods output and HQ
+microphone enabled. NTPods preserves manual endpoint choices and restores only
+changes recorded by its earlier automatic hands-free policy.
 
 ## Automatic return
 

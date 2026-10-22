@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::io;
 use std::time::{Duration, Instant};
 
@@ -23,6 +24,87 @@ impl SampleFormat {
 
     pub fn read_bytes(self) -> usize {
         480 * self.frame_bytes()
+    }
+}
+
+pub struct StartupPriming {
+    frames: usize,
+    remaining: usize,
+    frame_bytes: usize,
+    sample_bytes: usize,
+    queued: VecDeque<u8>,
+    capacity: usize,
+}
+
+impl StartupPriming {
+    pub fn new(duration: Duration, samples: usize, format: SampleFormat) -> io::Result<Self> {
+        if duration > Duration::from_millis(100) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Startup priming exceeds 100 ms",
+            ));
+        }
+        frame_bytes(samples)?;
+        let frames = (duration.as_nanos() * SAMPLE_RATE as u128).div_ceil(1_000_000_000) as usize;
+        let sample_bytes = format.frame_bytes();
+        let capacity = (frames + samples) * sample_bytes;
+        Ok(Self {
+            frames,
+            remaining: 0,
+            frame_bytes: samples * sample_bytes,
+            sample_bytes,
+            queued: VecDeque::with_capacity(if frames == 0 { 0 } else { capacity }),
+            capacity,
+        })
+    }
+
+    pub fn start(&mut self) {
+        self.reset();
+        self.remaining = self.frames;
+    }
+
+    pub fn reset(&mut self) {
+        self.queued.make_contiguous().fill(0);
+        self.queued.clear();
+        self.remaining = 0;
+    }
+
+    pub fn process(&mut self, source: Vec<u8>) -> io::Result<Vec<u8>> {
+        if source.len() != self.frame_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Invalid startup PCM frame",
+            ));
+        }
+        if self.remaining == 0 && self.queued.is_empty() {
+            return Ok(source);
+        }
+        if self.queued.len() + source.len() > self.capacity {
+            return Err(io::Error::other("Startup PCM queue exceeded its bound"));
+        }
+        // Drain the driver on every frame deadline while retaining the source onset.
+        self.queued.extend(source);
+        Ok(self.output())
+    }
+
+    pub fn has_pending(&self) -> bool {
+        !self.queued.is_empty()
+    }
+
+    pub fn drain(&mut self) -> Option<Vec<u8>> {
+        self.has_pending().then(|| self.output())
+    }
+
+    fn output(&mut self) -> Vec<u8> {
+        let silent = self.remaining.min(self.frame_bytes / self.sample_bytes);
+        self.remaining -= silent;
+        let mut output = vec![0; self.frame_bytes];
+        let prefix = silent * self.sample_bytes;
+        let copied = (self.frame_bytes - prefix).min(self.queued.len());
+        for (target, sample) in output[prefix..].iter_mut().zip(self.queued.drain(..copied)) {
+            *target = sample;
+        }
+        output
     }
 }
 
@@ -108,6 +190,20 @@ impl FrameAssembler {
         self.bytes.fill(0);
         self.used = 0;
     }
+
+    pub fn has_partial(&self) -> bool {
+        self.used != 0
+    }
+
+    pub fn finish(&mut self) -> Option<Vec<u8>> {
+        if self.used == 0 {
+            return None;
+        }
+        let mut frame = vec![0; self.frame_bytes];
+        frame[..self.used].copy_from_slice(&self.bytes[..self.used]);
+        self.reset();
+        Some(frame)
+    }
 }
 
 pub struct FrameClock {
@@ -183,6 +279,152 @@ impl FrameClock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_priming_preserves_source_order_and_stereo_alignment() {
+        for format in [SampleFormat::S16, SampleFormat::Float32] {
+            for samples in [480, 1_024] {
+                let width = format.frame_bytes();
+                let frame_bytes = samples * width;
+                let source: Vec<_> = (0..frame_bytes * 30).map(|n| (n % 251 + 1) as u8).collect();
+                let mut priming =
+                    StartupPriming::new(Duration::from_millis(100), samples, format).unwrap();
+                priming.start();
+                let mut output = Vec::new();
+                for frame in source.chunks_exact(frame_bytes) {
+                    output.extend(priming.process(frame.to_vec()).unwrap());
+                    assert!(priming.queued.len() <= 4_800 * width);
+                }
+                // A continuing producer can be silent; the retained source tail still drains.
+                for _ in 0..4_800usize.div_ceil(samples) {
+                    output.extend(priming.process(vec![0; frame_bytes]).unwrap());
+                }
+                assert!(output[..4_800 * width].iter().all(|byte| *byte == 0));
+                assert_eq!(&output[4_800 * width..4_800 * width + source.len()], source);
+                assert!(output[4_800 * width + source.len()..]
+                    .iter()
+                    .all(|byte| *byte == 0));
+            }
+        }
+    }
+
+    #[test]
+    fn priming_drains_a_short_source_without_more_input_or_unbounded_silence() {
+        for format in [SampleFormat::S16, SampleFormat::Float32] {
+            for samples in [480, 1_024] {
+                let width = format.frame_bytes();
+                let frame_bytes = samples * width;
+                for input_frames in [1, 4, 30] {
+                    let source: Vec<_> = (0..input_frames * frame_bytes)
+                        .map(|n| (n % 251 + 1) as u8)
+                        .collect();
+                    let mut priming =
+                        StartupPriming::new(Duration::from_millis(100), samples, format).unwrap();
+                    priming.start();
+                    assert_eq!(priming.drain(), None);
+                    let mut output = Vec::new();
+                    for frame in source.chunks_exact(frame_bytes) {
+                        output.extend(priming.process(frame.to_vec()).unwrap());
+                    }
+                    let mut drained = 0;
+                    while let Some(frame) = priming.drain() {
+                        output.extend(frame);
+                        drained += 1;
+                        assert!(drained <= 4_800usize.div_ceil(samples));
+                    }
+                    assert_eq!(priming.drain(), None);
+                    assert!(!priming.has_pending());
+                    assert!(output[..4_800 * width].iter().all(|byte| *byte == 0));
+                    assert_eq!(&output[4_800 * width..4_800 * width + source.len()], source);
+                    assert!(output[4_800 * width + source.len()..]
+                        .iter()
+                        .all(|byte| *byte == 0));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn final_partial_source_is_padded_once_and_reset_never_replays_it() {
+        for format in [SampleFormat::S16, SampleFormat::Float32] {
+            for samples in [480, 1_024] {
+                let width = format.frame_bytes();
+                let mut pcm = FrameAssembler::new_with_format(samples, format).unwrap();
+                assert!(!pcm.has_partial());
+                assert_eq!(pcm.finish(), None);
+                let source = vec![7; 17 * width];
+                assert!(pcm.push(&source).unwrap().is_none());
+                assert!(pcm.has_partial());
+                let frame = pcm.finish().unwrap();
+                assert_eq!(&frame[..source.len()], source);
+                assert!(frame[source.len()..].iter().all(|byte| *byte == 0));
+                assert_eq!(frame.len(), samples * width);
+                assert_eq!(pcm.finish(), None);
+                assert!(pcm.push(&source).unwrap().is_none());
+                pcm.reset();
+                assert_eq!(pcm.finish(), None);
+            }
+        }
+    }
+
+    #[test]
+    fn priming_is_disabled_by_default_and_reset_discards_the_previous_producer() {
+        for format in [SampleFormat::S16, SampleFormat::Float32] {
+            for samples in [480, 1_024] {
+                let frame_bytes = samples * format.frame_bytes();
+                let mut disabled = StartupPriming::new(Duration::ZERO, samples, format).unwrap();
+                disabled.start();
+                let source = vec![9; frame_bytes];
+                let pointer = source.as_ptr();
+                let unchanged = disabled.process(source).unwrap();
+                assert_eq!(unchanged.as_ptr(), pointer);
+                assert!(disabled.queued.is_empty());
+                let mut priming =
+                    StartupPriming::new(Duration::from_millis(100), samples, format).unwrap();
+                assert_eq!(
+                    priming.process(vec![7; frame_bytes]).unwrap(),
+                    vec![7; frame_bytes]
+                );
+                priming.start();
+                priming.process(vec![1; frame_bytes]).unwrap();
+                assert!(!priming.queued.is_empty());
+                priming.reset();
+                assert!(priming.queued.is_empty());
+                assert_eq!(
+                    priming.process(vec![2; frame_bytes]).unwrap(),
+                    vec![2; frame_bytes]
+                );
+                priming.start();
+                for _ in 0..4_800usize.div_ceil(samples) + 1 {
+                    let output = priming.process(vec![3; frame_bytes]).unwrap();
+                    assert!(output.iter().all(|byte| matches!(byte, 0 | 3)));
+                }
+                // Starting again also clears queued audio and rearms exactly one prefix.
+                priming.start();
+                assert_eq!(
+                    priming.process(vec![4; frame_bytes]).unwrap(),
+                    vec![0; frame_bytes]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn priming_rejects_unbounded_or_malformed_input_without_losing_queued_source() {
+        assert!(StartupPriming::new(Duration::MAX, 480, SampleFormat::Float32).is_err());
+        assert!(StartupPriming::new(Duration::ZERO, usize::MAX, SampleFormat::S16).is_err());
+        let mut priming =
+            StartupPriming::new(Duration::from_millis(100), 480, SampleFormat::S16).unwrap();
+        priming.start();
+        priming.process(vec![7; 1_920]).unwrap();
+        let queued = priming.queued.clone();
+        let remaining = priming.remaining;
+        for size in [0, 1, 1_916, 1_924] {
+            assert!(priming.process(vec![9; size]).is_err());
+            assert_eq!(priming.queued, queued);
+            assert_eq!(priming.remaining, remaining);
+        }
+    }
 
     #[test]
     fn float_frames_preserve_quiet_samples_and_respect_the_read_limit() {

@@ -1,7 +1,7 @@
 # NTPods for Windows
 
 > [!WARNING]
-> Installation requires Windows **Test Mode (test signing)**. Setup signs these
+> Direct Bluetooth drivers require Windows **Test Mode (test signing)**. Setup signs these
 > experimental drivers with a local test certificate; they are not Microsoft
 > production-signed. Test Mode weakens normal driver-signature enforcement.
 > Do not enable it on your everyday or work PC for NTPods. Use a dedicated test PC.
@@ -9,9 +9,12 @@
 > changing boot settings.
 
 NTPods provides AirPods controls, batteries, a high-quality microphone and
-experimental AAC/AAC-ELD playback on Windows 11 22H2 or newer, x64. Windows owns the Bluetooth
-adapter; NTPods adds an AAP control driver, an ACX microphone and an AudioSink
-playback driver.
+experimental AAC/AAC-ELD playback on Windows 11 22H2 or newer, x64. USB dongles
+use Microsoft's built-in USB audio, HID and serial drivers without Test Mode.
+New installs default to app-only. To use the PC's Bluetooth adapter, select
+**Direct Bluetooth drivers (Test Mode)** in the MSI or pass `-Drivers` to the
+ZIP installer. This adds an AAP control driver, an ACX microphone and an
+AudioSink playback driver.
 
 The MSI and ZIP include experimental AAC and AAC-ELD playback for the
 [listed AirPods models](../docs/WINDOWS-MODEL-SUPPORT.md#native-playback). Choose
@@ -25,7 +28,17 @@ additional AirPods settings for stem controls, accessibility and charging.
 Controls distinguish reported values from requests awaiting confirmation.
 See [Windows controls and protocol limits](../docs/WINDOWS-FEATURES.md).
 
-Setup configures the PC's [Apple Bluetooth identity](../docs/BLUETOOTH-HOST-IDENTITY.md)
+With compatible `airpods-dongle` firmware, the same settings, hearing assistance
+and saved hardware checks use USB HID. Playback settings offer Auto, SBC, AAC
+and AAC-ELD, the firmware's supported bitrates, and Game Mode. Game Mode requests
+remain distinct from confirmation by a fresh delay report. Automatic pause
+retains the selected player's ownership checks, including Spotify and Plexamp.
+Nearby finding uses the selected pair's verified identity; it reports signal
+strength and age without distance or direction. A collapsed dongle diagnostics
+group reads buffer, memory, encoding and recovery counters without starting audio
+or a hardware test. Hardware validation on the Pico remains pending.
+
+Direct Bluetooth setup configures the PC's [Apple Bluetooth identity](../docs/BLUETOOTH-HOST-IDENTITY.md)
 for settings such as Custom Transparency. It applies to all Bluetooth peers,
 requires a Windows restart when first applied, and is restored on uninstall.
 

@@ -1,6 +1,7 @@
 use super::protocol::invalid;
 use crate::driver::Driver;
 use std::io;
+use std::time::{Duration, Instant};
 
 const VERSION: u32 = 1;
 const QUERY: u32 = 0;
@@ -15,6 +16,47 @@ const REQUEST_PENDING: u32 = 4;
 pub(super) struct Request {
     pub sequence: u32,
     pub suspend: bool,
+}
+
+#[derive(Default)]
+pub(super) struct SuspendBarrier {
+    pending: Option<(u32, Instant)>,
+}
+
+impl SuspendBarrier {
+    pub fn begin(&mut self, sequence: u32, now: Instant) -> bool {
+        if self
+            .pending
+            .is_some_and(|(previous, _)| previous == sequence)
+        {
+            return false;
+        }
+        self.pending = Some((sequence, now));
+        true
+    }
+
+    pub fn ready(&self, sequence: u32, now: Instant, microphone_quiet: bool) -> io::Result<bool> {
+        let Some((pending, began)) = self.pending else {
+            return Err(invalid("No pending Windows Bluetooth suspension"));
+        };
+        if pending != sequence {
+            return Err(io::Error::new(
+                io::ErrorKind::ConnectionReset,
+                "Windows Bluetooth suspension changed",
+            ));
+        }
+        if now.saturating_duration_since(began) >= Duration::from_secs(5) {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "High-quality microphone did not become quiet for Windows Bluetooth suspension",
+            ));
+        }
+        Ok(microphone_quiet)
+    }
+
+    pub fn clear(&mut self) {
+        self.pending = None;
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -207,6 +249,53 @@ fn parse(output: &[u8]) -> io::Result<State> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn suspension_waits_for_actual_quiet_without_completing_or_extending_its_deadline() {
+        let now = Instant::now();
+        let mut barrier = SuspendBarrier::default();
+        assert!(barrier.ready(7, now, true).is_err());
+        assert!(barrier.begin(7, now));
+        assert!(!barrier.ready(7, now, false).unwrap());
+        assert!(!barrier.begin(7, now + Duration::from_secs(4)));
+        assert!(!barrier
+            .ready(7, now + Duration::from_millis(4999), false)
+            .unwrap());
+        assert!(barrier
+            .ready(7, now + Duration::from_millis(4999), true)
+            .unwrap());
+        for quiet in [false, true] {
+            assert_eq!(
+                barrier
+                    .ready(7, now + Duration::from_secs(5), quiet)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::TimedOut
+            );
+        }
+    }
+
+    #[test]
+    fn a_new_windows_request_invalidates_the_previous_quiet_wait() {
+        let now = Instant::now();
+        let mut barrier = SuspendBarrier::default();
+        assert!(barrier.begin(1, now));
+        assert!(barrier.begin(2, now + Duration::from_secs(4)));
+        assert_eq!(
+            barrier
+                .ready(1, now + Duration::from_secs(4), true)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::ConnectionReset
+        );
+        assert!(barrier
+            .ready(2, now + Duration::from_secs(5), true)
+            .unwrap());
+        barrier.clear();
+        assert!(barrier
+            .ready(2, now + Duration::from_secs(5), true)
+            .is_err());
+    }
 
     fn response(generation: u32, sequence: u32, flags: u32) -> Vec<u8> {
         [VERSION, generation, sequence, flags]

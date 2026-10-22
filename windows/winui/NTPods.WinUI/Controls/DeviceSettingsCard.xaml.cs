@@ -13,18 +13,26 @@ namespace NTPods.WinUI.Controls;
 public sealed partial class DeviceSettingsCard : UserControl
 {
     public DaemonClient? Client { get; set; }
+    public Func<object, bool>? SendCommand { get; set; }
     private readonly List<Action<Snapshot>> _updates = new();
     private Snapshot _snapshot = new();
+    private string _snapshotDeviceId = "";
     private bool _applying = true;
     private bool _refreshCoolingDown;
     private bool _deviceChanged;
     private bool _loudSoundReductionRead;
     private readonly PlaybackModeRequest _playbackMode = new();
     private SetPlaybackBitrateCmd? _bitrateRequested;
+    private PlaybackLinkSettings? _linkRequested;
+    private bool? _gameModeRequested;
+    private byte? _dongleProfileRequested;
+    private string _dongleBitrateMode = "";
+    private bool _linkDirty;
     private string? _playbackErrorAtRequest;
     private string? _bitrateShownMode;
     private bool _bitrateDirty;
-    private bool PlaybackPending => _playbackMode.Requested is not null || _bitrateRequested is not null;
+    public event Action? PlaybackPendingChanged;
+    public bool PlaybackPending => _dongleProfileRequested is not null || _playbackMode.Requested is not null || _bitrateRequested is not null || _linkRequested is not null || _gameModeRequested is not null;
     private readonly List<(StackPanel Panel, FrameworkElement Row, Border? Divider, byte Id)> _rows = new();
     private readonly DispatcherTimer _refreshCooldown = new() { Interval = TimeSpan.FromSeconds(5) };
     private readonly DispatcherTimer _playbackTimeout = new() { Interval = TimeSpan.FromSeconds(5) };
@@ -38,10 +46,15 @@ public sealed partial class DeviceSettingsCard : UserControl
             _playbackMode.Cancel();
             _bitrateRequested = null;
             _bitrateDirty = false;
+            _linkRequested = null;
+            _gameModeRequested = null;
+            _dongleProfileRequested = null;
+            _linkDirty = false;
             Update(_snapshot);
             Client?.RequestState();
         };
-        Unloaded += (_, _) => { _playbackTimeout.Stop(); _playbackMode.Cancel(); _bitrateRequested = null; };
+        Unloaded += (_, _) => { _playbackTimeout.Stop(); _playbackMode.Cancel(); _bitrateRequested = null; _linkRequested = null; _gameModeRequested = null;
+            _dongleProfileRequested = null; _linkDirty = false; };
         ComfortExpander.Expanding += (_, _) => ReadLoudSoundReduction();
         _refreshCooldown.Tick += (_, _) =>
         {
@@ -156,14 +169,14 @@ public sealed partial class DeviceSettingsCard : UserControl
         toggle.Toggled += (_, _) =>
         {
             if (!_applying && DeviceSettingStatus.CanChange(_snapshot, id))
-                Client?.SetDeviceControl(id, DeviceSettingStatus.ToggleValue(id, toggle.IsOn), _snapshot.DeviceId);
+                Send(new SetDeviceControlCmd { Id = id, Value = DeviceSettingStatus.ToggleValue(id, toggle.IsOn), DeviceId = _snapshot.DeviceId });
         };
         if (choice is not null) choice.SelectionChanged += (_, _) =>
         {
             if (!_applying && choice.SelectedIndex >= 0 && !DeviceSettingStatus.Available(_snapshot, id) &&
                 DeviceSettingStatus.CanChoose(_snapshot, id))
             {
-                if (Client?.Send(new SetDeviceControlCmd
+                if (Send(new SetDeviceControlCmd
                     { Id = id, Value = DeviceSettingStatus.ToggleValue(id, choice.SelectedIndex == 0), DeviceId = _snapshot.DeviceId }) != true)
                 {
                     Update(_snapshot);
@@ -244,7 +257,7 @@ public sealed partial class DeviceSettingsCard : UserControl
             if (!dirty || owner != _snapshot.DeviceId || left.SelectedIndex < 0 || right.SelectedIndex < 0 ||
                 !DeviceSettingStatus.CanChoose(_snapshot, id) || Client is null) return;
             uint value = ((left.SelectedIndex == 0 ? 1u : 5u) << 8) | (right.SelectedIndex == 0 ? 1u : 5u);
-            if (!Client.Send(new SetDeviceControlCmd { Id = id, Value = value, DeviceId = _snapshot.DeviceId })) return;
+            if (!Send(new SetDeviceControlCmd { Id = id, Value = value, DeviceId = _snapshot.DeviceId })) return;
             dirty = false;
             owner = null;
             baseline = null;
@@ -295,7 +308,7 @@ public sealed partial class DeviceSettingsCard : UserControl
         {
             if (_applying || choice.SelectedIndex < 0 || !DeviceSettingStatus.CanChoose(_snapshot, id)) return;
             uint value = values[choice.SelectedIndex];
-            if (Client?.Send(new SetDeviceControlCmd { Id = id, Value = value, DeviceId = _snapshot.DeviceId }) != true)
+            if (Send(new SetDeviceControlCmd { Id = id, Value = value, DeviceId = _snapshot.DeviceId }) != true)
             {
                 Update(_snapshot);
                 return;
@@ -357,7 +370,7 @@ public sealed partial class DeviceSettingsCard : UserControl
             uint mask = 0;
             for (int i = 0; i < options.Length; i++)
                 if (options[i].Visibility == Visibility.Visible && options[i].IsChecked == true) mask |= 1u << i;
-            if (!Client.Send(new SetDeviceControlCmd { Id = id, Value = mask, DeviceId = _snapshot.DeviceId })) return;
+            if (!Send(new SetDeviceControlCmd { Id = id, Value = mask, DeviceId = _snapshot.DeviceId })) return;
             dirty = false;
             owner = null;
             baseline = null;
@@ -422,7 +435,7 @@ public sealed partial class DeviceSettingsCard : UserControl
             bool initialChoice = id == 0x40 && !DeviceSettingStatus.DisplayValue(_snapshot, id).HasValue;
             if (Client is null || !DeviceSettingStatus.CanChoose(_snapshot, id) ||
                 !(dirty && owner == _snapshot.DeviceId || initialChoice && !dirty)) return;
-            if (!Client.Send(new SetDeviceControlCmd { Id = id, Value = prefix | (uint)slider.Value, DeviceId = _snapshot.DeviceId })) return;
+            if (!Send(new SetDeviceControlCmd { Id = id, Value = prefix | (uint)slider.Value, DeviceId = _snapshot.DeviceId })) return;
             dirty = false;
             owner = null;
             baseline = null;
@@ -453,17 +466,27 @@ public sealed partial class DeviceSettingsCard : UserControl
 
     public void Update(Snapshot s)
     {
-        _deviceChanged = s.DeviceId != _snapshot.DeviceId;
-        if (_deviceChanged || Client?.IsReady != true || !s.PlaybackNativeDriver || !s.PlaybackAvailable ||
+        _deviceChanged = s.DeviceId != _snapshotDeviceId;
+        _snapshotDeviceId = s.DeviceId;
+        if (_deviceChanged || Client?.IsReady != true || !(s.PlaybackNativeDriver || DonglePlayback(s)) || !s.PlaybackAvailable ||
             PlaybackPending && s.PlaybackError != _playbackErrorAtRequest && !string.IsNullOrEmpty(s.PlaybackError))
         {
             _playbackMode.Cancel();
             _bitrateRequested = null;
             _bitrateDirty = false;
+            _linkRequested = null;
+            _gameModeRequested = null;
+            _dongleProfileRequested = null;
+            _linkDirty = false;
         }
         _playbackMode.Update(s);
-        if (_bitrateRequested is { } requested && PlaybackModeRequest.BitrateFor(s, requested.Mode) == new PlaybackBitrate { BestEffort = requested.BestEffort, Kbps = requested.Kbps, Variable = requested.Variable })
+        if (_linkRequested == s.PlaybackLink) _linkRequested = null;
+        if (_gameModeRequested == s.PlaybackGameMode) _gameModeRequested = null;
+        if (_bitrateRequested is { } requested && PlaybackModeRequest.BitrateFor(s, requested.Mode) is { } reported &&
+            reported.Kbps == requested.Kbps && reported.Variable == requested.Variable &&
+            (DonglePlayback(s) || reported.BestEffort == requested.BestEffort))
             _bitrateRequested = null;
+        if (_dongleProfileRequested == s.Dongle.Health.Audio?.RequestedCodec) _dongleProfileRequested = null;
         if (!PlaybackPending) _playbackTimeout.Stop();
         if (_deviceChanged || !s.Connected || s.LinkStale) _loudSoundReductionRead = false;
         _snapshot = s;
@@ -483,7 +506,7 @@ public sealed partial class DeviceSettingsCard : UserControl
             ErrorBar.Message = s.DeviceSettingsError ?? "";
             UpdatePlayback(s);
             StemExpander.Header = Localize.Get(headphone ? "DeviceControls.Buttons" : "DeviceControls.Stem");
-            bool reduction = DeviceModels.Find(s.Model).LoudSoundReduction;
+            bool reduction = SendCommand is null && DeviceModels.Find(s.Model).LoudSoundReduction;
             LoudSoundReductionRow.Visibility = reduction ? Visibility.Visible : Visibility.Collapsed;
             LoudSoundReductionSwitch.IsOn = s.LoudSoundReduction == true;
             LoudSoundReductionSwitch.IsEnabled = DeviceModels.CanChangeLoudSoundReduction(s);
@@ -517,6 +540,8 @@ public sealed partial class DeviceSettingsCard : UserControl
         if (ComfortExpander.IsExpanded) ReadLoudSoundReduction();
     }
 
+    private static bool DonglePlayback(Snapshot s) => s.DeviceId.StartsWith("dongle:", StringComparison.Ordinal) && s.PlaybackAvailable && s.Dongle.Health.Audio is not null;
+
     private static bool MicrophoneBusy(Snapshot s) => s.MicCaptureActive || s.MicUplinkActive ||
         s.MicState is "starting" or "capturing" or "stopping" or "recovering";
 
@@ -524,10 +549,13 @@ public sealed partial class DeviceSettingsCard : UserControl
     {
         string preferred = _playbackMode.DisplayedMode(s);
         string mode = _playbackMode.BitrateMode(s);
-        bool native = s.PlaybackAvailable && s.PlaybackNativeDriver;
-        PlaybackRouteRow.Visibility = s.PlaybackNativeDriver || s.PlaybackState == "unavailable" ? Visibility.Visible : Visibility.Collapsed;
-        PlaybackPicker.SelectedIndex = native ? preferred switch { "aac" => 0, "aac_eld" => 1, _ => -1 } : -1;
-        bool enabled = native && Client?.IsReady == true && !MicrophoneBusy(s) && !PlaybackPending;
+        bool dongle = DonglePlayback(s);
+        bool native = s.PlaybackAvailable && (s.PlaybackNativeDriver || dongle);
+        DongleAutomaticItem.Visibility = DongleSbcItem.Visibility = dongle ? Visibility.Visible : Visibility.Collapsed;
+        BestEffortItem.Visibility = dongle ? Visibility.Collapsed : Visibility.Visible;
+        PlaybackRouteRow.Visibility = native || s.PlaybackState == "unavailable" ? Visibility.Visible : Visibility.Collapsed;
+        PlaybackPicker.SelectedIndex = dongle ? (_dongleProfileRequested ?? s.Dongle.Health.Audio!.RequestedCodec) switch { 0 => 2, 1 => 3, 2 => 0, 3 => 1, _ => -1 } : native ? preferred switch { "aac" => 0, "aac_eld" => 1, _ => -1 } : -1;
+        bool enabled = native && Client?.IsReady == true && !MicrophoneBusy(s) && !PlaybackPending && s.Dongle.Health.Audio?.Pending != true;
         PlaybackPicker.IsEnabled = enabled;
         string help = Localize.Get(!native ? "Playback.DriverUnavailable" : MicrophoneBusy(s) ? "Playback.StopRecording" : PlaybackPending ? "Playback.Starting" : s.PlaybackState switch
         {
@@ -537,7 +565,7 @@ public sealed partial class DeviceSettingsCard : UserControl
             _ => "Playback.Help"
         });
         if (native && s.PlaybackState == "ready")
-            help += " " + Localize.Get("Playback.CurrentCodec", s.PlaybackMode == "aac_eld" ? "AAC-ELD" : "AAC");
+            help += " " + Localize.Get("Playback.CurrentCodec", dongle ? s.Dongle.Health.Audio!.Codec switch { 1 => "SBC", 2 => "AAC", 3 => "AAC-ELD", _ => "—" } : s.PlaybackMode == "aac_eld" ? "AAC-ELD" : "AAC");
         if (s.PlaybackBitrateKbps is uint actual) help += " " + Localize.Get(
             PlaybackModeRequest.BitrateFor(s, s.PlaybackMode).Variable ? "Playback.PeakBitrate" : "Playback.CurrentBitrate", actual);
         AutomationProperties.SetHelpText(PlaybackPicker, help);
@@ -546,13 +574,25 @@ public sealed partial class DeviceSettingsCard : UserControl
             ? new PlaybackBitrate { BestEffort = pending.BestEffort, Kbps = pending.Kbps, Variable = pending.Variable } : PlaybackModeRequest.BitrateFor(s, mode);
         if (_bitrateShownMode != mode) _bitrateDirty = false;
         _bitrateShownMode = mode;
-        PlaybackQualityRow.Visibility = native ? Visibility.Visible : Visibility.Collapsed;
+        PlaybackQualityRow.Visibility = native && (!dongle || s.Dongle.Health.Audio?.Codec is 2 or 3) ? Visibility.Visible : Visibility.Collapsed;
         VariableBitrateItem.Visibility = mode == "aac_eld" ? Visibility.Visible : Visibility.Collapsed;
         PlaybackQualityPicker.SelectedIndex = bitrate.Variable ? 2 : bitrate.BestEffort ? 0 : 1;
         PlaybackQualityPicker.IsEnabled = enabled;
         PlaybackBitrateRow.Visibility = bitrate.BestEffort ? Visibility.Collapsed : Visibility.Visible;
+        DongleBitratePicker.Visibility = dongle ? Visibility.Visible : Visibility.Collapsed;
+        PlaybackKbps.Visibility = PlaybackBitrateApply.Visibility = dongle ? Visibility.Collapsed : Visibility.Visible;
+        if (dongle)
+        {
+            if (_dongleBitrateMode != mode)
+            {
+                _dongleBitrateMode = mode;
+                DongleBitratePicker.ItemsSource = mode == "aac_eld" ? new uint[] { 128, 174, 192, 220, 256 } : new uint[] { 96, 128, 174, 192, 220 };
+            }
+            DongleBitratePicker.SelectedItem = bitrate.Kbps == 0 ? (mode == "aac_eld" ? 256u : 220u) : bitrate.Kbps;
+            DongleBitratePicker.IsEnabled = enabled;
+        }
         PlaybackKbps.Minimum = mode == "aac_eld" ? 128 : 96;
-        PlaybackKbps.Maximum = mode == "aac_eld" ? 256 : 512;
+        PlaybackKbps.Maximum = mode == "aac_eld" ? 256 : dongle ? 220 : 512;
         if (!_bitrateDirty) PlaybackKbps.Value = bitrate.Kbps;
         PlaybackKbps.IsEnabled = enabled;
         string codecHelp = Localize.Get("Playback.BitrateCodec", mode == "aac_eld" ? "AAC-ELD" : "AAC");
@@ -563,6 +603,33 @@ public sealed partial class DeviceSettingsCard : UserControl
         AutomationProperties.SetHelpText(PlaybackKbps, bitrateHelp);
         ToolTipService.SetToolTip(PlaybackKbps, bitrateHelp);
         PlaybackBitrateApply.IsEnabled = enabled && _bitrateDirty && ValidBitrate();
+        var link = _linkRequested ?? s.PlaybackLink;
+        PlaybackLinkRow.Visibility = native && mode == "aac_eld" && link is not null ? Visibility.Visible : Visibility.Collapsed;
+        PlaybackLinkPicker.SelectedIndex = link?.Mode switch { "automatic" => 1, "manual" => 2, _ => 0 };
+        PlaybackLinkPicker.IsEnabled = enabled && link is not null;
+        PlaybackLinkCustomRow.Visibility = link?.Mode == "manual" ? Visibility.Visible : Visibility.Collapsed;
+        if (!_linkDirty) PlaybackLinkKbps.Value = link?.Kbps ?? 174;
+        PlaybackLinkKbps.IsEnabled = PlaybackLinkPicker.IsEnabled;
+        PlaybackLinkApply.IsEnabled = PlaybackLinkPicker.IsEnabled && _linkDirty &&
+            PlaybackLinkSettings.FromInput("manual", PlaybackLinkKbps.Value) is not null;
+        PlaybackLinkHelp.Text = Localize.Get(!bitrate.Variable ? "Playback_LinkRequiresVariable" :
+            link?.Mode == "automatic" ? "Playback_LinkAutomaticHelp" :
+            link?.Mode == "manual" ? "Playback_LinkCustomHelp" : "Playback_LinkHelp");
+        PlaybackGameModeRow.Visibility = native && s.PlaybackGameMode.HasValue ? Visibility.Visible : Visibility.Collapsed;
+        PlaybackGameModeSwitch.IsOn = _gameModeRequested ?? s.PlaybackGameMode ?? false;
+        PlaybackGameModeSwitch.IsEnabled = enabled && s.PlaybackGameMode.HasValue;
+        if (dongle)
+        {
+            string status = s.Dongle.Health.Audio?.GameModeState switch {
+                "pending" or "restoring" => Localize.Get("DeviceSetting.Pending"),
+                "confirmed" => Localize.Get("DeviceSetting.Confirmed"),
+                "unconfirmed" => Localize.Get("DeviceSetting.Sent"),
+                _ => ""
+            };
+            ToolTipService.SetToolTip(PlaybackGameModeRow, status);
+            AutomationProperties.SetHelpText(PlaybackGameModeSwitch, status);
+        }
+        PlaybackPendingChanged?.Invoke();
         PlaybackError.Text = s.PlaybackError ?? (s.PlaybackState == "unavailable" ? Localize.Get("Playback.DriverUnavailable") : "");
         bool failed = !PlaybackPending && !string.IsNullOrWhiteSpace(PlaybackError.Text);
         PlaybackError.Visibility = failed ? Visibility.Visible : Visibility.Collapsed;
@@ -573,10 +640,16 @@ public sealed partial class DeviceSettingsCard : UserControl
     private void Playback_Changed(object sender, SelectionChangedEventArgs e)
     {
         if (_applying || !PlaybackPicker.IsEnabled || PlaybackPicker.SelectedItem is not ComboBoxItem { Tag: string mode }) return;
-        if (_snapshot.PlaybackAvailable && _snapshot.PlaybackNativeDriver && _playbackMode.Begin(_snapshot, mode) is { } command)
+        if (DonglePlayback(_snapshot) && (mode is "automatic" or "sbc"))
+        {
+            byte codec = mode == "automatic" ? (byte)0 : (byte)1;
+            if (Send(new SetDongleAudioProfileCmd { Codec = codec, Bitrate = 0 }))
+            { _dongleProfileRequested = codec; StartPlaybackTimeout(); }
+        }
+        else if (_snapshot.PlaybackAvailable && (_snapshot.PlaybackNativeDriver || DonglePlayback(_snapshot)) && _playbackMode.Begin(_snapshot, mode) is { } command)
         {
             _playbackErrorAtRequest = _snapshot.PlaybackError;
-            if (Client?.Send(command) == true) StartPlaybackTimeout();
+            if (Send(command) == true) StartPlaybackTimeout();
             else _playbackMode.Cancel();
         }
         _applying = true;
@@ -584,14 +657,21 @@ public sealed partial class DeviceSettingsCard : UserControl
         _applying = false;
     }
 
-    private void StartPlaybackTimeout()
+    private void StartPlaybackTimeout(int seconds = 5)
     {
         _playbackTimeout.Stop();
+        _playbackTimeout.Interval = TimeSpan.FromSeconds(seconds);
         _playbackTimeout.Start();
     }
 
     private bool ValidBitrate() => double.IsFinite(PlaybackKbps.Value) && PlaybackKbps.Value == Math.Truncate(PlaybackKbps.Value) &&
         PlaybackKbps.Value >= PlaybackKbps.Minimum && PlaybackKbps.Value <= PlaybackKbps.Maximum;
+
+    private void DongleBitrate_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_applying && DongleBitratePicker.IsEnabled && DonglePlayback(_snapshot) && DongleBitratePicker.SelectedItem is uint kbps)
+            SendBitrate(false, kbps, PlaybackQualityPicker.SelectedIndex == 2);
+    }
 
     private void PlaybackQuality_Changed(object sender, SelectionChangedEventArgs e)
     {
@@ -611,7 +691,7 @@ public sealed partial class DeviceSettingsCard : UserControl
 
     private void PlaybackBitrateApply_Click(object sender, RoutedEventArgs e)
     {
-        if (PlaybackBitrateApply.IsEnabled && ValidBitrate()) SendBitrate(false, (uint)PlaybackKbps.Value);
+        if (PlaybackBitrateApply.IsEnabled && ValidBitrate()) SendBitrate(false, (uint)PlaybackKbps.Value, PlaybackQualityPicker.SelectedIndex == 2);
     }
 
     private void SendBitrate(bool bestEffort, uint kbps, bool variable = false)
@@ -619,7 +699,7 @@ public sealed partial class DeviceSettingsCard : UserControl
         _bitrateRequested = new SetPlaybackBitrateCmd { Mode = _playbackMode.BitrateMode(_snapshot), BestEffort = bestEffort, Kbps = kbps, Variable = variable };
         _playbackErrorAtRequest = _snapshot.PlaybackError;
         _bitrateDirty = false;
-        if (Client?.Send(_bitrateRequested) == true) StartPlaybackTimeout();
+        if (Send(_bitrateRequested) == true) StartPlaybackTimeout();
         else _bitrateRequested = null;
         _applying = true;
         UpdatePlayback(_snapshot);
@@ -629,14 +709,60 @@ public sealed partial class DeviceSettingsCard : UserControl
     private void PlaybackRetry_Click(object sender, RoutedEventArgs e)
     {
         if (_snapshot.PlaybackNativeDriver && _snapshot.PlaybackAvailable && !MicrophoneBusy(_snapshot) &&
-            _snapshot.PlaybackState == "error" && Client?.Send(new RetryPlaybackCmd()) == true)
+            _snapshot.PlaybackState == "error" && Send(new RetryPlaybackCmd()) == true)
             PlaybackRetry.IsEnabled = false;
+    }
+
+    private void PlaybackLink_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (_applying || !PlaybackLinkPicker.IsEnabled ||
+            PlaybackLinkPicker.SelectedItem is not ComboBoxItem { Tag: string mode } || _snapshot.PlaybackLink is not { } saved) return;
+        SendLink(mode, saved.Kbps);
+    }
+
+    private void PlaybackLinkKbps_Changed(NumberBox sender, NumberBoxValueChangedEventArgs args)
+    {
+        if (_applying || !PlaybackLinkKbps.IsEnabled) return;
+        _linkDirty = args.NewValue != _snapshot.PlaybackLink?.Kbps;
+        PlaybackLinkApply.IsEnabled = _linkDirty && PlaybackLinkSettings.FromInput("manual", args.NewValue) is not null;
+    }
+
+    private void PlaybackLinkApply_Click(object sender, RoutedEventArgs e)
+    {
+        if (PlaybackLinkApply.IsEnabled) SendLink("manual", PlaybackLinkKbps.Value);
+    }
+
+    private void SendLink(string mode, double kbps)
+    {
+        if (PlaybackLinkSettings.FromInput(mode, kbps) is not { } settings || settings == _snapshot.PlaybackLink) return;
+        _linkRequested = settings;
+        _linkDirty = false;
+        _playbackErrorAtRequest = _snapshot.PlaybackError;
+        if (Send(new SetPlaybackLinkCmd { Settings = settings }) == true) StartPlaybackTimeout();
+        else _linkRequested = null;
+        _applying = true;
+        UpdatePlayback(_snapshot);
+        _applying = false;
+    }
+
+    private void PlaybackGameMode_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (_applying || !PlaybackGameModeSwitch.IsEnabled || !_snapshot.PlaybackGameMode.HasValue ||
+            PlaybackGameModeSwitch.IsOn == _snapshot.PlaybackGameMode) return;
+        _gameModeRequested = PlaybackGameModeSwitch.IsOn;
+        _playbackErrorAtRequest = _snapshot.PlaybackError;
+        // The stream may need up to 20 seconds to restore its previous buffer safely.
+        if (Send(new SetPlaybackGameModeCmd { Enabled = _gameModeRequested.Value }) == true) StartPlaybackTimeout(25);
+        else _gameModeRequested = null;
+        _applying = true;
+        UpdatePlayback(_snapshot);
+        _applying = false;
     }
 
     private void ReadLoudSoundReduction(bool force = false)
     {
-        if (DeviceModels.ShouldReadLoudSoundReduction(_snapshot, _loudSoundReductionRead, force))
-            _loudSoundReductionRead = Client?.Send(new GetLoudSoundReductionCmd()) == true;
+        if (SendCommand is null && DeviceModels.ShouldReadLoudSoundReduction(_snapshot, _loudSoundReductionRead, force))
+            _loudSoundReductionRead = Send(new GetLoudSoundReductionCmd()) == true;
     }
 
     private void LoudSoundReduction_Toggled(object sender, RoutedEventArgs e)
@@ -647,7 +773,7 @@ public sealed partial class DeviceSettingsCard : UserControl
         LoudSoundReductionSwitch.IsOn = _snapshot.LoudSoundReduction == true;
         _applying = false;
         if (DeviceModels.CanChangeLoudSoundReduction(_snapshot) &&
-            Client?.Send(new SetLoudSoundReductionCmd { On = requested }) == true)
+            Send(new SetLoudSoundReductionCmd { On = requested }) == true)
             LoudSoundReductionSwitch.IsEnabled = false;
     }
 
@@ -656,13 +782,15 @@ public sealed partial class DeviceSettingsCard : UserControl
         if (!_applying) Client?.SetAutoPause(AutoPauseSwitch.IsOn);
     }
 
+    private bool Send(object command) => SendCommand?.Invoke(command) ?? Client?.Send(command) == true;
+
     private void Refresh_Click(object sender, RoutedEventArgs e)
     {
         if (!RefreshButton.IsEnabled || Client is null) return;
         _refreshCoolingDown = true;
         RefreshButton.IsEnabled = false;
         _refreshCooldown.Start();
-        Client.RefreshDeviceSettings();
+        Send(new RefreshDeviceSettingsCmd());
         ReadLoudSoundReduction(force: true);
     }
 }

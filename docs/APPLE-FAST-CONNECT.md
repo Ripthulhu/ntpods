@@ -71,6 +71,20 @@ length prefix:
 | 34 | 4 | Lower half of that word, LE32 |
 | 38 | 4 observed | Trailing discovery data |
 
+visionOS 27.0.1 / 24M372's ULLA eligibility test maps internal feature 35 to
+bit 36 of that extended-feature word. The decoder exports `ulla_gate_bit36`;
+this is separate from AACP capability ID `0x23`. In the selected Pro 3 / 9A348
+exchange above, frame 878 advertises `087c7c1b00000000` with the bit set; the
+Intel Mac reply at 882 advertises `004d040d00000000` with it clear. Connection
+847 matches the selected pair. These individual payloads were checked against
+the saved capture; they establish advertisements, not a working ULLA link or
+capture-wide playback validation.
+
+Vision Pro also requires host support and suitable accessory/local band and
+location policy before suppressing ordinary A2DP publication. Its ULLA controls
+use UHI client 2 through the Durant plugin, not PFC/AACP opcodes or standard
+Bluetooth HCI commands. Advertising this bit alone cannot establish that route.
+
 Messages 3–6 contain sections after the common header:
 
 - Section `01 00`: LE16 byte length, followed by general TLVs.

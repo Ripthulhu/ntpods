@@ -7,6 +7,7 @@ internal static class BatteryFreshnessChecks
     {
         CheckArtworkAvailability();
         CheckSharedAge();
+        CheckCachePolicy();
         var state = new Snapshot
         {
             Connected = true, BatterySource = "aap", BatteryLive = true,
@@ -46,6 +47,35 @@ internal static class BatteryFreshnessChecks
         state.BatteryFreshness = null;
         Check(BatteryPresentation.IsLive(state, BatteryPart.Left), "Legacy snapshots remain compatible.");
         Console.WriteLine("Per-component battery freshness checks passed.");
+    }
+
+    private static void CheckCachePolicy()
+    {
+        var state = new Snapshot
+        {
+            Model = "AirPods Pro 3", Connected = true, BatterySource = "aap", BatteryLive = true,
+            Battery = new Battery { Left = 70, Right = 72, Case = 90 },
+            BatteryFreshness = new BatteryFreshness
+            {
+                Left = new BatteryObservation { TimestampMs = 1_792_000_100_000, Present = true, Live = true },
+                Right = new BatteryObservation { TimestampMs = 1_792_000_000_000, Present = false },
+                Case = new BatteryObservation { TimestampMs = 1_792_000_000_000 },
+            },
+        };
+        Check(BatteryPresentation.Reading(state, BatteryPart.Left, false) == 70 &&
+            BatteryPresentation.Reading(state, BatteryPart.Right, false) is null &&
+            BatteryPresentation.Reading(state, BatteryPart.Case, false) == 90,
+            "Hiding disconnected components must preserve live readings and a case omitted from a fresh packet.");
+        Check(BatteryPresentation.Reading(state, BatteryPart.Right, true) == 72 && state.BatteryFreshness.Right.TimestampMs == 1_792_000_000_000,
+            "Re-enabling retained readings must restore the original value and age without changing observations.");
+        state.Connected = false;
+        state.BatteryLive = false;
+        Check(BatteryPresentation.Reading(state, BatteryPart.Left, false) is null && state.Battery.Left == 70 && state.Model == "AirPods Pro 3",
+            "Hiding cached values on disconnect cannot delete battery samples or model metadata.");
+        state.BatterySource = "ble";
+        state.BatteryLive = true;
+        Check(BatteryPresentation.Reading(state, BatteryPart.Left, false) == 70,
+            "Live nearby BLE readings remain visible without a control connection.");
     }
 
     private static void CheckSharedAge()

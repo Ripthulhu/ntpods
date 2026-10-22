@@ -58,8 +58,8 @@ pub struct ModeState {
     pub revision: u64,
 }
 
-#[derive(Clone)]
-struct ModeCache {
+#[derive(Clone, Default)]
+pub(super) struct ModeCache {
     session: u64,
     revision: u64,
     hearing: Option<[u8; 11]>,
@@ -78,7 +78,20 @@ fn flag(value: u8) -> Option<bool> {
 }
 
 impl ModeCache {
-    fn state(&self) -> ModeState {
+    /// Preserve validated templates for an Off recovery, but require a new report.
+    pub(super) fn invalidate_report(&mut self, slot: u8) {
+        let changed = match slot {
+            2 => self.hearing.take().is_some(),
+            3 => self.assist.take().is_some(),
+            4 => self.pme.take().is_some(),
+            _ => false,
+        };
+        if changed {
+            self.revision = self.revision.wrapping_add(1);
+        }
+    }
+
+    pub(super) fn state(&self) -> ModeState {
         let voice = self.pme.as_ref().and_then(|packet| flag(packet[10]));
         let media = self.pme.as_ref().and_then(|packet| flag(packet[11]));
         ModeState {
@@ -105,6 +118,37 @@ impl ModeCache {
             },
             revision: self.revision,
         }
+    }
+
+    /// USB owns a separate cache; observing its reports must not alter native state.
+    pub(super) fn observe(&mut self, packet: &[u8]) -> bool {
+        let changed = if packet.starts_with(&[4, 0, 4, 0, 9, 0, 0x2c]) {
+            let value = hearing_report(packet);
+            let changed = self.hearing != value;
+            self.hearing = value;
+            self.hearing_template = value;
+            changed
+        } else if packet.starts_with(&[4, 0, 4, 0, 9, 0, 0x33]) {
+            let value = match packet {
+                [4, 0, 4, 0, 9, 0, 0x33, value @ (1 | 2), 0, 0, 0] => flag(*value),
+                _ => None,
+            };
+            let changed = self.assist != value;
+            self.assist = value;
+            changed
+        } else if packet.starts_with(&[4, 0, 4, 0, 0x53, 0]) {
+            let value = pme_report(packet);
+            let changed = self.pme != value;
+            self.pme = value;
+            self.pme_template = value;
+            changed
+        } else {
+            false
+        };
+        if changed {
+            self.revision = self.revision.wrapping_add(1);
+        }
+        changed
     }
 }
 
@@ -681,7 +725,7 @@ fn discover(
         .ok_or("Hearing assistance is not available on these AirPods.".into())
 }
 
-fn read_settings(
+pub(super) fn read_settings(
     exchange: &mut impl FnMut(&[u8]) -> Result<Vec<u8>, String>,
 ) -> Result<(Characteristic, Vec<u8>, HearingAidSettings), String> {
     let characteristic = discover(exchange)?;
@@ -689,7 +733,7 @@ fn read_settings(
     Ok((characteristic, value, settings))
 }
 
-fn editable_value(value: &[u8], characteristic: Characteristic) -> bool {
+pub(super) fn editable_value(value: &[u8], characteristic: Characteristic) -> bool {
     characteristic.write_opcode.is_some()
         && value.len() == 104
         && matches!(value[..4], [2, 2, 0x60 | 0x64, 0])
@@ -761,7 +805,7 @@ pub fn read(drv: &Driver, gen: u64) -> Result<Option<HearingAidSettings>, String
     })
 }
 
-fn prepare_settings(
+pub(super) fn prepare_settings(
     mut exchange: impl FnMut(&[u8]) -> Result<Vec<u8>, String>,
     expected: &HearingAidSettings,
 ) -> Result<(Characteristic, Vec<u8>), String> {
@@ -805,7 +849,7 @@ fn patch_settings(value: &mut [u8], requested: &HearingAidSettings) {
     }
 }
 
-fn write_settings(
+pub(super) fn write_settings(
     mut exchange: impl FnMut(&[u8]) -> Result<Vec<u8>, String>,
     characteristic: Characteristic,
     mut preserved: Vec<u8>,
@@ -913,17 +957,17 @@ pub struct ModeVerification {
     pub session: u64,
 }
 
-struct ModePlan {
+pub(super) struct ModePlan {
     enrollment: u8,
     hearing: bool,
     voice: bool,
     media: bool,
     gate: bool,
     original_pme: [u8; 140],
-    packets: Vec<Vec<u8>>,
+    pub(super) packets: Vec<Vec<u8>>,
 }
 
-fn mode_plan(cache: &ModeCache, mode: Mode, on: bool) -> Result<ModePlan, String> {
+pub(super) fn mode_plan(cache: &ModeCache, mode: Mode, on: bool) -> Result<ModePlan, String> {
     let state = cache.state();
     if on && state.hearing_enrolled != Some(true) {
         return Err("Set up Hearing Assistance on an iPhone or iPad first.".into());
@@ -1014,7 +1058,7 @@ pub fn next_mode_gen(mode: Mode, on: bool) -> Result<u64, String> {
     Ok(next_gen())
 }
 
-fn mode_confirmed(plan: &ModePlan, cache: &ModeCache) -> bool {
+pub(super) fn mode_confirmed(plan: &ModePlan, cache: &ModeCache) -> bool {
     let state = cache.state();
     cache
         .hearing
@@ -1088,7 +1132,7 @@ pub fn mode_reports_complete() -> bool {
         && state.pme_media_enabled.is_some()
 }
 
-fn verify_profile(
+pub(super) fn verify_profile(
     original: &[u8],
     mut exchange: impl FnMut(&[u8]) -> Result<Vec<u8>, String>,
 ) -> Result<(HearingAidSettings, bool), String> {
@@ -1422,6 +1466,51 @@ mod tests {
             assist: Some(hearing == Some(HA_ON_2C) || voice || media),
             pme: Some(pme),
             pme_template: Some(pme),
+        }
+    }
+
+    #[test]
+    fn independent_mode_cache_uses_reports_without_touching_other_sessions() {
+        let original = mode_fixture(false, false, false);
+        let mut cache = ModeCache::default();
+        assert!(cache.observe(&original.hearing.unwrap()));
+        assert!(cache.observe(&HA_OFF_33));
+        assert!(cache.observe(&original.pme.unwrap()));
+        let plan = mode_plan(&cache, Mode::HearingAid, true).unwrap();
+        assert!(!mode_confirmed(&plan, &cache));
+        for packet in &plan.packets {
+            cache.observe(packet);
+        }
+        assert!(mode_confirmed(&plan, &cache));
+        assert_eq!(original.state().hearing_enabled, Some(false));
+        assert_eq!(cache.state().hearing_enabled, Some(true));
+        let revision = cache.state().revision;
+        assert!(!cache.observe(&HA_ON_2C));
+        assert_eq!(cache.state().revision, revision);
+        cache.invalidate_report(2);
+        assert_eq!(cache.state().hearing_enabled, None);
+        assert!(!mode_confirmed(&plan, &cache));
+        assert!(mode_plan(&cache, Mode::HearingAid, false).is_ok());
+        assert!(cache.observe(&HA_ON_2C));
+        assert!(mode_confirmed(&plan, &cache));
+    }
+
+    #[test]
+    fn malformed_mode_reports_remove_edit_authorization_and_templates() {
+        let mut cache = mode_fixture(false, false, false);
+        for packet in [
+            vec![4, 0, 4, 0, 9, 0, 0x2c],
+            vec![4, 0, 4, 0, 9, 0, 0x33],
+            vec![4, 0, 4, 0, 0x53, 0],
+        ] {
+            assert!(cache.observe(&packet));
+        }
+        assert!(cache.state().hearing_enabled.is_none());
+        assert!(cache.state().media_enabled.is_none());
+        for mode in [Mode::HearingAid, Mode::MediaAssist] {
+            for on in [true, false] {
+                assert!(mode_plan(&cache, mode, on).is_err());
+            }
         }
     }
 

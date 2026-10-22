@@ -1,5 +1,6 @@
 //! AAP protocol: outgoing commands + parsers for the packets the AirPods push.
 
+#[path = "aap/accessory.rs"]
 pub mod accessory;
 
 pub const PSM_AACP: u16 = 0x1001;

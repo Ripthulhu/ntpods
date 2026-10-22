@@ -11,6 +11,7 @@ use windows_sys::Win32::Foundation::ERROR_REQ_NOT_ACCEP;
 pub struct Session {
     driver: Driver,
     address: u64,
+    generation: Option<u64>,
     flush_ms: u16,
     pub mode: Mode,
     pub eld_aus: usize,
@@ -27,6 +28,7 @@ pub struct Session {
     closing: bool,
     interrupted: Box<dyn Fn() -> bool>,
     coordination: Option<coordination::Coordinator>,
+    on_closed: Option<Box<dyn FnOnce(bool)>>,
     pub mtu: usize,
     pub bitrate: u32,
     pub variable: bool,
@@ -37,7 +39,17 @@ pub struct Session {
     pub delay_serial: u64,
 }
 
-pub fn driver_ready(driver: &Driver, address: u64) -> io::Result<()> {
+pub fn driver_ready(driver: &Driver, address: u64, intent: u64) -> io::Result<Option<u64>> {
+    let mut owned = [0; 40];
+    match driver.playback_ioctl(0x814, &3u32.to_le_bytes(), &mut owned) {
+        Ok(size) => {
+            if size != owned.len() { return Err(invalid("Invalid playback ownership response")); }
+            owned_driver_ready(&owned, address, intent)?;
+            return Ok(Some(intent));
+        }
+        Err(error) if matches!(error.raw_os_error(), Some(1 | 50 | 87)) => {}
+        Err(error) => return Err(error),
+    }
     let mut data = [0; 28];
     if driver.playback_ioctl(0x814, &[], &mut data)? != data.len()
         || u32::from_le_bytes(data[..4].try_into().unwrap()) != 1
@@ -48,6 +60,26 @@ pub fn driver_ready(driver: &Driver, address: u64) -> io::Result<()> {
     if data[4..12] != [0; 8] {
         return Err(invalid("A playback session is already open"));
     }
+    Ok(None)
+}
+
+fn owned_driver_ready(data: &[u8], address: u64, intent: u64) -> io::Result<()> {
+    if data.len() != 40
+        || data[..4] != 3u32.to_le_bytes()
+        || u64::from_le_bytes(data[20..28].try_into().unwrap()) != address
+        || u64::from_le_bytes(data[32..40].try_into().unwrap()) != intent
+        || intent == 0
+    {
+        return Err(invalid("Playback listener belongs to another request"));
+    }
+    let flags = u32::from_le_bytes(data[28..32].try_into().unwrap());
+    if flags & !7 != 0
+        || flags & 2 == 0
+        || data[8..12] != [0; 4]
+        || (data[4..8] != [0; 4] && flags & 1 == 0)
+    {
+        return Err(invalid("A playback session is already open"));
+    }
     Ok(())
 }
 
@@ -55,18 +87,21 @@ impl Session {
     pub fn open(
         driver: Driver,
         address: u64,
+        generation: Option<u64>,
         mode: Mode,
         eld_aus: usize,
         bitrates: [ntpods_ipc::PlaybackBitrate; 2],
         cancel: Arc<AtomicBool>,
         interrupted: impl Fn() -> bool + 'static,
         on_mode: impl FnOnce(Mode),
+        on_closed: impl FnOnce(bool) + 'static,
     ) -> io::Result<Self> {
         validate_eld_aus(eld_aus)?;
         let gaming_supported = super::capabilities::gaming_supported(address);
         let mut session = Self {
             driver,
             address,
+            generation,
             flush_ms: 200,
             mode,
             eld_aus,
@@ -83,6 +118,7 @@ impl Session {
             closing: false,
             interrupted: Box::new(interrupted),
             coordination: None,
+            on_closed: Some(Box::new(on_closed)),
             mtu: 0,
             bitrate: 0,
             variable: false,
@@ -189,15 +225,31 @@ impl Session {
 
     fn open_channel(&self, address: u64, channel: u32) -> io::Result<usize> {
         self.check_cancelled()?;
-        let input = [
-            1u32.to_le_bytes().as_slice(),
+        let version = if self.generation.is_some() {
+            3u32
+        } else {
+            1u32
+        };
+        let mut input = [
+            version.to_le_bytes().as_slice(),
             channel.to_le_bytes().as_slice(),
             address.to_le_bytes().as_slice(),
         ]
         .concat();
+        if let Some(generation) = self.generation {
+            input.extend_from_slice(
+                &(if channel == 0 {
+                    u16::MAX as u32
+                } else {
+                    200u32
+                })
+                .to_le_bytes(),
+            );
+            input.extend_from_slice(&generation.to_le_bytes());
+        }
         let mut output = [0; 16];
         if self.driver.playback_ioctl(0x810, &input, &mut output)? != output.len()
-            || output[..4] != 1u32.to_le_bytes()
+            || output[..4] != version.to_le_bytes()
             || output[4..8] != channel.to_le_bytes()
         {
             return Err(invalid("Invalid playback channel response"));
@@ -207,10 +259,17 @@ impl Session {
 
     fn open_media(&self, flush_ms: u16) -> io::Result<usize> {
         self.check_cancelled()?;
-        let input = media_open_request(self.address, flush_ms)?;
+        let mut input = media_open_request(self.address, flush_ms)?;
+        let version = if let Some(generation) = self.generation {
+            input[..4].copy_from_slice(&3u32.to_le_bytes());
+            input.extend_from_slice(&generation.to_le_bytes());
+            3u32
+        } else {
+            2u32
+        };
         let mut output = [0; 16];
         if self.driver.playback_ioctl(0x810, &input, &mut output)? != output.len()
-            || output[..4] != 2u32.to_le_bytes()
+            || output[..4] != version.to_le_bytes()
             || output[4..8] != 1u32.to_le_bytes()
         {
             return Err(invalid(
@@ -245,7 +304,7 @@ impl Session {
         self.state = StreamState::Idle;
         let seid = self.seid;
         self.seid = 0;
-        let close = [2u32.to_le_bytes(), 1u32.to_le_bytes()].concat();
+        let close = self.close_input(1);
         if self.driver.playback_ioctl(0x811, &close, &mut [])? != 0 {
             return Err(invalid("Invalid media close response"));
         }
@@ -291,24 +350,57 @@ impl Session {
 
     fn send(&self, channel: u32, packet: &[u8]) -> io::Result<()> {
         let mut input = Vec::with_capacity(8 + packet.len());
-        input.extend_from_slice(&1u32.to_le_bytes());
+        input.extend_from_slice(
+            &(if self.generation.is_some() {
+                3u32
+            } else {
+                1u32
+            })
+            .to_le_bytes(),
+        );
         input.extend_from_slice(&channel.to_le_bytes());
+        if let Some(generation) = self.generation {
+            input.extend_from_slice(&generation.to_le_bytes());
+        }
         input.extend_from_slice(packet);
         self.driver.playback_ioctl(0x812, &input, &mut [])?;
         Ok(())
     }
 
     fn receive(&self, wait_ms: u32) -> io::Result<Vec<u8>> {
-        let input = [
-            1u32.to_le_bytes(),
-            0u32.to_le_bytes(),
-            wait_ms.to_le_bytes(),
-        ]
-        .concat();
+        let mut input = vec![];
+        input.extend_from_slice(
+            &(if self.generation.is_some() {
+                3u32
+            } else {
+                1u32
+            })
+            .to_le_bytes(),
+        );
+        input.extend_from_slice(&0u32.to_le_bytes());
+        if let Some(generation) = self.generation {
+            input.extend_from_slice(&generation.to_le_bytes());
+        }
+        input.extend_from_slice(&wait_ms.to_le_bytes());
         let mut output = vec![0; 8192];
         let size = self.driver.playback_ioctl(0x813, &input, &mut output)?;
         output.truncate(size);
         Ok(output)
+    }
+
+    fn close_input(&self, channel: u32) -> Vec<u8> {
+        if let Some(generation) = self.generation {
+            [
+                3u32.to_le_bytes().as_slice(),
+                channel.to_le_bytes().as_slice(),
+                generation.to_le_bytes().as_slice(),
+            ]
+            .concat()
+        } else if channel == 1 {
+            [2u32.to_le_bytes(), 1u32.to_le_bytes()].concat()
+        } else {
+            vec![]
+        }
     }
 
     fn request(&mut self, signal: u8, payload: &[u8]) -> io::Result<Vec<u8>> {
@@ -747,8 +839,16 @@ impl Drop for Session {
     fn drop(&mut self) {
         self.closing = true;
         let _ = self.suspend();
+        let mut closed = true;
         if let Some(coordinator) = self.coordination.take() {
-            if let Err(error) = coordinator.disable(&self.driver) {
+            // V3 close disarms and drains coordination with channel ownership.
+            // A control disconnect may already have performed that same close.
+            if let Err(error) = if self.generation.is_none() {
+                coordinator.disable(&self.driver)
+            } else {
+                Ok(())
+            } {
+                closed = false;
                 crate::log(&format!(
                     "playback: profile coordination cleanup failed: {error}"
                 ));
@@ -762,8 +862,15 @@ impl Drop for Session {
             };
             let _ = self.request(signal, &[self.seid << 2]);
         }
-        if let Err(error) = self.driver.playback_ioctl(0x811, &[], &mut []) {
+        if let Err(error) = self
+            .driver
+            .playback_ioctl(0x811, &self.close_input(2), &mut [])
+        {
+            closed = false;
             crate::log(&format!("playback: channel cleanup failed: {error}"));
+        }
+        if let Some(on_closed) = self.on_closed.take() {
+            on_closed(closed);
         }
     }
 }
@@ -772,6 +879,30 @@ impl Drop for Session {
 mod tests {
     use super::*;
     use ntpods_ipc::PlaybackBitrate;
+
+    #[test]
+    fn readiness_adopts_only_current_unclaimed_signaling() {
+        let mut data = [0; 40];
+        data[..4].copy_from_slice(&3u32.to_le_bytes());
+        data[20..28].copy_from_slice(&42u64.to_le_bytes());
+        data[32..40].copy_from_slice(&7u64.to_le_bytes());
+        for (signaling, media, flags, allowed) in [
+            (0u32, 0u32, 2u32, true),
+            (0, 0, 6, true),
+            (1, 0, 3, true),
+            (1, 0, 2, false),
+            (1, 1, 3, false),
+            (0, 0, 0, false),
+            (1, 0, 11, false),
+        ] {
+            data[4..8].copy_from_slice(&signaling.to_le_bytes());
+            data[8..12].copy_from_slice(&media.to_le_bytes());
+            data[28..32].copy_from_slice(&flags.to_le_bytes());
+            assert_eq!(owned_driver_ready(&data, 42, 7).is_ok(), allowed);
+            assert!(owned_driver_ready(&data, 43, 7).is_err());
+            assert!(owned_driver_ready(&data, 42, 8).is_err());
+        }
+    }
 
     #[test]
     fn signaling_drain_requires_an_empty_read_and_bounds_busy_peers() {
@@ -974,7 +1105,7 @@ mod tests {
         assert!(!preferences[0].variable);
         assert_eq!(fallback.bitrate, 512_000);
 
-        for (aus, sufficient_mtu) in [(1, 337), (2, 662)] {
+        for (aus, sufficient_mtu) in [(1, 337), (2, 662), (3, 987)] {
             for mtu in [48, sufficient_mtu - 1] {
                 assert!(Mode::Eld
                     .bitrate(preferences[1], eld_bitrate_limit(mtu, aus).unwrap())
@@ -1231,7 +1362,7 @@ mod tests {
 
     #[test]
     fn eld_mtu_budget_includes_cbr_padding() {
-        for (aus, maximum_mtu, minimum_mtu) in [(1, 337, 177), (2, 662, 342)] {
+        for (aus, maximum_mtu, minimum_mtu) in [(1, 337, 177), (2, 662, 342), (3, 987, 507)] {
             assert_eq!(eld_bitrate_limit(1023, aus).unwrap(), 256000);
             assert_eq!(eld_bitrate_limit(maximum_mtu, aus).unwrap(), 256000);
             assert_eq!(eld_bitrate_limit(maximum_mtu - 1, aus).unwrap(), 255200);
@@ -1240,7 +1371,7 @@ mod tests {
             assert_eq!(eld_bitrate_limit(0, aus).unwrap(), 0);
             assert_eq!(eld_bitrate_limit(usize::MAX, aus).unwrap(), 256000);
         }
-        for aus in [0, 3, usize::MAX] {
+        for aus in [0, 4, usize::MAX] {
             assert!(eld_bitrate_limit(1023, aus).is_err());
         }
     }

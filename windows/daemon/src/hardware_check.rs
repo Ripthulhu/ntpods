@@ -6,7 +6,7 @@ use ntpods_ipc::{HardwareCheckState, HardwareDiagnostics};
 const REQUEST_UUID: [u8; 16] = 0xa4120004_95c5_4d6f_9098_0f0b41457e0au128.to_le_bytes();
 const WAIT_MS: u64 = 120_000;
 
-fn transaction(mut exchange: impl FnMut(&[u8]) -> Result<Vec<u8>, String>) -> Result<(), String> {
+pub(super) fn transaction(mut exchange: impl FnMut(&[u8]) -> Result<Vec<u8>, String>) -> Result<(), String> {
     let characteristic =
         att_settings::discover_write_request(&mut exchange, &REQUEST_UUID, "Hardware check")?
             .ok_or("These AirPods do not expose the hardware-check request.")?;

@@ -9,5 +9,7 @@
   <ItemGroup>
     <Compile Include="../../winui/NTPods.WinUI/Ipc/DaemonClient.cs" Link="DaemonClient.cs" />
     <Compile Include="../../winui/NTPods.WinUI/Ipc/Messages.cs" Link="Messages.cs" />
+    <Compile Include="../../winui/NTPods.WinUI/Controls/CompanionControls.cs" Link="CompanionControls.cs" />
+    <Compile Include="../../winui/NTPods.WinUI/Services/CompanionUiTrace.cs" Link="CompanionUiTrace.cs" />
   </ItemGroup>
 </Project>

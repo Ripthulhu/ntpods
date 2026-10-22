@@ -88,6 +88,8 @@ try {
     Run (Join-Path $tests 'audio-inf-target.exe') @('windows/drivers/audio/NTPodsAudio.inf')
     Run 'cl.exe' @('/nologo', '/W4', '/WX', '/TC', "/Fe:$tests\aap-policy.exe", "/Fo:$tests\aap-policy.obj", 'windows/drivers/aap/tests/policy_test.c')
     Run (Join-Path $tests 'aap-policy.exe') @()
+    Run 'cl.exe' @('/nologo', '/W4', '/WX', '/TC', "/Fe:$tests\aap-brb-completion.exe", "/Fo:$tests\aap-brb-completion.obj", 'windows/drivers/aap/tests/brb_completion_test.c')
+    Run (Join-Path $tests 'aap-brb-completion.exe') @()
     Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', "/Fe:$tests\aap-concurrency.exe", "/Fo:$tests\aap-concurrency.obj", 'windows/drivers/aap/tests/receive_concurrency_test.cpp')
     Run (Join-Path $tests 'aap-concurrency.exe') @()
     Run 'cl.exe' @('/nologo', '/W4', '/WX', '/TC', "/Fe:$tests\aap-inf-target.exe", "/Fo:$tests\aap-inf-target.obj", 'windows/drivers/aap/tests/inf_target_test.c', '/link', 'setupapi.lib')

@@ -12,9 +12,11 @@
 enum { CHANNELS = 2, FRAME_SAMPLES = 480, PCM_SAMPLES = 960 };
 __declspec(dllimport) int ntpods_fdk_pcm_bits(void);
 
-static int parse_options(int argc, char **argv, unsigned *bitrate, int *variable, int *pcm_f32) {
+static int parse_options(int argc, char **argv, unsigned *bitrate, int *variable, int *pcm_f32,
+                         unsigned *link_budget) {
     *bitrate = 256000;
     *variable = *pcm_f32 = 0;
+    *link_budget = 0;
     int seen_rate = 0;
     for (int index = 1; index < argc; ++index) {
         if (!strcmp(argv[index], "--pcm-f32") && !*pcm_f32) {
@@ -26,9 +28,14 @@ static int parse_options(int argc, char **argv, unsigned *bitrate, int *variable
             if (strlen(argv[index]) != 6 || strspn(argv[index], "0123456789") != 6 ||
                 sscanf_s(argv[index], "%u", bitrate) != 1) return 0;
             seen_rate = 1;
+        } else if (!strcmp(argv[index], "--link-budget") && !*link_budget && ++index < argc) {
+            if (strlen(argv[index]) != 3 || strspn(argv[index], "0123456789") != 3 ||
+                sscanf_s(argv[index], "%u", link_budget) != 1 ||
+                *link_budget < 128 || *link_budget > 256) return 0;
         } else return 0;
     }
-    return *bitrate >= 128000 && *bitrate <= 256000 && *bitrate % 1000 == 0;
+    return *bitrate >= 128000 && *bitrate <= 256000 && *bitrate % 1000 == 0 &&
+        (!*link_budget || *variable);
 }
 
 static int read_pcm(INT_PCM *pcm, int pcm_f32) {
@@ -107,13 +114,18 @@ int main(int argc, char **argv) {
     int exit_code = 1;
     DWORD task_index = 0;
     HANDLE audio_task = NULL;
-    unsigned bitrate;
+    unsigned bitrate, link_budget;
     int variable, pcm_f32;
-    if (!parse_options(argc, argv, &bitrate, &variable, &pcm_f32)) {
-        fprintf(stderr, "Use --bitrate with 128000..256000 bits per second in 1000-bit steps, or --vbr; optionally --pcm-f32.\n");
+    if (!parse_options(argc, argv, &bitrate, &variable, &pcm_f32, &link_budget)) {
+        fprintf(stderr, "Use --bitrate with 128000..256000 bits per second in 1000-bit steps, or --vbr; optionally --pcm-f32. --link-budget accepts 128..256 kbps with --vbr only.\n");
         return 1;
     }
-    const unsigned peak_bitrate = variable ? 256000 : bitrate;
+    // FDK rounds its frame ceiling up; pass a byte-aligned rate to preserve the budget.
+    const unsigned peak_bitrate = link_budget ? (link_budget * 10 / 8) * 800 :
+        variable ? 256000 : bitrate;
+    const unsigned bandwidth = !link_budget ? 0 : link_budget <= 128 ? 15500 :
+        link_budget <= 160 ? 17500 : 20000;
+    const unsigned variable_mode = link_budget && peak_bitrate < 192000 ? 4 : 5;
     if (sizeof(INT_PCM) != 4 || ntpods_fdk_pcm_bits() != 32 || _setmode(_fileno(stdin), _O_BINARY) == -1 ||
         _setmode(_fileno(stdout), _O_BINARY) == -1) {
         fprintf(stderr, "Cannot initialize PCM input and binary output.\n");
@@ -143,10 +155,15 @@ int main(int argc, char **argv) {
             goto cleanup;
         }
     }
+    if (link_budget && aacEncoder_SetParam(encoder, AACENC_BANDWIDTH, bandwidth) != AACENC_OK) {
+        fprintf(stderr, "Unsupported AAC-ELD bandwidth limit.\n");
+        goto cleanup;
+    }
     if (aacEncEncode(encoder, NULL, NULL, NULL, NULL) != AACENC_OK ||
         aacEncInfo(encoder, &info) != AACENC_OK || !valid_configuration(&info) ||
-        aacEncoder_GetParam(encoder, AACENC_BITRATEMODE) != (variable ? 5u : 0u) ||
+        aacEncoder_GetParam(encoder, AACENC_BITRATEMODE) != (variable ? variable_mode : 0u) ||
         aacEncoder_GetParam(encoder, AACENC_PEAK_BITRATE) != peak_bitrate ||
+        (link_budget && aacEncoder_GetParam(encoder, AACENC_BANDWIDTH) != bandwidth) ||
         (!variable && aacEncoder_GetParam(encoder, AACENC_BITRATE) != bitrate)) {
         fprintf(stderr, "Cannot initialize the 480-sample AAC-ELD configuration.\n");
         goto cleanup;
@@ -157,7 +174,7 @@ int main(int argc, char **argv) {
         goto cleanup;
     }
     // FDK's CBR frames can exceed the rounded 10 ms byte budget by one byte.
-    const unsigned max_au = (peak_bitrate + 799) / 800 + 1;
+    const unsigned max_au = link_budget ? peak_bitrate / 800 : (peak_bitrate + 799) / 800 + 1;
     audio_task = AvSetMmThreadCharacteristicsW(L"Audio", &task_index);
     for (;;) {
         const int status = read_pcm(pcm, pcm_f32);

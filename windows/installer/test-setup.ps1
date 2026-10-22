@@ -1,6 +1,7 @@
 # No elevation or system changes: temporary filesystem checks, then mocked privileged writes.
 $ErrorActionPreference = 'Stop'
 & (Join-Path $PSScriptRoot 'test-stop-ntpods.ps1')
+& (Join-Path $PSScriptRoot 'test-optional-drivers.ps1')
 . (Join-Path $PSScriptRoot 'setup-common.ps1')
 & {
     $script:removalCalls = @()

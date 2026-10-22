@@ -1,4 +1,4 @@
-//! Keep hands-free endpoints out of device pickers while the HQ route is available.
+//! Restore hands-free endpoints hidden by earlier versions.
 
 use crate::hfp_endpoints::{Endpoint, Endpoints};
 use std::fs::{File, OpenOptions};
@@ -449,70 +449,28 @@ fn finish_child(child: &mut Child) -> Option<bool> {
     }
 }
 
-pub fn start(ctx: crate::Ctx) {
-    thread::spawn(move || {
-        let mut warned = false;
-        loop {
-            let result = spawn_guard();
-            let mut child = match result {
-                Ok(child) => child,
-                Err(_) => {
-                    if !warned {
-                        crate::log("handsfree: visibility helper could not start");
-                        warned = true;
-                    }
-                    if ctx.shutting_down.load(Ordering::Acquire) {
-                        if !matches!(journal_is_clean(), Ok(true)) {
-                            ctx.shutdown_cleanup_failed.store(true, Ordering::Release);
-                        }
-                        ctx.handsfree_done.store(true, Ordering::Release);
-                        return;
-                    }
-                    thread::sleep(Duration::from_secs(3));
-                    continue;
-                }
-            };
-            let mut sent = None;
-            loop {
-                if ctx.shutting_down.load(Ordering::Acquire) {
-                    let finished = finish_child(&mut child);
-                    if finished != Some(true) {
-                        ctx.shutdown_cleanup_failed.store(true, Ordering::Release);
-                        crate::log("handsfree: endpoint restoration is still pending");
-                    }
-                    ctx.handsfree_done
-                        .store(finished.is_some(), Ordering::Release);
-                    return;
-                }
-                let target = crate::handsfree_target(&ctx).unwrap_or(0);
-                if sent != Some(target) {
-                    let result = child
-                        .stdin
-                        .as_mut()
-                        .ok_or_else(|| io::Error::other("Helper closed"))
-                        .and_then(|input| writeln!(input, "{target}"));
-                    if result.is_err() {
-                        break;
-                    }
-                    sent = Some(target);
-                }
-                if !matches!(child.try_wait(), Ok(None)) {
-                    break;
-                }
-                thread::sleep(Duration::from_millis(500));
-            }
-            if finish_child(&mut child).is_none() {
-                ctx.shutdown_cleanup_failed.store(true, Ordering::Release);
-                crate::log("handsfree: visibility helper did not finish restoring endpoints");
-                return;
-            }
-            if !warned {
-                crate::log("handsfree: retrying endpoint visibility helper");
-                warned = true;
-            }
-            thread::sleep(Duration::from_secs(3));
+pub fn recover() -> io::Result<()> {
+    if journal_is_clean()? {
+        return Ok(());
+    }
+    let mut child = spawn_guard()?;
+    match finish_child(&mut child) {
+        Some(true) => {}
+        Some(false) => return Err(io::Error::other("Hands-free endpoint restoration failed")),
+        None => {
+            // The independent helper retains the journal while a slow restore finishes.
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Hands-free endpoint restoration is pending",
+            ));
         }
-    });
+    }
+    if !journal_is_clean()? {
+        return Err(io::Error::other(
+            "Hands-free endpoint restoration is pending",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -639,6 +597,43 @@ mod tests {
             fail_ready: false,
             fail_state: false,
         }
+    }
+
+    #[test]
+    fn empty_recovery_preserves_manual_disables_and_visible_endpoints() {
+        let devices = devices();
+        let before = devices.endpoints.borrow().clone();
+        let mut lease = Lease::default();
+        let mut journal = FakeJournal::default();
+        lease.restore(&devices, &mut journal).unwrap();
+        assert_eq!(*devices.endpoints.borrow(), before);
+        assert!(devices.calls.borrow().is_empty());
+        assert!(journal.records.is_empty());
+    }
+
+    #[test]
+    fn old_journal_restore_failure_retains_only_owned_changes() {
+        let mut devices = devices();
+        let saved = Restore::new(1, &devices.endpoints.borrow()[0].1);
+        devices.endpoints.borrow_mut()[0].1.state = DISABLED;
+        devices.fail_restore = true;
+        let mut lease = Lease {
+            records: vec![saved.clone()],
+            target: None,
+        };
+        let mut journal = FakeJournal {
+            records: vec![saved.clone()],
+            fail: false,
+        };
+        assert!(lease.restore(&devices, &mut journal).is_err());
+        assert_eq!(lease.records, [saved.clone()]);
+        assert_eq!(journal.records, [saved]);
+        assert!(devices.calls.borrow().is_empty());
+        devices.fail_restore = false;
+        lease.restore(&devices, &mut journal).unwrap();
+        assert_eq!(*devices.calls.borrow(), [("mic".into(), true)]);
+        assert_eq!(devices.endpoints.borrow()[1].1.state, DISABLED);
+        assert!(journal.records.is_empty());
     }
 
     #[test]

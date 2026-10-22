@@ -10,7 +10,8 @@ values and command-line output. It also runs in the complete build.
 
 `python windows/tests/test-pfc-decode.py` checks the offline
 [Fast Connect decoder](../docs/pfc_decode.py): message framing, channel and
-endpoint descriptors, delay units, extended TLV lengths and truncated input.
+endpoint descriptors, delay units, extended-feature ordering, ULLA gate bit 36,
+extended TLV lengths and truncated input.
 It uses synthetic packets and also runs in the complete build.
 
 `pwsh -File windows/tests/test-bluetooth-host-identity.ps1` checks the

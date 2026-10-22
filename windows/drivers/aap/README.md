@@ -68,6 +68,13 @@ cl /nologo /W4 /WX /EHsc /std:c++17 tests/receive_concurrency_test.cpp
 receive_concurrency_test.exe
 ```
 
+`tests/brb_completion_test.c` checks completion, cancellation and timeout results.
+A successful completed CLOSE retires its handle even if cancellation was already
+requested. Failed closes retain ownership; OPEN and transfer cancellations remain
+failures. The playback transport harness also checks that released handles are
+neither restored nor closed twice. All three tests run in `windows/build.ps1`.
+Requests that have not completed still retain their BRBs and buffers while draining.
+
 `cargo test --manifest-path windows/daemon/Cargo.toml driver::tests` exercises
 Windows overlapped completion on local test pipes. One pending read times out and
 is drained while another on the same handle remains usable; a closed peer returns
@@ -263,6 +270,45 @@ and remote disconnect cleanup.
 Build it with `cl /W4 /WX /EHsc /std:c++17` like the existing concurrency test.
 Codec playback has limited model coverage; congestion, driver stress and
 Driver Verifier still require hardware testing. See the validation reference above.
+
+### Selected-peer incoming signaling
+
+The experimental backend arms PSM `0x19` for the selected bonded peer before
+priming HFP. This uses a per-address `BRB_L2CA_REGISTER_SERVER`, as documented in
+[Accepting L2CAP Connections](https://learn.microsoft.com/en-us/windows-hardware/drivers/bluetooth/accepting-l2cap-connections-in-a-bluetooth-profile-driver),
+and does not replace a generic server or register SDP. The server accepts one
+signaling channel while the current explicit native playback intent is armed.
+An incoming channel remains unclaimed until the backend adopts it; acceptance
+does not select an output or start playback. Media channels remain outgoing.
+
+LISTEN (`0x8000E058`) takes the packed 24-byte record `u32 version=1, enabled;
+u64 address, generation`. Generation is the backend's nonzero audio intent.
+Version 3 OPEN adds `u32 flush_timeout_ms; u64 generation` to the 16-byte base.
+Version 3 SEND/CLOSE take `u32 version=3, channel; u64 generation`; SEND appends
+payload, RECEIVE appends `u32 timeout_ms`. CLOSE channel `1` closes media and
+`2` disarms and closes both channels. Version 3 STATUS takes `u32 version=3`
+and returns the 28-byte base plus `u32 flags; u64 generation` (40 bytes).
+Flags are unclaimed incoming `1`, listening `2`, and acceptance pending `4`.
+Older drivers keep the existing outbound-only ABI; unsupported listening never
+fabricates a connected channel.
+
+A dedicated passive lifecycle lock serializes arm/disarm and channel owners.
+Callbacks and response completions use only the spin lock and rundown; outgoing
+opens reserve the same slot as incoming acceptance. Disarm disables acceptance,
+unregisters, drains responses, then closes channels and old disconnect work.
+Close reserves its slot until the BRB finishes. A channel reference keeps its
+callback context alive independently of the server registration. If unregister
+fails, the server handle is retained, rundown stays closed, and rearm fails
+until cleanup succeeds; callbacks then return before borrowing the interface.
+Scoped transfers and close reject old generations. Session teardown is
+synchronous in the single playback manager; same-intent restarts rearm only
+after its previous Session has dropped and only while that intent is current.
+
+The production-C substitute tests cover incoming/outgoing slot ownership,
+asynchronous response drain, stale ownership, remote disconnect and negotiation
+failure. WDK compilation and these substitutes do not prove live BthPort or
+AirPods interoperability. The captured pending inbound requests justify testing
+this path; adopting an inbound channel remains a hardware hypothesis.
 
 ### Windows profile coordination
 

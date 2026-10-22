@@ -11,6 +11,7 @@ param(
     [string]$LocalAppData,
     [string]$AppData,
     [switch]$Drivers,
+    [switch]$PreserveDriverOwnership,
     [switch]$PreserveExisting,
     [string]$TransactionId,
     [ValidateSet('on', 'off')][string]$StartupMode = 'off',
@@ -29,19 +30,23 @@ try {
         }
         'rollback' {
             Stop-NTPods
-            try { & (Join-Path $PSScriptRoot 'bluetooth-host-identity.ps1') -Action Rollback -TransactionId $TransactionId }
-            finally { Restore-NTPodsDriverCheckpoint $PSScriptRoot $TransactionId }
+            if ($Drivers) {
+                try { & (Join-Path $PSScriptRoot 'bluetooth-host-identity.ps1') -Action Rollback -TransactionId $TransactionId }
+                finally { Restore-NTPodsDriverCheckpoint $PSScriptRoot $TransactionId }
+            }
             if (-not $PreserveExisting) {
-                Unregister-NTPodsTasks
+                if ($Drivers) { Unregister-NTPodsTasks }
                 if ($UserSid) { Assert-UserSid $UserSid; Remove-RunValues $UserSid 'NTPods', 'NTPods Daemon' }
-                foreach ($name in 'InstalledUserSid', 'InstallKind') {
+                foreach ($name in 'InstalledUserSid', 'InstallKind', 'DirectBluetoothDrivers') {
                     Remove-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\NTPods' -Name $name -ErrorAction SilentlyContinue
                 }
             }
         }
         'commit' {
-            try { & (Join-Path $PSScriptRoot 'bluetooth-host-identity.ps1') -Action Commit -TransactionId $TransactionId }
-            finally { Complete-NTPodsDriverTransaction $TransactionId }
+            if ($Drivers) {
+                try { & (Join-Path $PSScriptRoot 'bluetooth-host-identity.ps1') -Action Commit -TransactionId $TransactionId }
+                finally { Complete-NTPodsDriverTransaction $TransactionId }
+            }
         }
         'install' {
             Assert-UserSid $UserSid
@@ -57,13 +62,16 @@ try {
                         Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
                     }
                 }
+                Register-NTPodsTasks $PSScriptRoot $UserSid
+                & (Join-Path $PSScriptRoot 'bluetooth-host-identity.ps1') -Action Install -TransactionId $TransactionId
             }
-            Register-NTPodsTasks $PSScriptRoot $UserSid
             New-Item -Path 'HKLM:\SOFTWARE\NTPods' -Force | Out-Null
             Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\NTPods' -Name InstalledUserSid -Value $UserSid
             Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\NTPods' -Name InstallKind -Value 'msi'
+            # Feature deselection during a major app-only upgrade leaves the
+            # installed packages intact; retain their eventual uninstall owner.
+            Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\NTPods' -Name DirectBluetoothDrivers -Value ([int]($Drivers -or $PreserveDriverOwnership)) -Type DWord
             Set-StartupMode $UserSid $StartupMode $PSScriptRoot
-            & (Join-Path $PSScriptRoot 'bluetooth-host-identity.ps1') -Action Install -TransactionId $TransactionId
             # The unelevated app creates its own user-data directory.
         }
         'remove-drivers' {
@@ -71,7 +79,12 @@ try {
             Uninstall-NTPodsDrivers $PSScriptRoot $TransactionId
         }
         'undo-remove-drivers' { Restore-NTPodsDriverCheckpoint $PSScriptRoot $TransactionId }
-        'finish-remove-drivers' { Complete-NTPodsDriverRemoval $TransactionId }
+        'finish-remove-drivers' {
+            & (Join-Path $PSScriptRoot 'bluetooth-host-identity.ps1') -Action Restore
+            Complete-NTPodsDriverRemoval $TransactionId
+            Unregister-NTPodsTasks
+            Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\NTPods' -Name DirectBluetoothDrivers -Value 0 -Type DWord
+        }
         'uninstall' {
             Stop-NTPods
             # Commit runs after MSI has deleted the installed scripts.
@@ -79,14 +92,17 @@ try {
         }
         'finish-remove' {
             if (-not (Assert-IdentityRemovalTransaction $TransactionId)) { throw 'Identity removal files were not found.' }
-            & (Join-Path $PSScriptRoot 'bluetooth-host-identity.ps1') -Action Restore
-            Complete-NTPodsDriverRemoval $TransactionId
-            Unregister-NTPodsTasks
+            if ($Drivers) {
+                & (Join-Path $PSScriptRoot 'bluetooth-host-identity.ps1') -Action Restore
+                Complete-NTPodsDriverRemoval $TransactionId
+                Unregister-NTPodsTasks
+            }
             # The app's own "Start with Windows" setting writes these too.
             $installedSid = (Get-ItemProperty 'HKLM:\SOFTWARE\NTPods' -ErrorAction SilentlyContinue).InstalledUserSid
             if ($installedSid) { Assert-UserSid $installedSid; Remove-RunValues $installedSid 'NTPods', 'NTPods Daemon' }
             Remove-ItemProperty 'HKLM:\SOFTWARE\NTPods' -Name InstalledUserSid -ErrorAction SilentlyContinue
             Remove-ItemProperty 'HKLM:\SOFTWARE\NTPods' -Name InstallKind -ErrorAction SilentlyContinue
+            Remove-ItemProperty 'HKLM:\SOFTWARE\NTPods' -Name DirectBluetoothDrivers -ErrorAction SilentlyContinue
             Remove-IdentityRemoval $TransactionId
         }
         'undo-remove' { Remove-IdentityRemoval $TransactionId }
@@ -96,7 +112,7 @@ try {
 } catch {
     Write-Host "ERROR: $_"
     Write-Host $_.ScriptStackTrace
-    if ($Action -eq 'install') {
+    if ($Action -eq 'install' -and $Drivers) {
         try { & (Join-Path $PSScriptRoot 'bluetooth-host-identity.ps1') -Action Rollback -TransactionId $TransactionId }
         catch { Write-Host "Bluetooth identity recovery failed: $_ The original backup was retained." }
         try { Restore-NTPodsDriverCheckpoint $PSScriptRoot $TransactionId }

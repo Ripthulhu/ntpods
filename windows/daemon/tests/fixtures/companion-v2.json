@@ -1,0 +1,390 @@
+{
+  "device": "AA:BB:CC:DD:EE:FF",
+  "sid": "0000000000000000000000000000000000000000000000000000000000000000",
+  "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "client_nonce": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+  "server_nonce": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+  "auth": [
+    {
+      "client_caps": "03",
+      "server_caps": "03",
+      "transcript": "NTPODS-COMPANION/2\nservice=bbc1e9f2-6f73-4c61-ae15-6e74706f6473\nclient=android\nserver=pc\ndevice=AA:BB:CC:DD:EE:FF\nclient_nonce=202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f\nserver_nonce=404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f\nclient_caps=03\nserver_caps=03\n",
+      "sid": "628870c5318e3d519391f2a559fe37c94a7fec6cef8b028ea367504a86a582c8",
+      "server_proof": "5b4030aa163ea0085a1618f282393d0ed62817e38012461823cab87699b621ff",
+      "client_proof": "2a6ab41f49a296aae9cf74fb70c56c9998912c7e0c022b24ce2209f1c347fca4"
+    },
+    {
+      "client_caps": "01",
+      "server_caps": "03",
+      "transcript": "NTPODS-COMPANION/2\nservice=bbc1e9f2-6f73-4c61-ae15-6e74706f6473\nclient=android\nserver=pc\ndevice=AA:BB:CC:DD:EE:FF\nclient_nonce=202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f\nserver_nonce=404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f\nclient_caps=01\nserver_caps=03\n",
+      "sid": "3bd878f5db056340c49e7dfd7a9978bb94ba7d04a546862f3e87d2e3694a78bb",
+      "server_proof": "0a2780cfc9ad020499240c0679e6644adb27f43256dad5488c2d189c32ac450e",
+      "client_proof": "933a73400425d8c970445dd8331be811829d16e03974e046bc32ddb019cf9b6b"
+    },
+    {
+      "client_caps": "00",
+      "server_caps": "02",
+      "transcript": "NTPODS-COMPANION/2\nservice=bbc1e9f2-6f73-4c61-ae15-6e74706f6473\nclient=android\nserver=pc\ndevice=AA:BB:CC:DD:EE:FF\nclient_nonce=202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f\nserver_nonce=404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f\nclient_caps=00\nserver_caps=02\n",
+      "sid": "7b1549898fb01009e8a4274c4a0599e4052f74f5ea5cd3020b938908cb27fea4",
+      "server_proof": "ad06e8762119f88a74bcac954934b00c3672c6f0069ced2673d84b4f48ecaf81",
+      "client_proof": "ddbe311caee5bc39a871241e366c91f37c2e11c5effc5e19a1d8e3f308ded9b1"
+    }
+  ],
+  "cases": [
+    {
+      "name": "ping",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"ping\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\"}"
+    },
+    {
+      "name": "hello",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"hello\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"nonce\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"caps\":\"03\"}"
+    },
+    {
+      "name": "capability_subset",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"hello\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"nonce\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"caps\":\"01\"}"
+    },
+    {
+      "name": "unknown_capability",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"hello\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"nonce\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"caps\":\"04\"}"
+    },
+    {
+      "name": "host_auto_pause",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"pref\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"key\":\"host_auto_pause\",\"rev\":\"8000000000000001\",\"origin\":\"android\",\"value\":true}"
+    },
+    {
+      "name": "theme",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"pref\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"key\":\"theme\",\"rev\":\"8000000000000001\",\"origin\":\"android\",\"value\":\"dark\"}"
+    },
+    {
+      "name": "connection_popup_enabled",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"pref\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"key\":\"connection_popup_enabled\",\"rev\":\"8000000000000001\",\"origin\":\"android\",\"value\":false}"
+    },
+    {
+      "name": "cache_disconnected_battery",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"pref\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"key\":\"cache_disconnected_battery\",\"rev\":\"8000000000000001\",\"origin\":\"android\",\"value\":true}"
+    },
+    {
+      "name": "call_takeover_enabled",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"pref\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"key\":\"call_takeover_enabled\",\"rev\":\"8000000000000001\",\"origin\":\"android\",\"value\":false}"
+    },
+    {
+      "name": "call_return_enabled",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"pref\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"key\":\"call_return_enabled\",\"rev\":\"8000000000000001\",\"origin\":\"android\",\"value\":false}"
+    },
+    {
+      "name": "desired_microphone_side",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"pref\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"key\":\"desired_microphone_side\",\"rev\":\"8000000000000001\",\"origin\":\"android\",\"value\":\"left\"}"
+    },
+    {
+      "name": "desired_ear_detection",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"pref\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"key\":\"desired_ear_detection\",\"rev\":\"8000000000000001\",\"origin\":\"android\",\"value\":\"on\"}"
+    },
+    {
+      "name": "desired_noise_modes_cycle",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"pref\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"key\":\"desired_noise_modes_cycle\",\"rev\":\"8000000000000001\",\"origin\":\"android\",\"value\":\"06\"}"
+    },
+    {
+      "name": "desired_swipe_duration",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"pref\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"key\":\"desired_swipe_duration\",\"rev\":\"8000000000000001\",\"origin\":\"android\",\"value\":\"2\"}"
+    },
+    {
+      "name": "desired_case_sounds",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"pref\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"key\":\"desired_case_sounds\",\"rev\":\"8000000000000001\",\"origin\":\"android\",\"value\":\"off\"}"
+    },
+    {
+      "name": "desired_case_volume",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"pref\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"key\":\"desired_case_volume\",\"rev\":\"8000000000000001\",\"origin\":\"android\",\"value\":\"100\"}"
+    },
+    {
+      "name": "desired_allow_off",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"pref\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"key\":\"desired_allow_off\",\"rev\":\"8000000000000001\",\"origin\":\"android\",\"value\":\"unset\"}"
+    },
+    {
+      "name": "conversation_policy",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"pref\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"key\":\"conversation_policy\",\"rev\":\"ffffffffffffffff\",\"origin\":\"pc\",\"mode\":\"abs_cap\",\"first\":\"33\",\"second\":\"19.8\",\"pause_media\":true}"
+    },
+    {
+      "name": "relative_policy",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"pref\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"key\":\"conversation_policy\",\"rev\":\"ffffffffffffffff\",\"origin\":\"pc\",\"mode\":\"relative\",\"first\":\"43\",\"second\":\"20\",\"pause_media\":true}"
+    },
+    {
+      "name": "hold_actions",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"pref\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"key\":\"desired_hold_actions\",\"rev\":\"0000000000000001\",\"origin\":\"pc\",\"left\":\"listening\",\"right\":\"assistant\"}"
+    },
+    {
+      "name": "unset_hold_actions",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"pref\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"key\":\"desired_hold_actions\",\"rev\":\"0000000000000001\",\"origin\":\"android\",\"left\":\"unset\",\"right\":\"unset\"}"
+    },
+    {
+      "name": "pref_ack",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"pref_ack\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"key\":\"theme\",\"rev\":\"0000000000000001\",\"origin\":\"pc\",\"code\":\"unchanged\"}"
+    },
+    {
+      "name": "call_origin_off",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"call_origin\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"origin_token\":\"00000000000000000000000000000000\",\"ready\":false}"
+    },
+    {
+      "name": "call_origin_ready",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"call_origin\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"origin_token\":\"22222222222222222222222222222222\",\"ready\":true}"
+    },
+    {
+      "name": "call_begin",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"call_begin\",\"tx\":\"0123456789abcdef\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"episode\":\"11111111111111111111111111111111\",\"call_gen\":\"0000000000000001\",\"origin_token\":\"22222222222222222222222222222222\"}"
+    },
+    {
+      "name": "call_ringing",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"call_state\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"episode\":\"11111111111111111111111111111111\",\"call_gen\":\"0000000000000001\",\"state\":\"ringing\",\"hfp_ready\":false,\"sco\":\"idle\",\"all_idle\":false}"
+    },
+    {
+      "name": "call_hfp_ready_without_sco",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"call_state\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"episode\":\"11111111111111111111111111111111\",\"call_gen\":\"0000000000000001\",\"state\":\"ringing\",\"hfp_ready\":true,\"sco\":\"idle\",\"all_idle\":false}"
+    },
+    {
+      "name": "call_active",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"call_state\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"episode\":\"11111111111111111111111111111111\",\"call_gen\":\"0000000000000001\",\"state\":\"active\",\"hfp_ready\":true,\"sco\":\"connected\",\"all_idle\":false}"
+    },
+    {
+      "name": "call_idle",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"call_state\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"episode\":\"11111111111111111111111111111111\",\"call_gen\":\"0000000000000001\",\"state\":\"idle\",\"hfp_ready\":false,\"sco\":\"idle\",\"all_idle\":true}"
+    },
+    {
+      "name": "call_end",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"call_end\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"episode\":\"11111111111111111111111111111111\",\"call_gen\":\"0000000000000001\",\"origin_token\":\"22222222222222222222222222222222\",\"reason\":\"ended\"}"
+    },
+    {
+      "name": "call_invalidated",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"call_end\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"episode\":\"11111111111111111111111111111111\",\"call_gen\":\"0000000000000001\",\"origin_token\":\"22222222222222222222222222222222\",\"reason\":\"invalidated\"}"
+    },
+    {
+      "name": "manual_prepare",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"prepare\",\"tx\":\"0123456789abcdef\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"target\":\"android\",\"purpose\":\"manual\",\"episode\":\"00000000000000000000000000000000\",\"call_gen\":\"0000000000000000\",\"origin_token\":\"00000000000000000000000000000000\"}"
+    },
+    {
+      "name": "call_takeover_prepare",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"prepare\",\"tx\":\"0123456789abcdef\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"target\":\"android\",\"purpose\":\"call_takeover\",\"episode\":\"11111111111111111111111111111111\",\"call_gen\":\"0000000000000001\",\"origin_token\":\"22222222222222222222222222222222\"}"
+    },
+    {
+      "name": "call_return_prepare",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"prepare\",\"tx\":\"0123456789abcdef\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"target\":\"pc\",\"purpose\":\"call_return\",\"episode\":\"11111111111111111111111111111111\",\"call_gen\":\"0000000000000001\",\"origin_token\":\"22222222222222222222222222222222\"}"
+    },
+    {
+      "name": "hfp_acquire_receipt",
+      "accepted": true,
+      "frame": "{\"v\":2,\"type\":\"result\",\"tx\":\"0123456789abcdef\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"phase\":\"acquire\",\"ok\":true,\"code\":\"hfp_ready\"}"
+    },
+    {
+      "name": "v1",
+      "accepted": false,
+      "frame": "{\"v\":1,\"type\":\"ping\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\"}"
+    },
+    {
+      "name": "noninteger_version",
+      "accepted": false,
+      "frame": "{\"v\": 2.0, \"type\": \"ping\", \"tx\": \"0000000000000000\", \"device\": \"AA:BB:CC:DD:EE:FF\", \"sid\": \"0000000000000000000000000000000000000000000000000000000000000000\"}"
+    },
+    {
+      "name": "extra_field",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"ping\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"extra\":true}"
+    },
+    {
+      "name": "null_session",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"ping\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":null}"
+    },
+    {
+      "name": "wrong_device",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"ping\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:00\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\"}"
+    },
+    {
+      "name": "lowercase_device",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"ping\",\"tx\":\"0000000000000000\",\"device\":\"aa:bb:cc:dd:ee:ff\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\"}"
+    },
+    {
+      "name": "missing_colons_device",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"ping\",\"tx\":\"0000000000000000\",\"device\":\"AABBCCDDEEFF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\"}"
+    },
+    {
+      "name": "wrong_session",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"ping\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"}"
+    },
+    {
+      "name": "ping_with_transaction",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"ping\",\"tx\":\"0123456789abcdef\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\"}"
+    },
+    {
+      "name": "begin_without_transaction",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"call_begin\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"episode\":\"11111111111111111111111111111111\",\"call_gen\":\"0000000000000001\",\"origin_token\":\"22222222222222222222222222222222\"}"
+    },
+    {
+      "name": "unknown_preference",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"pref\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"key\":\"secret\",\"rev\":\"0000000000000001\",\"origin\":\"pc\",\"value\":true}"
+    },
+    {
+      "name": "wrong_boolean_type",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"pref\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"key\":\"host_auto_pause\",\"rev\":\"0000000000000001\",\"origin\":\"pc\",\"value\":\"true\"}"
+    },
+    {
+      "name": "zero_revision",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"pref\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"key\":\"theme\",\"rev\":\"0000000000000000\",\"origin\":\"pc\",\"value\":\"light\"}"
+    },
+    {
+      "name": "uppercase_revision",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"pref\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"key\":\"theme\",\"rev\":\"000000000000000A\",\"origin\":\"pc\",\"value\":\"light\"}"
+    },
+    {
+      "name": "unknown_origin",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"pref\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"key\":\"theme\",\"rev\":\"0000000000000001\",\"origin\":\"cloud\",\"value\":\"light\"}"
+    },
+    {
+      "name": "missing_policy_field",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"pref\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"key\":\"conversation_policy\",\"rev\":\"ffffffffffffffff\",\"origin\":\"pc\",\"mode\":\"abs_cap\",\"first\":\"33\",\"pause_media\":true}"
+    },
+    {
+      "name": "policy_number",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"pref\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"key\":\"conversation_policy\",\"rev\":\"ffffffffffffffff\",\"origin\":\"pc\",\"mode\":\"abs_cap\",\"first\":33,\"second\":\"19.8\",\"pause_media\":true}"
+    },
+    {
+      "name": "policy_exponent",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"pref\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"key\":\"conversation_policy\",\"rev\":\"ffffffffffffffff\",\"origin\":\"pc\",\"mode\":\"abs_cap\",\"first\":\"3.3e1\",\"second\":\"19.8\",\"pause_media\":true}"
+    },
+    {
+      "name": "policy_trailing_zero",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"pref\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"key\":\"conversation_policy\",\"rev\":\"ffffffffffffffff\",\"origin\":\"pc\",\"mode\":\"abs_cap\",\"first\":\"33\",\"second\":\"19.80\",\"pause_media\":true}"
+    },
+    {
+      "name": "policy_increases_second_stage",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"pref\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"key\":\"conversation_policy\",\"rev\":\"ffffffffffffffff\",\"origin\":\"pc\",\"mode\":\"abs_cap\",\"first\":\"33\",\"second\":\"34\",\"pause_media\":true}"
+    },
+    {
+      "name": "policy_out_of_range",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"pref\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"key\":\"conversation_policy\",\"rev\":\"ffffffffffffffff\",\"origin\":\"pc\",\"mode\":\"abs_cap\",\"first\":\"101\",\"second\":\"19.8\",\"pause_media\":true}"
+    },
+    {
+      "name": "policy_unknown_mode",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"pref\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"key\":\"conversation_policy\",\"rev\":\"ffffffffffffffff\",\"origin\":\"pc\",\"mode\":\"adaptive\",\"first\":\"33\",\"second\":\"19.8\",\"pause_media\":true}"
+    },
+    {
+      "name": "mixed_unset_hold",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"pref\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"key\":\"desired_hold_actions\",\"rev\":\"0000000000000001\",\"origin\":\"pc\",\"left\":\"unset\",\"right\":\"listening\"}"
+    },
+    {
+      "name": "case_volume_out_of_range",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"pref\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"key\":\"desired_case_volume\",\"rev\":\"0000000000000001\",\"origin\":\"pc\",\"value\":\"101\"}"
+    },
+    {
+      "name": "one_noise_mode",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"pref\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"key\":\"desired_noise_modes_cycle\",\"rev\":\"0000000000000001\",\"origin\":\"pc\",\"value\":\"01\"}"
+    },
+    {
+      "name": "bad_origin_ready_token",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"call_origin\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"origin_token\":\"00000000000000000000000000000000\",\"ready\":true}"
+    },
+    {
+      "name": "bad_origin_false_token",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"call_origin\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"origin_token\":\"22222222222222222222222222222222\",\"ready\":false}"
+    },
+    {
+      "name": "zero_episode",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"call_begin\",\"tx\":\"0123456789abcdef\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"episode\":\"00000000000000000000000000000000\",\"call_gen\":\"0000000000000001\",\"origin_token\":\"22222222222222222222222222222222\"}"
+    },
+    {
+      "name": "zero_call_generation",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"call_begin\",\"tx\":\"0123456789abcdef\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"episode\":\"11111111111111111111111111111111\",\"call_gen\":\"0000000000000000\",\"origin_token\":\"22222222222222222222222222222222\"}"
+    },
+    {
+      "name": "wrong_call_target",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"prepare\",\"tx\":\"0123456789abcdef\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"target\":\"pc\",\"purpose\":\"call_takeover\",\"episode\":\"11111111111111111111111111111111\",\"call_gen\":\"0000000000000001\",\"origin_token\":\"22222222222222222222222222222222\"}"
+    },
+    {
+      "name": "manual_with_call_context",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"prepare\",\"tx\":\"0123456789abcdef\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"target\":\"android\",\"purpose\":\"manual\",\"episode\":\"11111111111111111111111111111111\",\"call_gen\":\"0000000000000000\",\"origin_token\":\"00000000000000000000000000000000\"}"
+    },
+    {
+      "name": "unknown_call_state",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"call_state\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"episode\":\"11111111111111111111111111111111\",\"call_gen\":\"0000000000000001\",\"state\":\"answered\",\"hfp_ready\":true,\"sco\":\"idle\",\"all_idle\":false}"
+    },
+    {
+      "name": "unknown_sco_state",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"call_state\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"episode\":\"11111111111111111111111111111111\",\"call_gen\":\"0000000000000001\",\"state\":\"active\",\"hfp_ready\":true,\"sco\":\"ready\",\"all_idle\":false}"
+    },
+    {
+      "name": "unknown_call_end",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"call_end\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"episode\":\"11111111111111111111111111111111\",\"call_gen\":\"0000000000000001\",\"origin_token\":\"22222222222222222222222222222222\",\"reason\":\"timeout\"}"
+    },
+    {
+      "name": "duplicate_type",
+      "accepted": false,
+      "frame": "{\"v\":2,\"type\":\"ping\",\"type\":\"ping\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\"}"
+    },
+    {
+      "name": "duplicate_version",
+      "accepted": false,
+      "frame": "{\"v\":2,\"v\":2,\"type\":\"ping\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\"}"
+    }
+  ]
+}

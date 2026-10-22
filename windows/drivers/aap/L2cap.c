@@ -1,5 +1,6 @@
 /* Packet transport over the existing Windows Bluetooth profile stack. */
 #include "NTPodsAAP.h"
+#include "BrbCompletion.h"
 
 typedef struct _LP_BRB_COMPLETION {
     KEVENT Event;
@@ -27,7 +28,8 @@ NTSTATUS LpSubmitBrbSync(PDEVICE_CONTEXT Ctx, PBRB Brb, WDFREQUEST ParentRequest
     ULONGLONG deadline;
     NTSTATUS status, abortStatus = STATUS_SUCCESS;
     ULONG timeoutMs = 2000;
-    BOOLEAN closing = Brb->BrbHeader.Type == BRB_L2CA_CLOSE_CHANNEL;
+    BOOLEAN closing = Brb->BrbHeader.Type == BRB_L2CA_CLOSE_CHANNEL ||
+        Brb->BrbHeader.Type == BRB_L2CA_UNREGISTER_SERVER;
 
     NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
     if (InterlockedCompareExchange(&Ctx->Removed, 0, 0)) return STATUS_DEVICE_REMOVED;
@@ -68,14 +70,8 @@ NTSTATUS LpSubmitBrbSync(PDEVICE_CONTEXT Ctx, PBRB Brb, WDFREQUEST ParentRequest
             }
         }
         /* Completion must precede releasing the BRB and its caller-owned buffers. */
-        status = abortStatus == STATUS_SUCCESS ? completion.Status : abortStatus;
-        if (NT_SUCCESS(status) && !NT_SUCCESS(Brb->BrbHeader.Status)) {
-            status = Brb->BrbHeader.Status;
-        }
-        if (NT_SUCCESS(status) && BTH_ERROR(Brb->BrbHeader.BtStatus)) {
-            status = STATUS_UNSUCCESSFUL;
-        }
-        if (status == STATUS_TIMEOUT) status = STATUS_IO_TIMEOUT;
+        status = LpCompletedBrbStatus(completion.Status, Brb->BrbHeader.Status,
+            BTH_ERROR(Brb->BrbHeader.BtStatus), closing, abortStatus);
     }
     WdfObjectDelete(request);
     return status;

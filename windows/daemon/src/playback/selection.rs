@@ -1,4 +1,4 @@
-use ntpods_ipc::{PlaybackBitrate, PlaybackMode, Snapshot};
+use ntpods_ipc::{PlaybackBitrate, PlaybackLinkSettings, PlaybackMode, Snapshot};
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -8,6 +8,8 @@ pub struct Selection {
     pub revision: u64,
     pub cancel: Option<Arc<AtomicBool>>,
     pub bitrates: [PlaybackBitrate; 2],
+    pub link: PlaybackLinkSettings,
+    pub game_mode: bool,
 }
 
 impl Selection {
@@ -17,6 +19,8 @@ impl Selection {
             revision: 0,
             cancel: None,
             bitrates: [PlaybackBitrate::default(); 2],
+            link: PlaybackLinkSettings::default(),
+            game_mode: true,
         }
     }
 
@@ -105,6 +109,60 @@ impl Selection {
         }
         Ok(true)
     }
+
+    pub fn uses_link(&self, active: Option<PlaybackMode>) -> bool {
+        active.unwrap_or(self.mode) == PlaybackMode::AacEld && self.bitrates[1].variable
+    }
+
+    pub fn change_game_mode(
+        &mut self,
+        enabled: bool,
+        busy: bool,
+        persist: impl FnOnce(bool) -> io::Result<()>,
+    ) -> io::Result<bool> {
+        if self.game_mode == enabled {
+            return Ok(false);
+        }
+        if busy {
+            return Err(io::Error::other(
+                "Stop the microphone before changing playback.",
+            ));
+        }
+        persist(enabled)?;
+        // The stream owns the buffer transition; keep its existing PCM and session.
+        self.game_mode = enabled;
+        Ok(true)
+    }
+
+    pub fn change_link(
+        &mut self,
+        settings: PlaybackLinkSettings,
+        active: Option<PlaybackMode>,
+        busy: bool,
+        persist: impl FnOnce(PlaybackLinkSettings) -> io::Result<()>,
+    ) -> io::Result<bool> {
+        if !settings.is_valid() {
+            return Err(io::Error::other(
+                "Frame limit must be between 128 and 256 kbps.",
+            ));
+        }
+        if settings == self.link {
+            return Ok(false);
+        }
+        let affects_playback = self.uses_link(active);
+        if busy && affects_playback {
+            return Err(io::Error::other(
+                "Stop the microphone before changing playback.",
+            ));
+        }
+        persist(settings)?;
+        self.link = settings;
+        if affects_playback {
+            self.stop();
+            self.revision = self.revision.wrapping_add(1);
+        }
+        Ok(true)
+    }
 }
 
 pub fn validate_bitrate(mode: PlaybackMode, bitrate: PlaybackBitrate) -> io::Result<()> {
@@ -185,6 +243,31 @@ pub fn save_bitrates(values: [PlaybackBitrate; 2]) -> io::Result<()> {
     crate::persist_preference("playback-bitrates.json", &serde_json::to_vec(&values)?)
 }
 
+pub fn load_link() -> PlaybackLinkSettings {
+    path()
+        .ok()
+        .and_then(|path| std::fs::read(path.with_file_name("playback-link.json")).ok())
+        .and_then(|bytes| serde_json::from_slice::<PlaybackLinkSettings>(&bytes).ok())
+        .filter(|settings| settings.is_valid())
+        .unwrap_or_default()
+}
+
+pub fn save_link(settings: PlaybackLinkSettings) -> io::Result<()> {
+    crate::persist_preference("playback-link.json", &serde_json::to_vec(&settings)?)
+}
+
+pub fn load_game_mode() -> bool {
+    path()
+        .ok()
+        .and_then(|path| std::fs::read(path.with_file_name("playback-game-mode.json")).ok())
+        .and_then(|bytes| serde_json::from_slice::<bool>(&bytes).ok())
+        .unwrap_or(true)
+}
+
+pub fn save_game_mode(enabled: bool) -> io::Result<()> {
+    crate::persist_preference("playback-game-mode.json", &serde_json::to_vec(&enabled)?)
+}
+
 pub fn save(mode: PlaybackMode) -> io::Result<()> {
     crate::persist_preference("playback-mode.json", &serde_json::to_vec(&mode)?)
 }
@@ -192,6 +275,107 @@ pub fn save(mode: PlaybackMode) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn game_mode_persists_before_publishing_without_replacing_the_stream() {
+        let mut selected = Selection::new(PlaybackMode::AacEld);
+        let cancel = Arc::new(AtomicBool::new(false));
+        selected.cancel = Some(cancel.clone());
+        assert!(selected.game_mode);
+        assert!(selected
+            .change_game_mode(false, true, |_| panic!("busy"))
+            .is_err());
+        assert!(selected
+            .change_game_mode(false, false, |_| Err(io::Error::other("disk full")))
+            .is_err());
+        assert!(selected.game_mode);
+        assert!(selected
+            .change_game_mode(true, true, |_| panic!("no change"))
+            .is_ok_and(|changed| !changed));
+        assert!(selected
+            .change_game_mode(false, false, |enabled| {
+                assert!(!enabled);
+                Ok(())
+            })
+            .unwrap());
+        assert!(!selected.game_mode);
+        assert_eq!(selected.revision, 0);
+        assert!(!cancel.load(Ordering::Acquire));
+        assert!(selected.change_game_mode(true, false, |_| Ok(())).unwrap());
+        assert!(selected.game_mode);
+    }
+
+    #[test]
+    fn link_preferences_are_bounded_and_persist_before_cancellation() {
+        let mut selected = Selection::new(PlaybackMode::AacEld);
+        selected.bitrates[1].variable = true;
+        let cancel = Arc::new(AtomicBool::new(false));
+        selected.cancel = Some(cancel.clone());
+        let manual = PlaybackLinkSettings {
+            mode: ntpods_ipc::PlaybackLinkMode::Manual,
+            kbps: 174,
+        };
+        for invalid in [127, 257, u16::MAX] {
+            assert!(selected
+                .change_link(
+                    PlaybackLinkSettings {
+                        kbps: invalid,
+                        ..manual
+                    },
+                    None,
+                    false,
+                    |_| panic!("invalid value persisted")
+                )
+                .is_err());
+        }
+        assert!(selected
+            .change_link(manual, None, true, |_| panic!("busy stream changed"))
+            .is_err());
+        assert!(selected
+            .change_link(manual, None, false, |_| Err(io::Error::other("disk full")))
+            .is_err());
+        assert_eq!(selected.link, PlaybackLinkSettings::default());
+        assert_eq!(selected.revision, 0);
+        assert!(!cancel.load(Ordering::Acquire));
+        assert!(selected
+            .change_link(manual, None, false, |value| {
+                assert_eq!(value, manual);
+                Ok(())
+            })
+            .unwrap());
+        assert_eq!(selected.link, manual);
+        assert_eq!(selected.revision, 1);
+        assert!(cancel.load(Ordering::Acquire));
+        assert!(!selected
+            .change_link(manual, None, true, |_| panic!(
+                "unchanged preference written"
+            ))
+            .unwrap());
+    }
+
+    #[test]
+    fn dormant_link_choices_do_not_restart_aac_or_fixed_bitrate() {
+        for (mode, active, variable) in [
+            (PlaybackMode::Aac, Some(PlaybackMode::Aac), false),
+            (PlaybackMode::AacEld, Some(PlaybackMode::Aac), true),
+            (PlaybackMode::AacEld, Some(PlaybackMode::AacEld), false),
+        ] {
+            let mut selected = Selection::new(mode);
+            selected.bitrates[1].variable = variable;
+            let cancel = Arc::new(AtomicBool::new(false));
+            selected.cancel = Some(cancel.clone());
+            let value = PlaybackLinkSettings {
+                mode: ntpods_ipc::PlaybackLinkMode::Automatic,
+                ..PlaybackLinkSettings::default()
+            };
+            assert!(selected
+                .change_link(value, active, true, |_| Ok(()))
+                .unwrap());
+            assert_eq!(selected.link, value);
+            assert_eq!(selected.revision, 0);
+            assert!(!cancel.load(Ordering::Acquire));
+        }
+    }
 
     #[test]
     fn variable_profile_is_opt_in_and_restarts_only_eld() {

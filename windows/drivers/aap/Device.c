@@ -51,6 +51,10 @@ VOID LpStopChannels(PDEVICE_CONTEXT Ctx)
     if (Ctx->OperationLock == NULL) return;
 #if NTPODS_EXPERIMENTAL_PLAYBACK
     /* Unregister drains callbacks; none may wait behind our OperationLock. */
+    {
+        NTSTATUS status = LpPlaybackDisarm(Ctx);
+        if (!NT_SUCCESS(status)) KdPrint(("NTPodsAAP: playback disarm failed=0x%08X\n", status));
+    }
     LpMpmDisable(Ctx);
     if (Ctx->Playback.DisconnectWork) WdfWorkItemFlush(Ctx->Playback.DisconnectWork);
 #endif

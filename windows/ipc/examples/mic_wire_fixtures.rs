@@ -1,9 +1,96 @@
 //! Executed by windows/tests/test-ipc.ps1 against the real C# wire model.
 use ntpods_ipc::{
-    from_line, to_line, BatteryFreshness, BatteryObservation, Command, Equalizer, Event,
-    HearingAidSettings, MicMode, NearbyFinderState, PlaybackBitrate, PlaybackMode, Snapshot,
+    from_line, to_line, BatteryFreshness, BatteryObservation, Command, CompanionStatus,
+    CompanionTarget, Equalizer, Event, HearingAidSettings, MicMode, NearbyFinderState,
+    PlaybackBitrate, PlaybackLinkMode, PlaybackLinkSettings, PlaybackMode, Snapshot,
     TransparencySettings,
 };
+
+const COMPANION_SECRET: &str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+
+fn companion_statuses() -> [CompanionStatus; 2] {
+    [
+        CompanionStatus {
+            linked: true,
+            connected: true,
+            device_id: Some("001122334455".into()),
+            peer_address: Some("AA:BB:CC:DD:EE:FF".into()),
+            held_away: true,
+            phase: "released".into(),
+            error: Some("Transfer \"stopped\".\nTry again.".into()),
+        },
+        CompanionStatus {
+            phase: "idle".into(),
+            ..Default::default()
+        },
+    ]
+}
+
+fn check_companion_fixtures(lines: &[&str]) {
+    assert_eq!(
+        lines.len(),
+        7,
+        "two companion events and five commands expected"
+    );
+    for (line, expected) in lines[..2].iter().zip(companion_statuses()) {
+        let Some(Event::CompanionStatus { status }) = from_line::<Event>(line) else {
+            panic!("wrong companion event");
+        };
+        assert_eq!(status, expected);
+        let value: serde_json::Value = serde_json::from_str(line).unwrap();
+        let status_keys: std::collections::BTreeSet<_> = value["status"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            status_keys,
+            [
+                "linked",
+                "connected",
+                "device_id",
+                "peer_address",
+                "held_away",
+                "phase",
+                "error"
+            ]
+            .into()
+        );
+        assert!(
+            !line.contains(COMPANION_SECRET),
+            "approval secrets must never enter events"
+        );
+    }
+    assert!(matches!(from_line::<Command>(lines[2]),
+        Some(Command::CompanionLink { peer_address, secret_hex, device_id })
+        if peer_address == "AA:BB:CC:DD:EE:FF" && secret_hex == COMPANION_SECRET && device_id == "001122334455"));
+    assert!(matches!(
+        from_line::<Command>(lines[3]),
+        Some(Command::CompanionStatus)
+    ));
+    for (line, expected) in lines[4..6]
+        .iter()
+        .zip([CompanionTarget::Pc, CompanionTarget::Android])
+    {
+        assert!(matches!(from_line::<Command>(line),
+            Some(Command::CompanionSwitch { target, device_id, request_id: u64::MAX })
+            if target == expected && device_id == "001122334455"));
+    }
+    assert!(matches!(
+        from_line::<Command>(lines[6]),
+        Some(Command::CompanionForget)
+    ));
+    for malformed in [
+        r#"{"cmd":"companion_link","peer_address":"AA:BB:CC:DD:EE:FF","device_id":"001122334455"}"#,
+        r#"{"cmd":"companion_switch","device_id":"001122334455","request_id":1}"#,
+        r#"{"cmd":"companion_switch","target":"windows","device_id":"001122334455","request_id":1}"#,
+        r#"{"cmd":"companion_switch","target":"pc","device_id":"001122334455","request_id":-1}"#,
+        r#"{"cmd":"companion_switch","target":"pc","device_id":"001122334455","request_id":"18446744073709551615"}"#,
+    ] {
+        assert!(from_line::<Command>(malformed).is_none(), "{malformed}");
+    }
+}
 
 fn transparency(enabled: bool) -> TransparencySettings {
     TransparencySettings {
@@ -84,6 +171,15 @@ fn snapshots() -> Vec<Snapshot> {
             variable: phase == "capturing",
         },
         playback_bitrate_kbps: (phase == "capturing").then_some(256),
+        playback_link: Some(PlaybackLinkSettings {
+            mode: match phase {
+                "capturing" => PlaybackLinkMode::Manual,
+                "starting" => PlaybackLinkMode::Automatic,
+                _ => PlaybackLinkMode::Off,
+            },
+            kbps: if phase == "capturing" { 256 } else { 174 },
+        }),
+        playback_game_mode: Some(phase != "error"),
         playback_delay_reporting: matches!(
             phase,
             "starting" | "capturing" | "stopping" | "recovering"
@@ -202,12 +298,20 @@ fn snapshots() -> Vec<Snapshot> {
         hardware_diagnostics: (phase != "unavailable").then_some(ntpods_ipc::HardwareDiagnostics {
             read_at_unix_seconds: 1_700_000_100,
             left: ntpods_ipc::HardwareDiagnosticEar {
-                measured_at_unix_seconds: u64::MAX, first_use_unix_seconds: Some(u32::MAX), general: 1, measurement: 0,
-                component_failures: Some(1), unknown_bits: 0x10000,
+                measured_at_unix_seconds: u64::MAX,
+                first_use_unix_seconds: Some(u32::MAX),
+                general: 1,
+                measurement: 0,
+                component_failures: Some(1),
+                unknown_bits: 0x10000,
             },
             right: ntpods_ipc::HardwareDiagnosticEar {
-                measured_at_unix_seconds: 0, first_use_unix_seconds: None, general: 0, measurement: 0,
-                component_failures: None, unknown_bits: 0,
+                measured_at_unix_seconds: 0,
+                first_use_unix_seconds: None,
+                general: 0,
+                measurement: 0,
+                component_failures: None,
+                unknown_bits: 0,
             },
         }),
         hardware_diagnostics_pending: phase == "starting",
@@ -229,14 +333,21 @@ fn snapshots() -> Vec<Snapshot> {
             "error" => Some(("error", true, false)),
             "waiting_for_ear" => Some(("completed", true, true)),
             _ => None,
-        }.map(|(check_phase, left_updated, right_updated)| ntpods_ipc::HardwareCheckState {
-            request_id: u64::MAX,
-            phase: check_phase.into(),
-            left_updated,
-            right_updated,
-            error: (check_phase == "error").then(|| "Check failed.".into()),
-        }),
-        earbuds_in_case: match phase { "idle" => Some(true), "capturing" => Some(false), _ => None },
+        }
+        .map(
+            |(check_phase, left_updated, right_updated)| ntpods_ipc::HardwareCheckState {
+                request_id: u64::MAX,
+                phase: check_phase.into(),
+                left_updated,
+                right_updated,
+                error: (check_phase == "error").then(|| "Check failed.".into()),
+            },
+        ),
+        earbuds_in_case: match phase {
+            "idle" => Some(true),
+            "capturing" => Some(false),
+            _ => None,
+        },
         loud_sound_reduction: match phase {
             "idle" => Some(true),
             "starting" | "error" => Some(false),
@@ -273,7 +384,12 @@ fn snapshots() -> Vec<Snapshot> {
             paused: phase == "capturing",
             available_identity: true,
             rssi: (phase == "starting").then_some(-68),
-            trend: if phase == "starting" { "stronger" } else { "unknown" }.into(),
+            trend: if phase == "starting" {
+                "stronger"
+            } else {
+                "unknown"
+            }
+            .into(),
             last_heard_age_ms: (phase == "starting").then_some(1_200),
         },
         anc_unconfirmed: matches!(phase, "starting" | "error"),
@@ -414,6 +530,8 @@ fn main() {
                 "playback_native_driver",
                 "playback_aac_bitrate",
                 "playback_aac_eld_bitrate",
+                "playback_link",
+                "playback_game_mode",
                 "playback_bitrate_kbps",
                 "playback_delay_reporting",
                 "playback_delay_tenths_ms",
@@ -433,8 +551,16 @@ fn main() {
             assert!(old.allow_off_requested.is_none());
             assert!(old.hearing_aid_enabled.is_none() && old.hearing_aid_revision == 0);
             assert!(!old.hearing_aid_editable);
-            assert!(old.hardware_diagnostics.is_none() && !old.hardware_diagnostics_pending && old.hardware_diagnostics_error.is_none());
-            assert!(old.hearing_metadata.is_none() && !old.hearing_metadata_pending && old.hearing_metadata_error.is_none());
+            assert!(
+                old.hardware_diagnostics.is_none()
+                    && !old.hardware_diagnostics_pending
+                    && old.hardware_diagnostics_error.is_none()
+            );
+            assert!(
+                old.hearing_metadata.is_none()
+                    && !old.hearing_metadata_pending
+                    && old.hearing_metadata_error.is_none()
+            );
             assert!(old.hardware_check.is_none() && old.earbuds_in_case.is_none());
             assert!(
                 old.transparency.is_none()
@@ -446,7 +572,11 @@ fn main() {
                     && !old.loud_sound_reduction_pending
                     && old.loud_sound_reduction_error.is_none()
             );
-            assert!(old.device_controls.is_empty() && old.device_controls_requested.is_empty() && old.device_controls_pending.is_empty());
+            assert!(
+                old.device_controls.is_empty()
+                    && old.device_controls_requested.is_empty()
+                    && old.device_controls_pending.is_empty()
+            );
             assert!(old.aacp_capabilities.is_empty());
             assert!(
                 old.eq.is_none() && old.eq_pending.is_none() && old.device_settings_error.is_none()
@@ -478,16 +608,29 @@ fn main() {
                 lid_open: false,
                 sequence: 2,
             }));
+            for status in companion_statuses() {
+                let line = to_line(&Event::CompanionStatus { status });
+                assert_eq!(
+                    line.lines().count(),
+                    1,
+                    "status errors must remain one NDJSON frame"
+                );
+                assert!(!line.contains(COMPANION_SECRET));
+                lines.push_str(&line);
+            }
             std::fs::write(&args[2], lines).unwrap();
-            println!("Rust: emitted eight lifecycle states, one legacy state and two lid events");
+            println!("Rust: emitted eight lifecycle states, one legacy state, two lid events and two companion events");
         }
         "check" => {
             let text = std::fs::read_to_string(&args[2]).unwrap();
-            let lines: Vec<_> = text.lines().collect();
+            let all_lines: Vec<_> = text.lines().collect();
+            assert!(all_lines.len() >= 7);
+            let (lines, companion) = all_lines.split_at(all_lines.len() - 7);
+            check_companion_fixtures(companion);
             assert_eq!(
                 lines.len(),
-                states.len() + 81,
-                "C# states, legacy state, seventy-eight commands and two lid events expected"
+                states.len() + 86,
+                "C# states, legacy state, eighty-one commands and two lid events expected"
             );
             for (line, expected) in lines.iter().zip(&states) {
                 let Event::State(actual) = from_line::<Event>(line).expect("C# event must parse")
@@ -517,15 +660,28 @@ fn main() {
             assert!(legacy.playback_delay_tenths_ms.is_none());
             assert!(legacy.playback_buffer_target_ms.is_none());
             assert!(legacy.playback_buffer_error.is_none());
-            assert!(legacy.auto_pause && legacy.device_controls.is_empty() && legacy.device_controls_requested.is_empty() && legacy.eq.is_none());
+            assert!(
+                legacy.auto_pause
+                    && legacy.device_controls.is_empty()
+                    && legacy.device_controls_requested.is_empty()
+                    && legacy.eq.is_none()
+            );
             assert!(legacy.aacp_capabilities.is_empty());
             assert!(!legacy.anc_unconfirmed);
             assert!(legacy.adaptive_strength_requested.is_none());
             assert!(legacy.allow_off_requested.is_none());
             assert!(legacy.hearing_aid_enabled.is_none() && legacy.hearing_aid_revision == 0);
             assert!(!legacy.hearing_aid_editable);
-            assert!(legacy.hardware_diagnostics.is_none() && !legacy.hardware_diagnostics_pending && legacy.hardware_diagnostics_error.is_none());
-            assert!(legacy.hearing_metadata.is_none() && !legacy.hearing_metadata_pending && legacy.hearing_metadata_error.is_none());
+            assert!(
+                legacy.hardware_diagnostics.is_none()
+                    && !legacy.hardware_diagnostics_pending
+                    && legacy.hardware_diagnostics_error.is_none()
+            );
+            assert!(
+                legacy.hearing_metadata.is_none()
+                    && !legacy.hearing_metadata_pending
+                    && legacy.hearing_metadata_error.is_none()
+            );
             assert!(legacy.hardware_check.is_none() && legacy.earbuds_in_case.is_none());
             assert!(
                 legacy.transparency.is_none()
@@ -769,7 +925,21 @@ fn main() {
                 Some(Command::SetAnc { mode: 3, device_id: Some(id) }) if id == "001122334455"));
             assert!(matches!(from_line::<Command>(commands[58]),
                 Some(Command::SetDeviceControl { id: 0x2E, value: 50, device_id: Some(id) }) if id == "001122334455"));
-            for invalid_target in &commands[59..] {
+            for (line, mode) in commands[59..62].iter().zip([
+                PlaybackLinkMode::Off,
+                PlaybackLinkMode::Automatic,
+                PlaybackLinkMode::Manual,
+            ]) {
+                assert!(
+                    matches!(from_line::<Command>(line), Some(Command::SetPlaybackLink { settings }) if settings == PlaybackLinkSettings { mode, kbps: 174 })
+                );
+            }
+            for (line, expected) in commands[62..64].iter().zip([false, true]) {
+                assert!(
+                    matches!(from_line::<Command>(line), Some(Command::SetPlaybackGameMode { enabled }) if enabled == expected)
+                );
+            }
+            for invalid_target in &commands[64..] {
                 assert!(
                     from_line::<Command>(invalid_target).is_none(),
                     "{invalid_target}"
@@ -809,7 +979,9 @@ fn main() {
             ] {
                 assert!(from_line::<Command>(malformed).is_none(), "{malformed}");
             }
-            println!("Rust: C# state, microphone and device-setting command roundtrips passed");
+            println!(
+                "Rust: C# state, microphone, device-setting and companion IPC roundtrips passed"
+            );
         }
         _ => panic!("expected emit or check"),
     }

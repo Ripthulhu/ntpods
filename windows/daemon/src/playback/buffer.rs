@@ -800,7 +800,8 @@ fn automatic_request(
     // Keep the tested Pro 3 AAC path; other models need the Apple codec and SDP bit.
     let supported = gaming_supported != Some(false)
         && (pro3 || (gaming_supported == Some(true) && apple_codec));
-    (supported
+    (state.playback_game_mode == Some(true)
+        && supported
         && state.connected
         && state.playback_native_driver
         && state.playback_state == "ready"
@@ -1299,11 +1300,17 @@ mod tests {
             connected: true,
             playback_native_driver: true,
             playback_state: "ready".into(),
+            playback_game_mode: Some(true),
             ..Default::default()
         };
         let request = automatic_request(&state, None, false, true, Some(1490), false).unwrap();
         assert_eq!((request.target, request.restore), (60, 150));
         assert!(request.lifetime == Lifetime::Playback);
+        for preference in [Some(false), None] {
+            state.playback_game_mode = preference;
+            assert!(automatic_request(&state, Some(true), true, true, Some(1490), true).is_none());
+        }
+        state.playback_game_mode = Some(true);
         for report in [None, Some(0), Some(280), Some(599), Some(600)] {
             assert!(automatic_request(&state, None, false, true, report, false).is_none());
         }
@@ -1460,14 +1467,26 @@ mod tests {
         pause.wait_for(Duration::from_secs(2)).unwrap();
         worker.join().unwrap();
         assert!(!pause.is_pending());
-        assert!(!active.shared.lock().unwrap().can_automate(Instant::now(), false));
+        assert!(!active
+            .shared
+            .lock()
+            .unwrap()
+            .can_automate(Instant::now(), false));
         let nested = begin_pause(active.clone()).unwrap();
         assert!(!nested.is_pending());
         nested.wait_for(Duration::ZERO).unwrap();
         drop(pause);
-        assert!(!active.shared.lock().unwrap().can_automate(Instant::now(), false));
+        assert!(!active
+            .shared
+            .lock()
+            .unwrap()
+            .can_automate(Instant::now(), false));
         drop(nested);
-        assert!(active.shared.lock().unwrap().can_automate(Instant::now(), false));
+        assert!(active
+            .shared
+            .lock()
+            .unwrap()
+            .can_automate(Instant::now(), false));
     }
 
     #[test]

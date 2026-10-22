@@ -17,7 +17,8 @@ static NTSTATUS LpPlaybackCloseChannel(PDEVICE_CONTEXT ctx, ULONG index)
     if (!channel->SendLock || !channel->ReceiveLock) return STATUS_SUCCESS;
     WdfSpinLockAcquire(ctx->Lock);
     ++channel->Generation;
-    channel->Connected = channel->Opening = FALSE;
+    channel->Connected = channel->Incoming = FALSE;
+    channel->Opening = TRUE; /* Also reserves this slot while close drains. */
     WdfSpinLockRelease(ctx->Lock);
     WdfWaitLockAcquire(channel->SendLock, NULL);
     WdfWaitLockAcquire(channel->ReceiveLock, NULL);
@@ -47,6 +48,7 @@ static NTSTATUS LpPlaybackCloseChannel(PDEVICE_CONTEXT ctx, ULONG index)
     WdfWaitLockRelease(channel->ReceiveLock);
     WdfWaitLockRelease(channel->SendLock);
     WdfSpinLockAcquire(ctx->Lock);
+    channel->Opening = FALSE;
     if (!NT_SUCCESS(status) && ctx->Playback.Aborted) status = STATUS_CONNECTION_ABORTED;
     WdfSpinLockRelease(ctx->Lock);
     return status;
@@ -101,9 +103,23 @@ static VOID LpPlaybackIndication(PVOID context, INDICATION_CODE indication,
     WdfSpinLockRelease(ctx->Lock);
 }
 
+VOID LpPlaybackIncomingChannelIndication(PVOID context, INDICATION_CODE indication,
+                                        PINDICATION_PARAMETERS parameters)
+{
+    LpPlaybackIndication(context, indication, parameters);
+}
+
+/* Server.Lock serializes ownership changes with arm/disarm, including tokenless
+ * legacy operations. Direction locks additionally drain already reserved I/O. */
+static BOOLEAN LpPlaybackOwner(PDEVICE_CONTEXT ctx, ULONGLONG token)
+{
+    return token ? ctx->Playback.Server.Enabled && ctx->Playback.Server.Token == token
+                 : !ctx->Playback.Server.Enabled;
+}
+
 static NTSTATUS LpPlaybackOpen(PDEVICE_CONTEXT ctx, const LP_PLAYBACK_OPEN_INPUT* input,
                                 USHORT flushTimeoutMs, LP_PLAYBACK_OPEN_OUTPUT* output,
-                                WDFREQUEST request, BOOLEAN* created)
+                                WDFREQUEST request, BOOLEAN* created, ULONGLONG token)
 {
     LP_PLAYBACK_CHANNEL* channel = &ctx->Playback.Channels[input->Channel];
     struct _BRB_L2CA_OPEN_CHANNEL* brb;
@@ -119,6 +135,11 @@ static NTSTATUS LpPlaybackOpen(PDEVICE_CONTEXT ctx, const LP_PLAYBACK_OPEN_INPUT
         return STATUS_INVALID_PARAMETER;
     if (InterlockedCompareExchange(&ctx->Playback.WorkQueued, 0, 0))
         return STATUS_DEVICE_NOT_READY;
+retry:
+    if (token && input->Channel == LP_PLAYBACK_SIGNALING) {
+        status = LpPlaybackWaitIncoming(ctx, request);
+        if (!NT_SUCCESS(status)) return status;
+    }
     WdfSpinLockAcquire(ctx->Lock);
     connected = channel->Connected;
     signaling = ctx->Playback.Channels[LP_PLAYBACK_SIGNALING].Connected;
@@ -127,13 +148,45 @@ static NTSTATUS LpPlaybackOpen(PDEVICE_CONTEXT ctx, const LP_PLAYBACK_OPEN_INPUT
     WdfSpinLockRelease(ctx->Lock);
     if (!NT_SUCCESS(status)) return status;
     if (input->Channel == LP_PLAYBACK_MEDIA && !signaling) return STATUS_DEVICE_NOT_CONNECTED;
-    if (!connected) {
-        status = input->Channel == LP_PLAYBACK_SIGNALING
-            ? LpPlaybackClose(ctx) : LpPlaybackCloseChannel(ctx, input->Channel);
+    if (connected && token && input->Channel == LP_PLAYBACK_SIGNALING) {
+        WdfSpinLockAcquire(ctx->Lock);
+        /* Adoption is single-use. Another Session cannot borrow a claimed slot. */
+        if (!channel->Incoming) status = STATUS_DEVICE_BUSY;
+        else channel->Incoming = FALSE;
+        WdfSpinLockRelease(ctx->Lock);
         if (!NT_SUCCESS(status)) return status;
+        *created = TRUE;
+    }
+    if (!connected) {
+        if (input->Channel == LP_PLAYBACK_SIGNALING) {
+            L2CAP_CHANNEL_HANDLE stale;
+            status = LpPlaybackCloseChannel(ctx, LP_PLAYBACK_MEDIA);
+            if (!NT_SUCCESS(status)) return status;
+            WdfSpinLockAcquire(ctx->Lock);
+            stale = channel->Handle;
+            closed = ctx->Playback.Server.Accepting || channel->Connected;
+            WdfSpinLockRelease(ctx->Lock);
+            if (closed) goto retry;
+            status = stale ? LpPlaybackCloseChannel(ctx, LP_PLAYBACK_SIGNALING) : STATUS_SUCCESS;
+        } else status = LpPlaybackCloseChannel(ctx, input->Channel);
+        if (!NT_SUCCESS(status)) return status;
+        WdfSpinLockAcquire(ctx->Lock);
+        if (ctx->Playback.Server.Accepting || channel->Connected || channel->Handle) {
+            WdfSpinLockRelease(ctx->Lock);
+            goto retry;
+        }
+        channel->Opening = TRUE;
+        channel->Incoming = FALSE;
+        channel->LastDisconnect = NULL;
+        WdfSpinLockRelease(ctx->Lock);
         brb = (struct _BRB_L2CA_OPEN_CHANNEL*)ctx->BthInterface.BthAllocateBrb(
             BRB_L2CA_OPEN_CHANNEL, LP_POOL_TAG);
-        if (!brb) return STATUS_INSUFFICIENT_RESOURCES;
+        if (!brb) {
+            WdfSpinLockAcquire(ctx->Lock);
+            channel->Opening = FALSE;
+            WdfSpinLockRelease(ctx->Lock);
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
         brb->BtAddress = input->Address;
         brb->ChannelHandle = NULL;
         brb->Psm = 0x0019;
@@ -151,10 +204,6 @@ static NTSTATUS LpPlaybackOpen(PDEVICE_CONTEXT ctx, const LP_PLAYBACK_OPEN_INPUT
         brb->Callback = LpPlaybackIndication;
         brb->CallbackContext = channel;
         brb->ReferenceObject = ctx->WdmDeviceObject;
-        WdfSpinLockAcquire(ctx->Lock);
-        channel->Opening = TRUE;
-        channel->LastDisconnect = NULL;
-        WdfSpinLockRelease(ctx->Lock);
         status = LpSubmitBrbSync(ctx, (PBRB)brb, request);
         if (NT_SUCCESS(status) && (!brb->ChannelHandle || brb->OutResults.Params.Mtu < 48 ||
             brb->InResults.Params.Mtu < 48 || brb->InResults.Params.Mtu > LP_PLAYBACK_MAX_PACKET))
@@ -195,7 +244,7 @@ static NTSTATUS LpPlaybackOpen(PDEVICE_CONTEXT ctx, const LP_PLAYBACK_OPEN_INPUT
 
 static NTSTATUS LpPlaybackTransfer(PDEVICE_CONTEXT ctx, ULONG index, BOOLEAN receive,
                                     PVOID buffer, ULONG length, ULONG timeout,
-                                    PULONG transferred, WDFREQUEST request)
+                                    PULONG transferred, WDFREQUEST request, ULONGLONG token)
 {
     LP_PLAYBACK_CHANNEL* channel = &ctx->Playback.Channels[index];
     WDFWAITLOCK lock = receive ? channel->ReceiveLock : channel->SendLock;
@@ -216,7 +265,8 @@ static NTSTATUS LpPlaybackTransfer(PDEVICE_CONTEXT ctx, ULONG index, BOOLEAN rec
     WdfSpinLockAcquire(ctx->Lock);
     if (ctx->Playback.Aborted) {
         status = STATUS_CONNECTION_ABORTED;
-    } else if (generation != channel->Generation || !channel->Connected ||
+    } else if (!LpPlaybackOwner(ctx, token) || channel->Incoming ||
+        generation != channel->Generation || !channel->Connected ||
         !ctx->Playback.Channels[LP_PLAYBACK_SIGNALING].Connected) {
         status = STATUS_DEVICE_NOT_CONNECTED;
     } else if (receive ? length < channel->ReceiveMtu
@@ -268,6 +318,7 @@ VOID LpEvtPlaybackIoctl(WDFQUEUE queue, WDFREQUEST request, size_t outputLength,
     BOOLEAN channelCreated = FALSE;
     BOOLEAN mpmControl = FALSE;
     BOOLEAN control = FALSE;
+    BOOLEAN lifecycle = FALSE;
     if (InterlockedCompareExchange(&ctx->Stopping, 0, 0) ||
         !InterlockedCompareExchange(&ctx->Ready, 0, 0) || !ctx->HasBthInterface) {
         status = STATUS_DEVICE_NOT_READY;
@@ -284,9 +335,17 @@ VOID LpEvtPlaybackIoctl(WDFQUEUE queue, WDFREQUEST request, size_t outputLength,
     }
     status = STATUS_INVALID_PARAMETER;
     switch (code) {
+    case IOCTL_LP_PLAYBACK_LISTEN:
+        if (inputLength == sizeof(LP_PLAYBACK_LISTEN_INPUT) && !outputLength) {
+            LP_PLAYBACK_LISTEN_INPUT copy;
+            RtlCopyMemory(&copy, input, sizeof(copy));
+            status = LpPlaybackListen(ctx, &copy, request);
+        }
+        break;
     case IOCTL_LP_PLAYBACK_OPEN: {
-        LP_PLAYBACK_OPEN_INPUT_V2 copy;
-        if ((inputLength != sizeof(copy.Base) && inputLength != sizeof(copy)) ||
+        LP_PLAYBACK_OPEN_INPUT_V3 copy = {0};
+        if ((inputLength != sizeof(copy.Base) && inputLength != sizeof(LP_PLAYBACK_OPEN_INPUT_V2) &&
+             inputLength != sizeof(copy)) ||
             outputLength != sizeof(LP_PLAYBACK_OPEN_OUTPUT)) break;
         RtlCopyMemory(&copy.Base, input, sizeof(copy.Base));
         if (copy.Base.Version == LP_PLAYBACK_VERSION) {
@@ -294,12 +353,23 @@ VOID LpEvtPlaybackIoctl(WDFQUEUE queue, WDFREQUEST request, size_t outputLength,
                 !LpPlaybackValidHeader(copy.Base.Version, copy.Base.Channel)) break;
             copy.FlushTimeoutMs = copy.Base.Channel == LP_PLAYBACK_MEDIA
                 ? LP_PLAYBACK_MEDIA_FLUSH_MS : L2CAP_INFINITE_FLUSHTO;
-        } else {
-            if (inputLength != sizeof(copy) || copy.Base.Version != LP_PLAYBACK_OPEN_VERSION ||
-                copy.Base.Channel != LP_PLAYBACK_MEDIA) break;
+        } else if (copy.Base.Version == LP_PLAYBACK_OPEN_VERSION) {
+            if (inputLength != sizeof(LP_PLAYBACK_OPEN_INPUT_V2) || copy.Base.Channel != LP_PLAYBACK_MEDIA) break;
+            RtlCopyMemory(&copy, input, sizeof(LP_PLAYBACK_OPEN_INPUT_V2));
+        } else if (copy.Base.Version == LP_PLAYBACK_OWNED_VERSION) {
+            if (inputLength != sizeof(copy) || copy.Base.Channel >= LP_PLAYBACK_CHANNELS) break;
             RtlCopyMemory(&copy, input, sizeof(copy));
+            if (!copy.Generation) break;
+        } else break;
+        if (copy.Base.Channel == LP_PLAYBACK_MEDIA) {
             if (!LpPlaybackValidFlush(copy.FlushTimeoutMs)) break;
             mediaOnlyOpen = TRUE;
+        } else if (copy.FlushTimeoutMs != L2CAP_INFINITE_FLUSHTO) break;
+        WdfWaitLockAcquire(ctx->Playback.Server.Lock, NULL);
+        lifecycle = TRUE;
+        if (!LpPlaybackOwner(ctx, copy.Generation)) {
+            status = STATUS_DEVICE_NOT_CONNECTED;
+            break;
         }
         if (copy.Base.Channel == LP_PLAYBACK_SIGNALING) {
             LpMpmAcquirePlayback(ctx);
@@ -307,13 +377,30 @@ VOID LpEvtPlaybackIoctl(WDFQUEUE queue, WDFREQUEST request, size_t outputLength,
         } else WdfWaitLockAcquire(ctx->OperationLock, NULL);
         control = TRUE;
         status = LpPlaybackOpen(ctx, &copy.Base, (USHORT)copy.FlushTimeoutMs,
-            (LP_PLAYBACK_OPEN_OUTPUT*)output, request, &channelCreated);
+            (LP_PLAYBACK_OPEN_OUTPUT*)output, request, &channelCreated, copy.Generation);
         if (NT_SUCCESS(status)) count = sizeof(LP_PLAYBACK_OPEN_OUTPUT);
         break;
     }
     case IOCTL_LP_PLAYBACK_CLOSE: {
-        LP_PLAYBACK_CLOSE_INPUT copy;
+        LP_PLAYBACK_OWNED_INPUT copy = {0};
         if (outputLength) break;
+        if (inputLength == sizeof(copy)) {
+            RtlCopyMemory(&copy, input, sizeof(copy));
+            if (copy.Version != LP_PLAYBACK_OWNED_VERSION || !copy.Generation ||
+                (copy.Channel != LP_PLAYBACK_MEDIA && copy.Channel != LP_PLAYBACK_ALL_CHANNELS)) break;
+            if (copy.Channel == LP_PLAYBACK_ALL_CHANNELS) {
+                LP_PLAYBACK_LISTEN_INPUT disable = {LP_PLAYBACK_LISTEN_VERSION, 0, ctx->DeviceAddress, copy.Generation};
+                status = LpPlaybackListen(ctx, &disable, request);
+                break;
+            }
+        } else if (inputLength) {
+            if (inputLength != sizeof(LP_PLAYBACK_CLOSE_INPUT)) break;
+            RtlCopyMemory(&copy, input, sizeof(LP_PLAYBACK_CLOSE_INPUT));
+            if (copy.Version != LP_PLAYBACK_OPEN_VERSION || copy.Channel != LP_PLAYBACK_MEDIA) break;
+        }
+        WdfWaitLockAcquire(ctx->Playback.Server.Lock, NULL);
+        lifecycle = TRUE;
+        if (!LpPlaybackOwner(ctx, copy.Generation)) { status = STATUS_DEVICE_NOT_CONNECTED; break; }
         if (!inputLength) {
             LpMpmAcquirePlayback(ctx);
             mpmControl = TRUE;
@@ -321,9 +408,6 @@ VOID LpEvtPlaybackIoctl(WDFQUEUE queue, WDFREQUEST request, size_t outputLength,
             status = LpPlaybackClose(ctx);
             break;
         }
-        if (inputLength != sizeof(copy)) break;
-        RtlCopyMemory(&copy, input, sizeof(copy));
-        if (copy.Version != LP_PLAYBACK_OPEN_VERSION || copy.Channel != LP_PLAYBACK_MEDIA) break;
         WdfWaitLockAcquire(ctx->OperationLock, NULL);
         control = TRUE;
         status = LpPlaybackCloseChannel(ctx, LP_PLAYBACK_MEDIA);
@@ -331,31 +415,50 @@ VOID LpEvtPlaybackIoctl(WDFQUEUE queue, WDFREQUEST request, size_t outputLength,
     }
     case IOCTL_LP_PLAYBACK_SEND: {
         LP_PLAYBACK_SEND_INPUT* header = (LP_PLAYBACK_SEND_INPUT*)input;
-        if (inputLength <= sizeof(*header) || inputLength > sizeof(*header) + LP_PLAYBACK_MAX_PACKET || outputLength) break;
-        if (!LpPlaybackValidHeader(header->Version, header->Channel)) break;
-        status = LpPlaybackTransfer(ctx, header->Channel, FALSE, (PUCHAR)input + sizeof(*header),
-            (ULONG)(inputLength - sizeof(*header)), 0, &count, request);
+        ULONGLONG token = 0;
+        size_t headerSize = sizeof(*header);
+        if (inputLength < headerSize || outputLength) break;
+        if (header->Version == LP_PLAYBACK_OWNED_VERSION && header->Channel < LP_PLAYBACK_CHANNELS) {
+            if (inputLength <= sizeof(LP_PLAYBACK_OWNED_INPUT)) break;
+            token = ((LP_PLAYBACK_OWNED_INPUT*)input)->Generation;
+            if (!token) break;
+            headerSize = sizeof(LP_PLAYBACK_OWNED_INPUT);
+        } else if (!LpPlaybackValidHeader(header->Version, header->Channel)) break;
+        if (inputLength <= headerSize || inputLength > headerSize + LP_PLAYBACK_MAX_PACKET) break;
+        status = LpPlaybackTransfer(ctx, header->Channel, FALSE, (PUCHAR)input + headerSize,
+            (ULONG)(inputLength - headerSize), 0, &count, request, token);
         count = 0;
         break;
     }
     case IOCTL_LP_PLAYBACK_RECEIVE: {
-        LP_PLAYBACK_RECEIVE_INPUT copy;
-        if (inputLength != sizeof(copy) || outputLength == 0 || outputLength > LP_PLAYBACK_MAX_PACKET) break;
-        RtlCopyMemory(&copy, input, sizeof(copy));
-        if (!LpPlaybackValidHeader(copy.Version, copy.Channel)) break;
-        status = LpPlaybackTransfer(ctx, copy.Channel, TRUE, output, (ULONG)outputLength,
-                                    copy.TimeoutMs, &count, request);
+        LP_PLAYBACK_RECEIVE_INPUT_V3 copy = {0};
+        if (!outputLength || outputLength > LP_PLAYBACK_MAX_PACKET) break;
+        if (inputLength == sizeof(copy)) {
+            RtlCopyMemory(&copy, input, sizeof(copy));
+            if (copy.Base.Version != LP_PLAYBACK_OWNED_VERSION || !copy.Base.Generation ||
+                copy.Base.Channel >= LP_PLAYBACK_CHANNELS) break;
+        } else if (inputLength == sizeof(LP_PLAYBACK_RECEIVE_INPUT)) {
+            LP_PLAYBACK_RECEIVE_INPUT legacy;
+            RtlCopyMemory(&legacy, input, sizeof(legacy));
+            if (!LpPlaybackValidHeader(legacy.Version, legacy.Channel)) break;
+            copy.Base.Version = legacy.Version;
+            copy.Base.Channel = legacy.Channel;
+            copy.TimeoutMs = legacy.TimeoutMs;
+        } else break;
+        status = LpPlaybackTransfer(ctx, copy.Base.Channel, TRUE, output, (ULONG)outputLength,
+                                    copy.TimeoutMs, &count, request, copy.Base.Generation);
         break;
     }
     case IOCTL_LP_PLAYBACK_STATUS: {
         LP_PLAYBACK_STATUS_OUTPUT* snapshot = (LP_PLAYBACK_STATUS_OUTPUT*)output;
         ULONG version = LP_PLAYBACK_VERSION;
-        if (outputLength != sizeof(*snapshot)) break;
         if (inputLength) {
             if (inputLength != sizeof(version)) break;
             RtlCopyMemory(&version, input, sizeof(version));
-            if (version != LP_PLAYBACK_OPEN_VERSION) break;
+            if (version != LP_PLAYBACK_OPEN_VERSION && version != LP_PLAYBACK_OWNED_VERSION) break;
         }
+        if (outputLength != (version == LP_PLAYBACK_OWNED_VERSION
+            ? sizeof(LP_PLAYBACK_STATUS_OUTPUT_V3) : sizeof(*snapshot))) break;
         WdfSpinLockAcquire(ctx->Lock);
         snapshot->Version = version;
         snapshot->SignalingOpen = ctx->Playback.Channels[0].Connected;
@@ -363,9 +466,16 @@ VOID LpEvtPlaybackIoctl(WDFQUEUE queue, WDFREQUEST request, size_t outputLength,
         snapshot->SignalingTransmitMtu = ctx->Playback.Channels[0].TransmitMtu;
         snapshot->MediaTransmitMtu = ctx->Playback.Channels[1].TransmitMtu;
         snapshot->Address = ctx->DeviceAddress;
+        if (version == LP_PLAYBACK_OWNED_VERSION) {
+            LP_PLAYBACK_STATUS_OUTPUT_V3* owned = (LP_PLAYBACK_STATUS_OUTPUT_V3*)output;
+            owned->Flags = (ctx->Playback.Channels[0].Incoming ? LP_PLAYBACK_INCOMING : 0) |
+                (ctx->Playback.Server.Enabled ? LP_PLAYBACK_LISTENING : 0) |
+                (ctx->Playback.Server.Accepting ? LP_PLAYBACK_ACCEPTING : 0);
+            owned->Generation = ctx->Playback.Server.Token;
+        }
         status = ctx->Playback.Aborted ? STATUS_CONNECTION_ABORTED : STATUS_SUCCESS;
         WdfSpinLockRelease(ctx->Lock);
-        count = sizeof(*snapshot);
+        count = (ULONG)outputLength;
         break;
     }
     case IOCTL_LP_PLAYBACK_MPM: {
@@ -384,13 +494,14 @@ VOID LpEvtPlaybackIoctl(WDFQUEUE queue, WDFREQUEST request, size_t outputLength,
         if (code == IOCTL_LP_PLAYBACK_OPEN) {
             if (mediaOnlyOpen) {
                 if (channelCreated) LpPlaybackCloseChannel(ctx, LP_PLAYBACK_MEDIA);
-            } else LpPlaybackClose(ctx);
+            } else if (channelCreated) LpPlaybackClose(ctx);
         }
         status = STATUS_CANCELLED;
     }
 complete:
     if (mpmControl) LpMpmReleasePlayback(ctx);
     else if (control) WdfWaitLockRelease(ctx->OperationLock);
+    if (lifecycle) WdfWaitLockRelease(ctx->Playback.Server.Lock);
     WdfRequestCompleteWithInformation(request, status, NT_SUCCESS(status) ? count : 0);
 }
 
@@ -419,6 +530,8 @@ NTSTATUS LpPlaybackInitialize(WDFDEVICE device)
     status = WdfWorkItemCreate(&work, &attributes, &ctx->Playback.DisconnectWork);
     if (!NT_SUCCESS(status)) return status;
     status = LpMpmInitialize(device);
+    if (!NT_SUCCESS(status)) return status;
+    status = LpPlaybackServerInitialize(device);
     if (!NT_SUCCESS(status)) return status;
     WDF_IO_QUEUE_CONFIG_INIT(&queue, WdfIoQueueDispatchParallel);
     queue.EvtIoDeviceControl = LpEvtPlaybackIoctl;

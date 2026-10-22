@@ -102,6 +102,7 @@
   <ItemGroup>
     <ClInclude Include="NTPodsAAP.h" />
     <ClInclude Include="Policy.h" />
+    <ClInclude Include="BrbCompletion.h" />
     <ClInclude Include="Playback.h" />
     <ClInclude Include="PlaybackContract.h" />
     <ClInclude Include="Mpm.h" />
@@ -112,6 +113,7 @@
     <ClCompile Include="L2cap.c" />
     <ClCompile Include="Ioctl.c" />
     <ClCompile Include="Playback.c" Condition="'$(NTPodsExperimentalPlayback)' == 'true'" />
+    <ClCompile Include="PlaybackIncoming.c" Condition="'$(NTPodsExperimentalPlayback)' == 'true'" />
     <ClCompile Include="Mpm.c" Condition="'$(NTPodsExperimentalPlayback)' == 'true'" />
     <ClCompile Include="MpmVersion.c" Condition="'$(NTPodsExperimentalPlayback)' == 'true'" />
   </ItemGroup>

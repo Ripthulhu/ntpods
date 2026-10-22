@@ -52,7 +52,7 @@ fn ear(value: &hearing_diagnostics::Ear) -> HardwareDiagnosticEar {
     }
 }
 
-fn transaction(
+pub(super) fn transaction(
     model: &str,
     mut exchange: impl FnMut(&[u8]) -> Result<Vec<u8>, String>,
 ) -> Result<Option<HardwareDiagnostics>, String> {

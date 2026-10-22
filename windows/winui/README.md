@@ -42,6 +42,41 @@ The shared contract is in [`windows/ipc/src/lib.rs`](../ipc/src/lib.rs).
 distribution. Pipe I/O runs asynchronously; state updates reach WinUI through
 `DispatcherQueue`.
 
+For an already linked phone and the selected AirPods, the device page places a
+**Listen on** card between the batteries and listening modes. **Phone** and
+**This PC** are equal native icon buttons; neither indicates the current audio
+owner. A reserved progress slot shows an active transfer. Routine guidance stays
+in tooltips and accessible help; an unconfirmed switch shows an inline error.
+
+The controls use the companion link independently of the PC audio connection,
+so **This PC** remains usable after handing audio away. They require a ready,
+connected companion session for the selected pair and pause during microphone
+use or pending playback changes. Each click waits for its matching transfer
+result; session loss or selecting another pair clears the pending UI request.
+If no terminal receipt arrives within 80 seconds, the UI requests fresh status
+once before allowing another explicit choice. It never retries a transfer
+automatically.
+
+The card's **Shared settings** expander contains call takeover/return, automatic
+connection popups and retained disconnected battery levels. Call takeover starts
+off and requires an explicit local choice in both apps; a received preference
+cannot grant local consent or phone permissions. Return applies only to a call
+that interrupted the PC, and resumes only the same player NTPods paused.
+Existing theme, host auto-pause and conversation controls share their matching
+preferences without sending displayed remote values back as edits. Saved
+unconfirmed accessory choices remain separate from confirmed reports and never
+send to the AirPods merely because they were synced. See
+[the companion contract](../../docs/COMPANION-PROTOCOL.md) for scope and limits.
+
+Launch `ntpods-winui.exe --attach` to use an already running daemon during a
+preview. This mode never starts a daemon, and Quit closes only the UI. Keep the
+self-contained build output together; no app installation is needed.
+
+For a receipt investigation, add `--companion-trace`. This opt-in flag writes
+at most 64 KiB to `%LOCALAPPDATA%/NTPods/companion-ui.log`, replacing the previous
+launch's trace. It records request IDs, phases and UI dispatch decisions, without
+device addresses, secrets or message payloads. Logging failures do not affect controls.
+
 ## Source map
 
 | Path under `NTPods.WinUI/` | Purpose |

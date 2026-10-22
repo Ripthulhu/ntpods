@@ -303,6 +303,11 @@ identifiers out of the repository.
 - Repeat microphone start/stop, overlapping clients, ear removal, case closure,
   Bluetooth toggle, sleep/resume, app exit and backend crash. Check for silence
   while disabled, stale PCM, missing endpoints and one-sided playback.
+- Validate the [HFP startup repair](WINDOWS-AVRCP-VOLUME.md#startup-and-lifetime)
+  with legacy Sound entries enabled and disabled, including HQ microphone PCM,
+  Windows profile suspension and recovery. Five Pro 3 returns passed with the
+  later startup request; earlier priming and the suspension handoff are untested
+  on hardware. The one-second endpoint target and Pro 1 HFP checks remain pending.
 - Exercise failed recovery, retry and install/upgrade/uninstall on a prepared test
   PC. Verify restoration for both connected and temporarily absent pairs.
 - Check access from another ordinary Windows account, then run Driver Verifier

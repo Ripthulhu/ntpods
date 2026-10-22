@@ -291,6 +291,25 @@ fn playback_error(error: io::Error) -> io::Error {
 }
 
 impl Driver {
+    /// Old drivers retain their outbound-only path. A supported listener must
+    /// acknowledge the explicit intent before Windows primes HFP.
+    #[cfg(feature = "experimental-playback")]
+    pub(crate) fn listen_playback(&self, address: u64, generation: u64) -> io::Result<bool> {
+        let input = [
+            1u32.to_le_bytes().as_slice(),
+            1u32.to_le_bytes().as_slice(),
+            address.to_le_bytes().as_slice(),
+            generation.to_le_bytes().as_slice(),
+        ]
+        .concat();
+        match self.playback_ioctl(0x816, &input, &mut []) {
+            Ok(0) => Ok(true),
+            Ok(_) => Err(io::Error::other("Invalid playback listener response")),
+            Err(error) if matches!(error.raw_os_error(), Some(1 | 50)) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
     #[cfg(feature = "experimental-playback")]
     pub(crate) fn playback_ioctl(
         &self,
@@ -298,17 +317,20 @@ impl Driver {
         input: &[u8],
         output: &mut [u8],
     ) -> io::Result<usize> {
-        if !(0x810..=0x815).contains(&function) {
+        if !(0x810..=0x816).contains(&function) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Invalid playback operation",
             ));
         }
         let timeout = match function {
-            0x810 | 0x811 => 20_000,
+            0x810 | 0x811 | 0x816 => 20_000,
             0x812 => 3_000,
             0x813 if input.len() == 12 => {
                 u32::from_le_bytes(input[8..12].try_into().unwrap()).min(10_000) + 1_000
+            }
+            0x813 if input.len() == 20 => {
+                u32::from_le_bytes(input[16..20].try_into().unwrap()).min(10_000) + 1_000
             }
             0x815 if input.len() == 20 && input[4..8] != [0; 4] => 20_000,
             _ => 2_000,
@@ -335,8 +357,19 @@ impl Driver {
         input[0..8].copy_from_slice(&addr.to_le_bytes());
         input[8..10].copy_from_slice(&psm.to_le_bytes());
         let mut out = [0u8; 8];
-        require_reply(ioctl(self.handle.0, IOCTL_LP_CONNECT, &input, &mut out)?, 8)?;
-        Ok(u32::from_le_bytes([out[0], out[1], out[2], out[3]]) != 0)
+        let bytes = ioctl(self.handle.0, IOCTL_LP_CONNECT, &input, &mut out).map_err(|error| {
+            crate::log(&format!("AAP connect: driver request failed: {error}"));
+            error
+        })?;
+        require_reply(bytes, 8)?;
+        let connected = u32::from_le_bytes(out[..4].try_into().unwrap()) != 0;
+        if !connected {
+            crate::log(&format!(
+                "AAP connect: rejected with NTSTATUS {:#010x}",
+                u32::from_le_bytes(out[4..8].try_into().unwrap())
+            ));
+        }
+        Ok(connected)
     }
 
     pub fn send(&self, data: &[u8]) -> io::Result<()> {

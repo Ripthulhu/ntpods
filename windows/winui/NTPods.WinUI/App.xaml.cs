@@ -12,7 +12,8 @@ namespace NTPods.WinUI;
 /// Tray client of ntpodsd. Normal launches show the window; --tray keeps it hidden.
 public partial class App : Application
 {
-    public DaemonClient Daemon { get; } = new();
+    private static bool AttachOnly => Array.IndexOf(Environment.GetCommandLineArgs(), "--attach") >= 0;
+    public DaemonClient Daemon { get; } = new(startDaemon: !AttachOnly);
 
     private MainWindow? _window;
     private TrayController? _tray;
@@ -77,12 +78,30 @@ public partial class App : Application
             client: Daemon);
         _tray.Show();
 
+        Daemon.CompanionPreferencesReceived += preferences =>
+        {
+            ulong epoch = Daemon.SessionEpoch;
+            _window.DispatcherQueue.TryEnqueue(() =>
+            {
+                if (epoch != Daemon.SessionEpoch || !Daemon.IsReady || preferences.DeviceId is not { Length: > 0 } deviceId ||
+                    preferences.Boolean("connection_popup_enabled") is not { } enabled) return;
+                if (AppSettings.ConnectionPopupEnabled(deviceId) != enabled)
+                    AppSettings.SetConnectionPopupEnabled(deviceId, enabled);
+                if (_latestSnapshot is { } snapshot)
+                {
+                    _tray?.UpdateSnapshot(snapshot);
+                    _island?.UpdateSnapshot(snapshot);
+                }
+            });
+        };
+
         Daemon.OverlayReceived += (title, body) =>
         {
             ulong epoch = Daemon.SessionEpoch;
             _window.DispatcherQueue.TryEnqueue(() =>
             {
-                if (epoch == Daemon.SessionEpoch && Daemon.IsReady) ShowIslandMessage(title, body);
+                if (epoch == Daemon.SessionEpoch && Daemon.IsReady &&
+                    AppSettings.ConnectionPopupEnabled(_latestSnapshot?.DeviceId ?? "")) ShowIslandMessage(title, body);
             });
         };
         Daemon.PairedLidReceived += lid =>
@@ -147,7 +166,7 @@ public partial class App : Application
                 bool connectionMessage = _islandPresence.Update(s, sessionReady, _islandTakeover.MayShow(s));
                 string? micMessage = _micNotifications.Update(s, sessionReady);
                 if (micMessage is not null) ShowIslandMessage(s.DevName, Localize.Get(micMessage));
-                else if (connectionMessage && _islandTakeover.MayShow(s)) ShowIsland(s);
+                else if (connectionMessage && _islandTakeover.MayShow(s) && AppSettings.ConnectionPopupEnabled(s.DeviceId)) ShowIsland(s);
                 else _island?.UpdateSnapshot(s);
                 RefreshIslandAction();
             });
@@ -266,7 +285,7 @@ public partial class App : Application
         try
         {
             bool caseCleanupConfirmed = _window is null || await _window.StopNearbyCaseInformationAsync();
-            await Daemon.ShutdownAsync();
+            if (!AttachOnly) await Daemon.ShutdownAsync();
             if (!caseCleanupConfirmed && _window is not null) await _window.ShowCaseCleanupFailureAsync();
         }
         catch (Exception)

@@ -9,6 +9,8 @@ namespace NTPods.WinUI.Controls;
 
 public sealed partial class HardwareDiagnosticsCard : UserControl
 {
+    public Func<object, bool>? SendCommand { get; set; }
+    private bool Send(object command) => SendCommand?.Invoke(command) ?? Client?.Send(command) == true;
     private DaemonClient? _client;
     public DaemonClient? Client
     {
@@ -182,13 +184,13 @@ public sealed partial class HardwareDiagnosticsCard : UserControl
 
     private void Read_Click(object sender, RoutedEventArgs e)
     {
-        if (ReadButton.IsEnabled) BeginRequest("diagnostics", () => Client?.Send(new GetHardwareDiagnosticsCmd()) == true);
+        if (ReadButton.IsEnabled) BeginRequest("diagnostics", () => Send(new GetHardwareDiagnosticsCmd()));
     }
 
     private void ReadMetadata_Click(object sender, RoutedEventArgs e)
     {
         if (MetadataReadButton.IsEnabled) BeginRequest("metadata",
-            () => Client?.Send(new GetHearingMetadataCmd { DeviceId = _snapshot.DeviceId }) == true);
+            () => Send(new GetHearingMetadataCmd { DeviceId = _snapshot.DeviceId }));
     }
 
     private async void Run_Click(object sender, RoutedEventArgs e)
@@ -197,7 +199,7 @@ public sealed partial class HardwareDiagnosticsCard : UserControl
         string target = _snapshot.DeviceId;
         if (_snapshot.HardwareCheck is { } check && HardwareDiagnosticsPresentation.IsRunning(check))
         {
-            BeginRequest("check", () => Client?.Send(new CancelHardwareCheckCmd { RequestId = check.RequestId, DeviceId = target }) == true,
+            BeginRequest("check", () => Send(new CancelHardwareCheckCmd { RequestId = check.RequestId, DeviceId = target }),
                 check.RequestId, cancelling: true);
             return;
         }
@@ -221,10 +223,10 @@ public sealed partial class HardwareDiagnosticsCard : UserControl
         if (result != ContentDialogResult.Primary || !IsLoaded ||
             !HardwareDiagnosticsPresentation.CanConfirmRun(_snapshot, Client?.IsReady == true, target, selection, _selectionRevision)) return;
         ulong id = (ulong)Random.Shared.NextInt64(1, long.MaxValue);
-        BeginRequest("check", () => Client?.Send(new StartHardwareCheckCmd
+        BeginRequest("check", () => Send(new StartHardwareCheckCmd
         {
             RequestId = id, DeviceId = target, BudsInCaseConfirmed = true,
-        }) == true, id);
+        }), id);
     }
 
     private void BeginRequest(string kind, Func<bool> send, ulong? requestId = null, bool cancelling = false)

@@ -9,6 +9,7 @@
 #define IOCTL_LP_PLAYBACK_RECEIVE CTL_CODE(FILE_DEVICE_NTPODS, 0x813, METHOD_BUFFERED, FILE_READ_DATA | FILE_WRITE_DATA)
 #define IOCTL_LP_PLAYBACK_STATUS CTL_CODE(FILE_DEVICE_NTPODS, 0x814, METHOD_BUFFERED, FILE_READ_DATA | FILE_WRITE_DATA)
 #define IOCTL_LP_PLAYBACK_MPM CTL_CODE(FILE_DEVICE_NTPODS, 0x815, METHOD_BUFFERED, FILE_READ_DATA | FILE_WRITE_DATA)
+#define IOCTL_LP_PLAYBACK_LISTEN CTL_CODE(FILE_DEVICE_NTPODS, 0x816, METHOD_BUFFERED, FILE_READ_DATA | FILE_WRITE_DATA)
 
 struct _DEVICE_CONTEXT;
 
@@ -26,7 +27,22 @@ typedef struct _LP_PLAYBACK_CHANNEL {
     ULONG Generation;
     BOOLEAN Connected;
     BOOLEAN Opening;
+    BOOLEAN Incoming;
 } LP_PLAYBACK_CHANNEL;
+
+typedef struct _LP_PLAYBACK_SERVER {
+    WDFDEVICE Device;
+    WDFWAITLOCK Lock;
+    EX_RUNDOWN_REF Rundown;
+    L2CAP_SERVER_HANDLE Handle;
+    ULONGLONG Token;
+    ULONG Epoch;
+    LONG Responses;
+    BOOLEAN Enabled;
+    BOOLEAN RundownStopped;
+    BOOLEAN Accepting;
+    KEVENT Accepted;
+} LP_PLAYBACK_SERVER;
 
 typedef struct _LP_PLAYBACK_CONTEXT {
     LP_PLAYBACK_CHANNEL Channels[LP_PLAYBACK_CHANNELS];
@@ -36,8 +52,16 @@ typedef struct _LP_PLAYBACK_CONTEXT {
     BOOLEAN Paired;
     BOOLEAN Aborted;
     LP_MPM_CONTEXT Mpm;
+    LP_PLAYBACK_SERVER Server;
 } LP_PLAYBACK_CONTEXT;
 
 NTSTATUS LpPlaybackInitialize(_In_ WDFDEVICE Device);
 NTSTATUS LpPlaybackClose(_In_ struct _DEVICE_CONTEXT* Ctx);
+NTSTATUS LpPlaybackListen(_In_ struct _DEVICE_CONTEXT* Ctx,
+                        _In_ const LP_PLAYBACK_LISTEN_INPUT* Input, _In_opt_ WDFREQUEST Request);
+NTSTATUS LpPlaybackDisarm(_In_ struct _DEVICE_CONTEXT* Ctx);
+NTSTATUS LpPlaybackServerInitialize(_In_ WDFDEVICE Device);
+NTSTATUS LpPlaybackWaitIncoming(_In_ struct _DEVICE_CONTEXT* Ctx, _In_ WDFREQUEST Request);
+VOID LpPlaybackIncomingChannelIndication(PVOID Context, INDICATION_CODE Indication,
+                                        PINDICATION_PARAMETERS Parameters);
 EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL LpEvtPlaybackIoctl;

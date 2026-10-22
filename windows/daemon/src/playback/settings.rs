@@ -5,6 +5,7 @@ pub(super) struct Settings {
     pub eld_aus: usize,
     pub eld_rtp_clock: EldRtpClock,
     pub eld_rtp_ssrc: u32,
+    pub startup_silence: Duration,
     reserve: Option<Duration>,
 }
 
@@ -42,7 +43,8 @@ impl Settings {
         let eld_aus = match units {
             None | Some("1") => 1,
             Some("2") => 2,
-            _ => return Err(invalid("NTPODS_ELD_AUS_PER_PACKET must be 1 or 2")),
+            Some("3") => 3,
+            _ => return Err(invalid("NTPODS_ELD_AUS_PER_PACKET must be 1, 2 or 3")),
         };
         let reserve = match reserve {
             None => None,
@@ -72,6 +74,7 @@ impl Settings {
             eld_rtp_clock,
             eld_rtp_ssrc,
             reserve,
+            startup_silence: Duration::from_millis(100),
         })
     }
 }
@@ -93,8 +96,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn startup_priming_is_always_enabled() {
+        let defaults = Settings::parse(None, None, None, None).unwrap();
+        assert_eq!(defaults.startup_silence, Duration::from_millis(100));
+    }
+
+    #[test]
     fn defaults_and_each_override_are_independent() {
-        for (units, expected_units) in [(None, 1), (Some("1"), 1), (Some("2"), 2)] {
+        for (units, expected_units) in [(None, 1), (Some("1"), 1), (Some("2"), 2), (Some("3"), 3)] {
             for (reserve, aac_ms, eld_ms) in
                 [(None, 30, 20), (Some("30"), 30, 30), (Some("50"), 50, 50)]
             {
@@ -105,6 +114,7 @@ mod tests {
                     (Some("1000"), EldRtpClock::Samples1000),
                 ] {
                     let settings = Settings::parse(units, reserve, clock, None).unwrap();
+                    assert_eq!(settings.startup_silence, Duration::from_millis(100));
                     assert_eq!(settings.eld_aus, expected_units);
                     assert_eq!(settings.eld_rtp_clock, expected_clock);
                     assert_eq!(
@@ -130,7 +140,7 @@ mod tests {
 
     #[test]
     fn twenty_milliseconds_requires_the_negotiated_eld_codec() {
-        for units in [None, Some("1"), Some("2")] {
+        for units in [None, Some("1"), Some("2"), Some("3")] {
             let settings = Settings::parse(units, Some("20"), None, None).unwrap();
             assert_eq!(
                 settings.reserve(Mode::Eld).unwrap(),
@@ -144,7 +154,7 @@ mod tests {
 
     #[test]
     fn invalid_values_do_not_silently_select_another_profile() {
-        for units in ["", "0", "3", "01", "-1", "1 ", "1.0"] {
+        for units in ["", "0", "4", "01", "-1", "1 ", "1.0"] {
             assert_eq!(
                 Settings::parse(Some(units), None, None, None)
                     .err()

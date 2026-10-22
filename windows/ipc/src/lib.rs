@@ -28,6 +28,77 @@ pub enum PlaybackMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationVolumeMode {
+    AbsCap,
+    Relative,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConversationPolicy {
+    pub mode: ConversationVolumeMode,
+    pub first: String,
+    pub second: String,
+    pub pause_media: bool,
+}
+
+impl Default for ConversationPolicy {
+    fn default() -> Self {
+        Self::from_legacy(25)
+    }
+}
+
+impl ConversationPolicy {
+    pub fn from_legacy(percent: u8) -> Self {
+        let percent = percent.min(100);
+        let second = u16::from(percent) * 6;
+        Self {
+            mode: ConversationVolumeMode::AbsCap,
+            first: percent.to_string(),
+            second: if second % 10 == 0 {
+                (second / 10).to_string()
+            } else {
+                format!("{}.{}", second / 10, second % 10)
+            },
+            pause_media: false,
+        }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        percent_units(&self.first).zip(percent_units(&self.second))
+            .is_some_and(|(first, second)| second <= first)
+    }
+
+    pub fn target(&self, original: f32, status: u8) -> Option<f32> {
+        if !self.is_valid() || !original.is_finite() || !(0.0..=1.0).contains(&original) { return None; }
+        let value = if status == 2 { &self.second } else { &self.first };
+        let fraction = value.parse::<f32>().ok()? / 100.0;
+        Some(match self.mode {
+            ConversationVolumeMode::AbsCap => original.min(fraction),
+            ConversationVolumeMode::Relative => original * fraction,
+        })
+    }
+}
+
+pub fn canonical_percent(value: &str) -> bool {
+    percent_units(value).is_some()
+}
+
+fn percent_units(value: &str) -> Option<u64> {
+    if value.is_empty() || value.len() > 13 { return None; }
+    let (whole, fraction) = value.split_once('.').map_or((value, None), |(whole, fraction)| (whole, Some(fraction)));
+    if whole.is_empty() || !whole.bytes().all(|b| b.is_ascii_digit()) ||
+        whole.len() > 3 || whole.len() > 1 && whole.starts_with('0') { return None; }
+    let mut units = whole.parse::<u64>().ok()? * 1_000_000_000;
+    if let Some(fraction) = fraction {
+        if fraction.is_empty() || fraction.len() > 9 || !fraction.bytes().all(|b| b.is_ascii_digit()) || fraction.ends_with('0') { return None; }
+        units += fraction.parse::<u64>().ok()? * 10_u64.pow(9 - fraction.len() as u32);
+    }
+    (units <= 100_000_000_000).then_some(units)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlaybackBitrate {
     pub best_effort: bool,
     pub kbps: u32,
@@ -41,6 +112,36 @@ impl Default for PlaybackBitrate {
             kbps: 256,
             variable: false,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaybackLinkMode {
+    #[default]
+    Off,
+    Automatic,
+    Manual,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlaybackLinkSettings {
+    pub mode: PlaybackLinkMode,
+    pub kbps: u16,
+}
+
+impl Default for PlaybackLinkSettings {
+    fn default() -> Self {
+        Self {
+            mode: PlaybackLinkMode::Off,
+            kbps: 174,
+        }
+    }
+}
+
+impl PlaybackLinkSettings {
+    pub fn is_valid(self) -> bool {
+        (128..=256).contains(&self.kbps)
     }
 }
 
@@ -229,9 +330,121 @@ impl Default for NearbyFinderState {
     }
 }
 
+/// USB health data belongs to its dongle session, never the native Bluetooth target.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DongleAudioState {
+    pub requested_codec: u8,
+    pub codec: u8,
+    pub variable: bool,
+    pub requested_bitrate: u32,
+    pub bitrate: u32,
+    pub game_mode_requested: bool,
+    pub game_mode_state: String,
+    pub input: u8,
+    pub pending: bool,
+    pub streaming: bool,
+    pub microphone_active: bool,
+    pub game_mode_supported: bool,
+    pub reported_delay_tenths_ms: Option<u16>,
+    pub priming_ms: u16,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DonglePerformanceState {
+    pub input: u8,
+    pub codec: u8,
+    pub flags: u8,
+    pub uptime_ms: Option<u32>,
+    pub pcm_used: Option<u32>,
+    pub pcm_capacity: Option<u32>,
+    pub pcm_high_water: Option<u32>,
+    pub underflow_frames: Option<u32>,
+    pub dropped_frames: Option<u32>,
+    pub encoded_units: Option<u32>,
+    pub encode_us: Option<u32>,
+    pub encode_max_us: Option<u32>,
+    pub send_failures: Option<u32>,
+    pub recoveries: Option<u32>,
+    pub heap_capacity: Option<u32>,
+    pub heap_allocated: Option<u32>,
+    pub heap_remaining: Option<u32>,
+    pub heap_arena: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DongleHealthState {
+    pub available: bool,
+    pub model: String,
+    pub firmware: String,
+    pub earbuds_in_case: Option<bool>,
+    #[serde(deserialize_with = "deserialize_device_controls")]
+    pub device_controls: BTreeMap<u8, u32>,
+    #[serde(deserialize_with = "deserialize_device_controls")]
+    pub device_controls_requested: BTreeMap<u8, u32>,
+    #[serde(deserialize_with = "deserialize_device_controls")]
+    pub device_controls_pending: BTreeMap<u8, u32>,
+    pub device_settings_pending: bool,
+    pub device_settings_error: Option<String>,
+    pub allow_off_requested: Option<bool>,
+    pub adaptive_strength_requested: Option<u32>,
+    pub anc_unconfirmed: bool,
+    pub audio: Option<DongleAudioState>,
+    pub performance: Option<DonglePerformanceState>,
+    pub nearby_finder: NearbyFinderState,
+    pub hearing_aid_enabled: Option<bool>,
+    pub hearing_aid_revision: u64,
+    pub hearing_aid_enrolled: Option<bool>,
+    pub media_assist_enabled: Option<bool>,
+    pub media_assist_revision: u64,
+    pub media_assist_available: bool,
+    pub hearing_aid_settings: Option<HearingAidSettings>,
+    pub hearing_aid_editable: bool,
+    pub hearing_aid_pending: bool,
+    pub hearing_aid_error: Option<String>,
+    pub hardware_diagnostics: Option<HardwareDiagnostics>,
+    pub hardware_diagnostics_pending: bool,
+    pub hardware_diagnostics_error: Option<String>,
+    pub hearing_metadata: Option<HearingMetadata>,
+    pub hearing_metadata_pending: bool,
+    pub hearing_metadata_error: Option<String>,
+    pub hardware_check: Option<HardwareCheckState>,
+}
+
 /// The daemon's authoritative state, pushed to clients on connect and on change.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DongleState {
+    pub present: bool,
+    pub ambiguous: bool,
+    pub session: u64,
+    pub generation: u32,
+    /// Opaque selected-pair identity; AACP-only reconnects do not change it.
+    pub pair_token: u64,
+    pub selected: bool,
+    pub connected: bool,
+    pub controls_ready: bool,
+    pub streaming: bool,
+    pub phone_connected: bool,
+    pub microphone_active: bool,
+    pub phone_pairing: bool,
+    pub usb_playback: bool,
+    pub anc: u8,
+    pub battery: Battery,
+    pub battery_age_ms: [Option<u32>; 3],
+    pub codec: u8,
+    pub capabilities: u16,
+    pub pending: bool,
+    pub error: Option<String>,
+    pub health: DongleHealthState,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
+    #[serde(default)]
+    pub dongle: DongleState,
     pub connected: bool,
     /// Idle AAP transport has failed while Windows still reports a connection.
     /// Silence alone does not mark the link stale.
@@ -405,6 +618,11 @@ pub struct Snapshot {
     #[serde(default)]
     pub playback_aac_eld_bitrate: PlaybackBitrate,
     #[serde(default)]
+    pub playback_link: Option<PlaybackLinkSettings>,
+    /// Saved receiver-buffer policy; absent on backends without this control.
+    #[serde(default)]
+    pub playback_game_mode: Option<bool>,
+    #[serde(default)]
     pub playback_bitrate_kbps: Option<u32>,
     #[serde(default)]
     pub playback_delay_reporting: bool,
@@ -524,6 +742,7 @@ where
 impl Default for Snapshot {
     fn default() -> Self {
         Self {
+            dongle: DongleState::default(),
             connected: false,
             link_stale: false,
             dev_name: String::new(),
@@ -596,6 +815,8 @@ impl Default for Snapshot {
             playback_native_driver: false,
             playback_aac_bitrate: PlaybackBitrate::default(),
             playback_aac_eld_bitrate: PlaybackBitrate::default(),
+            playback_link: None,
+            playback_game_mode: None,
             playback_bitrate_kbps: None,
             playback_delay_reporting: false,
             playback_delay_tenths_ms: None,
@@ -651,6 +872,54 @@ pub mod feature {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Command {
+    /// Only the allowlisted dongle command subset may cross this target-pinned envelope.
+    DongleHealth {
+        session: u64,
+        generation: u32,
+        command: Box<Command>,
+    },
+    /// USB controls never open a Windows Bluetooth or audio session.
+    DongleControl {
+        session: u64,
+        generation: u32,
+        opcode: u8,
+        #[serde(default)]
+        argument: u8,
+    },
+    SetDongleAudioProfile {
+        codec: u8,
+        variable: bool,
+        bitrate: u32,
+    },
+    GetDonglePerformance,
+    /// Approve one already-bonded companion app. The secret is never published in events.
+    CompanionLink {
+        peer_address: String,
+        secret_hex: String,
+        device_id: String,
+    },
+    CompanionStatus,
+    CompanionSwitch {
+        target: CompanionTarget,
+        device_id: String,
+        #[serde(default)]
+        request_id: u64,
+    },
+    CompanionForget,
+    CompanionSetPreference {
+        key: String,
+        value: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device_id: Option<String>,
+        #[serde(default)]
+        request_id: u64,
+    },
+    CompanionCallConsent {
+        enabled: bool,
+        device_id: String,
+        #[serde(default)]
+        request_id: u64,
+    },
     /// Command-pipe liveness probe; produces no snapshot or notification.
     Ping,
     /// Sent on connect; the daemon replies with a `State` snapshot.
@@ -698,6 +967,12 @@ pub enum Command {
         kbps: u32,
         #[serde(default)]
         variable: bool,
+    },
+    SetPlaybackLink {
+        settings: PlaybackLinkSettings,
+    },
+    SetPlaybackGameMode {
+        enabled: bool,
     },
     /// Toggle an AAP control-command setting (see the `feature` module).
     SetFeature {
@@ -845,6 +1120,44 @@ pub enum Command {
     Shutdown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompanionTarget {
+    Pc,
+    Android,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompanionStatus {
+    pub linked: bool,
+    pub connected: bool,
+    pub device_id: Option<String>,
+    pub peer_address: Option<String>,
+    pub held_away: bool,
+    pub phase: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompanionPreference {
+    pub key: String,
+    pub rev: String,
+    pub origin: String,
+    pub value: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompanionPreferences {
+    pub device_id: Option<String>,
+    pub records: Vec<CompanionPreference>,
+    pub local_call_consent: bool,
+    pub peer_prefs: bool,
+    pub peer_calls: bool,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HearingTestModeProbeResult {
     pub initial_state: Option<u8>,
@@ -860,6 +1173,8 @@ pub struct HearingTestModeProbeResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Event {
+    CompanionStatus { status: CompanionStatus },
+    CompanionPreferences { preferences: CompanionPreferences },
     /// Full state, pushed on connect and whenever it changes.
     State(Snapshot),
     /// At most 25 Hz; signed sensor values, not degrees or calibrated acceleration.
@@ -918,6 +1233,61 @@ pub fn from_line<T: for<'de> Deserialize<'de>>(line: &str) -> Option<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn game_mode_requires_an_explicit_boolean() {
+        for enabled in [false, true] {
+            assert!(
+                matches!(from_line::<Command>(&to_line(&Command::SetPlaybackGameMode { enabled })),
+                Some(Command::SetPlaybackGameMode { enabled: actual }) if actual == enabled)
+            );
+        }
+        assert!(from_line::<Command>(r#"{"cmd":"set_playback_game_mode"}"#).is_none());
+        for value in ["null", "1", "\"true\"", "{}", "[]"] {
+            assert!(from_line::<Command>(&format!(
+                r#"{{"cmd":"set_playback_game_mode","enabled":{value}}}"#
+            ))
+            .is_none());
+        }
+    }
+
+    #[test]
+    fn playback_link_commands_preserve_modes_and_reject_incomplete_settings() {
+        for mode in [
+            PlaybackLinkMode::Off,
+            PlaybackLinkMode::Automatic,
+            PlaybackLinkMode::Manual,
+        ] {
+            for kbps in [128, 174, 256] {
+                let settings = PlaybackLinkSettings { mode, kbps };
+                assert!(settings.is_valid());
+                assert!(
+                    matches!(from_line::<Command>(&to_line(&Command::SetPlaybackLink { settings })),
+                    Some(Command::SetPlaybackLink { settings: actual }) if actual == settings)
+                );
+            }
+        }
+        for value in [
+            "null",
+            "{}",
+            r#"{"mode":"manual"}"#,
+            r#"{"mode":"unknown","kbps":174}"#,
+            r#"{"mode":"manual","kbps":-1}"#,
+            r#"{"mode":"manual","kbps":174.5}"#,
+        ] {
+            assert!(from_line::<Command>(&format!(
+                r#"{{"cmd":"set_playback_link","settings":{value}}}"#
+            ))
+            .is_none());
+        }
+        for kbps in [0, 127, 257, u16::MAX] {
+            assert!(!PlaybackLinkSettings {
+                kbps,
+                ..PlaybackLinkSettings::default()
+            }
+            .is_valid());
+        }
+    }
 
     #[test]
     fn hearing_test_probe_preserves_readback_and_partial_cleanup_failure() {

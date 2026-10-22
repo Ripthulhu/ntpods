@@ -188,11 +188,32 @@ pub struct Lifecycle {
     stop_retried: bool,
     failed: bool,
     unexpected_audio: bool,
+    windows_suspended: bool,
+    windows_yield: bool,
+    quiet_confirmed: bool,
 }
 
 impl Lifecycle {
+    pub fn set_windows_suspended(&mut self, suspended: bool) {
+        self.windows_suspended = suspended;
+        if suspended && (self.cleanup_pending() || self.accepts_pcm()) {
+            self.windows_yield = true;
+            self.audio_restore_pending = false;
+            if matches!(self.phase, Phase::Recovering | Phase::Error) {
+                self.failed |= self.phase == Phase::Error;
+                self.phase = Phase::Stopping;
+                self.reset_failed = false;
+                self.reset_finished = false;
+            }
+        }
+    }
+
+    pub fn yielding_to_windows(&self) -> bool {
+        self.windows_yield
+    }
+
     pub fn tick(&mut self, now: u64, wanted: bool, ear_allowed: bool) -> Action {
-        let capture_allowed = wanted && ear_allowed;
+        let capture_allowed = wanted && ear_allowed && !self.windows_suspended;
         if self.unexpected_audio {
             self.unexpected_audio = false;
             self.begin_stop(now);
@@ -215,6 +236,7 @@ impl Lifecycle {
             }
             Phase::Stopping if now >= self.deadline_ms => {
                 if self.quiet_for_ms(now) >= QUIET_MS {
+                    self.quiet_confirmed = true;
                     self.uplink_active = false;
                     if self.audio_restore_pending {
                         self.phase = Phase::Recovering;
@@ -233,6 +255,11 @@ impl Lifecycle {
                     self.recovery_expires_ms = now + DRAIN_TIMEOUT_MS;
                     Action::RetryStop
                 } else {
+                    if self.windows_yield {
+                        // A deliberate yield must not rebuild Windows' audio services.
+                        self.deadline_ms = now.saturating_add(QUIET_MS);
+                        return Action::None;
+                    }
                     self.phase = Phase::Recovering;
                     Action::ResetAudio
                 }
@@ -248,13 +275,17 @@ impl Lifecycle {
                     self.phase = Phase::Error;
                     Action::Reconnect
                 } else {
+                    self.quiet_confirmed = true;
                     self.finish_stop();
                     Action::None
                 }
             }
             // Taking the AirPods out does not revoke the app's capture request.
             Phase::Error if !wanted && !self.cleanup_pending() => {
-                *self = Self::default();
+                *self = Self {
+                    windows_suspended: self.windows_suspended,
+                    ..Self::default()
+                };
                 Action::None
             }
             _ => Action::None,
@@ -262,9 +293,10 @@ impl Lifecycle {
     }
 
     pub fn audio_packet(&mut self, now: u64) {
+        self.quiet_confirmed = false;
         self.last_audio_ms = Some(now);
         self.uplink_active = true;
-        self.audio_restore_pending = true;
+        self.audio_restore_pending |= !self.windows_yield && !self.windows_suspended;
         if matches!(self.phase, Phase::Stopping | Phase::Recovering) {
             self.stop_packets = self.stop_packets.saturating_add(1);
         }
@@ -281,6 +313,7 @@ impl Lifecycle {
         }
     }
     pub fn start_attempted(&mut self) {
+        self.quiet_confirmed = false;
         self.uplink_active = true;
         self.audio_restore_pending = true;
     }
@@ -293,10 +326,23 @@ impl Lifecycle {
     pub fn cleanup_pending(&self) -> bool {
         self.uplink_active || self.audio_restore_pending
     }
+    pub fn quiet_for_windows(&self) -> Option<bool> {
+        if self.cleanup_pending() || !matches!(self.phase, Phase::Idle | Phase::Error) {
+            Some(false)
+        } else if self.quiet_confirmed {
+            Some(true)
+        } else {
+            // A fresh lifecycle cannot clear a previous transport's failed drain.
+            None
+        }
+    }
     /// Retry after permission was revoked and microphone cleanup finished.
     pub fn retry_after_revocation(&mut self) {
         if self.phase == Phase::Error && !self.cleanup_pending() {
-            *self = Self::default();
+            *self = Self {
+                windows_suspended: self.windows_suspended,
+                ..Self::default()
+            };
         }
     }
     /// Decoded audio renews stream health even when no app wants its samples.
@@ -307,13 +353,17 @@ impl Lifecycle {
         }
     }
     pub fn capture_timed_out(&self, now: u64) -> bool {
-        self.accepts_pcm() && now >= self.deadline_ms
+        !self.windows_suspended && self.accepts_pcm() && now >= self.deadline_ms
     }
     pub fn start_failed(&mut self, now: u64) {
         self.failed = true;
         self.begin_stop(now);
     }
     fn begin_stop(&mut self, now: u64) {
+        if self.windows_suspended {
+            self.windows_yield = true;
+            self.audio_restore_pending = false;
+        }
         self.phase = Phase::Stopping;
         self.deadline_ms = now + QUIET_MS;
         self.recovery_expires_ms = now + DRAIN_TIMEOUT_MS;
@@ -333,6 +383,7 @@ impl Lifecycle {
     fn finish_stop(&mut self) {
         self.uplink_active = false;
         self.audio_restore_pending = false;
+        self.windows_yield = false;
         self.phase = if self.failed {
             Phase::Error
         } else {
@@ -380,6 +431,155 @@ impl Lifecycle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quiet_receipt_needs_real_cleanup_and_a_fresh_lifecycle_cannot_erase_failure() {
+        let mut mic = Lifecycle::default();
+        assert_eq!(mic.quiet_for_windows(), None);
+        assert_eq!(mic.tick(0, true, true), Action::Start);
+        assert_eq!(mic.quiet_for_windows(), Some(false));
+        mic.start_attempted();
+        mic.set_windows_suspended(true);
+        assert_eq!(mic.tick(1, true, true), Action::Stop);
+        assert_eq!(mic.quiet_for_windows(), Some(false));
+        assert_eq!(mic.tick(500, true, true), Action::None);
+        assert_eq!(mic.quiet_for_windows(), Some(false));
+        assert_eq!(mic.tick(501, true, true), Action::None);
+        assert_eq!(mic.quiet_for_windows(), Some(true));
+        mic.audio_packet(502);
+        assert_eq!(mic.quiet_for_windows(), Some(false));
+        assert_eq!(Lifecycle::default().quiet_for_windows(), None);
+        mic.phase = Phase::Error;
+        assert_eq!(mic.quiet_for_windows(), Some(false));
+    }
+
+    #[test]
+    fn windows_voice_blocks_hq_without_clearing_the_current_demand() {
+        for mode in [MicMode::Automatic, MicMode::KeepActive, MicMode::Manual] {
+            let mut demand = Demand::default();
+            demand.configure(mode, 0);
+            demand.set_manual(true);
+            let mut mic = Lifecycle::default();
+            mic.set_windows_suspended(true);
+            for now in [0, 5_000, 30_000] {
+                assert_eq!(
+                    mic.tick(now, demand.wanted(now, true, true, true), true),
+                    Action::None
+                );
+                assert!(!mic.cleanup_pending());
+            }
+            mic.set_windows_suspended(false);
+            assert_eq!(
+                mic.tick(30_001, demand.wanted(30_001, true, true, true), true),
+                Action::Start
+            );
+        }
+    }
+
+    #[test]
+    fn clearing_a_previous_mic_failure_does_not_revoke_windows_suspension() {
+        let mut mic = Lifecycle {
+            phase: Phase::Error,
+            ..Lifecycle::default()
+        };
+        mic.set_windows_suspended(true);
+        mic.retry_after_revocation();
+        assert_eq!(mic.tick(0, true, true), Action::None);
+        mic.phase = Phase::Error;
+        assert_eq!(mic.tick(1, false, true), Action::None);
+        assert_eq!(mic.tick(2, true, true), Action::None);
+        mic.set_windows_suspended(false);
+        assert_eq!(mic.tick(3, true, true), Action::Start);
+    }
+
+    #[test]
+    fn windows_yield_drains_without_service_reset_and_resumes_only_current_demand() {
+        for resume in [true, false] {
+            let mut mic = Lifecycle::default();
+            assert_eq!(mic.tick(0, true, true), Action::Start);
+            mic.start_attempted();
+            mic.audio_packet(1);
+            mic.pcm_received(1);
+            mic.set_windows_suspended(true);
+            assert!(!mic.capture_timed_out(10_000));
+            assert_eq!(mic.tick(10_000, true, true), Action::Stop);
+            assert!(mic.yielding_to_windows());
+            mic.audio_packet(10_100);
+            assert_eq!(mic.tick(10_599, true, true), Action::None);
+            assert_eq!(mic.tick(10_600, true, true), Action::None);
+            assert_eq!(mic.phase, Phase::Idle);
+            assert!(!mic.cleanup_pending());
+            assert_eq!(mic.tick(20_000, resume, true), Action::None);
+            mic.set_windows_suspended(false);
+            assert_eq!(
+                mic.tick(20_001, resume, true),
+                if resume { Action::Start } else { Action::None }
+            );
+        }
+    }
+
+    #[test]
+    fn a_late_windows_request_cancels_start_and_does_not_latch_capture_failure() {
+        let mut mic = Lifecycle::default();
+        assert_eq!(mic.tick(0, true, true), Action::Start);
+        mic.start_attempted();
+        mic.set_windows_suspended(true);
+        mic.request_stop(1);
+        assert_eq!(mic.tick(501, true, true), Action::None);
+        assert_eq!(mic.phase, Phase::Idle);
+        mic.set_windows_suspended(false);
+        assert_eq!(mic.tick(502, true, true), Action::Start);
+    }
+
+    #[test]
+    fn windows_takeover_preempts_failed_reset_without_reconnect_or_losing_the_error() {
+        let mut mic = Lifecycle::default();
+        assert_eq!(mic.tick(0, true, true), Action::Start);
+        mic.start_attempted();
+        mic.pcm_received(1);
+        assert_eq!(mic.tick(5_001, true, true), Action::Stop);
+        assert_eq!(mic.tick(5_501, true, true), Action::ResetAudio);
+        mic.reset_completed(5_501, false);
+        mic.set_windows_suspended(true);
+        assert_eq!(mic.tick(6_001, true, true), Action::None);
+        assert_eq!(mic.phase, Phase::Error);
+        assert!(!mic.cleanup_pending());
+        mic.set_windows_suspended(false);
+        assert_eq!(mic.tick(6_002, true, true), Action::None);
+        assert_eq!(mic.phase, Phase::Error);
+        assert_eq!(mic.tick(6_003, false, true), Action::None);
+        assert_eq!(mic.tick(6_004, true, true), Action::Start);
+    }
+
+    #[test]
+    fn an_unquiet_windows_yield_never_rebuilds_legacy_services_or_claims_shutdown() {
+        let mut mic = Lifecycle::default();
+        assert_eq!(mic.tick(0, true, true), Action::Start);
+        mic.start_attempted();
+        mic.set_windows_suspended(true);
+        assert_eq!(mic.tick(1, true, true), Action::Stop);
+        let mut retries = 0;
+        for now in (101..30_001).step_by(100) {
+            mic.audio_packet(now);
+            match mic.tick(now, true, true) {
+                Action::None => (),
+                Action::RetryStop => retries += 1,
+                action => panic!("Windows voice was interrupted by {action:?}"),
+            }
+            // Releasing voice cannot turn an unfinished deliberate STOP into a reset.
+            if now == 10_001 {
+                mic.set_windows_suspended(false);
+            }
+        }
+        assert_eq!(retries, 1);
+        assert!(mic.uplink_active);
+        assert!(mic.cleanup_pending());
+        assert!(!mic.accepts_pcm());
+        assert!(mic.wait_ms(29_901, 100) > 0);
+        assert_eq!(mic.tick(30_501, false, true), Action::None);
+        assert_eq!(mic.phase, Phase::Idle);
+        assert!(!mic.cleanup_pending());
+    }
 
     #[test]
     fn automatic_delay_starts_at_last_client_close_and_reopen_cancels_it() {

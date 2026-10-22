@@ -109,6 +109,7 @@ def decode(data, kind):
         # Apple stores the first LE32 word in the high half of its feature word.
         high, low = reader.uint(4), reader.uint(4)
         result["extended_features_internal"] = f"{(high << 32) | low:016x}"
+        result["ulla_gate_bit36"] = bool(high & 0x10)
         result["tail"] = reader.take(len(data) - reader.offset).hex()
         return result
     result["sections"] = []

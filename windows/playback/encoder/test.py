@@ -122,6 +122,41 @@ def decode(data):
         return struct.unpack("<" + "f" * (decoded.stat().st_size // 4), decoded.read_bytes())
 
 
+def check_link_budgets(pcm, stress_pcm):
+    integers = struct.unpack("<" + "h" * (len(pcm) // 2), pcm)
+    for budget in range(128, 257):
+        arguments = ["--vbr", "--link-budget", str(budget)]
+        limited = subprocess.run([BUILD / "ntpods-eld-encoder.exe", *arguments],
+                                 input=stress_pcm, capture_output=True, timeout=30, check=True)
+        assert not limited.stderr, limited.stderr.decode(errors="replace")
+        _, sizes = parse_stream(limited.stdout)
+        assert len(sizes) >= 300 and max(sizes) <= budget * 10 // 8, (budget, max(sizes))
+        if budget not in {128, 160, 161, 174, 191, 192, 256}:
+            continue
+        values = decode(limited.stdout)
+        assert len(values) == len(sizes) * 960
+        assert all(math.isfinite(value) and abs(value) <= 2 for value in values)
+        tones = subprocess.run([BUILD / "ntpods-eld-encoder.exe", *arguments],
+                               input=pcm, capture_output=True, timeout=30, check=True)
+        assert encode_float([value / 32768 for value in integers], *arguments) == tones.stdout
+        channels = decode(tones.stdout)
+        for side, frequency in ((0, 440), (1, 880)):
+            assert 0.1 < spectral_amplitude(channels[side::2][24000:120000], frequency) < 0.25
+    reordered = subprocess.run([BUILD / "ntpods-eld-encoder.exe", "--link-budget", "174", "--vbr"],
+                               input=pcm, capture_output=True, timeout=30, check=True)
+    assert reordered.stdout == encode_float([value / 32768 for value in integers],
+                                            "--vbr", "--link-budget", "174")
+    for arguments in (["--link-budget", "174"], ["--bitrate", "192000", "--link-budget", "174"],
+                      ["--vbr", "--link-budget"], ["--vbr", "--link-budget", "127"],
+                      ["--vbr", "--link-budget", "257"], ["--vbr", "--link-budget", "174000"],
+                      ["--vbr", "--link-budget", "174x"], ["--vbr", "--link-budget", "-174"],
+                      ["--vbr", "--link-budget", "174.5"], ["--vbr", "--link-budget", "000"],
+                      ["--vbr", "--link-budget", "174", "--link-budget", "174"]):
+        rejected = subprocess.run([BUILD / "ntpods-eld-encoder.exe", *arguments],
+                                  input=b"", capture_output=True, timeout=10)
+        assert rejected.returncode != 0 and not rejected.stdout
+
+
 def run():
     pcm = bytearray()
     for i in range(48000 * 3):
@@ -168,6 +203,7 @@ def run():
                                     -30000 if i % 960 == 0 else 0)
                          for i in range(48000))
     stress_pcm = noise + transients
+    check_link_budgets(pcm, stress_pcm)
     stress = subprocess.run([BUILD / "ntpods-eld-encoder.exe"], input=stress_pcm,
                             capture_output=True, timeout=30, check=True)
     _, stress_sizes = parse_stream(stress.stdout)
@@ -218,6 +254,7 @@ def run():
     print(f"PASS: ASC {asc.hex()}, {len(sizes)} AUs, peak {max(sizes)} bytes; "
           f"noise peak {max(stress_sizes)} bytes; 48 kHz stereo pitch, "
           "channel separation, all 129 bitrate budgets, noise/transients, Float32 precision and truncated input; "
+          "all 129 VBR link budgets and cutoff/quality boundaries; "
           f"VBR tones {variable_tone_rate / 1000:.1f}, noise {variable_noise_rate / 1000:.1f} kbps, "
           f"peak {max(variable_stress_sizes)} bytes.")
 

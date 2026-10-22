@@ -475,6 +475,17 @@ Notification restoration was verified. NTPods has no case-ringing control;
 the reported sound capability and successful Stop response do not establish
 working Start/Stop behavior.
 
+iOS also builds a two-byte DULT Short Start, `1A 03`. Its host-side
+`trackingShort` context is not an extra payload byte. A separate test on
+2026-10-21 used the Pro 3 case with PnP `01/004C/2029/0001` and buds reporting
+firmware `9A348`: Short Start followed by Stop `01 03` two seconds later on
+the same unpaired connection. Both ATT writes succeeded; only Stop returned
+status zero. No Start response or Sound Completed event arrived, and the user
+heard no sound. The uncached identity, indication subscription and restoration
+to the original CCCD `0000` were verified. Short Start therefore remains
+unusable for case ringing under these conditions; successful writes do not
+establish sound authorization or a Find My registration prerequisite.
+
 ### Case sound and bonding limits
 
 The iOS 27.0.1 (24A446) Hawkeye configuration writer uses `01 00 02` for Start

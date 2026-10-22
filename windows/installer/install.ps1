@@ -1,18 +1,20 @@
 <#
     ZIP installer for Windows 11 22H2 or newer. Uses the same setup functions as
-    NTPods.msi: sign and install the AAP, ACX microphone and playback drivers;
-    copy the apps to Program Files; register helper tasks and startup entries.
+    NTPods.msi: copy the apps to Program Files and register startup entries.
+    USB dongles use Windows' built-in drivers. -Drivers additionally signs and
+    installs the direct Bluetooth drivers and configures the PC's Apple identity.
     The distribution includes all inputs; development tools are not required.
 
-    Use a test PC. Before running as administrator:
+    For -Drivers, use a test PC configured beforehand:
       1. Save the BitLocker recovery key.
       2. Disable Secure Boot if it blocks test signing.
       3. Run bcdedit /set testsigning on, then reboot.
 
     Usage: powershell -ExecutionPolicy Bypass -File .\install.ps1
-    -Yes skips the BitLocker recovery-key confirmation for unattended installs.
+    -Drivers opts into direct Bluetooth support. Existing drivers are otherwise left alone.
+    -Yes skips the driver installation's BitLocker recovery-key confirmation.
 #>
-param([switch]$Yes, [ValidateSet('auto', 'acx')][string]$MicDriver = 'acx')
+param([switch]$Drivers, [switch]$Yes, [ValidateSet('auto', 'acx')][string]$MicDriver = 'acx')
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $here 'setup-common.ps1')
@@ -21,9 +23,13 @@ $dest = Join-Path $env:ProgramFiles 'NTPods'
 $sid = Get-CurrentUserSid
 
 # Validate before changing certificates or drivers.
-Write-Warning 'NTPods requires Test Mode, which weakens Windows driver-signature checks. These experimental drivers are not Microsoft production-signed. Do not enable Test Mode on your everyday or work PC for NTPods; use a dedicated test PC.'
 if (-not (Test-Admin)) { throw 'Run this from an ADMINISTRATOR PowerShell.' }
 Assert-UserSid $sid
+$existingInstall = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\NTPods' -ErrorAction SilentlyContinue
+if ($existingInstall.InstallKind -eq 'msi') { throw 'Update an MSI installation with the MSI package, not the ZIP installer.' }
+$ownsDrivers = $Drivers -or (Test-NTPodsZipDriverOwnership $existingInstall)
+if ($Drivers) {
+Write-Warning 'Direct Bluetooth drivers require Test Mode, which weakens Windows driver-signature checks. These experimental drivers are not Microsoft production-signed. Use a dedicated test PC. USB dongles do not require Test Mode.'
 $MicDriver = Resolve-MicDriver $MicDriver
 $bitlocker = Test-BitLocker
 if (-not (Test-TestMode)) {
@@ -50,15 +56,21 @@ if ($bitlocker) {
         if ($a -notmatch '^(y|yes|s|sim)$') { throw 'Stopped: save the BitLocker recovery key first, then run this again.' }
     }
 }
+}
 
-$required = @(
+$driverFiles = @(
     'driver\NTPodsAAP.sys', 'driver\ntpodsaap.cat', 'driver\NTPodsAAP.inf',
     'driver-mic-acx\AudioCodec.sys', 'driver-mic-acx\audiocodec.cat', 'driver-mic-acx\AudioCodec.inf',
     'driver-audio\NTPodsAudio.sys', 'driver-audio\ntpodsaudio.cat', 'driver-audio\NTPodsAudio.inf',
-    'tools\devcon.exe', 'tools\audio-binding.exe', 'audio-driver.ps1', 'ntpodsd.exe', 'avcodec-61.dll', 'avutil-59.dll', 'swresample-5.dll',
+    'tools\devcon.exe', 'tools\audio-binding.exe'
+)
+$required = @(
+    'audio-driver.ps1', 'ntpodsd.exe', 'avcodec-61.dll', 'avutil-59.dll', 'swresample-5.dll',
     'ntpods-aac-encoder.exe', 'ntpods-eld-encoder.exe', 'ntpods-fdk-q31.dll',
     'winui\ntpods-winui.exe', 'fix-driver.ps1', 'rename-mic.ps1', 'bluetooth-host-identity.ps1'
-) | ForEach-Object { Join-Path $here $_ }
+)
+if ($Drivers) { $required += $driverFiles }
+$required = $required | ForEach-Object { Join-Path $here $_ }
 $missing = @($required | Where-Object { -not (Test-Path $_) })
 if ($missing) {
     throw "This install folder is incomplete. Download the release again. Missing:`n  " + ($missing -join "`n  ")
@@ -74,20 +86,23 @@ $work = Join-Path $setupDir "drivers-$([guid]::NewGuid())"
 $transactionId = [guid]::NewGuid().ToString()
 try {
 Prepare-NTPodsAppTransaction $here $transactionId
+if ($Drivers) {
 try { Install-NTPodsDrivers $here $work $MicDriver $sid $transactionId }
 finally {
     if ([IO.Path]::GetFullPath($work).StartsWith($setupDir + '\', [StringComparison]::OrdinalIgnoreCase)) {
         Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
+}
 
 Write-Host "==> Installing the apps in $dest"
 Install-NTPodsAppTransaction $transactionId
 
-Register-NTPodsTasks $dest $sid
+if ($Drivers) { Register-NTPodsTasks $dest $sid }
 New-Item -Path 'HKLM:\SOFTWARE\NTPods' -Force | Out-Null
 Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\NTPods' -Name InstalledUserSid -Value $sid
 Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\NTPods' -Name InstallKind -Value 'zip'
+Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\NTPods' -Name DirectBluetoothDrivers -Value ([int]$ownsDrivers) -Type DWord
 
 # The daemon needs the user's audio session. These Run values also back the
 # app's Start with Windows setting; --tray keeps the window hidden at login.
@@ -97,28 +112,33 @@ foreach ($l in 'NTPods Daemon.lnk', 'NTPods.lnk') {   # older installs used shor
     Remove-Item (Join-Path $startup $l) -Force -ErrorAction SilentlyContinue
 }
 Set-RunValues $sid (Join-Path $dest 'ntpodsd.exe') (Join-Path $dest 'winui\ntpods-winui.exe')
-& (Join-Path $dest 'bluetooth-host-identity.ps1') -Action Install -TransactionId $transactionId
+if ($Drivers) { & (Join-Path $dest 'bluetooth-host-identity.ps1') -Action Install -TransactionId $transactionId }
 } catch {
     $failure = $_
+    $recoveryErrors = @()
+    if ($Drivers) {
     try { & (Join-Path $here 'bluetooth-host-identity.ps1') -Action Rollback -TransactionId $transactionId }
     catch { Write-Warning "Bluetooth identity recovery failed: $_ The original backup was retained." }
-    $recoveryErrors = @()
     try { Restore-NTPodsDriverCheckpoint $here $transactionId }
     catch { $recoveryErrors += "Driver recovery failed: $_ Backup retained at $(Get-DriverCheckpointPath)." }
+    }
     try { Restore-NTPodsAppTransaction $transactionId }
     catch { $recoveryErrors += "App recovery failed: $_ Backup retained at $(Get-NTPodsAppTransactionPath)." }
     if ($recoveryErrors.Count) { throw "Installation failed: $failure $($recoveryErrors -join ' ')" }
     throw $failure
 }
+if ($Drivers) {
 try { & (Join-Path $dest 'bluetooth-host-identity.ps1') -Action Commit -TransactionId $transactionId }
 catch { Write-Warning "Installation completed, but Bluetooth identity transaction cleanup failed: $_" }
 try { Complete-NTPodsDriverTransaction $transactionId }
 catch { Write-Warning "Installation completed, but backup cleanup failed at $(Get-DriverCheckpointPath). Remaining backup files may be incomplete. $_" }
+}
 try { Complete-NTPodsAppTransaction $transactionId }
 catch { Write-Warning "Installation completed, but app backup cleanup failed at $(Get-NTPodsAppTransactionPath). $_" }
 
 Write-Host ''
-Write-Host '==> Done. A reboot is needed to finish the driver install.' -ForegroundColor Green
-Write-Host '    After reboot, connect your AirPods — the WinUI app (tray) shows battery'
-Write-Host '    + Noise Control, and the NTPods microphone appears in Sound > Input'
-Write-Host '    (and in Discord etc.), renamed to your AirPods once they connect.'
+if ($Drivers) {
+    Write-Host '==> Done. Restart Windows to finish the direct Bluetooth driver install.' -ForegroundColor Green
+} else {
+    Write-Host '==> Done. The app is installed; existing drivers and Bluetooth identity were left unchanged.' -ForegroundColor Green
+}

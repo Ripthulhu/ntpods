@@ -34,6 +34,13 @@
             <StackPanel Spacing="8">
                 <TextBlock Text="{Binding [ConversationVolume_Help], Source={StaticResource Loc}}"
                            Foreground="{ThemeResource AppleSecondaryBrush}" FontSize="14" TextWrapping="Wrap" />
+                <StackPanel x:Name="ConversationPolicyControls" Spacing="12" Visibility="Collapsed">
+                    <ComboBox x:Name="ConversationMode" HorizontalAlignment="Stretch" SelectionChanged="ConversationMode_SelectionChanged"
+                              AutomationProperties.Name="{Binding [ConversationPolicy_Mode], Source={StaticResource Loc}}">
+                        <ComboBoxItem Content="{Binding [ConversationPolicy_Absolute], Source={StaticResource Loc}}" />
+                        <ComboBoxItem Content="{Binding [ConversationPolicy_Relative], Source={StaticResource Loc}}" />
+                    </ComboBox>
+                </StackPanel>
                 <Grid ColumnSpacing="16">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                     <Slider x:Name="ConversationVolumeSlider" Minimum="0" Maximum="100" StepFrequency="1"
@@ -43,6 +50,22 @@
                     <TextBlock x:Name="ConversationVolumeText" Grid.Column="1" MinWidth="44" VerticalAlignment="Center"
                                TextAlignment="Right" Foreground="{ThemeResource AppleSecondaryBrush}" />
                 </Grid>
+                <StackPanel x:Name="ConversationSecondControls" Spacing="8" Visibility="Collapsed">
+                    <TextBlock Text="{Binding [ConversationPolicy_Second], Source={StaticResource Loc}}" FontSize="14" TextWrapping="Wrap" />
+                    <Grid ColumnSpacing="16">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                        <Slider x:Name="ConversationSecondSlider" Minimum="0" Maximum="100" StepFrequency="1"
+                                AutomationProperties.Name="{Binding [ConversationPolicy_Second], Source={StaticResource Loc}}" ValueChanged="ConversationSecond_ValueChanged" />
+                        <TextBlock x:Name="ConversationSecondText" Grid.Column="1" MinWidth="44" TextAlignment="Right" VerticalAlignment="Center"
+                                   Foreground="{ThemeResource AppleSecondaryBrush}" />
+                    </Grid>
+                    <Grid ColumnSpacing="16" MinHeight="48">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                        <TextBlock Text="{Binding [ConversationPolicy_Pause], Source={StaticResource Loc}}" FontSize="16" TextWrapping="Wrap" VerticalAlignment="Center" />
+                        <ToggleSwitch x:Name="ConversationPause" Grid.Column="1" Style="{StaticResource SettingToggle}" VerticalAlignment="Center"
+                                      AutomationProperties.Name="{Binding [ConversationPolicy_Pause], Source={StaticResource Loc}}" Toggled="ConversationPause_Toggled" />
+                    </Grid>
+                </StackPanel>
                 <TextBlock x:Name="ConversationVolumeError" Visibility="Collapsed" TextWrapping="Wrap" FontSize="14"
                            AutomationProperties.LiveSetting="Polite"
                            Text="{Binding [ConversationVolume_Error], Source={StaticResource Loc}}" />

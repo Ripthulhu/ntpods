@@ -8,6 +8,55 @@ See [microphone research](WINDOWS-MIC-PROTOCOL-RESEARCH.md) for clock and recove
 assumptions, [validation](WINDOWS-VALIDATION.md) for hardware results, and
 [model support](WINDOWS-MODEL-SUPPORT.md) for capability gates.
 
+## LE Audio, Classic LC3 and Vision Pro HDR
+
+Standard LE Audio on this Pro 3 pair remains unverified. Static analysis of iOS
+27.0.1 / 24A446 and visionOS 27.0.1 / 24M372 establishes executable PACS/ASCS,
+LC3 codec-ID `0x06`, CIG/CIS and ISO data-path handling. Intel Tahoe 25G241 also
+contains the gated host stack. Host implementation does not establish that the
+earbuds expose those services or accept that transport.
+The iOS activation chain resolves standard hearing/common-audio services; the
+corresponding Intel Tahoe peripheral activation remains unproven.
+
+The examined `bluetoothaudiod` entry points require `Accessibility/LeAudio`, or
+`enableHALEAudio` in `com.apple.bluetooth` together with a successful developer-mode
+check returning 1. The iOS TMAS/live-on predicate additionally checks internal
+diagnostics, `LEAudioLiveOnEnable` and host/controller support; CAS/ASCS can
+instead pass the HAP gate. Its “Should Launch”
+state comes from host connection option `kCBConnectOptionDetectAndLaunchLEAudio`;
+it is not proof of peer authentication. No preference or feature gate was changed.
+
+LC3 names alone do not establish LE Audio. visionOS `bluetoothd` separately maps
+LC3 `0x7F` and LC3-Stereo `0xFF` in its HFP/SCO setup path. Its HDR eSCO choice
+requires remote proprietary capability plus a local controller predicate. Those
+codec IDs and packet sizes are not this reference's AVDTP codec or media format.
+The local predicate checks Apple's internal controller kind and revision; its
+ACI, BCM and SRS proprietary-feature queries use different vendor commands.
+Neither that mapping nor those commands establish Intel HDR support.
+
+The Pro 3 [HDR RF report](https://fccid.io/BCG-A3063/Test-Report/Bluetooth-HDR-Test-Report-8575658)
+tests separate 4 and 8 Mbps modes in the 2.4 GHz band on A3063 firmware 8A357.
+These are radio test rates, not NTPods codec bitrates. Their required Intel
+radio/baseband support and control interface remain unestablished.
+
+The traced Vision Pro ULLA route uses an AudioAP firmware image and a `durant`
+driver/plugin/controller interface. That requirement does not establish Intel
+compatibility or rule out other HDR routes. [Apple's Vision Pro support page](https://support.apple.com/en-us/118522)
+confirms lossless and ultra-low-latency support for Pro 3 without identifying it
+as standard LE Audio.
+Its peer eligibility bit is decoded in [Fast Connect discovery](APPLE-FAST-CONNECT.md#framing).
+Advertising that bit does not establish the UHI control or media transport.
+The Vision Pro `VirtualAudio` HAL plug-in prefers the ULLA device kind and
+selects it through a private CoreAudio property. That identifies profile
+selection; its PCM transfer, codec, sample format and clock remain unresolved.
+
+Positive AirPods LE Audio evidence needs identity-bound earbud PACS `0x1850` and
+ASCS `0x184E`, LC3 configuration, accepted CIS setup and corresponding ISO traffic.
+Local controller features, remote peer features and actual streaming are separate
+checks. Existing reconnect captures lack controller initialization; missing ISO
+traffic in them does not prove unsupported hardware. The current NTPods playback
+and HQ microphone paths remain the Classic transports described below.
+
 ## Channels and ownership
 
 | Path | L2CAP PSM | What crosses it |
@@ -40,12 +89,14 @@ Sources: [L2CAP transport](../windows/drivers/aap/L2cap.c),
 
 ## Playback negotiation
 
-Native Connect does not enable Windows' legacy AudioSink or HFP profiles when
-NTPods owns the playback driver. Disconnect still releases those profiles.
-For supported HQ microphones, a separate helper disables the selected pair's HFP
-service before exposing the native render endpoint, preserving its original state
-for restoration. This avoids Windows' endpoint-unification wait; it does not
-change AVDTP timing or the Windows-wide timeout. See
+Native Connect protects the legacy AudioSink profile when NTPods owns the
+playback driver. HFP control and audio remain available, including for older
+buds. Before AAP setup, an explicit connection enables the selected pair's HFP
+service and requests its control connection; service enablement alone does not
+prove HFP readiness. Disconnect releases those profiles, so a native transport
+reset on return must also restore HFP. Manual Sound choices remain unchanged.
+This avoids the observed endpoint-unification wait without changing AVDTP
+timing or the Windows-wide timeout. See
 [startup and lifetime](WINDOWS-AVRCP-VOLUME.md#startup-and-lifetime).
 AVDTP setup waits for a healthy AACP handshake. If the initial signaling channel
 is rejected with Windows error 71 after its bounded retries, NTPods permits one

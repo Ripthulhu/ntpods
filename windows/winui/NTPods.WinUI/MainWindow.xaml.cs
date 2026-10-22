@@ -22,6 +22,7 @@ public sealed partial class MainWindow : Window
     private bool _closed;
     private bool _showingSettings;
     private int _navigationVersion;
+    private ulong? _companionQueriedEpoch;
     private XamlRoot? _sizingRoot;
 
     public MainWindow(DaemonClient client)
@@ -101,6 +102,9 @@ public sealed partial class MainWindow : Window
         _client.SnapshotReceived += OnSnapshot;
         _client.ConnectPromptReceived += OnConnectPrompt;
         _client.ConnectionChanged += OnConnectionChanged;
+        _client.CompanionStatusReceived += OnCompanionStatus;
+        _client.CompanionPreferencesReceived += OnCompanionPreferences;
+        _client.CommandResultReceived += OnCompanionResult;
     }
 
     private void OnRootChanged(XamlRoot sender, XamlRootChangedEventArgs args) => EnforceMinimumSize();
@@ -341,6 +345,7 @@ public sealed partial class MainWindow : Window
             try
             {
                 _pairingLid.Clear();
+                if (!AppSettings.ConnectionPopupEnabled(_lastSnapshot?.DeviceId ?? "")) return;
                 var prompt = GetConnectPrompt();
                 prompt.ShowPrompt(name, _ =>
                 {
@@ -353,10 +358,89 @@ public sealed partial class MainWindow : Window
 
         });
 
-    private void OnConnectionChanged(bool connected) =>
+    private void OnCompanionStatus(CompanionStatus status)
+    {
+        ulong epoch = _client.SessionEpoch;
+        long receivedAt = Environment.TickCount64;
+        CompanionUiTrace.Write("status_callback", new { epoch, phase = CompanionUiTrace.Phase(status.Phase) });
+        bool queued = DispatcherQueue.TryEnqueue(() =>
+        {
+            bool ready = _client.IsReady;
+            string reason = _closed ? "closed" : epoch != _client.SessionEpoch ? "epoch" : !ready ? "offline" : "accepted";
+            CompanionUiTrace.Write("status_dispatch", new { epoch, current_epoch = _client.SessionEpoch, ready, closed = _closed, reason,
+                phase = CompanionUiTrace.Phase(status.Phase) });
+            if (reason == "accepted") DevicePageView.UpdateCompanionStatus(status, receivedAt);
+        });
+        if (!queued) CompanionUiTrace.Write("status_queue_failed", new { epoch });
+    }
+
+    private ulong? _themeSentEpoch;
+    private int? _themeSentIndex;
+
+    private void OnCompanionPreferences(CompanionPreferences preferences)
+    {
+        ulong epoch = _client.SessionEpoch;
         DispatcherQueue.TryEnqueue(() =>
         {
-            DevicePageView.SetDaemonReady(connected && _client.IsReady);
-            if (!connected) DevicePageView.ShowWaitingForDaemon();
+            if (_closed || epoch != _client.SessionEpoch || !_client.IsReady) return;
+            if (preferences.DeviceId is { Length: > 0 } deviceId)
+            {
+                if (preferences.Boolean("cache_disconnected_battery") is { } cache && AppSettings.CacheDisconnectedBattery(deviceId) != cache)
+                    AppSettings.SetCacheDisconnectedBattery(deviceId, cache);
+                if (preferences.Boolean("connection_popup_enabled") is { } popups && AppSettings.ConnectionPopupEnabled(deviceId) != popups)
+                    AppSettings.SetConnectionPopupEnabled(deviceId, popups);
+            }
+            DevicePageView.UpdateCompanionPreferences(preferences);
+            if (preferences.Find("theme") is not { ValueKind: System.Text.Json.JsonValueKind.String } theme) return;
+            int index = theme.GetString() switch { "light" => 1, "dark" => 2, _ => 0 };
+            if (AppSettings.PendingThemeIndex is { } pending && pending != index)
+            {
+                if ((_themeSentEpoch != epoch || _themeSentIndex != pending) &&
+                    _client.SetCompanionPreference("theme", pending switch { 1 => "light", 2 => "dark", _ => "system" }))
+                { _themeSentEpoch = epoch; _themeSentIndex = pending; }
+                return;
+            }
+            if (AppSettings.ThemeIndex != index || AppSettings.PendingThemeIndex is not null)
+                AppSettings.AcknowledgeTheme(index);
+            SettingsPageView.InitThemeSelector(index);
+            RootGrid.RequestedTheme = AppSettings.Theme;
+            _themeSentEpoch = null;
+            _themeSentIndex = null;
         });
+    }
+
+    private void OnCompanionResult(DaemonEvent.CommandResult result)
+    {
+        if (result.Command is not ("companion_switch" or "companion_set_preference" or "companion_call_consent")) return;
+        ulong epoch = _client.SessionEpoch;
+        CompanionUiTrace.Write("result_callback", new { epoch, request_id = result.RequestId });
+        bool queued = DispatcherQueue.TryEnqueue(() =>
+        {
+            bool ready = _client.IsReady;
+            string reason = _closed ? "closed" : epoch != _client.SessionEpoch ? "epoch" : !ready ? "offline" : "accepted";
+            CompanionUiTrace.Write("result_dispatch", new { epoch, current_epoch = _client.SessionEpoch, ready, closed = _closed, reason,
+                request_id = result.RequestId });
+            if (reason == "accepted") DevicePageView.CompleteCompanion(result, epoch);
+        });
+        if (!queued) CompanionUiTrace.Write("result_queue_failed", new { epoch, request_id = result.RequestId });
+    }
+
+    private void OnConnectionChanged(bool connected)
+    {
+        ulong epoch = _client.SessionEpoch;
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (_closed || epoch != _client.SessionEpoch) return;
+            bool ready = connected && _client.IsReady;
+            DevicePageView.SetDaemonReady(ready);
+            DevicePageView.SetCompanionSession(epoch, ready);
+            if (!ready)
+            {
+                _companionQueriedEpoch = null;
+                DevicePageView.ShowWaitingForDaemon();
+            }
+            else if (_companionQueriedEpoch != epoch && _client.RequestCompanionStatus())
+                _companionQueriedEpoch = epoch;
+        });
+    }
 }

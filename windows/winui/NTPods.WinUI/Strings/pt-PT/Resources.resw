@@ -395,8 +395,8 @@
   <data name="NoiseControl.RequestTimeout" xml:space="preserve"><value>Os AirPods não confirmaram esta alteração. Atualize as definições do dispositivo e tente novamente.</value></data>
   <data name="NoiseControl.OffUnavailable" xml:space="preserve"><value>Os AirPods indicam o modo Desativado, mas o controlo está indisponível. Atualize as definições do dispositivo.</value></data>
   <data name="ConversationVolume_Title" xml:space="preserve"><value>Volume enquanto fala</value></data>
-  <data name="ConversationVolume_Help" xml:space="preserve"><value>Volume máximo de reprodução neste PC enquanto fala.</value></data>
-  <data name="ConversationVolume_Error" xml:space="preserve"><value>Não foi possível confirmar o volume. Tente novamente.</value></data>
+  <data name="ConversationVolume_Help" xml:space="preserve"><value>Comportamento da reprodução neste PC enquanto fala.</value></data>
+  <data name="ConversationVolume_Error" xml:space="preserve"><value>Não foi possível guardar as definições de conversa. Tente novamente.</value></data>
   <data name="Action_Close" xml:space="preserve"><value>Fechar</value></data>
   <data name="Shutdown.Closing" xml:space="preserve"><value>NTPods — A restabelecer o áudio antes de fechar…</value></data>
   <data name="Shutdown.FailedTitle" xml:space="preserve"><value>Encerramento não confirmado</value></data>
@@ -433,7 +433,7 @@
   <data name="SettingsNearbyBattery.UpdateFailed" xml:space="preserve"><value>Não foi possível confirmar a definição de bateria por proximidade. Tente novamente.</value></data>
   <data name="Playback.Variable" xml:space="preserve"><value>Variável (experimental)</value></data>
   <data name="Playback.VariableHelp" xml:space="preserve"><value>Taxa de bits variável AAC-ELD, até 256 kbps.</value></data>
-  <data name="Playback.PeakBitrate" xml:space="preserve"><value>Taxa de bits máxima: {0} kbps.</value></data>
+  <data name="Playback.PeakBitrate" xml:space="preserve"><value>Limite de débito negociado: {0} kbps.</value></data>
   <data name="Transparency.Title" xml:space="preserve"><value>Transparência personalizada</value></data>
   <data name="Transparency.Help" xml:space="preserve"><value>Experimental. Ajusta o som exterior no modo Transparência. Leia as definições atuais antes de as alterar.</value></data>
   <data name="Transparency.Enable" xml:space="preserve"><value>Usar definições personalizadas</value></data>
@@ -594,4 +594,68 @@
   <data name="HardwareChecks.RawDataHelp" xml:space="preserve"><value>Valores de volume guardados; não são bandas de frequência nem uma medição do nível sonoro.</value></data>
   <data name="HardwareChecks.FirstUse" xml:space="preserve"><value>Primeira utilização (hora do dispositivo): {0}</value></data>
   <data name="HardwareChecks.Preparing" xml:space="preserve"><value>A preparar a verificação. Mantenha o estojo aberto.</value></data>
+  <data name="Playback_LinkLimit" xml:space="preserve"><value>Coexistência Wi-Fi</value></data>
+  <data name="Playback_LinkOff" xml:space="preserve"><value>Desativada</value></data>
+  <data name="Playback_LinkAutomatic" xml:space="preserve"><value>Automática</value></data>
+  <data name="Playback_LinkCustom" xml:space="preserve"><value>Personalizada</value></data>
+  <data name="Playback_LinkKbps" xml:space="preserve"><value>Limite por trama (kbps)</value></data>
+  <data name="Playback_LinkApply" xml:space="preserve"><value>Aplicar limite por trama</value></data>
+  <data name="Playback_LinkRequiresVariable" xml:space="preserve"><value>A sua escolha fica guardada e só se aplica com débito variável.</value></data>
+  <data name="Playback_LinkHelp" xml:space="preserve"><value>Desativada mantém o orçamento normal por trama. Alterar esta definição reinicia brevemente a reprodução.</value></data>
+  <data name="Playback_LinkAutomaticHelp" xml:space="preserve"><value>Reduz o orçamento por trama enquanto este PC está ligado a uma rede Wi-Fi de 2,4 GHz.</value></data>
+  <data name="Playback_LinkCustomHelp" xml:space="preserve"><value>Limita cada trama comprimida, não o débito médio. Limites mais baixos deixam menos espaço para os detalhes do áudio. As alterações reiniciam brevemente a reprodução.</value></data>
+  <data name="Playback_GameMode" xml:space="preserve"><value>Modo de Jogo</value></data>
+  <data name="Playback_GameModeHelp" xml:space="preserve"><value>Usa uma memória intermédia de reprodução menor nos AirPods compatíveis. As alterações podem interromper brevemente o áudio.</value></data>
+  <data name="Companion.Title" xml:space="preserve"><value>Ouvir em</value></data>
+  <data name="Companion.Phone" xml:space="preserve"><value>Telemóvel</value></data>
+  <data name="Companion.ThisPC" xml:space="preserve"><value>Este PC</value></data>
+  <data name="Companion.Help" xml:space="preserve"><value>Escolha onde ligar os AirPods.</value></data>
+  <data name="Companion.Pending" xml:space="preserve"><value>A mudar de dispositivo…</value></data>
+  <data name="Companion.Unavailable" xml:space="preserve"><value>Abra a aplicação no telemóvel associado para mudar de dispositivo.</value></data>
+  <data name="Companion.Busy" xml:space="preserve"><value>Pare o microfone ou a chamada antes de mudar.</value></data>
+  <data name="Companion.Failed" xml:space="preserve"><value>Não foi possível confirmar a mudança. Escolha um dispositivo para tentar novamente.</value></data>
+  <data name="CompanionSettings.Title" xml:space="preserve"><value>Definições partilhadas</value></data>
+  <data name="CompanionSettings.Calls" xml:space="preserve"><value>Atender chamadas no telemóvel</value></data>
+  <data name="CompanionSettings.CallsHelp" xml:space="preserve"><value>Ative esta opção aqui e no LibrePods. As chamadas recebidas podem mover os AirPods deste PC para o telemóvel.</value></data>
+  <data name="CompanionSettings.Return" xml:space="preserve"><value>Voltar ao PC após as chamadas</value></data>
+  <data name="CompanionSettings.ReturnHelp" xml:space="preserve"><value>Volta apenas se a chamada interrompeu este PC. Retoma o mesmo leitor apenas se o NTPods o colocou em pausa.</value></data>
+  <data name="CompanionSettings.Popups" xml:space="preserve"><value>Avisos de ligação</value></data>
+  <data name="CompanionSettings.BatteryCache" xml:space="preserve"><value>Manter os níveis de bateria após desligar</value></data>
+  <data name="CompanionSettings.SaveFailed" xml:space="preserve"><value>Não foi possível guardar a definição. Tente novamente.</value></data>
+  <data name="ConversationPolicy.Mode" xml:space="preserve"><value>Comportamento do volume durante conversas</value></data>
+  <data name="ConversationPolicy.Absolute" xml:space="preserve"><value>Limitar o volume</value></data>
+  <data name="ConversationPolicy.Relative" xml:space="preserve"><value>Reduzir o volume original</value></data>
+  <data name="ConversationPolicy.Second" xml:space="preserve"><value>Volume da segunda fase</value></data>
+  <data name="ConversationPolicy.Pause" xml:space="preserve"><value>Pausar a reprodução ao falar</value></data>
+  <data name="CompanionSettings.Unavailable" xml:space="preserve"><value>As definições partilhadas estão indisponíveis.</value></data>
+  <data name="Dongle_Title" xml:space="preserve"><value>AirPods Dongle</value></data>
+  <data name="Dongle_OutputHelp" xml:space="preserve"><value>Escolha «AirPods Dongle» como saída de som do Windows.</value></data>
+  <data name="Dongle_Reconnect" xml:space="preserve"><value>Voltar a ligar AirPods</value></data>
+  <data name="Dongle_Pair" xml:space="preserve"><value>Emparelhar AirPods…</value></data>
+  <data name="Dongle_Phone" xml:space="preserve"><value>Emparelhar telemóvel</value></data>
+  <data name="Dongle_PhoneWaiting" xml:space="preserve"><value>Selecione AirPods Dongle nas definições Bluetooth do telemóvel.</value></data>
+  <data name="Dongle_Connected" xml:space="preserve"><value>AirPods ligados por USB</value></data>
+  <data name="Dongle_NotConnected" xml:space="preserve"><value>AirPods desligados</value></data>
+  <data name="Dongle_NativeHelp" xml:space="preserve"><value>A ligação Bluetooth automática do PC fica em pausa enquanto o adaptador está ligado. Ligar no cabeçalho continua a usar o Bluetooth do PC.</value></data>
+  <data name="Dongle_PairHelp" xml:space="preserve"><value>Coloque a reprodução e a gravação USB em pausa e desligue o telemóvel. Ative o modo de emparelhamento dos AirPods antes de continuar.</value></data>
+  <data name="Dongle_BatteryAge" xml:space="preserve"><value>Último relatório: há {0} segundos</value></data>
+  <data name="Dongle_Unknown" xml:space="preserve"><value>Ainda não há informação da bateria.</value></data>
+  <data name="Dongle_Multiple" xml:space="preserve"><value>Desligue os outros adaptadores AirPods para escolher este.</value></data>
+  <data name="Dongle_Busy" xml:space="preserve"><value>O adaptador está ocupado. Aguarde ou coloque a reprodução em pausa e tente novamente.</value></data>
+  <data name="Dongle_Stale" xml:space="preserve"><value>A ligação mudou. Tente novamente.</value></data>
+  <data name="Dongle_Timeout" xml:space="preserve"><value>O adaptador não confirmou o pedido. Verifique a ligação antes de tentar novamente.</value></data>
+  <data name="Dongle_Unsupported" xml:space="preserve"><value>Atualize o firmware do adaptador para usar estes controlos.</value></data>
+  <data name="Dongle_Error" xml:space="preserve"><value>Verifique a ligação USB do adaptador.</value></data>
+  <data name="Dongle_ReplaceConfirm" xml:space="preserve"><value>Isto substitui o emparelhamento AirPods guardado na posição atual do adaptador. Ative o modo de emparelhamento dos novos AirPods e escolha Emparelhar.</value></data>
+  <data name="Dongle_PairAction" xml:space="preserve"><value>Emparelhar</value></data>
+  <data name="Dongle_Cancel" xml:space="preserve"><value>Cancelar</value></data>
+  <data name="Dongle_PairNative" xml:space="preserve"><value>Emparelhar pelo Bluetooth do PC</value></data>
+  <data name="Dongle_Diagnostics" xml:space="preserve"><value>Diagnóstico de ligação</value></data>
+  <data name="Dongle_ReadDiagnostics" xml:space="preserve"><value>Atualizar</value></data>
+  <data name="Dongle_Queue" xml:space="preserve"><value>Memória intermédia de áudio: {0} / {1} fotogramas (máximo {2})</value></data>
+  <data name="Dongle_Memory" xml:space="preserve"><value>Memória disponível: {0} KiB de {1} KiB</value></data>
+  <data name="Dongle_Encoding" xml:space="preserve"><value>Codificação: {0} µs (máximo {1} µs)</value></data>
+  <data name="Dongle_Drops" xml:space="preserve"><value>Memória intermédia vazia: {0} fotogramas; descartados: {1}</value></data>
+  <data name="Dongle_Recovery" xml:space="preserve"><value>Falhas de envio: {0}; recuperações: {1}</value></data>
+  <data name="Dongle_CountersHelp" xml:space="preserve"><value>Os contadores iniciam com o adaptador. O tempo de codificação não representa a latência de escuta.</value></data>
 </root>

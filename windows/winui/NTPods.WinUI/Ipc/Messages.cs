@@ -49,6 +49,17 @@ public sealed record PlaybackBitrate
     };
 }
 
+public sealed record PlaybackLinkSettings
+{
+    [JsonRequired, JsonPropertyName("mode")] public string Mode { get; init; } = "off";
+    [JsonRequired, JsonPropertyName("kbps")] public ushort Kbps { get; init; } = 174;
+    [JsonIgnore] public bool IsValid => Mode is "off" or "automatic" or "manual" && Kbps is >= 128 and <= 256;
+
+    public static PlaybackLinkSettings? FromInput(string mode, double kbps) =>
+        double.IsFinite(kbps) && kbps == Math.Truncate(kbps) && kbps is >= 128 and <= 256 &&
+        mode is "off" or "automatic" or "manual" ? new() { Mode = mode, Kbps = (ushort)kbps } : null;
+}
+
 public sealed record HearingAidSettings
 {
     [JsonRequired, JsonPropertyName("left_eq")] public float[] LeftEq { get; init; } = [];
@@ -156,9 +167,124 @@ public sealed record NearbyFinderState
     [JsonPropertyName("last_heard_age_ms")] public ulong? LastHeardAgeMs { get; init; }
 }
 
+public sealed class DongleAudioState
+{
+    [JsonPropertyName("requested_codec")] public byte RequestedCodec { get; init; }
+    [JsonPropertyName("codec")] public byte Codec { get; init; }
+    [JsonPropertyName("variable")] public bool Variable { get; init; }
+    [JsonPropertyName("requested_bitrate")] public uint RequestedBitrate { get; init; }
+    [JsonPropertyName("bitrate")] public uint Bitrate { get; init; }
+    [JsonPropertyName("game_mode_requested")] public bool GameModeRequested { get; init; }
+    [JsonPropertyName("game_mode_state")] public string GameModeState { get; init; } = "off";
+    [JsonPropertyName("input")] public byte Input { get; init; }
+    [JsonPropertyName("pending")] public bool Pending { get; init; }
+    [JsonPropertyName("streaming")] public bool Streaming { get; init; }
+    [JsonPropertyName("microphone_active")] public bool MicrophoneActive { get; init; }
+    [JsonPropertyName("game_mode_supported")] public bool GameModeSupported { get; init; }
+    [JsonPropertyName("reported_delay_tenths_ms")] public ushort? ReportedDelayTenthsMs { get; init; }
+    [JsonPropertyName("priming_ms")] public ushort PrimingMs { get; init; }
+    [JsonIgnore] public bool IsValid => RequestedCodec <= 3 && Codec <= 3 && Input <= 2 && PrimingMs == 100 &&
+        GameModeState is "off" or "pending" or "unconfirmed" or "confirmed" or "failed" or "unsupported" or "restoring";
+}
+
+public sealed class DonglePerformanceState
+{
+    [JsonPropertyName("input")] public byte Input { get; init; }
+    [JsonPropertyName("codec")] public byte Codec { get; init; }
+    [JsonPropertyName("flags")] public byte Flags { get; init; }
+    [JsonPropertyName("uptime_ms")] public uint? UptimeMs { get; init; }
+    [JsonPropertyName("pcm_used")] public uint? PcmUsed { get; init; }
+    [JsonPropertyName("pcm_capacity")] public uint? PcmCapacity { get; init; }
+    [JsonPropertyName("pcm_high_water")] public uint? PcmHighWater { get; init; }
+    [JsonPropertyName("underflow_frames")] public uint? UnderflowFrames { get; init; }
+    [JsonPropertyName("dropped_frames")] public uint? DroppedFrames { get; init; }
+    [JsonPropertyName("encoded_units")] public uint? EncodedUnits { get; init; }
+    [JsonPropertyName("encode_us")] public uint? EncodeUs { get; init; }
+    [JsonPropertyName("encode_max_us")] public uint? EncodeMaxUs { get; init; }
+    [JsonPropertyName("send_failures")] public uint? SendFailures { get; init; }
+    [JsonPropertyName("recoveries")] public uint? Recoveries { get; init; }
+    [JsonPropertyName("heap_capacity")] public uint? HeapCapacity { get; init; }
+    [JsonPropertyName("heap_allocated")] public uint? HeapAllocated { get; init; }
+    [JsonPropertyName("heap_remaining")] public uint? HeapRemaining { get; init; }
+    [JsonPropertyName("heap_arena")] public uint? HeapArena { get; init; }
+    [JsonIgnore] public bool IsValid => Input <= 2 && Codec <= 3 && (Flags & ~15) == 0 &&
+        !(PcmUsed > PcmCapacity) && !(PcmHighWater > PcmCapacity) && !(HeapAllocated > HeapCapacity) && !(HeapRemaining > HeapCapacity);
+}
+
+public sealed class DongleHealthState
+{
+    [JsonPropertyName("available")] public bool Available { get; set; }
+    [JsonPropertyName("model")] public string Model { get; set; } = "";
+    [JsonPropertyName("firmware")] public string Firmware { get; set; } = "";
+    [JsonPropertyName("earbuds_in_case")] public bool? EarbudsInCase { get; set; }
+    [JsonPropertyName("device_controls")] public Dictionary<byte, uint> DeviceControls { get; set; } = new();
+    [JsonPropertyName("device_controls_requested")] public Dictionary<byte, uint> DeviceControlsRequested { get; set; } = new();
+    [JsonPropertyName("device_controls_pending")] public Dictionary<byte, uint> DeviceControlsPending { get; set; } = new();
+    [JsonPropertyName("device_settings_pending")] public bool DeviceSettingsPending { get; set; }
+    [JsonPropertyName("device_settings_error")] public string? DeviceSettingsError { get; set; }
+    [JsonPropertyName("allow_off_requested")] public bool? AllowOffRequested { get; set; }
+    [JsonPropertyName("adaptive_strength_requested")] public uint? AdaptiveStrengthRequested { get; set; }
+    [JsonPropertyName("anc_unconfirmed")] public bool AncUnconfirmed { get; set; }
+    [JsonPropertyName("audio")] public DongleAudioState? Audio { get; set; }
+    [JsonPropertyName("performance")] public DonglePerformanceState? Performance { get; set; }
+    [JsonPropertyName("nearby_finder")] public NearbyFinderState NearbyFinder { get; set; } = new();
+    [JsonPropertyName("hearing_aid_enabled")] public bool? HearingAidEnabled { get; set; }
+    [JsonPropertyName("hearing_aid_revision")] public ulong HearingAidRevision { get; set; }
+    [JsonPropertyName("hearing_aid_enrolled")] public bool? HearingAidEnrolled { get; set; }
+    [JsonPropertyName("media_assist_enabled")] public bool? MediaAssistEnabled { get; set; }
+    [JsonPropertyName("media_assist_revision")] public ulong MediaAssistRevision { get; set; }
+    [JsonPropertyName("media_assist_available")] public bool MediaAssistAvailable { get; set; }
+    [JsonPropertyName("hearing_aid_settings")] public HearingAidSettings? HearingAidSettings { get; set; }
+    [JsonPropertyName("hearing_aid_editable")] public bool HearingAidEditable { get; set; }
+    [JsonPropertyName("hearing_aid_pending")] public bool HearingAidPending { get; set; }
+    [JsonPropertyName("hearing_aid_error")] public string? HearingAidError { get; set; }
+    [JsonPropertyName("hardware_diagnostics")] public HardwareDiagnostics? HardwareDiagnostics { get; set; }
+    [JsonPropertyName("hardware_diagnostics_pending")] public bool HardwareDiagnosticsPending { get; set; }
+    [JsonPropertyName("hardware_diagnostics_error")] public string? HardwareDiagnosticsError { get; set; }
+    [JsonPropertyName("hearing_metadata")] public HearingMetadata? HearingMetadata { get; set; }
+    [JsonPropertyName("hearing_metadata_pending")] public bool HearingMetadataPending { get; set; }
+    [JsonPropertyName("hearing_metadata_error")] public string? HearingMetadataError { get; set; }
+    [JsonPropertyName("hardware_check")] public HardwareCheckState? HardwareCheck { get; set; }
+    [JsonIgnore] public bool IsValid => Model is not null && Firmware is not null && DeviceControls is not null &&
+        DeviceControlsRequested is not null && DeviceControlsPending is not null && NearbyFinder is not null &&
+        DeviceControls.Count <= 32 && DeviceControlsRequested.Count <= 32 && DeviceControlsPending.Count <= 32 &&
+        NearbyFinder.Rssi is null or (>= -126 and <= 20) &&
+        NearbyFinder.Trend is "unknown" or "stronger" or "steady" or "weaker" &&
+        (!NearbyFinder.Active || NearbyFinder.AvailableIdentity) &&
+        Audio is not { IsValid: false } && Performance is not { IsValid: false } &&
+        HearingAidSettings is not { IsValid: false } && HardwareDiagnostics is not { IsValid: false } &&
+        HearingMetadata is not { IsValid: false } && HardwareCheck is not { IsValid: false };
+}
+
 /// The daemon's authoritative state, pushed on connect and on every change.
+public sealed class DongleState
+{
+    [JsonPropertyName("present")] public bool Present { get; set; }
+    [JsonPropertyName("ambiguous")] public bool Ambiguous { get; set; }
+    [JsonPropertyName("session")] public ulong Session { get; set; }
+    [JsonPropertyName("generation")] public uint Generation { get; set; }
+    [JsonPropertyName("pair_token")] public ulong PairToken { get; set; }
+    [JsonPropertyName("selected")] public bool Selected { get; set; }
+    [JsonPropertyName("connected")] public bool Connected { get; set; }
+    [JsonPropertyName("controls_ready")] public bool ControlsReady { get; set; }
+    [JsonPropertyName("streaming")] public bool Streaming { get; set; }
+    [JsonPropertyName("phone_connected")] public bool PhoneConnected { get; set; }
+    [JsonPropertyName("microphone_active")] public bool MicrophoneActive { get; set; }
+    [JsonPropertyName("phone_pairing")] public bool PhonePairing { get; set; }
+    [JsonPropertyName("usb_playback")] public bool UsbPlayback { get; set; }
+    [JsonPropertyName("anc")] public byte Anc { get; set; }
+    [JsonPropertyName("battery")] public Battery Battery { get; set; } = new();
+    [JsonPropertyName("battery_age_ms")] public uint?[] BatteryAgeMs { get; set; } = [null, null, null];
+    [JsonPropertyName("codec")] public byte Codec { get; set; }
+    [JsonPropertyName("capabilities")] public ushort Capabilities { get; set; }
+    [JsonPropertyName("pending")] public bool Pending { get; set; }
+    [JsonPropertyName("error")] public string? Error { get; set; }
+    [JsonPropertyName("health")] public DongleHealthState Health { get; set; } = new();
+}
+
 public sealed class Snapshot
 {
+    [JsonPropertyName("dongle")] public DongleState Dongle { get; set; } = new();
     [JsonPropertyName("device_id")] public string DeviceId { get; set; } = "";
     [JsonPropertyName("connected")] public bool Connected { get; set; }
 
@@ -195,6 +321,8 @@ public sealed class Snapshot
     [JsonPropertyName("playback_native_driver")] public bool PlaybackNativeDriver { get; set; }
     [JsonPropertyName("playback_aac_bitrate")] public PlaybackBitrate PlaybackAacBitrate { get; set; } = new();
     [JsonPropertyName("playback_aac_eld_bitrate")] public PlaybackBitrate PlaybackAacEldBitrate { get; set; } = new();
+    [JsonPropertyName("playback_link")] public PlaybackLinkSettings? PlaybackLink { get; set; }
+    [JsonPropertyName("playback_game_mode")] public bool? PlaybackGameMode { get; set; }
     [JsonPropertyName("playback_bitrate_kbps")] public uint? PlaybackBitrateKbps { get; set; }
     [JsonPropertyName("playback_delay_reporting")] public bool PlaybackDelayReporting { get; set; }
     [JsonPropertyName("playback_delay_tenths_ms")] public ushort? PlaybackDelayTenthsMs { get; set; }
@@ -325,6 +453,23 @@ public sealed class GetStateCmd
     [JsonPropertyName("cmd")] public string Cmd => "get_state";
 }
 
+public sealed class DongleControlCmd
+{
+    [JsonPropertyName("cmd")] public string Cmd => "dongle_control";
+    [JsonPropertyName("session")] public ulong Session { get; init; }
+    [JsonPropertyName("generation")] public uint Generation { get; init; }
+    [JsonPropertyName("opcode")] public byte Opcode { get; init; }
+    [JsonPropertyName("argument")] public byte Argument { get; init; }
+}
+
+public sealed class DongleHealthCmd
+{
+    [JsonPropertyName("cmd")] public string Cmd => "dongle_health";
+    [JsonPropertyName("session")] public ulong Session { get; init; }
+    [JsonPropertyName("generation")] public uint Generation { get; init; }
+    [JsonPropertyName("command")] public required object Command { get; init; }
+}
+
 public sealed class PingCmd
 {
     [JsonPropertyName("cmd")] public string Cmd => "ping";
@@ -389,6 +534,31 @@ public sealed class SetPlaybackBitrateCmd
     [JsonPropertyName("variable")] public bool Variable { get; init; }
 }
 
+public sealed class SetPlaybackGameModeCmd
+{
+    [JsonPropertyName("cmd")] public string Cmd => "set_playback_game_mode";
+    [JsonPropertyName("enabled")] public bool Enabled { get; init; }
+}
+
+public sealed class SetDongleAudioProfileCmd
+{
+    [JsonPropertyName("cmd")] public string Cmd => "set_dongle_audio_profile";
+    [JsonPropertyName("codec")] public byte Codec { get; init; }
+    [JsonPropertyName("variable")] public bool Variable { get; init; }
+    [JsonPropertyName("bitrate")] public uint Bitrate { get; init; }
+}
+
+public sealed class GetDonglePerformanceCmd
+{
+    [JsonPropertyName("cmd")] public string Cmd => "get_dongle_performance";
+}
+
+public sealed class SetPlaybackLinkCmd
+{
+    [JsonPropertyName("cmd")] public string Cmd => "set_playback_link";
+    [JsonPropertyName("settings")] public PlaybackLinkSettings Settings { get; init; } = new();
+}
+
 public sealed class SetPlaybackBufferCmd
 {
     [JsonPropertyName("cmd")] public string Cmd => "set_playback_buffer";
@@ -437,6 +607,142 @@ public sealed class SetAutoPauseCmd
 public sealed class RefreshDeviceSettingsCmd
 {
     [JsonPropertyName("cmd")] public string Cmd => "refresh_device_settings";
+}
+
+public sealed class CompanionLinkCmd
+{
+    [JsonPropertyName("cmd")] public string Cmd => "companion_link";
+    [JsonPropertyName("peer_address")] public required string PeerAddress { get; init; }
+    [JsonPropertyName("secret_hex")] public required string SecretHex { get; init; }
+    [JsonPropertyName("device_id")] public required string DeviceId { get; init; }
+}
+
+public sealed class CompanionStatusCmd
+{
+    [JsonPropertyName("cmd")] public string Cmd => "companion_status";
+}
+
+public sealed class CompanionSwitchCmd
+{
+    [JsonPropertyName("cmd")] public string Cmd => "companion_switch";
+    [JsonPropertyName("target")] public required string Target { get; init; }
+    [JsonPropertyName("device_id")] public required string DeviceId { get; init; }
+    [JsonPropertyName("request_id")] public ulong RequestId { get; init; }
+}
+
+public sealed class CompanionForgetCmd
+{
+    [JsonPropertyName("cmd")] public string Cmd => "companion_forget";
+}
+
+public sealed class CompanionSetPreferenceCmd
+{
+    [JsonPropertyName("cmd")] public string Cmd => "companion_set_preference";
+    [JsonPropertyName("key")] public required string Key { get; init; }
+    [JsonPropertyName("value")] public required JsonElement Value { get; init; }
+    [JsonPropertyName("device_id")] public string? DeviceId { get; init; }
+    [JsonPropertyName("request_id")] public ulong RequestId { get; init; }
+}
+
+public sealed class CompanionCallConsentCmd
+{
+    [JsonPropertyName("cmd")] public string Cmd => "companion_call_consent";
+    [JsonPropertyName("enabled")] public bool Enabled { get; init; }
+    [JsonPropertyName("device_id")] public required string DeviceId { get; init; }
+    [JsonPropertyName("request_id")] public ulong RequestId { get; init; }
+}
+
+public sealed record ConversationPolicy
+{
+    [JsonPropertyName("mode")] public string Mode { get; init; } = "abs_cap";
+    [JsonPropertyName("first")] public string First { get; init; } = "25";
+    [JsonPropertyName("second")] public string Second { get; init; } = "15";
+    [JsonPropertyName("pause_media")] public bool PauseMedia { get; init; }
+    [JsonIgnore] public bool IsValid => Mode is "abs_cap" or "relative" &&
+        Percent(First, out var first) && Percent(Second, out var second) && second <= first;
+
+    internal static bool Percent(string? text, out decimal value)
+    {
+        value = 0;
+        return text is { Length: > 0 and <= 13 } &&
+            System.Text.RegularExpressions.Regex.IsMatch(text, @"\A(?:0|[1-9][0-9]?|100)(?:\.[0-9]{0,8}[1-9])?\z") &&
+            decimal.TryParse(text, System.Globalization.NumberStyles.AllowDecimalPoint,
+                System.Globalization.CultureInfo.InvariantCulture, out value) && value <= 100;
+    }
+}
+
+public sealed class CompanionPreference
+{
+    [JsonPropertyName("key")] public string Key { get; init; } = "";
+    [JsonPropertyName("rev")] public string Rev { get; init; } = "";
+    [JsonPropertyName("origin")] public string Origin { get; init; } = "";
+    [JsonPropertyName("value")] public JsonElement Value { get; init; }
+    [JsonIgnore] public bool IsValid => Rev is { Length: 16 } && Rev.Any(c => c != '0') &&
+        Rev.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f') && Origin is "pc" or "android" && ValidValue(Key, Value);
+
+    public static bool ValidValue(string key, JsonElement value)
+    {
+        if (key is "host_auto_pause" or "connection_popup_enabled" or "cache_disconnected_battery" or
+            "call_takeover_enabled" or "call_return_enabled") return value.ValueKind is JsonValueKind.True or JsonValueKind.False;
+        if (key == "conversation_policy") return ExactObject(value, "mode", "first", "second", "pause_media") &&
+            value.Deserialize<ConversationPolicy>(Wire.Json) is { IsValid: true };
+        if (key == "desired_hold_actions")
+        {
+            if (!ExactObject(value, "left", "right") || !String(value.GetProperty("left"), out var left) ||
+                !String(value.GetProperty("right"), out var right)) return false;
+            return left == "unset" && right == "unset" || left is "listening" or "assistant" && right is "listening" or "assistant";
+        }
+        if (!String(value, out var text)) return false;
+        return key switch
+        {
+            "theme" => text is "system" or "light" or "dark",
+            "desired_microphone_side" => text is "unset" or "auto" or "right" or "left",
+            "desired_ear_detection" or "desired_case_sounds" or "desired_allow_off" => text is "unset" or "on" or "off",
+            "desired_swipe_duration" => text is "unset" or "0" or "1" or "2",
+            "desired_case_volume" => text == "unset" || System.Text.RegularExpressions.Regex.IsMatch(text!, @"\A(?:0|[1-9][0-9]?|100)\z"),
+            "desired_noise_modes_cycle" => text == "unset" || text is { Length: 2 } && text[0] == '0' &&
+                "35679abcdef".Contains(text[1]),
+            _ => false,
+        };
+    }
+
+    private static bool String(JsonElement value, out string? text)
+    {
+        text = value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+        return text is not null;
+    }
+
+    private static bool ExactObject(JsonElement value, params string[] keys) => value.ValueKind == JsonValueKind.Object &&
+        value.EnumerateObject().Count() == keys.Length && keys.All(key => value.TryGetProperty(key, out _));
+}
+
+public sealed class CompanionPreferences
+{
+    [JsonPropertyName("device_id")] public string? DeviceId { get; init; }
+    [JsonPropertyName("records")] public CompanionPreference[] Records { get; init; } = [];
+    [JsonPropertyName("local_call_consent")] public bool LocalCallConsent { get; init; }
+    [JsonPropertyName("peer_prefs")] public bool PeerPrefs { get; init; }
+    [JsonPropertyName("peer_calls")] public bool PeerCalls { get; init; }
+    [JsonPropertyName("error")] public string? Error { get; init; }
+    [JsonIgnore] public bool IsValid => Records is { Length: <= 15 } && Records.All(record => record is { IsValid: true }) &&
+        Records.Select(record => record.Key).Distinct(StringComparer.Ordinal).Count() == Records.Length && Error is null or { Length: <= 512 };
+    public bool Matches(string deviceId) => DeviceId is { Length: > 0 } &&
+        string.Equals(DeviceId.Replace(":", ""), deviceId.Replace(":", ""), StringComparison.OrdinalIgnoreCase);
+    public JsonElement? Find(string key) => Records.FirstOrDefault(record => record.Key == key)?.Value;
+    public bool? Boolean(string key) => Find(key) is { ValueKind: JsonValueKind.True or JsonValueKind.False } value ? value.GetBoolean() : null;
+    [JsonIgnore] public bool LocalCallTakeoverEnabled => LocalCallConsent && Boolean("call_takeover_enabled") == true;
+    [JsonIgnore] public ConversationPolicy? Conversation => Find("conversation_policy") is { } value ? value.Deserialize<ConversationPolicy>(Wire.Json) : null;
+}
+
+public sealed class CompanionStatus
+{
+    [JsonPropertyName("linked")] public bool Linked { get; init; }
+    [JsonPropertyName("connected")] public bool Connected { get; init; }
+    [JsonPropertyName("device_id")] public string? DeviceId { get; init; }
+    [JsonPropertyName("peer_address")] public string? PeerAddress { get; init; }
+    [JsonPropertyName("held_away")] public bool HeldAway { get; init; }
+    [JsonPropertyName("phase")] public string Phase { get; init; } = "idle";
+    [JsonPropertyName("error")] public string? Error { get; init; }
 }
 
 public sealed class SetConversationVolumeCmd
@@ -632,6 +938,8 @@ public sealed class ShutdownCmd
 
 public abstract record DaemonEvent
 {
+    public sealed record Companion(CompanionStatus Status) : DaemonEvent;
+    public sealed record Preferences(CompanionPreferences Value) : DaemonEvent;
     /// Full state, pushed on connect and whenever it changes.
     public sealed record State(Snapshot Snapshot) : DaemonEvent;
 
@@ -675,10 +983,19 @@ public static class Wire
 
             switch (tag)
             {
+                case "companion_preferences":
+                    if (!root.TryGetProperty("preferences", out var preferences) || preferences.ValueKind != JsonValueKind.Object ||
+                        preferences.Deserialize<CompanionPreferences>(Json) is not { IsValid: true } preferenceState) return null;
+                    return new DaemonEvent.Preferences(preferenceState);
+                case "companion_status":
+                    if (!root.TryGetProperty("status", out var companion) || companion.ValueKind != JsonValueKind.Object ||
+                        companion.Deserialize<CompanionStatus>(Json) is not { } companionStatus) return null;
+                    return new DaemonEvent.Companion(companionStatus);
                 case "state":
                     // Serde flattens Snapshot beside the event tag; deserialize the whole object.
                     var snap = root.Deserialize<Snapshot>(Json) ?? new Snapshot();
-                    if (snap.Battery is null || snap.BatterySource is null || snap.BatteryFreshness is { IsValid: false } ||
+                    if (snap.Dongle is null || snap.Dongle.Health is not { IsValid: true } ||
+                        snap.Battery is null || snap.BatterySource is null || snap.BatteryFreshness is { IsValid: false } ||
                         snap.DeviceControls is null || snap.DeviceControlsRequested is null || snap.DeviceControlsPending is null || snap.AacpCapabilities is null ||
                         snap.MicMode is not ("automatic" or "keep_active" or "manual") || snap.MicStopDelaySecs > 3600 ||
                         snap.PlaybackMode is not ("windows" or "aac" or "aac_eld") ||
@@ -686,6 +1003,7 @@ public static class Wire
                         snap.PlaybackState is not ("windows" or "unavailable" or "disconnected" or "starting" or "ready" or "stopping" or "error") ||
                         snap.PlaybackAacBitrate is null || !snap.PlaybackAacBitrate.IsValidFor("aac") ||
                         snap.PlaybackAacEldBitrate is null || !snap.PlaybackAacEldBitrate.IsValidFor("aac_eld") ||
+                        snap.PlaybackLink is { IsValid: false } ||
                         snap.PlaybackBitrateKbps is < 96 or > 512 ||
                         snap.HeadTrackingState is not ("idle" or "starting" or "streaming" or "error" or "waiting_for_ear") ||
                         snap.AdaptiveStrengthRequested is > 100 || snap.ConversationVolume > 100 ||

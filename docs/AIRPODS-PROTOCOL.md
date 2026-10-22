@@ -5,7 +5,7 @@ Wire formats, implementation links and hardware coverage for NTPods.
 | Reference | Contents |
 | --- | --- |
 | [Controls, battery and sensors](WINDOWS-AIRPODS-CONTROL-PROTOCOL.md) | AAP setup, settings, accessory reports, nearby BLE battery and signal finding, DULT case information, ATT and sensors |
-| [Playback and microphone](WINDOWS-AIRPODS-AUDIO-PROTOCOL.md) | AAC/AAC-ELD negotiation, media packets, mic uplink, start/stop and recovery |
+| [Playback and microphone](WINDOWS-AIRPODS-AUDIO-PROTOCOL.md) | AAC/AAC-ELD negotiation, media packets, mic uplink, recovery, and the limits of LE Audio/HDR findings |
 | [Apple Profile Fast Connect](APPLE-FAST-CONNECT.md) | Discovery, channel assignment, profile descriptors and the Windows driver boundary |
 | [macOS capture procedure](MACOS-PROTOCOL-CAPTURE.md) | Repeatable comparisons with Apple's implementation and a record for unknown traffic |
 | [macOS audio captures](MACOS-AUDIO-CAPTURE-2026-10-12.md) | Codec negotiation, gaming-audio buffer control and host timing |
@@ -26,8 +26,15 @@ Wire formats, implementation links and hardware coverage for NTPods.
 | BLE GATT, DULT non-owner service | Read-only information from a nearby charging case, separate from the Classic bud connection | [BluetoothCaseInformation.cs](../windows/winui/NTPods.WinUI/Services/BluetoothCaseInformation.cs), [DultCaseProtocol.cs](../windows/winui/NTPods.WinUI/Services/DultCaseProtocol.cs) |
 | BLE GATT, FD44 Hawkeye control points | Case sound/configuration research; separate framing and initialization from DULT | No production writer; [sound and bonding limits](WINDOWS-AIRPODS-CONTROL-PROTOCOL.md#case-sound-and-bonding-limits) |
 | ATT | Additional settings, including hearing-assistance data | [device settings](../windows/daemon/src/device_settings.rs), [hearing.rs](../windows/daemon/src/hearing.rs) |
-| Standard Bluetooth profiles | Service discovery, media controls and hands-free audio can also appear in a host capture | Mostly handled by Windows; [hands-free visibility](../windows/daemon/src/handsfree.rs) controls which matching endpoints NTPods hides |
+| Standard Bluetooth profiles | Service discovery, media controls and hands-free audio can also appear in a host capture | Mostly handled by Windows; NTPods leaves hands-free endpoints available for [manual configuration](WINDOWS-FEATURES.md#microphone) |
 | Windows driver/IPC | PCM handoff and application state; these formats are local to NTPods | [IPC](../windows/ipc/src/lib.rs), [driver source](../windows/drivers) |
+| USB HID to Pico 2 W | Bounded AACP/ATT settings transactions on the dongle's selected Classic link | [dongle_rpc.rs](../windows/daemon/src/dongle_rpc.rs), [dongle_health.rs](../windows/daemon/src/dongle_health.rs) |
+
+The USB hearing/diagnostic path reuses the native record parsers and complete
+profile readback checks. It keeps separate state pinned to the USB session and
+Bluetooth generation. USB acceptance is not device confirmation. No test-signed
+Windows driver is required for this path, but Pico hardware validation remains
+pending; native Bluetooth results do not establish dongle support.
 
 An HCI trace shows the host/controller boundary. It can expose L2CAP and media
 payloads after Bluetooth link decryption, but it does not reveal all traffic

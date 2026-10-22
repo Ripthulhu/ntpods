@@ -11,6 +11,8 @@ namespace NTPods.WinUI.Controls;
 
 public sealed partial class HearingAidCard : UserControl
 {
+    public Func<object, bool>? SendCommand { get; set; }
+    private bool Send(object command) => SendCommand?.Invoke(command) ?? Client?.Send(command) == true;
     private DaemonClient? _client;
     public DaemonClient? Client
     {
@@ -333,7 +335,7 @@ public sealed partial class HearingAidCard : UserControl
         _debounce.Stop();
         _request.CancelEdit();
         ShowError(null);
-        if (Client?.Send(new GetHearingAidCmd()) != true)
+        if (!Send(new GetHearingAidCmd()))
         {
             ShowError(Localize.Get("HearingAid.Unconfirmed"));
             return;
@@ -377,8 +379,8 @@ public sealed partial class HearingAidCard : UserControl
         ulong id = request.Begin(on);
         ShowError(null);
         bool sent = request == _media
-            ? Client?.Send(new SetMediaAssistCmd { RequestId = id, On = on }) == true
-            : Client?.Send(new SetHearingAidModeCmd { RequestId = id, On = on }) == true;
+            ? Send(new SetMediaAssistCmd { RequestId = id, On = on })
+            : Send(new SetHearingAidModeCmd { RequestId = id, On = on });
         _timeout.Stop();
         if (sent) _timeout.Start();
         else { request.Cancel(); ShowError(Localize.Get("HearingAid.Unconfirmed")); }
@@ -403,13 +405,13 @@ public sealed partial class HearingAidCard : UserControl
         }
         ulong id = _request.Begin(true, "set_hearing_aid");
         ShowError(null);
-        bool sent = Client?.Send(new SetHearingAidCmd
+        bool sent = Send(new SetHearingAidCmd
         {
             RequestId = id,
             On = true,
             Expected = _edit.Baseline,
             Settings = _edit.Draft,
-        }) == true;
+        });
         _timeout.Stop();
         if (sent) _timeout.Start();
         else { _request.Cancel(); ShowError(Localize.Get("HearingAid.Unconfirmed")); }

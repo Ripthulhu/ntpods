@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Channels;
 using Microsoft.Win32.SafeHandles;
+using NTPods.WinUI.Services;
 
 namespace NTPods.WinUI.Ipc;
 
@@ -17,6 +18,8 @@ public sealed class DaemonClient : IDisposable
     public event Action<ushort, bool>? PairingNearbyReceived;
     public event Action<DaemonEvent.PairedLid>? PairedLidReceived;
     public event Action<DaemonEvent.CommandResult>? CommandResultReceived;
+    public event Action<CompanionStatus>? CompanionStatusReceived;
+    public event Action<CompanionPreferences>? CompanionPreferencesReceived;
     public event Action<DaemonEvent.HeadTracking>? HeadTrackingReceived;
     public event Action<bool>? ConnectionChanged;
 
@@ -46,7 +49,8 @@ public sealed class DaemonClient : IDisposable
     private Task? _run;
     private bool _stopping;
 
-    public DaemonClient() : this("NTPods-events", "NTPods-cmds", TrySpawnDaemon, DaemonIsRunning) { }
+    public DaemonClient(bool startDaemon = true) : this("NTPods-events", "NTPods-cmds",
+        startDaemon ? TrySpawnDaemon : () => null, DaemonIsRunning) { }
 
     internal DaemonClient(string eventsPipe, string commandsPipe, Func<Process?> spawnDaemon, Func<bool>? daemonIsRunning = null)
     {
@@ -81,6 +85,13 @@ public sealed class DaemonClient : IDisposable
 
     private static byte[] Encode(object command) => Encoding.UTF8.GetBytes(Wire.ToLine(command));
     public void RequestState() => Send(new GetStateCmd());
+    public bool RequestCompanionStatus() => Send(new CompanionStatusCmd());
+    public bool SetCompanionPreference(string key, object value, string? deviceId = null, ulong requestId = 0)
+    {
+        var payload = System.Text.Json.JsonSerializer.SerializeToElement(value, Wire.Json);
+        return CompanionPreference.ValidValue(key, payload) && Send(new CompanionSetPreferenceCmd
+            { Key = key, Value = payload, DeviceId = deviceId, RequestId = requestId });
+    }
     public void SetAnc(byte mode, string? deviceId = null) => Send(new SetAncCmd { Mode = mode, DeviceId = deviceId });
     public void SetMicMode(bool auto, bool manual) => Send(new SetMicModeCmd { Auto = auto, Manual = manual });
     public void SetFeature(byte feature, bool on) => Send(new SetFeatureCmd { Feature = feature, On = on });
@@ -199,6 +210,8 @@ public sealed class DaemonClient : IDisposable
                     while (session.Outgoing.Reader.TryRead(out var pending))
                         pending.Delivered?.TrySetException(new IOException("The background service disconnected."));
                     SnapshotReceived?.Invoke(new Snapshot());
+                    CompanionStatusReceived?.Invoke(new CompanionStatus());
+                    CompanionPreferencesReceived?.Invoke(new CompanionPreferences());
                     ConnectionChanged?.Invoke(false);
                 }
                 try { if (reader is not null && writer is not null) await Task.WhenAll(reader, writer).ConfigureAwait(false); }
@@ -214,7 +227,9 @@ public sealed class DaemonClient : IDisposable
         using var reader = new StreamReader(session.Events, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
         while (await reader.ReadLineAsync(session.Cancellation.Token).ConfigureAwait(false) is { } line)
         {
-            switch (Wire.ParseEvent(line))
+            var parsed = Wire.ParseEvent(line);
+            CompanionUiTrace.Wire(line, parsed, SessionEpoch);
+            switch (parsed)
             {
                 case DaemonEvent.State state:
                     lock (_gate)
@@ -239,10 +254,20 @@ public sealed class DaemonClient : IDisposable
                     PairedLidReceived?.Invoke(lid);
                     break;
                 case DaemonEvent.CommandResult result:
+                    CompanionUiTrace.Write("typed_result", new { epoch = SessionEpoch,
+                        command = result.Command == "companion_switch" ? "companion_switch" : "other", request_id = result.RequestId });
                     CommandResultReceived?.Invoke(result);
                     break;
                 case DaemonEvent.HeadTracking movement:
                     HeadTrackingReceived?.Invoke(movement);
+                    break;
+                case DaemonEvent.Preferences preferences:
+                    lock (_gate) { if (!ReferenceEquals(_session, session)) return; }
+                    CompanionPreferencesReceived?.Invoke(preferences.Value);
+                    break;
+                case DaemonEvent.Companion companion:
+                    lock (_gate) { if (!ReferenceEquals(_session, session)) return; }
+                    CompanionStatusReceived?.Invoke(companion.Status);
                     break;
             }
         }

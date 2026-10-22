@@ -125,7 +125,6 @@ pub fn restore_experimental_audio() -> std::io::Result<()> {
     )
 }
 
-#[cfg(feature = "experimental-playback")]
 pub fn playback_intent() -> u64 {
     AUDIO_INTENT.snapshot()
 }
@@ -356,29 +355,15 @@ pub fn request_audio_for_cleanup(mac: u64, intent: u64) -> Option<(u32, u32)> {
 
 fn request_audio_inner(mac: u64, intent: u64, cleanup: bool) -> Option<(u32, u32)> {
     let _gate = AUDIO_GATE.enter(&AUDIO_INTENT, cleanup)?;
-    request_audio_with(
-        &AUDIO_INTENT,
-        intent,
-        mac,
-        || {
-            #[cfg(feature = "experimental-playback")]
-            {
-                crate::playback::owns_sink(mac)
-            }
-            #[cfg(not(feature = "experimental-playback"))]
-            {
-                false
-            }
-        },
-        |connect| set_audio_services(mac, connect, false, intent),
-    )
+    request_audio_with(&AUDIO_INTENT, intent, mac, |connect| {
+        set_audio_services(mac, connect, false, intent)
+    })
 }
 
 fn request_audio_with(
     requests: &AudioIntent,
     intent: u64,
     mac: u64,
-    native_owned: impl FnOnce() -> bool,
     set_services: impl FnOnce(bool) -> (u32, u32),
 ) -> Option<(u32, u32)> {
     if !requests.is_current(intent) {
@@ -386,10 +371,6 @@ fn request_audio_with(
     }
     if mac == 0 || mac > 0xffff_ffff_ffff {
         return Some((87, 87));
-    }
-    if intent & 1 != 0 && native_owned() {
-        // AAP and native AVDTP open the link; enabling legacy HFP can block both.
-        return requests.is_current(intent).then_some((0, 0));
     }
     requests
         .is_current(intent)
@@ -417,10 +398,38 @@ pub fn reset_audio_services_for_request(mac: u64, sink_only: bool, intent: u64) 
             return (1223, 1223);
         }
         if let Some(result) = crate::playback::reset_if_active(mac, intent, true) {
-            return result;
+            if sink_only {
+                return result;
+            }
+            // Native recovery keeps AudioSink installed, but a preceding
+            // Disconnect disabled HFP. Restore that service before AAP/HFP
+            // startup rather than treating the native reset as its receipt.
+            return finish_native_reconnect(
+                result,
+                || AUDIO_INTENT.allows_recovery(intent),
+                || request_audio_for_cleanup(mac, intent),
+            );
         }
     }
     reset_audio_services_inner(mac, sink_only, intent, true)
+}
+
+#[cfg(feature = "experimental-playback")]
+fn finish_native_reconnect(
+    native_result: (u32, u32),
+    current: impl Fn() -> bool,
+    restore_profiles: impl FnOnce() -> Option<(u32, u32)>,
+) -> (u32, u32) {
+    if native_result != (0, 0) {
+        return native_result;
+    }
+    if !current() {
+        return (1223, 1223);
+    }
+    match restore_profiles() {
+        Some(result) if current() => result,
+        _ => (1223, 1223),
+    }
 }
 
 /// A manual rebuild keeps the device and intent reserved by its command thread.
@@ -476,87 +485,123 @@ mod audio_intent_tests {
     use super::{AudioGate, AudioIntent};
     use std::sync::{mpsc, Arc};
 
+    #[cfg(feature = "experimental-playback")]
     #[test]
-    fn native_connect_does_not_enable_legacy_profiles_but_disconnect_still_disables_them() {
-        let requests = AudioIntent::new();
-        let connect = requests.reserve(true).unwrap();
+    fn native_reconnect_requires_profile_restore_and_preserves_failure_and_cancellation() {
+        use std::cell::Cell;
+        let current = Cell::new(true);
+        let restores = Cell::new(0);
+        for profile_result in [(0, 0), (0, 5), (0, 1168)] {
+            assert_eq!(
+                super::finish_native_reconnect(
+                    (0, 0),
+                    || current.get(),
+                    || {
+                        restores.set(restores.get() + 1);
+                        Some(profile_result)
+                    }
+                ),
+                profile_result
+            );
+        }
+        assert_eq!(restores.get(), 3);
+        for native_result in [(1460, 1460), (1223, 1223), (1167, 1167)] {
+            assert_eq!(
+                super::finish_native_reconnect(
+                    native_result,
+                    || true,
+                    || panic!("Failed native recovery cannot enable profiles")
+                ),
+                native_result
+            );
+        }
+        current.set(false);
         assert_eq!(
-            super::request_audio_with(
-                &requests,
-                connect,
-                1,
-                || true,
-                |_| panic!("native Connect must not enable HFP")
+            super::finish_native_reconnect(
+                (0, 0),
+                || current.get(),
+                || panic!("A newer disconnect cannot restore HFP")
             ),
-            Some((0, 0))
+            (1223, 1223)
         );
-        let disconnect = requests.reserve(false).unwrap();
+        current.set(true);
         assert_eq!(
-            super::request_audio_with(
-                &requests,
-                disconnect,
-                1,
-                || panic!("Disconnect does not query native ownership"),
-                |connect| {
-                    assert!(!connect);
-                    (0, 7)
+            super::finish_native_reconnect(
+                (0, 0),
+                || current.get(),
+                || {
+                    current.set(false);
+                    Some((0, 0))
                 }
             ),
-            Some((0, 7))
+            (1223, 1223)
         );
         assert_eq!(
-            super::request_audio_with(
-                &requests,
-                disconnect,
-                0,
-                || panic!("invalid address"),
-                |_| panic!("invalid address")
-            ),
-            Some((87, 87))
+            super::finish_native_reconnect((0, 0), || true, || None),
+            (1223, 1223)
         );
     }
 
     #[test]
-    fn native_ownership_lookup_cannot_acknowledge_a_superseded_connect() {
+    fn connect_reenables_services_after_disconnect_and_propagates_failures() {
         let requests = AudioIntent::new();
         let connect = requests.reserve(true).unwrap();
         assert_eq!(
-            super::request_audio_with(
-                &requests,
-                connect,
-                1,
-                || {
-                    requests.reserve(false).unwrap();
-                    true
-                },
-                |_| panic!("superseded native Connect")
-            ),
+            super::request_audio_with(&requests, connect, 1, |enabled| {
+                assert!(enabled);
+                (0, 5)
+            }),
+            Some((0, 5))
+        );
+        let disconnect = requests.reserve(false).unwrap();
+        assert_eq!(
+            super::request_audio_with(&requests, disconnect, 1, |connect| {
+                assert!(!connect);
+                (0, 7)
+            }),
+            Some((0, 7))
+        );
+        let reconnect = requests.reserve(true).unwrap();
+        assert_eq!(
+            super::request_audio_with(&requests, reconnect, 1, |enabled| {
+                assert!(enabled);
+                (4, 9)
+            }),
+            Some((4, 9))
+        );
+    }
+
+    #[test]
+    fn stale_requests_and_invalid_addresses_never_change_services() {
+        let requests = AudioIntent::new();
+        let connect = requests.reserve(true).unwrap();
+        requests.reserve(false).unwrap();
+        assert_eq!(
+            super::request_audio_with(&requests, connect, 1, |_| { panic!("superseded Connect") }),
             None
         );
         let connect = requests.reserve(true).unwrap();
         assert_eq!(
-            super::request_audio_with(
-                &requests,
-                connect,
-                1,
-                || false,
-                |enabled| {
-                    assert!(enabled);
-                    (4, 9)
-                }
-            ),
+            super::request_audio_with(&requests, connect, 1, |enabled| {
+                assert!(enabled);
+                (4, 9)
+            }),
             Some((4, 9))
         );
         assert_eq!(
-            super::request_audio_with(
-                &requests,
-                connect.wrapping_sub(2),
-                1,
-                || panic!("stale Connect"),
-                |_| panic!("stale Connect")
-            ),
+            super::request_audio_with(&requests, connect.wrapping_sub(2), 1, |_| panic!(
+                "stale Connect"
+            )),
             None
         );
+        for invalid in [0, 0x1_0000_0000_0000] {
+            assert_eq!(
+                super::request_audio_with(&requests, connect, invalid, |_| {
+                    panic!("invalid address")
+                }),
+                Some((87, 87))
+            );
+        }
     }
 
     #[test]

@@ -133,6 +133,21 @@ codec negotiation so an AAC fallback keeps its larger reserve. The 100 ms ring
 capacity is a separate safety bound. Queue occupancy and the source reserve
 must not be added as separate fixed delays.
 
+Playback sends encoded silence for the first 100 ms of PCM after each AVDTP
+Start, retaining the source read by the playback loop in a bounded queue and
+sending it afterward in order.
+The driver continues to drain at ordinary frame deadlines. This adds 100 ms of
+source delay; it does not reduce the codec or receiver delay. Cancellation, a
+new producer or Bluetooth suspension clears the retained audio. A normal
+producer stop drains already-owned samples for up to 250 ms without reading the
+stopped driver; a new producer cancels that tail. The existing pre-Start backlog
+discard is unchanged. Priming is always enabled and has no user setting. Acoustic timing and calibrated
+hearing-test output remain unverified.
+
+NTPods leaves HFP control and audio endpoints available. See
+[Bluetooth endpoint startup](WINDOWS-AVRCP-VOLUME.md#startup-and-lifetime) for the
+Windows unification delay and the limits of disabling the HFP service.
+
 The sample-count frame clock preserves AAC's fractional 21.333 ms period.
 AAC-ELD sends one 10 ms access unit per packet. Changing
 the Windows period does not change either codec's frame size.
@@ -143,14 +158,14 @@ Process environment values allow controlled playback comparisons:
 
 | Variable | Default | Diagnostic override | Effect |
 | --- | --- | --- | --- |
-| `NTPODS_ELD_AUS_PER_PACKET` | `1` | `2` | Group two 10 ms AAC-ELD frames instead of sending each frame immediately |
+| `NTPODS_ELD_AUS_PER_PACKET` | `1` | `2`, `3` | Group two or three 10 ms AAC-ELD frames instead of sending each frame immediately |
 | `NTPODS_PLAYBACK_RESERVE_MS` | AAC-ELD: `20`; AAC: `30` | `20`, `30`, `50` | `20` requires AAC-ELD; `30` and `50` work with either codec |
 | `NTPODS_ELD_RTP_CLOCK` | `48000` | `monotonic`, `1000` | Sample-count clock, or elapsed host milliseconds with `monotonic` |
 | `NTPODS_ELD_RTP_SSRC` | `0x11223344`; `0` with an explicit `monotonic` clock | `0`, `0x11223344` | Isolate the RTP source identifier |
 
 Invalid values reject playback. Values are read when the backend opens a playback
-session; they are not saved in app settings. Codec parameters, bitrate preferences
-and Bluetooth flush settings stay unchanged. The selected packet count is
+session; they are not saved in app settings. Codec selection, saved bitrate
+preferences and Bluetooth flush settings stay unchanged. The selected packet count is
 included in MTU checks on initial setup and every media reopen.
 The reserve applies to both wall-clock and driver-clock scheduling, including
 pause/resume and microphone recovery.
@@ -165,6 +180,11 @@ $app = 'C:\Program Files\NTPods\winui\ntpods-winui.exe'
 Start-Process -FilePath $app -Environment @{
     NTPODS_ELD_AUS_PER_PACKET = '2'
     NTPODS_PLAYBACK_RESERVE_MS = '30'
+}
+
+# After quitting, compare Tahoe's normal three-frame grouping separately.
+Start-Process -FilePath $app -Environment @{
+    NTPODS_ELD_AUS_PER_PACKET = '3'
 }
 
 # After quitting that session, compare the larger reserve separately.
@@ -192,6 +212,55 @@ No user or machine environment variables are written. An explicit `20` override
 rejects an AAC fallback; omit it to use the codec's default.
 Completing an earbud-buffer trial does not clear these process values; its
 restoration covers only the earbud target, clock adjustment and Bluetooth flush.
+
+### Saved frame limits
+
+**Playback and microphone → Wi-Fi coexistence** offers Off, Automatic and Custom.
+The backend saves the choice in `playback-link.json`. Custom accepts an integer
+128–256 kbps; editing the number requires Apply. A changed active limit restarts
+the stream, with the same microphone and buffer-trial guards as bitrate changes.
+Failed validation or persistence leaves the previous choice and stream intact.
+The choice is retained but inactive during AAC or fixed-bitrate playback.
+
+At 174 kbps, the worker caps each 10 ms frame at 217 bytes and selects a 20 kHz
+encoded bandwidth. Budgets up to 128 kbps use 15.5 kHz; 129–160 use 17.5 kHz.
+FDK lowers its VBR quality from 5 to 4 below 192 kbps. The worker verifies those
+parameters before publishing its configuration; the backend also checks each AU
+against the budget. This is not Apple's encoder or a target average bitrate.
+See the [Mac policy](MACOS-AUDIO-CAPTURE-2026-10-12.md#host-encoder-link-adaptation)
+and [worker checks](../windows/playback/encoder/README.md).
+
+In Automatic mode, a verified local 2.4 GHz Wi-Fi connection selects
+the 174 kbps frame budget. A verified absence of such a connection restores
+normal Variable mode. This only applies to AAC-ELD Variable mode with its
+negotiated 256 kbps ceiling; fixed bitrate, Best effort CBR and AAC are unchanged.
+Unknown, unsupported or transitioning Wi-Fi state keeps the session's last
+budget. Saved preferences, volume, packet grouping, timestamps and receiver
+settings are unchanged.
+
+The decision is refreshed before initial encoding, each AVDTP Start after idle
+and existing recovery or microphone-driven encoder restarts. A prepared encoder
+is refreshed again before its first Start. Wi-Fi changes during uninterrupted
+playback take effect at the next such boundary. Continuous changes need a worker
+control protocol and decoder-continuity checks: FDK reinitializes quantizer and
+pre-echo configuration when its budget changes, despite retaining PCM history.
+
+Band detection uses Microsoft's location-free
+[`wlan_intf_opcode_realtime_connection_quality`](https://learn.microsoft.com/en-us/windows/win32/api/wlanapi/ne-wlanapi-wlan_intf_opcode#constants)
+and its connected-link frequencies. It does not scan or read SSIDs/BSSIDs.
+Malformed and truncated replies are rejected. Multiple connected interfaces or
+links are considered; a confirmed 2.4 GHz link takes precedence over unknown
+reports. This is a Wi-Fi coexistence policy, not Bluetooth packet-loss feedback.
+The unresolved Mac device-count condition remains unused. The policy is off by
+default. A short Pro 3 / 9A348 comparison in 0.2.73 confirmed clean playback and
+pause/resume at a static 174 kbps frame limit, followed by restoration to fixed
+256 kbps. Automatic operation during actual 2.4 GHz Wi-Fi traffic remains untested.
+
+Three maximum-size 321-byte AUs need 987 bytes, including RTP and AU headers.
+Initial setup and media reopen enforce the negotiated MTU and bitrate limit;
+three-frame grouping does not bypass either. Short Pro 3 / 9A348 checks in 0.2.73
+confirmed clean three-frame playback, pause/resume and HQ microphone recovery.
+Packet grouping remains an internal choice, normally one frame per packet.
 
 The default advances the AAC-ELD timestamp by 480 per 480-sample frame and uses
 SSRC `0x11223344`. The `1000` override advances by 10 per frame. The explicit
@@ -255,8 +324,9 @@ pause/resume and microphone recovery separately; clean playback alone cannot
 establish a latency reduction.
 
 Also check sustained playback, volume and system load on Pro 1 and Pro 3 where
-supported. Single-frame packets double the packet rate relative to two-frame
-packets and may affect radio scheduling.
+supported. Single-frame packets send two or three times as many packets as the
+grouped variants and may affect radio scheduling. Larger groups also hold the
+first AU longer; packet timing alone does not establish acoustic latency.
 
 ## Earbud delay and buffer control
 
@@ -334,8 +404,15 @@ and the Windows audio device. Playback briefly stops at each reopen.
 
 ### Automatic receiver-buffer policy
 
-NTPods requests a 60 ms receiver buffer while native playback is active and the
-mic is idle. It reads the paired device's cached SDP PnP record once per playback
+The saved **Game Mode** switch is enabled by default, preserving the existing
+policy. With it enabled, NTPods requests a 60 ms receiver buffer while native
+playback is active and the mic is idle. Turning it off waits for the stream's
+coordinated restoration before saving the choice; it does not replace the PCM
+stream or change the codec, bitrate, startup priming or volume. Turning it on
+allows the existing eligibility check to apply the policy again. The preference
+is stored in `playback-game-mode.json`; it is not a report of the active target.
+
+NTPods reads the paired device's cached SDP PnP record once per playback
 session: bit 20 of the 64-bit Apple attribute `0xA001` enables this policy for
 AAC-ELD. A cleared bit disables it. Missing or invalid records retain the existing
 Pro 3 (A3063/A3064/A3065) fallback; Pro 3 also retains its tested AAC path.

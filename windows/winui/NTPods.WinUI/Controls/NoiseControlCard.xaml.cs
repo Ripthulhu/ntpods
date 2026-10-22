@@ -18,6 +18,7 @@ namespace NTPods.WinUI.Controls;
 public sealed partial class NoiseControlCard : UserControl
 {
     public DaemonClient? Client { get; set; }
+    public Func<object, bool>? SendCommand { get; set; }
 
     private const byte ModeId = 0x0D;
     private const byte StrengthId = ControlId.AdaptiveNoiseStrength;
@@ -343,7 +344,8 @@ public sealed partial class NoiseControlCard : UserControl
         _timedOut = false;
         _requestTimeout.Stop();
         _requestTimeout.Start();
-        Client!.SetDeviceControl(id, value, _snapshot.DeviceId);
+        var command = new SetDeviceControlCmd { Id = id, Value = value, DeviceId = _snapshot.DeviceId };
+        if (SendCommand is { } send) send(command); else Client?.Send(command);
     }
 
     private void Request(byte id, uint value)

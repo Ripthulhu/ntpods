@@ -11,6 +11,8 @@ Assert-ProtectedInstallPath $PSScriptRoot
 Stop-NTPods
 Initialize-SetupDirectory | Out-Null
 $transactionId = [guid]::NewGuid().ToString()
+$ownsDrivers = Test-NTPodsZipDriverOwnership $installed
+if ($ownsDrivers) {
 Uninstall-NTPodsDrivers $PSScriptRoot $transactionId
 try { & (Join-Path $PSScriptRoot 'bluetooth-host-identity.ps1') -Action Restore }
 catch {
@@ -20,12 +22,14 @@ catch {
 }
 Complete-NTPodsDriverRemoval $transactionId
 Unregister-NTPodsTasks
+}
 Remove-RunValues $installed.InstalledUserSid @('NTPods', 'NTPods Daemon')
-foreach ($name in 'InstalledUserSid', 'InstallKind') {
+foreach ($name in 'InstalledUserSid', 'InstallKind', 'DirectBluetoothDrivers') {
     Remove-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\NTPods' -Name $name -ErrorAction SilentlyContinue
 }
 $target = [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\')
 $expected = [IO.Path]::GetFullPath((Join-Path $env:ProgramFiles 'NTPods')).TrimEnd('\')
 if ($target -ine $expected) { throw 'Refusing to remove an unexpected install directory.' }
 Remove-Item -LiteralPath $target -Recurse -Force
-Write-Host 'NTPods programs, tasks, drivers and development certificate removed. User data and boot settings were preserved. Restart Windows to finish restoring its Bluetooth identity and audio drivers.'
+Write-Host 'NTPods removed. User data and boot settings were preserved.'
+if ($ownsDrivers) { Write-Host 'Restart Windows to finish restoring its Bluetooth identity and audio drivers.' }

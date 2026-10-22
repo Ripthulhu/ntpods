@@ -6,6 +6,7 @@ mod codec;
 mod coordination;
 mod encoder;
 mod engine_period;
+mod link;
 mod pcm;
 mod protocol;
 mod render;
@@ -14,6 +15,7 @@ mod selection;
 mod session;
 mod settings;
 mod timing;
+mod wifi;
 
 use crate::{bt, driver::Driver, Ctx};
 pub use buffer::{
@@ -21,7 +23,8 @@ pub use buffer::{
     AutomaticPause,
 };
 use codec::{AudioEncoder, EldRtpClock, MediaPackets, Mode};
-use ntpods_ipc::{PlaybackBitrate, PlaybackMode};
+use link::LinkBudget;
+use ntpods_ipc::{PlaybackBitrate, PlaybackLinkSettings, PlaybackMode};
 #[cfg(test)]
 use pcm::MAX_READ_BYTES;
 use pcm::{FrameAssembler, FrameClock};
@@ -41,6 +44,7 @@ struct Control {
     intent: u64,
     reset: SyncSender<Reset>,
     stop: Arc<AtomicBool>,
+    windows_suspended: bool,
 }
 static CONTROL: Mutex<Option<Control>> = Mutex::new(None);
 static NATIVE_ADDRESS: AtomicU64 = AtomicU64::new(0);
@@ -143,6 +147,22 @@ pub fn active_address() -> Option<u64> {
     (address != 0).then_some(address)
 }
 
+pub fn windows_audio_suspended(address: u64) -> bool {
+    CONTROL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .is_some_and(|control| control.address == address && control.windows_suspended)
+}
+
+fn set_windows_suspended(address: u64, intent: u64, suspended: bool) {
+    if let Some(control) = CONTROL.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        if control.address == address && control.intent == intent {
+            control.windows_suspended = suspended;
+        }
+    }
+}
+
 pub fn owns_sink(address: u64) -> bool {
     address != 0
         && (NATIVE_ADDRESS.load(Ordering::Acquire) == address
@@ -154,12 +174,16 @@ pub fn start(ctx: Ctx) {
     {
         let mut selected = ctx.playback_selection.lock().unwrap();
         selected.bitrates = selection::load_bitrates();
+        selected.link = selection::load_link();
+        selected.game_mode = selection::load_game_mode();
         let mut state = ctx.state.lock().unwrap();
         state.playback_available = bound;
         state.playback_native_driver = bound;
         state.playback_preferred_mode = Some(selected.mode);
         state.playback_aac_bitrate = selected.bitrates[0];
         state.playback_aac_eld_bitrate = selected.bitrates[1];
+        state.playback_link = Some(selected.link);
+        state.playback_game_mode = Some(selected.game_mode);
     }
     thread::spawn(move || {
         manage(&ctx);
@@ -212,6 +236,95 @@ pub fn set_bitrate(
                         "disconnected"
                     }
                     .into();
+                }
+            }
+            Err(error) => state.playback_error = Some(error.to_string()),
+        }
+    }
+    ctx.push_state();
+}
+
+pub fn set_link(
+    ctx: &Ctx,
+    settings: PlaybackLinkSettings,
+    expected: (u64, u64, [PlaybackBitrate; 2]),
+) {
+    {
+        let _preference = ctx.mic_preference.lock().unwrap();
+        let mut selected = ctx.playback_selection.lock().unwrap();
+        let mut state = ctx.state.lock().unwrap();
+        if ctx.shutting_down.load(Ordering::Acquire)
+            || bt::playback_intent() != expected.0
+            || selected.revision != expected.1
+            || selected.bitrates != expected.2
+        {
+            return;
+        }
+        let active = (state.playback_state == "ready").then_some(state.playback_mode);
+        let affects_playback = selected.uses_link(active);
+        let busy = selection::microphone_busy(
+            &state,
+            ctx.capture_active.load(Ordering::Acquire),
+            ctx.mic_on.load(Ordering::Acquire),
+        );
+        let result = if state.playback_buffer_target_ms.is_some() {
+            Err(io::Error::other(
+                "Restore the buffer trial before changing playback.",
+            ))
+        } else {
+            selected.change_link(settings, active, busy, selection::save_link)
+        };
+        match result {
+            Ok(changed) => {
+                state.playback_link = Some(selected.link);
+                if changed && affects_playback {
+                    state.playback_error = None;
+                    state.playback_bitrate_kbps = None;
+                    state.playback_state = if selected.cancel.is_some() {
+                        "stopping"
+                    } else if state.connected && ctx.connect_requested.explicit() {
+                        "starting"
+                    } else {
+                        "disconnected"
+                    }
+                    .into();
+                }
+            }
+            Err(error) => state.playback_error = Some(error.to_string()),
+        }
+    }
+    ctx.push_state();
+}
+
+pub fn set_game_mode(ctx: &Ctx, enabled: bool, expected: (u64, u64, [PlaybackBitrate; 2])) {
+    {
+        let _preference = ctx.mic_preference.lock().unwrap();
+        let mut selected = ctx.playback_selection.lock().unwrap();
+        let mut state = ctx.state.lock().unwrap();
+        if ctx.shutting_down.load(Ordering::Acquire)
+            || bt::playback_intent() != expected.0
+            || selected.revision != expected.1
+            || selected.bitrates != expected.2
+        {
+            return;
+        }
+        let busy = selection::microphone_busy(
+            &state,
+            ctx.capture_active.load(Ordering::Acquire),
+            ctx.mic_on.load(Ordering::Acquire),
+        );
+        let result = if state.playback_buffer_target_ms.is_some() {
+            Err(io::Error::other(
+                "Restore the buffer trial before changing playback.",
+            ))
+        } else {
+            selected.change_game_mode(enabled, busy, selection::save_game_mode)
+        };
+        match result {
+            Ok(changed) => {
+                state.playback_game_mode = Some(selected.game_mode);
+                if changed {
+                    state.playback_error = None;
                 }
             }
             Err(error) => state.playback_error = Some(error.to_string()),
@@ -392,39 +505,18 @@ fn connection_poll_due(now: Instant, next_poll: Instant, intent: u64, polled_int
 fn manage(ctx: &Ctx) {
     let mut address = 0;
     let mut render: Option<Render> = None;
-    let mut hfp: Option<crate::hfp_guard::Guard> = None;
     let mut attempted = None;
     let mut next_poll = Instant::now();
     let mut polled_intent = bt::playback_intent();
     let mut connected = false;
-    let mut bound = false;
     while !ctx.shutting_down.load(Ordering::Acquire) {
         if ctx.mac() != address {
-            release_output(ctx, &mut render, &mut hfp);
+            release_render(&mut render);
             address = ctx.mac();
-            bound = false;
             attempted = None;
             next_poll = Instant::now();
         }
         let intent = bt::playback_intent();
-        let disconnecting = ctx.user_disconnected.load(Ordering::Acquire)
-            || ctx
-                .pending_audio_disconnect
-                .lock()
-                .unwrap()
-                .blocks_playback();
-        if hfp.as_ref().is_some_and(|guard| {
-            !keep_hfp_isolated(
-                &ctx.state.lock().unwrap(),
-                ctx.pipe.is_open(),
-                bound,
-                disconnecting,
-                guard.alive(),
-            )
-        }) {
-            release_output(ctx, &mut render, &mut hfp);
-            attempted = None;
-        }
         if transition_startup_repair(
             &mut STARTUP_REPAIR.lock().unwrap(),
             address,
@@ -446,10 +538,10 @@ fn manage(ctx: &Ctx) {
                 release_render(&mut render);
                 attempted = None;
             }
-            bound = address != 0 && crate::driver::native_audio_bound(address);
+            let bound = address != 0 && crate::driver::native_audio_bound(address);
             availability(ctx, address, bound);
             if !bound {
-                release_output(ctx, &mut render, &mut hfp);
+                release_render(&mut render);
             }
             connected = bound
                 && ctx.connect_requested.explicit()
@@ -515,12 +607,13 @@ fn manage(ctx: &Ctx) {
                     selected.revision,
                     selected.mode,
                     selected.bitrates,
+                    selected.link,
                     cancel,
                     intent,
                 ))
             }
         };
-        let Some((revision, mode, bitrates, cancel, intent)) = request else {
+        let Some((revision, mode, bitrates, link_settings, cancel, intent)) = request else {
             thread::sleep(Duration::from_millis(50));
             continue;
         };
@@ -542,8 +635,8 @@ fn manage(ctx: &Ctx) {
                 cancel,
                 mode,
                 bitrates,
+                link_settings,
                 intent,
-                &mut hfp,
                 |mode, kbps| {
                     publish(
                         ctx,
@@ -618,50 +711,12 @@ fn manage(ctx: &Ctx) {
         };
         publish(ctx, address, revision, intent, name, error, None);
     }
-    release_output(ctx, &mut render, &mut hfp);
-}
-
-fn release_output(
-    ctx: &Ctx,
-    render: &mut Option<Render>,
-    guard: &mut Option<crate::hfp_guard::Guard>,
-) {
-    release_render(render);
-    if let Some(mut guard) = guard.take() {
-        if let Err(error) = guard.finish() {
-            ctx.shutdown_cleanup_failed.store(true, Ordering::Release);
-            crate::log(&format!("hands-free profile restoration: {error}"));
-        }
-    }
+    release_render(&mut render);
 }
 
 fn release_render(render: &mut Option<Render>) {
     render.take();
     NATIVE_ADDRESS.store(0, Ordering::Release);
-}
-
-fn keep_hfp_isolated(
-    state: &ntpods_ipc::Snapshot,
-    microphone_ready: bool,
-    native_bound: bool,
-    disconnecting: bool,
-    helper_alive: bool,
-) -> bool {
-    native_bound
-        && helper_alive
-        && !disconnecting
-        && state.playback_mode != PlaybackMode::Windows
-        && hfp_policy(state, microphone_ready) == Some(true)
-}
-
-fn hfp_policy(state: &ntpods_ipc::Snapshot, microphone_ready: bool) -> Option<bool> {
-    if !microphone_ready || state.mic_state == "error" {
-        Some(false)
-    } else if state.model.is_empty() || state.firmware.is_empty() {
-        None
-    } else {
-        Some(crate::device_models::microphone(state))
-    }
 }
 
 #[derive(Debug)]
@@ -773,8 +828,8 @@ fn run(
     stop: Arc<AtomicBool>,
     mode: Mode,
     bitrates: [PlaybackBitrate; 2],
+    link_settings: PlaybackLinkSettings,
     intent: u64,
-    hfp: &mut Option<crate::hfp_guard::Guard>,
     report_codec: impl Fn(Mode, Option<u32>),
     report_delay: impl Fn(bool, Option<u16>),
     stopping: impl FnOnce(),
@@ -784,13 +839,25 @@ fn run(
     }
     let startup = Instant::now();
     let settings = settings::Settings::load()?;
-    session::driver_ready(&driver, address)?;
+    let generation = {
+        let _action = ctx.companion_actions.lock().unwrap();
+        if stop.load(Ordering::Acquire) || ctx.shutting_down.load(Ordering::Acquire) ||
+            !ctx.connect_requested.explicit() || ctx.user_disconnected.load(Ordering::Acquire) ||
+            ctx.mac() != address || !bt::audio_request_is_current(intent) {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "Playback request superseded"));
+        }
+        driver.listen_playback(address, intent)?;
+        session::driver_ready(&driver, address, intent)?
+    };
     render.set_ready(false)?;
     let session_ctx = ctx.clone();
+    let close_ctx = ctx.clone();
+    let close_serial = crate::companion::native_started(ctx, address, intent);
     let buffer_driver = driver.clone();
     let mut session = Session::open(
         driver,
         address,
+        generation,
         mode,
         settings.eld_aus,
         bitrates,
@@ -805,10 +872,14 @@ fn run(
                 || !bt::audio_request_is_current(intent)
         },
         |mode| report_codec(mode, None),
+        move |closed| crate::companion::native_closed(&close_ctx, address, intent, close_serial, closed),
     )?;
     let mut buffer = buffer::Stream::new(ctx, address, intent, buffer_driver);
     let mode = session.mode;
     let reserve = settings.reserve(mode)?;
+    if !settings.startup_silence.is_zero() {
+        crate::log("playback: 100 ms startup priming retains the source PCM after each START");
+    }
     crate::log(&format!(
         "playback: ELD AUs per packet={}, source reserve={} ms",
         settings.eld_aus,
@@ -821,44 +892,59 @@ fn run(
         ));
     }
     session.suspend()?;
-    session.enable_coordination()?;
-    if hfp.is_none() {
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            session.check_cancelled()?;
-            let state = ctx.state.lock().unwrap();
-            let policy = hfp_policy(&state, ctx.pipe.is_open());
-            if policy == Some(true) {
-                drop(state);
-                let guard = crate::hfp_guard::Guard::start_if(address, || {
-                    session.check_cancelled()?;
-                    if ctx
-                        .pending_audio_disconnect
-                        .lock()
-                        .unwrap()
-                        .blocks_playback()
-                    {
-                        return Err(io::Error::new(
-                            io::ErrorKind::Interrupted,
-                            "Audio disconnect is still completing",
-                        ));
-                    }
-                    Ok(())
-                })?;
-                *hfp = Some(guard);
-                session.check_cancelled()?;
-                break;
-            }
-            if policy == Some(false) || Instant::now() >= deadline {
-                break;
-            }
-            drop(state);
-            thread::sleep(Duration::from_millis(20));
+    let handsfree_started = Instant::now();
+    let handsfree = crate::hfp_endpoints::connect_control(address, || {
+        if stop.load(Ordering::Acquire)
+            || ctx.shutting_down.load(Ordering::Acquire)
+            || !ctx.connect_requested.explicit()
+            || ctx.user_disconnected.load(Ordering::Acquire)
+            || ctx.mac() != address
+            || !bt::audio_request_is_current(intent)
+        {
+            Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Hands-free connection was superseded",
+            ))
+        } else {
+            Ok(())
         }
+    });
+    match handsfree {
+        Ok(status) => crate::log(&format!(
+            "playback startup: hands-free request_acknowledged={} jack_ready={} elapsed_ms={}",
+            status.request_acknowledged,
+            status.jack_ready,
+            handsfree_started.elapsed().as_millis()
+        )),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::Interrupted | io::ErrorKind::ConnectionReset
+            ) =>
+        {
+            return Err(error);
+        }
+        Err(error) => crate::log(&format!(
+            "playback startup: hands-free connection unavailable after {} ms: {error}",
+            handsfree_started.elapsed().as_millis()
+        )),
     }
+    session.enable_coordination()?;
     let encoder_started = Instant::now();
-    let mut encoder =
-        AudioEncoder::new_with_format(mode, session.bitrate, session.variable, render.format()?)?;
+    let mut link = LinkBudget::for_settings(link_settings, mode, session.variable);
+    let budget = link.refresh(
+        mode,
+        session.bitrate,
+        session.variable,
+        wifi::connected_24ghz,
+    );
+    let mut encoder = AudioEncoder::new_with_budget(
+        mode,
+        session.bitrate,
+        session.variable,
+        render.format()?,
+        budget,
+    )?;
     crate::log(&format!(
         "playback startup: encoder ready in {} ms",
         encoder_started.elapsed().as_millis()
@@ -874,6 +960,7 @@ fn run(
             intent,
             reset,
             stop: stop.clone(),
+            windows_suspended: !session.coordination_allows_playback(),
         });
     }
     let _registered = Registration;
@@ -902,16 +989,18 @@ fn run(
         &requests,
         mode,
         reserve,
+        settings.startup_silence,
+        &mut link,
         settings.eld_rtp_clock,
         settings.eld_rtp_ssrc,
         &mut timing,
         &report_delay,
+        || crate::microphone_quiet_for_windows(&ctx.mic_preference, &ctx.mic_on, &ctx.hq_mic_quiet),
         || {
             if shutdown_complete(
                 ctx.shutting_down.load(Ordering::Acquire),
                 ctx.receiver_done.load(Ordering::Acquire),
-            ) || hfp.as_ref().is_some_and(|guard| !guard.alive())
-                || !ctx.connect_requested.explicit()
+            ) || !ctx.connect_requested.explicit()
                 || ctx.user_disconnected.load(Ordering::Acquire)
                 || ctx.mac() != address
             {
@@ -919,11 +1008,6 @@ fn run(
             }
             if Instant::now() >= next_connection_check {
                 next_connection_check = Instant::now() + Duration::from_secs(1);
-                if hfp.is_some()
-                    && hfp_policy(&ctx.state.lock().unwrap(), ctx.pipe.is_open()) != Some(true)
-                {
-                    return true;
-                }
                 let started = Instant::now();
                 let connected = bt::is_connected(address);
                 let elapsed = started.elapsed();
@@ -1007,6 +1091,44 @@ impl PcmStartup {
     }
 }
 
+struct PcmTail {
+    generation: u32,
+    started: Instant,
+    aac_lookahead_padded: bool,
+}
+
+impl PcmTail {
+    fn new(generation: u32, started: Instant) -> Self {
+        Self {
+            generation,
+            started,
+            aac_lookahead_padded: false,
+        }
+    }
+
+    fn complete(&self, buffered_pcm: bool, outstanding: usize, pending_units: usize) -> bool {
+        !buffered_pcm && pending_units == 0 && outstanding <= usize::from(self.aac_lookahead_padded)
+    }
+
+    fn expired(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.started) >= Duration::from_millis(250)
+    }
+
+    fn interrupted(&self, streams: u32, generation: u32, now: Instant) -> bool {
+        streams != 0 || generation != self.generation || self.expired(now)
+    }
+
+    fn pad(&mut self, mode: Mode, outstanding: usize, pending_units: usize) -> bool {
+        if mode == Mode::Aac && outstanding != 0 && !self.aac_lookahead_padded {
+            // The AAC worker retains one frame; one zero frame releases the last source AU.
+            self.aac_lookahead_padded = true;
+            true
+        } else {
+            mode == Mode::Eld && outstanding == 0 && pending_units != 0
+        }
+    }
+}
+
 fn prime_output(
     samples: usize,
     reserve: Duration,
@@ -1068,10 +1190,13 @@ fn stream(
     requests: &Receiver<Reset>,
     mode: Mode,
     reserve: Duration,
+    startup_silence: Duration,
+    link: &mut LinkBudget,
     eld_rtp_clock: EldRtpClock,
     eld_rtp_ssrc: u32,
     timing: &mut timing::Timing,
     report_delay: impl Fn(bool, Option<u16>),
+    microphone_quiet: impl Fn() -> io::Result<bool>,
     mut disconnected: impl FnMut() -> bool,
 ) -> io::Result<()> {
     let setup_started = Instant::now();
@@ -1083,7 +1208,9 @@ fn stream(
     let read_bytes = format.read_bytes();
     let mut pcm = FrameAssembler::new_with_format(samples, format)?;
     let mut pcm_startup = PcmStartup::default();
+    let mut startup_priming = pcm::StartupPriming::new(startup_silence, samples, format)?;
     let mut active = false;
+    let mut draining: Option<PcmTail> = None;
     let mut encoder_fresh = true;
     let mut clock = FrameClock::new(samples, Instant::now())?;
     let mut next_poll = Instant::now();
@@ -1097,6 +1224,7 @@ fn stream(
     let mut generation = initial[3];
     let mut outstanding = 0usize;
     let mut engine_period = engine_period::Lease::default();
+    let mut suspend_barrier = coordination::SuspendBarrier::default();
     let notifications = match render.notifications(thread::current()) {
         Ok(notifications) => notifications,
         Err(error) => {
@@ -1127,21 +1255,31 @@ fn stream(
                 packets.clear();
                 active =
                     active && session.coordination_allows_playback() && render.status()?[0] != 0;
+                startup_priming.reset();
+                draining = None;
                 clock = prime_output(
                     samples,
                     reserve,
                     || {
-                        *encoder = AudioEncoder::new_with_format(
+                        let budget = link.refresh(
+                            mode,
+                            session.bitrate,
+                            session.variable,
+                            wifi::connected_24ghz,
+                        );
+                        *encoder = AudioEncoder::new_with_budget(
                             mode,
                             session.bitrate,
                             session.variable,
                             format,
+                            budget,
                         )?;
                         encoder_fresh = !active;
                         if active {
                             packets.start(Instant::now());
                             session.start()?;
                             pcm_startup.start(Instant::now());
+                            startup_priming.start();
                             render.begin_startup_diagnostics();
                         }
                         Ok(())
@@ -1203,23 +1341,38 @@ fn stream(
             ));
         }
         if let Some(request) = session.coordination_request() {
-            if request.suspend {
-                buffer.cleanup_before(render, || {
-                    session.restore_media_timeout()?;
-                    session.suspend()
-                })?;
-                active = false;
-                packets.clear();
-                pcm.reset();
-                outstanding = 0;
-            }
-            // Resuming policy does not start audio without a running Windows producer.
-            session.report_coordination(request.suspend, status[0] != 0, request.sequence)?;
-            crate::log(if request.suspend {
-                "playback: suspended for Windows Bluetooth coordination"
+            // Windows' Bluetooth suspension applies to the HQ uplink too.
+            let complete = if request.suspend {
+                set_windows_suspended(address, intent, true);
+                if suspend_barrier.begin(request.sequence, Instant::now()) {
+                    buffer.cleanup_before(render, || {
+                        session.restore_media_timeout()?;
+                        session.suspend()
+                    })?;
+                    active = false;
+                    packets.clear();
+                    pcm.reset();
+                    startup_priming.reset();
+                    draining = None;
+                    outstanding = 0;
+                }
+                let quiet = microphone_quiet()?;
+                suspend_barrier.ready(request.sequence, Instant::now(), quiet)?
             } else {
-                "playback: Windows Bluetooth suspension released"
-            });
+                suspend_barrier.clear();
+                true
+            };
+            if complete {
+                session.check_cancelled()?;
+                // Resume policy alone never starts audio without a Windows producer.
+                session.report_coordination(request.suspend, status[0] != 0, request.sequence)?;
+                set_windows_suspended(address, intent, !session.coordination_allows_playback());
+                crate::log(if request.suspend {
+                    "playback: suspended for Windows Bluetooth coordination"
+                } else {
+                    "playback: Windows Bluetooth suspension released"
+                });
+            }
         } else {
             session.report_coordination(session.coordination_suspended(), status[0] != 0, 0)?;
         }
@@ -1250,7 +1403,36 @@ fn stream(
             }
             session.report_coordination(session.coordination_suspended(), status[0] != 0, 0)?;
         }
-        if active && (status[0] == 0 || status[3] != generation) {
+        if active
+            && draining.is_none()
+            && status[0] == 0
+            && (!startup_silence.is_zero() || (mode == Mode::Eld && session.eld_aus > 1))
+            && (startup_priming.has_pending()
+                || pcm.has_partial()
+                || outstanding != 0
+                || packets.pending_units() != 0)
+        {
+            // A stopped producer flushes its ring and clock generation. Finish only
+            // already-owned samples; a new producer or generation cancels this tail.
+            draining = Some(PcmTail::new(status[3], Instant::now()));
+            clock = FrameClock::new(samples, Instant::now())?;
+        }
+        let tail_now = Instant::now();
+        let tail_expired = draining.as_ref().is_some_and(|tail| tail.expired(tail_now));
+        let tail_ended = draining.as_ref().is_some_and(|tail| {
+            tail.interrupted(status[0], status[3], tail_now)
+                || tail.complete(
+                    startup_priming.has_pending() || pcm.has_partial(),
+                    outstanding,
+                    packets.pending_units(),
+                )
+        });
+        if active
+            && (tail_ended || (draining.is_none() && (status[0] == 0 || status[3] != generation)))
+        {
+            if tail_expired {
+                crate::log("playback: startup PCM tail did not finish within 250 ms");
+            }
             buffer.cleanup_before(render, || {
                 session.restore_media_timeout()?;
                 session.suspend()
@@ -1258,6 +1440,8 @@ fn stream(
             active = false;
             packets.clear();
             pcm.reset();
+            startup_priming.reset();
+            draining = None;
             outstanding = 0;
         }
         if status[0] != 0 && !active && playback_allowed {
@@ -1269,18 +1453,30 @@ fn stream(
                 samples,
                 reserve,
                 || {
+                    let previous_budget = link.current();
+                    let budget = link.refresh(
+                        mode,
+                        session.bitrate,
+                        session.variable,
+                        wifi::connected_24ghz,
+                    );
+                    if budget != previous_budget {
+                        encoder_fresh = false;
+                    }
                     prepare_encoder(&mut encoder_fresh, || {
-                        *encoder = AudioEncoder::new_with_format(
+                        *encoder = AudioEncoder::new_with_budget(
                             mode,
                             session.bitrate,
                             session.variable,
                             format,
+                            budget,
                         )?;
                         Ok(())
                     })?;
                     packets.start(Instant::now());
                     session.start()?;
                     pcm_startup.start(Instant::now());
+                    startup_priming.start();
                     render.begin_startup_diagnostics();
                     Ok(())
                 },
@@ -1294,11 +1490,13 @@ fn stream(
         } else if active && status[2] != dropped {
             return Err(io::Error::other(PlaybackStall::PcmOverrun));
         }
-        if playback_allowed && buffer.poll(session, render)? {
+        if playback_allowed && draining.is_none() && buffer.poll(session, render)? {
             if !session.coordination_allows_playback() {
                 active = false;
                 packets.clear();
                 pcm.reset();
+                startup_priming.reset();
+                draining = None;
                 outstanding = 0;
                 continue;
             }
@@ -1312,15 +1510,23 @@ fn stream(
                 samples,
                 reserve,
                 || {
-                    *encoder = AudioEncoder::new_with_format(
+                    let budget = link.refresh(
+                        mode,
+                        session.bitrate,
+                        session.variable,
+                        wifi::connected_24ghz,
+                    );
+                    *encoder = AudioEncoder::new_with_budget(
                         mode,
                         session.bitrate,
                         session.variable,
                         format,
+                        budget,
                     )?;
                     packets.start(Instant::now());
                     session.start()?;
                     pcm_startup.start(Instant::now());
+                    startup_priming.start();
                     render.begin_startup_diagnostics();
                     Ok(())
                 },
@@ -1336,7 +1542,7 @@ fn stream(
         }
         let observed_at = Instant::now();
         let mut adjusting = false;
-        let host_time = if active && driver_clock {
+        let host_time = if active && driver_clock && draining.is_none() {
             let snapshot = render.clock()?;
             if snapshot.generation != generation {
                 continue;
@@ -1356,16 +1562,29 @@ fn stream(
                 return Err(io::Error::other(PlaybackStall::DeadlineMiss));
             }
             let mut replaced = false;
-            let frame = pcm.read_available(
-                |limit| render.read(limit),
-                || {
-                    replaced = render.status()?[3] != generation;
-                    Ok(!replaced)
-                },
-            )?;
+            let frame = if draining.is_some() {
+                pcm.finish()
+            } else {
+                pcm.read_available(
+                    |limit| render.read(limit),
+                    || {
+                        replaced = render.status()?[3] != generation;
+                        Ok(!replaced)
+                    },
+                )?
+            };
             if replaced {
                 continue;
             }
+            let frame = match frame {
+                Some(frame) => Some(startup_priming.process(frame)?),
+                None => startup_priming.drain().or_else(|| {
+                    draining
+                        .as_mut()
+                        .is_some_and(|tail| tail.pad(mode, outstanding, packets.pending_units()))
+                        .then(|| vec![0; samples * format.frame_bytes()])
+                }),
+            };
             if let Some(frame) = frame {
                 let nonzero = pcm_startup.started.is_some()
                     && match format {
@@ -1425,58 +1644,19 @@ fn stream(
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn case_sleep_retains_hfp_isolation_but_replacement_loss_restores_it() {
-        let mut state = ntpods_ipc::Snapshot {
-            model: "A3063".into(),
-            firmware: "9A348".into(),
-            playback_mode: PlaybackMode::AacEld,
-            ..Default::default()
-        };
-        for connected in [true, false] {
-            state.connected = connected;
-            assert!(keep_hfp_isolated(&state, true, true, false, true));
-        }
-        for (microphone, bound, disconnecting, helper) in [
-            (false, true, false, true),
-            (true, false, false, true),
-            (true, true, true, true),
-            (true, true, false, false),
-        ] {
-            assert!(!keep_hfp_isolated(
-                &state,
-                microphone,
-                bound,
-                disconnecting,
-                helper
-            ));
-        }
-        state.mic_state = "error".into();
-        assert!(!keep_hfp_isolated(&state, true, true, false, true));
-        state.mic_state.clear();
-        state.playback_mode = PlaybackMode::Windows;
-        assert!(!keep_hfp_isolated(&state, true, true, false, true));
-    }
-
-    #[test]
-    fn legacy_hfp_is_disabled_only_when_the_replacement_microphone_is_supported() {
-        let mut state = ntpods_ipc::Snapshot::default();
-        assert_eq!(super::hfp_policy(&state, true), None);
-        state.model = "A3063".into();
-        state.firmware = "9A348".into();
-        assert_eq!(super::hfp_policy(&state, true), Some(true));
-        assert_eq!(super::hfp_policy(&state, false), Some(false));
-        state.mic_state = "error".into();
-        assert_eq!(super::hfp_policy(&state, true), Some(false));
-        state.mic_state.clear();
-        state.firmware = "7A123".into();
-        assert_eq!(super::hfp_policy(&state, true), Some(false));
-        state.firmware = "9A348".into();
-        state.model = "unknown".into();
-        assert_eq!(super::hfp_policy(&state, true), Some(false));
-    }
-
     use super::*;
+
+    #[test]
+    fn pcm_tail_cannot_survive_a_new_producer_generation_or_timeout() {
+        let started = Instant::now();
+        let tail = PcmTail::new(8, started);
+        assert!(!tail.interrupted(0, 8, started));
+        assert!(!tail.interrupted(0, 8, started + Duration::from_millis(249)));
+        assert!(tail.interrupted(1, 8, started));
+        assert!(tail.interrupted(0, 9, started));
+        assert!(tail.interrupted(1, 9, started));
+        assert!(tail.interrupted(0, 8, started + Duration::from_millis(250)));
+    }
 
     #[test]
     fn startup_repair_reopens_once_only_after_control_close() {
@@ -1716,6 +1896,38 @@ mod tests {
     }
 
     #[test]
+    fn pcm_tail_releases_aac_lookahead_once_without_skipping_buffered_source() {
+        let mut tail = PcmTail::new(7, Instant::now());
+        assert!(!tail.complete(true, 0, 0));
+        assert!(!tail.complete(false, 1, 0));
+        assert!(tail.pad(Mode::Aac, 1, 0));
+        // Writing the padding takes outstanding from one to two. Its source AU
+        // must return before the one remaining lookahead frame can be discarded.
+        assert!(!tail.complete(false, 2, 0));
+        assert!(!tail.complete(true, 1, 0));
+        assert!(!tail.complete(false, 1, 1));
+        assert!(tail.complete(false, 1, 0));
+        assert!(!tail.pad(Mode::Aac, 1, 0));
+        let mut empty = PcmTail::new(8, Instant::now());
+        assert!(empty.complete(false, 0, 0));
+        assert!(!empty.pad(Mode::Aac, 0, 0));
+    }
+
+    #[test]
+    fn pcm_tail_waits_for_encoded_source_before_padding_an_eld_group() {
+        for units in [1, 2] {
+            let mut tail = PcmTail::new(7, Instant::now());
+            assert!(!tail.pad(Mode::Eld, 1, units));
+            assert!(!tail.complete(false, 1, units));
+            assert!(tail.pad(Mode::Eld, 0, units));
+            assert!(!tail.complete(true, 0, units));
+            assert!(!tail.complete(false, 0, units));
+            assert!(tail.complete(false, 0, 0));
+            assert!(!tail.pad(Mode::Eld, 0, 0));
+        }
+    }
+
+    #[test]
     fn initial_activation_reuses_the_encoder_but_resumes_reinitialize_it() {
         use std::cell::Cell;
         let initializations = Cell::new(1);
@@ -1807,8 +2019,18 @@ mod tests {
             intent: 3,
             reset: sender,
             stop: stop.clone(),
+            windows_suspended: false,
         });
         let _registration = Registration;
+        assert!(!windows_audio_suspended(1));
+        set_windows_suspended(2, 3, true);
+        set_windows_suspended(1, 5, true);
+        assert!(!windows_audio_suspended(1));
+        set_windows_suspended(1, 3, true);
+        assert!(windows_audio_suspended(1));
+        assert!(!windows_audio_suspended(2));
+        set_windows_suspended(1, 3, false);
+        assert!(!windows_audio_suspended(1));
         let worker = thread::spawn(move || {
             let Reset(reply) = requests.recv_timeout(Duration::from_secs(1)).unwrap();
             reply.send(Ok(())).unwrap();
@@ -1823,6 +2045,7 @@ mod tests {
         assert_eq!(reset_if_active(1, 5, true), Some((1223, 1223)));
         assert!(stop.load(Ordering::Acquire));
         drop(_registration);
+        assert!(!windows_audio_suspended(1));
         assert_eq!(reset_if_active(1, 3, false), None);
     }
 

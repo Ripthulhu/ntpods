@@ -229,7 +229,9 @@ public sealed partial class SettingsPage : UserControl
     {
         if (_applyingPreferences) return;
         var index = ThemeButtons.SelectedIndex;
-        ShowSaveResult(AppSettings.SetThemeIndex(index));
+        bool saved = AppSettings.SetLocalThemeIndex(index);
+        ShowSaveResult(saved);
+        if (saved) Client?.SetCompanionPreference("theme", index switch { 1 => "light", 2 => "dark", _ => "system" });
         ThemeChanged?.Invoke(index switch
         {
             1 => ElementTheme.Light,

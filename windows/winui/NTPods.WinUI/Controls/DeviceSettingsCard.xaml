@@ -35,17 +35,22 @@
                                   AutomationProperties.Name="{Binding [Playback_Title], Source={StaticResource Loc}}">
                             <ComboBoxItem Tag="aac" Content="AAC" />
                             <ComboBoxItem Tag="aac_eld" Content="AAC-ELD" />
+                            <ComboBoxItem x:Name="DongleAutomaticItem" Tag="automatic" Visibility="Collapsed"><TextBlock Text="{Binding [DeviceControls_Automatic], Source={StaticResource Loc}}" /></ComboBoxItem>
+                            <ComboBoxItem x:Name="DongleSbcItem" Tag="sbc" Content="SBC" Visibility="Collapsed" />
                         </ComboBox>
                         <StackPanel x:Name="PlaybackQualityRow" Spacing="8" Margin="0,12,0,0">
                             <TextBlock Text="{Binding [Playback_Quality], Source={StaticResource Loc}}" Style="{StaticResource DeviceLabel}" />
                             <ComboBox x:Name="PlaybackQualityPicker" HorizontalAlignment="Stretch" SelectionChanged="PlaybackQuality_Changed"
                                       AutomationProperties.Name="{Binding [Playback_Quality], Source={StaticResource Loc}}">
-                                <ComboBoxItem Content="{Binding [Playback_BestEffort], Source={StaticResource Loc}}" />
-                                <ComboBoxItem Content="{Binding [Playback_Manual], Source={StaticResource Loc}}" />
-                                <ComboBoxItem x:Name="VariableBitrateItem" Content="{Binding [Playback_Variable], Source={StaticResource Loc}}" />
+                                <ComboBoxItem x:Name="BestEffortItem"><TextBlock Text="{Binding [Playback_BestEffort], Source={StaticResource Loc}}" /></ComboBoxItem>
+                                <ComboBoxItem><TextBlock Text="{Binding [Playback_Manual], Source={StaticResource Loc}}" /></ComboBoxItem>
+                                <ComboBoxItem x:Name="VariableBitrateItem"><TextBlock Text="{Binding [Playback_Variable], Source={StaticResource Loc}}" /></ComboBoxItem>
                             </ComboBox>
                             <StackPanel x:Name="PlaybackBitrateRow" Spacing="8">
                                 <TextBlock Text="{Binding [Playback_Bitrate], Source={StaticResource Loc}}" Style="{StaticResource DeviceLabel}" />
+                                <ComboBox x:Name="DongleBitratePicker" Visibility="Collapsed" HorizontalAlignment="Stretch"
+                                          AutomationProperties.Name="{Binding [Playback_Bitrate], Source={StaticResource Loc}}"
+                                          SelectionChanged="DongleBitrate_Changed" />
                                 <NumberBox x:Name="PlaybackKbps"
                                            AutomationProperties.Name="{Binding [Playback_Bitrate], Source={StaticResource Loc}}"
                                            Minimum="96" Maximum="512" SmallChange="8" LargeChange="32"
@@ -53,7 +58,36 @@
                                 <Button x:Name="PlaybackBitrateApply" Content="{Binding [DeviceControls_Apply], Source={StaticResource Loc}}"
                                         AutomationProperties.Name="{Binding [Playback_ApplyBitrate], Source={StaticResource Loc}}" Click="PlaybackBitrateApply_Click" />
                             </StackPanel>
+                            <StackPanel x:Name="PlaybackLinkRow" Spacing="8" Margin="0,12,0,0" Visibility="Collapsed">
+                                <TextBlock Text="{Binding [Playback_LinkLimit], Source={StaticResource Loc}}" Style="{StaticResource DeviceLabel}" />
+                                <ComboBox x:Name="PlaybackLinkPicker" HorizontalAlignment="Stretch" SelectionChanged="PlaybackLink_Changed"
+                                          AutomationProperties.Name="{Binding [Playback_LinkLimit], Source={StaticResource Loc}}">
+                                    <ComboBoxItem Tag="off"><TextBlock Text="{Binding [Playback_LinkOff], Source={StaticResource Loc}}" /></ComboBoxItem>
+                                    <ComboBoxItem Tag="automatic"><TextBlock Text="{Binding [Playback_LinkAutomatic], Source={StaticResource Loc}}" /></ComboBoxItem>
+                                    <ComboBoxItem Tag="manual"><TextBlock Text="{Binding [Playback_LinkCustom], Source={StaticResource Loc}}" /></ComboBoxItem>
+                                </ComboBox>
+                                <TextBlock x:Name="PlaybackLinkHelp" Style="{StaticResource DeviceStatus}" />
+                                <StackPanel x:Name="PlaybackLinkCustomRow" Spacing="8" Visibility="Collapsed">
+                                    <TextBlock Text="{Binding [Playback_LinkKbps], Source={StaticResource Loc}}" Style="{StaticResource DeviceLabel}" />
+                                    <NumberBox x:Name="PlaybackLinkKbps" Minimum="128" Maximum="256" SmallChange="1" LargeChange="8"
+                                               SpinButtonPlacementMode="Compact" ValueChanged="PlaybackLinkKbps_Changed"
+                                               AutomationProperties.Name="{Binding [Playback_LinkKbps], Source={StaticResource Loc}}"
+                                               AutomationProperties.HelpText="{Binding [Playback_LinkCustomHelp], Source={StaticResource Loc}}"
+                                               ToolTipService.ToolTip="{Binding [Playback_LinkCustomHelp], Source={StaticResource Loc}}" />
+                                    <Button x:Name="PlaybackLinkApply" Content="{Binding [DeviceControls_Apply], Source={StaticResource Loc}}"
+                                            AutomationProperties.Name="{Binding [Playback_LinkApply], Source={StaticResource Loc}}" Click="PlaybackLinkApply_Click" />
+                                </StackPanel>
+                            </StackPanel>
                         </StackPanel>
+                        <Grid x:Name="PlaybackGameModeRow" ColumnSpacing="16" RowSpacing="8" Margin="0,14,0,0" Visibility="Collapsed">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                            <TextBlock Text="{Binding [Playback_GameMode], Source={StaticResource Loc}}" Style="{StaticResource DeviceLabel}" VerticalAlignment="Center" />
+                            <ToggleSwitch x:Name="PlaybackGameModeSwitch" Grid.Column="1" Style="{StaticResource SettingToggle}" VerticalAlignment="Center"
+                                          AutomationProperties.Name="{Binding [Playback_GameMode], Source={StaticResource Loc}}"
+                                          AutomationProperties.HelpText="{Binding [Playback_GameModeHelp], Source={StaticResource Loc}}" Toggled="PlaybackGameMode_Toggled" />
+                            <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Text="{Binding [Playback_GameModeHelp], Source={StaticResource Loc}}" Style="{StaticResource DeviceStatus}" />
+                        </Grid>
                         <TextBlock x:Name="PlaybackError" Style="{StaticResource DeviceStatus}" Visibility="Collapsed"
                                    AutomationProperties.LiveSetting="Polite" />
                         <Button x:Name="PlaybackRetry" Content="{Binding [Playback_Retry], Source={StaticResource Loc}}"

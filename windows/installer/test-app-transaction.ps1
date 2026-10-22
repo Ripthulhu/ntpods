@@ -34,6 +34,15 @@ function Register-NTPodsTasks([string]$dest) {
     }
     if ($script:failAt -in 'later', 'rollback') { throw 'Injected task registration failure.' }
 }
+function New-Item {
+    param([string]$Path, [string]$ItemType, [string]$Target, [switch]$Force)
+    if ($Path -eq 'HKLM:\SOFTWARE\NTPods') {
+        if ($script:failAt -eq 'app-only-later') { throw 'Injected app-only metadata failure.' }
+    } else { Microsoft.PowerShell.Management\New-Item @PSBoundParameters }
+}
+function Set-ItemProperty { }
+function Get-StartupDir { $script:caseRoot }
+function Set-RunValues { }
 
 $tokens = $null; $parseErrors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'install.ps1'), [ref]$tokens, [ref]$parseErrors)
@@ -54,7 +63,7 @@ function Reset-Fixture([string]$name, [bool]$existing) {
     foreach ($name in 'ntpodsd.exe', 'avcodec-61.dll', 'avutil-59.dll', 'swresample-5.dll', 'ntpods-aac-encoder.exe', 'ntpods-eld-encoder.exe', 'ntpods-fdk-q31.dll', 'fix-driver.ps1', 'rename-mic.ps1', 'setup-common.ps1', 'audio-driver.ps1', 'restore-playback.ps1', 'stop-ntpods.ps1', 'msi-setup.ps1', 'uninstall.ps1') {
         [IO.File]::WriteAllText((Join-Path $script:source $name), "new:$name")
     }
-    [IO.File]::WriteAllText((Join-Path $script:source 'bluetooth-host-identity.ps1'), 'param($Action, $TransactionId)')
+    [IO.File]::WriteAllText((Join-Path $script:source 'bluetooth-host-identity.ps1'), 'param($Action, $TransactionId); [IO.File]::AppendAllText((Join-Path $PSScriptRoot "identity-actions.txt"), $Action)')
     foreach ($name in 'winui', 'tools', 'licenses') {
         [IO.Directory]::CreateDirectory((Join-Path $script:source $name)) | Out-Null
         [IO.File]::WriteAllText((Join-Path $script:source "$name\payload.txt"), "new:$name")
@@ -73,7 +82,7 @@ function Reset-Fixture([string]$name, [bool]$existing) {
     $script:failAt = 'later'
 }
 
-function Invoke-InstallFixture([string]$transactionId) {
+function Invoke-InstallFixture([string]$transactionId, [bool]$Drivers = $true) {
     $here = $script:source
     $dest = $script:destination
     $setupDir = $script:caseRoot
@@ -93,6 +102,24 @@ function Assert-Original {
 }
 
 try {
+    foreach ($existing in $false, $true) {
+        Reset-Fixture "app-only-$existing" $existing
+        $script:failAt = 'none'
+        Invoke-InstallFixture "app-only-$existing" $false
+        Assert-True (-not $script:driverInstalled -and -not $script:driverRestored) 'App-only setup changed drivers.'
+        Assert-True (-not (Test-Path (Join-Path $script:destination 'identity-actions.txt'))) 'App-only setup changed Bluetooth identity.'
+        Complete-NTPodsAppTransaction "app-only-$existing"
+
+        Reset-Fixture "app-only-failure-$existing" $existing
+        $script:failAt = 'app-only-later'
+        $failure = Assert-Fails { Invoke-InstallFixture "app-only-failure-$existing" $false }
+        Assert-True ($failure.ToString() -match 'Injected app-only metadata failure') 'App-only failure was not reached.'
+        Assert-True (-not $script:driverInstalled -and -not $script:driverRestored) 'App-only rollback changed drivers.'
+        Assert-True (-not (Test-Path (Join-Path $script:source 'identity-actions.txt'))) 'App-only rollback touched Bluetooth identity.'
+        if ($existing) { Assert-Original }
+        else { Assert-True (-not (Test-Path $script:destination)) 'Failed app-only install left application files.' }
+    }
+
     Reset-Fixture 'missing-wide-library' $true
     Remove-Item -LiteralPath (Join-Path $script:source 'ntpods-fdk-q31.dll') -Force
     $failure = Assert-Fails { Invoke-InstallFixture 'missing-wide-library' }

@@ -29,12 +29,49 @@ pub(crate) fn native_output_device(address: u64) -> windows::core::Result<IMMDev
     find_output(Some(address), crate::driver::native_endpoint_owner)
 }
 
-fn output_device_for(address: Option<u64>) -> windows::core::Result<IMMDevice> {
+pub(crate) fn output_device_for(address: Option<u64>) -> windows::core::Result<IMMDevice> {
     find_output(address, |instance, selected| {
         selected_output_owner(instance, selected, || {
             crate::driver::native_endpoint_owner(instance, selected)
         })
     })
+}
+
+fn dongle_adapter(instance: &str) -> bool {
+    let mut parts = instance.split('\\');
+    parts.next().is_some_and(|part| part.eq_ignore_ascii_case("USB"))
+        && parts.next().is_some_and(|part| {
+            let fields: Vec<_> = part.split('&').collect();
+            fields.iter().any(|field| field.eq_ignore_ascii_case("VID_CAFE"))
+                && fields.iter().any(|field| field.eq_ignore_ascii_case("PID_4015"))
+                && fields.iter().any(|field| field.eq_ignore_ascii_case("MI_00"))
+        })
+}
+
+/// A single dongle render endpoint must also be the current default output.
+pub(crate) fn default_dongle_output() -> windows::core::Result<IMMDevice> {
+    unsafe {
+        let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
+        let default = enumerator.GetDefaultAudioEndpoint(eRender, eConsole)?;
+        let default_id = endpoint_id(&default).ok_or_else(|| Error::from(E_FAIL))?;
+        let devices = enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)?;
+        let mut matching = Vec::new();
+        for index in 0..devices.GetCount()? {
+            let device = devices.Item(index)?;
+            if adapter_instance(&enumerator, &device).is_ok_and(|instance| dongle_adapter(&instance)) {
+                matching.push(device);
+            }
+        }
+        if matching.len() == 1 && endpoint_id(&matching[0]).as_deref() == Some(&default_id) {
+            Ok(matching.pop().unwrap())
+        } else {
+            Err(Error::from(E_FAIL))
+        }
+    }
+}
+
+pub(crate) fn player_owns_dongle_output(player: &str) -> bool {
+    default_dongle_output().is_ok_and(|selected| player_owns_device(selected, player))
 }
 
 fn find_output(
@@ -268,11 +305,163 @@ fn is_application_session(result: windows::core::HRESULT) -> bool {
     result == windows::Win32::Foundation::S_FALSE
 }
 
+/// Bind an SMTC player to this output before an automatic transfer pauses it.
+/// Ambiguous players or the same application rendering elsewhere are refused.
+pub(crate) fn player_owns_output(address: u64, player: &str) -> bool {
+    output_device_for(Some(address)).is_ok_and(|selected| player_owns_device(selected, player))
+}
+
+fn player_owns_device(selected: IMMDevice, player: &str) -> bool {
+    (|| -> windows::core::Result<bool> {
+        let selected_id = endpoint_id(&selected).ok_or_else(|| Error::from(E_FAIL))?;
+        unsafe {
+            let enumerator: IMMDeviceEnumerator =
+                CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
+            let devices = enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)?;
+            let mut proof = PlayerOutputProof::default();
+            for index in 0..devices.GetCount()? {
+                let device = devices.Item(index)?;
+                let on_selected = endpoint_id(&device).as_deref() == Some(&selected_id);
+                let manager: IAudioSessionManager2 = device.Activate(CLSCTX_ALL, None)?;
+                let sessions = manager.GetSessionEnumerator()?;
+                for index in 0..sessions.GetCount()? {
+                    let session = sessions
+                        .GetSession(index)?
+                        .cast::<IAudioSessionControl2>()?;
+                    if session.GetState()? != AudioSessionStateActive
+                        || !is_application_session(session.IsSystemSoundsSession())
+                    {
+                        continue;
+                    }
+                    let identity = process_player_identity(session.GetProcessId()?);
+                    let matches = identity
+                        .as_ref()
+                        .map(|(app, image)| player_identity_matches(player, app.as_deref(), image));
+                    proof.observe(on_selected, matches);
+                }
+            }
+            Ok(proof.permits_pause())
+        }
+    })()
+    .unwrap_or(false)
+}
+
+#[derive(Default)]
+struct PlayerOutputProof {
+    selected_matches: usize,
+    ambiguous: bool,
+}
+
+impl PlayerOutputProof {
+    fn observe(&mut self, selected: bool, matches: Option<bool>) {
+        if selected {
+            if matches == Some(true) {
+                self.selected_matches += 1;
+            } else {
+                self.ambiguous = true;
+            }
+        } else if matches != Some(false) {
+            self.ambiguous = true;
+        }
+    }
+
+    fn permits_pause(&self) -> bool {
+        self.selected_matches == 1 && !self.ambiguous
+    }
+}
+
+fn process_player_identity(pid: u32) -> Option<(Option<String>, String)> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Storage::Packaging::Appx::GetApplicationUserModelId;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return None;
+        }
+        let mut image = [0u16; 32768];
+        let mut length = image.len() as u32;
+        let image_ok = QueryFullProcessImageNameW(process, 0, image.as_mut_ptr(), &mut length);
+        let mut app = [0u16; 512];
+        let mut app_length = app.len() as u32;
+        let app_ok = GetApplicationUserModelId(process, &mut app_length, app.as_mut_ptr());
+        CloseHandle(process);
+        if image_ok == 0 || length as usize > image.len() {
+            return None;
+        }
+        let app = (app_ok == 0 && app_length > 1 && app_length as usize <= app.len())
+            .then(|| String::from_utf16_lossy(&app[..app_length as usize - 1]));
+        Some((app, String::from_utf16_lossy(&image[..length as usize])))
+    }
+}
+
+fn player_identity_matches(player: &str, app: Option<&str>, image: &str) -> bool {
+    if player.is_empty() {
+        return false;
+    }
+    if let Some(app) = app {
+        return player == app;
+    }
+    // A packaged ID cannot be inferred from a desktop executable name.
+    if player.contains('!') || !player.to_ascii_lowercase().ends_with(".exe") {
+        return false;
+    }
+    if player.contains(['\\', '/']) {
+        player.eq_ignore_ascii_case(image)
+    } else {
+        image
+            .rsplit(['\\', '/'])
+            .next()
+            .is_some_and(|name| name.eq_ignore_ascii_case(player))
+    }
+}
+
 /// Host volume ducking driven by the AirPods' 0x4B Conversation Awareness events.
 pub struct ConvDuck {
     // CA can be disabled from an IPC thread, so retain a marshalled reference.
     active: Option<DuckedEndpoint<DuckEndpoint>>,
-    limit: u8,
+    policy: ntpods_ipc::ConversationPolicy,
+    paused: Option<ConversationPause>,
+    speaking_output: Option<(u64, String)>,
+}
+
+struct ConversationPause {
+    ticket: crate::media::SelectedPause,
+    route: (u64, String),
+    speech: SpeechPause,
+    permitted: Option<Box<dyn FnOnce() -> bool + Send>>,
+    resume_sent: bool,
+}
+
+struct SpeechPause {
+    active: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    resume_after: Option<std::time::Instant>,
+}
+
+impl SpeechPause {
+    fn new() -> Self {
+        Self {
+            active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            resume_after: None,
+        }
+    }
+
+    fn speaking(&mut self, speaking: bool, now: std::time::Instant) {
+        let previous = self
+            .active
+            .swap(speaking, std::sync::atomic::Ordering::AcqRel);
+        if speaking {
+            self.resume_after = None;
+        } else if previous {
+            self.resume_after = Some(now + std::time::Duration::from_millis(250));
+        }
+    }
+
+    fn may_resume(&self, now: std::time::Instant) -> bool {
+        self.resume_after.is_some_and(|at| now >= at)
+    }
 }
 
 impl Default for ConvDuck {
@@ -285,31 +474,123 @@ impl ConvDuck {
     pub fn new(limit: u8) -> Self {
         Self {
             active: None,
-            limit: limit.min(100),
+            policy: ntpods_ipc::ConversationPolicy::from_legacy(limit),
+            paused: None,
+            speaking_output: None,
         }
     }
 
     pub fn set_limit(&mut self, limit: u8) {
-        self.limit = limit.min(100);
+        self.set_policy(ntpods_ipc::ConversationPolicy::from_legacy(limit));
+    }
+
+    pub fn set_policy(&mut self, policy: ntpods_ipc::ConversationPolicy) {
+        if !policy.is_valid() {
+            return;
+        }
+        if self.policy.pause_media && !policy.pause_media {
+            self.finish_pause();
+        }
+        self.policy = policy;
         if let Some(duck) = &mut self.active {
-            duck.apply_limit(self.limit);
+            duck.apply_policy(&self.policy);
         }
     }
 
-    /// 1/3 cap playback at the chosen volume; 2 reduces it further to 60% of
-    /// that cap. Ending statuses restore only volume that we still own.
-    pub fn on_status(&mut self, status: u8, address: u64, output: Option<u64>) {
+    /// Ending statuses restore only volume and playback still owned by this episode.
+    pub fn on_status(
+        &mut self,
+        status: u8,
+        address: u64,
+        output: Option<u64>,
+        permitted: impl FnOnce() -> bool + Send + 'static,
+    ) {
         if matches!(status, 1 | 2 | 3) {
             let current = DuckEndpoint::current(address, output);
-            update_duck_for_route(&mut self.active, status, self.limit, current);
+            let route = current
+                .as_ref()
+                .map(|endpoint| (address, endpoint.id.clone()));
+            if self.speaking_output.is_some() && self.speaking_output != route {
+                self.paused = None;
+                self.speaking_output = None;
+            }
+            if self
+                .paused
+                .as_ref()
+                .is_some_and(|paused| Some(&paused.route) != route.as_ref())
+            {
+                self.paused = None;
+            }
+            if let Some(paused) = self.paused.as_mut() {
+                self.speaking_output = route.clone();
+                if self.policy.pause_media {
+                    paused.speech.speaking(true, std::time::Instant::now());
+                }
+            } else if status == 1 && self.speaking_output.is_none() {
+                self.speaking_output = route.clone();
+                if self.policy.pause_media {
+                    if let Some(route) = route {
+                        self.paused = Some(ConversationPause {
+                            ticket: crate::media::SelectedPause::start(address),
+                            route,
+                            speech: SpeechPause::new(),
+                            permitted: Some(Box::new(permitted)),
+                            resume_sent: false,
+                        });
+                    }
+                }
+            }
+            update_duck_for_route_policy(&mut self.active, status, &self.policy, current);
         } else {
-            update_duck(&mut self.active, status, self.limit, || None);
+            update_duck_policy(&mut self.active, status, &self.policy, || None);
+            if matches!(status, 4 | 6 | 7 | 8 | 9) {
+                self.speaking_output = None;
+                self.finish_pause();
+            }
         }
+        self.poll();
     }
 
     /// Disabling Conversation Awareness may omit the end event; restore any owned duck.
     pub fn restore(&mut self) {
         restore_duck(&mut self.active);
+        self.speaking_output = None;
+        self.finish_pause();
+    }
+
+    fn finish_pause(&mut self) {
+        if let Some(paused) = self.paused.as_mut() {
+            if !paused.resume_sent {
+                paused.speech.speaking(false, std::time::Instant::now());
+            }
+        }
+    }
+
+    /// Called by the existing host poll so media work never blocks Bluetooth reception.
+    pub fn poll(&mut self) {
+        let Some(paused) = self.paused.as_mut() else {
+            return;
+        };
+        while let Some(receipt) = paused.ticket.poll() {
+            if matches!(
+                receipt,
+                crate::media::PauseReceipt::Failed | crate::media::PauseReceipt::Resumed(_)
+            ) {
+                self.paused = None;
+                return;
+            }
+        }
+        if !paused.resume_sent && paused.speech.may_resume(std::time::Instant::now()) {
+            let speech = paused.speech.active.clone();
+            let permitted = paused.permitted.take();
+            paused.resume_sent = true;
+            if !paused.ticket.resume(move || {
+                !speech.load(std::sync::atomic::Ordering::Acquire)
+                    && permitted.is_some_and(|permitted| permitted())
+            }) {
+                self.paused = None;
+            }
+        }
     }
 
     /// A successful choice takes ownership only on the output that was ducked.
@@ -436,10 +717,15 @@ struct DuckedEndpoint<E> {
 }
 
 impl<E: DuckVolume> DuckedEndpoint<E> {
+    fn apply_policy(&mut self, policy: &ntpods_ipc::ConversationPolicy) {
+        if let Some(target) = policy.target(self.original, self.status) {
+            self.set_if_owned(target);
+        }
+    }
+
+    #[cfg(test)]
     fn apply_limit(&mut self, limit: u8) {
-        let cap = f32::from(limit.min(100)) / 100.0;
-        let cap = if self.status == 2 { cap * 0.6 } else { cap };
-        self.set_if_owned(self.original.min(cap));
+        self.apply_policy(&ntpods_ipc::ConversationPolicy::from_legacy(limit));
     }
 
     fn set_if_owned(&mut self, target: f32) {
@@ -473,10 +759,10 @@ impl<E: DuckVolume> DuckedEndpoint<E> {
     }
 }
 
-fn update_duck<E: DuckVolume>(
+fn update_duck_policy<E: DuckVolume>(
     active: &mut Option<DuckedEndpoint<E>>,
     status: u8,
-    limit: u8,
+    policy: &ntpods_ipc::ConversationPolicy,
     find_endpoint: impl FnOnce() -> Option<E>,
 ) {
     match status {
@@ -515,14 +801,14 @@ fn update_duck<E: DuckVolume>(
     }
     if let Some(duck) = active {
         duck.status = status;
-        duck.apply_limit(limit);
+        duck.apply_policy(policy);
     }
 }
 
-fn update_duck_for_route<E: DuckVolume>(
+fn update_duck_for_route_policy<E: DuckVolume>(
     active: &mut Option<DuckedEndpoint<E>>,
     status: u8,
-    limit: u8,
+    policy: &ntpods_ipc::ConversationPolicy,
     current: Option<E>,
 ) {
     if active
@@ -531,7 +817,37 @@ fn update_duck_for_route<E: DuckVolume>(
     {
         restore_duck(active);
     }
-    update_duck(active, status, limit, || current);
+    update_duck_policy(active, status, policy, || current);
+}
+
+#[cfg(test)]
+fn update_duck<E: DuckVolume>(
+    active: &mut Option<DuckedEndpoint<E>>,
+    status: u8,
+    limit: u8,
+    find: impl FnOnce() -> Option<E>,
+) {
+    update_duck_policy(
+        active,
+        status,
+        &ntpods_ipc::ConversationPolicy::from_legacy(limit),
+        find,
+    );
+}
+
+#[cfg(test)]
+fn update_duck_for_route<E: DuckVolume>(
+    active: &mut Option<DuckedEndpoint<E>>,
+    status: u8,
+    limit: u8,
+    current: Option<E>,
+) {
+    update_duck_for_route_policy(
+        active,
+        status,
+        &ntpods_ipc::ConversationPolicy::from_legacy(limit),
+        current,
+    );
 }
 
 fn restore_duck<E: DuckVolume>(active: &mut Option<DuckedEndpoint<E>>) {
@@ -554,6 +870,104 @@ fn override_duck<E: DuckVolume>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dongle_endpoint_requires_the_exact_audio_interface_identity() {
+        assert!(super::dongle_adapter(r"USB\VID_CAFE&PID_4015&MI_00\instance"));
+        for instance in [r"USB\VID_CAFE&PID_4015&MI_02\x", r"BTHENUM\VID_CAFE&PID_4015&MI_00\x",
+            r"USB\VID_CAFE&PID_40150&MI_00\x", r"USB\VID_CAFE&PID_4015\x"] {
+            assert!(!super::dongle_adapter(instance));
+        }
+    }
+    #[test]
+    fn conversation_resume_waits_for_a_stable_end_without_extending_on_repeated_end_reports() {
+        use std::time::{Duration, Instant};
+        let now = Instant::now();
+        let mut speech = super::SpeechPause::new();
+        speech.speaking(false, now);
+        assert!(!speech.may_resume(now + Duration::from_millis(249)));
+        speech.speaking(false, now + Duration::from_millis(200));
+        assert!(speech.may_resume(now + Duration::from_millis(250)));
+    }
+
+    #[test]
+    fn new_speech_revokes_a_pending_conversation_resume() {
+        use std::sync::atomic::Ordering;
+        use std::time::{Duration, Instant};
+        let now = Instant::now();
+        let mut speech = super::SpeechPause::new();
+        let guard = speech.active.clone();
+        speech.speaking(false, now);
+        speech.speaking(true, now + Duration::from_millis(100));
+        assert!(guard.load(Ordering::Acquire));
+        assert!(!speech.may_resume(now + Duration::from_secs(1)));
+        speech.speaking(false, now + Duration::from_secs(2));
+        assert!(speech.may_resume(now + Duration::from_millis(2250)));
+    }
+
+    #[test]
+    fn automatic_pause_requires_one_unambiguous_player_on_the_selected_output() {
+        for (sessions, expected) in [
+            (vec![], false),
+            (vec![(true, Some(true))], true),
+            (vec![(true, Some(true)), (false, Some(false))], true),
+            (vec![(true, Some(true)), (true, Some(true))], false),
+            (vec![(true, Some(true)), (true, Some(false))], false),
+            (vec![(true, Some(true)), (false, Some(true))], false),
+            (vec![(true, Some(true)), (false, None)], false),
+            (vec![(true, None)], false),
+        ] {
+            let mut proof = super::PlayerOutputProof::default();
+            for (selected, matches) in sessions {
+                proof.observe(selected, matches);
+            }
+            assert_eq!(proof.permits_pause(), expected);
+        }
+    }
+
+    #[test]
+    fn player_identity_requires_exact_packaged_id_or_desktop_executable() {
+        assert!(super::player_identity_matches(
+            "Music.Package!App",
+            Some("Music.Package!App"),
+            r"C:\Apps\player.exe"
+        ));
+        assert!(!super::player_identity_matches(
+            "Music.Package!Other",
+            Some("Music.Package!App"),
+            r"C:\Apps\player.exe"
+        ));
+        assert!(!super::player_identity_matches(
+            "player.exe",
+            Some("Music.Package!App"),
+            r"C:\Apps\player.exe"
+        ));
+        assert!(super::player_identity_matches(
+            "Spotify.exe",
+            None,
+            r"C:\Apps\Spotify.EXE"
+        ));
+        assert!(!super::player_identity_matches(
+            "Spotify",
+            None,
+            r"C:\Apps\Spotify.exe"
+        ));
+        assert!(!super::player_identity_matches(
+            "Music.Package!App",
+            None,
+            r"C:\Apps\App.exe"
+        ));
+        assert!(!super::player_identity_matches(
+            r"C:\Other\Spotify.exe",
+            None,
+            r"C:\Apps\Spotify.exe"
+        ));
+        assert!(!super::player_identity_matches(
+            "",
+            None,
+            r"C:\Apps\player.exe"
+        ));
+    }
+
     #[test]
     fn activity_errors_cannot_hide_known_playback_or_prove_idle() {
         use windows::Win32::Foundation::E_FAIL;
@@ -1113,8 +1527,8 @@ mod tests {
 
     #[test]
     fn configurable_limit_clamps_and_does_not_override_manual_volume() {
-        assert_eq!(ConvDuck::default().limit, 25);
-        assert_eq!(ConvDuck::new(255).limit, 100);
+        assert_eq!(ConvDuck::default().policy.first, "25");
+        assert_eq!(ConvDuck::new(255).policy.first, "100");
         let endpoint = Endpoint::new(0.8);
         let mut active = None;
         update_duck(&mut active, 1, 0, || Some(endpoint.clone()));

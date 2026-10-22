@@ -8,12 +8,14 @@
         <Grid HorizontalAlignment="Stretch">
             <StackPanel x:Name="DeviceRoot" MaxWidth="688" Padding="24,20,24,48" Spacing="24" HorizontalAlignment="Stretch">
                 <controls:DeviceHeader x:Name="Header" />
+                <controls:DongleCard x:Name="DongleCard" Visibility="Collapsed" />
                 <HyperlinkButton x:Name="PairFirstButton" Visibility="Collapsed" HorizontalAlignment="Center" Click="Pair_Click"
                                  Content="{Binding [Pairing_Title], Source={StaticResource Loc}}" />
                 <InfoBar x:Name="PairingError" IsOpen="False" Visibility="Collapsed" Severity="Error" Closed="PairingError_Closed" />
                 <ContentControl x:Name="DeviceBody" IsTabStop="False" HorizontalContentAlignment="Stretch">
                     <StackPanel x:Name="DeviceSections" Spacing="24">
                         <controls:BatteryCard x:Name="BatteryCard" />
+                        <controls:CompanionCard x:Name="CompanionCard" Visibility="Collapsed" />
                         <controls:NoiseControlCard x:Name="NoiseControlCard" />
                         <controls:FeaturesCard x:Name="FeaturesCard" />
                         <StackPanel x:Name="VolumeSections" Spacing="12">
@@ -26,14 +28,16 @@
                             <controls:NearbyFinderCard x:Name="NearbyFinderCard" Visibility="Collapsed" />
                             <controls:HeartRateCard x:Name="HeartRateCard" />
                             <controls:HeadTrackingCard x:Name="HeadTrackingCard" />
-                            <controls:HearingAidCard x:Name="HearingAidCard" Visibility="Collapsed" />
                             <controls:TransparencyCard x:Name="TransparencyCard" Visibility="Collapsed" />
-                            <controls:HardwareDiagnosticsCard x:Name="HardwareDiagnosticsCard" Visibility="Collapsed" />
                             <controls:NearbyCaseCard x:Name="NearbyCaseCard" Visibility="Collapsed" />
                             <controls:MultipointCard x:Name="MultipointCard" Visibility="Collapsed" />
                         </StackPanel>
                     </StackPanel>
                 </ContentControl>
+                <StackPanel x:Name="HealthSections" Spacing="12" Visibility="Collapsed">
+                    <controls:HearingAidCard x:Name="HearingAidCard" Visibility="Collapsed" />
+                    <controls:HardwareDiagnosticsCard x:Name="HardwareDiagnosticsCard" Visibility="Collapsed" />
+                </StackPanel>
             </StackPanel>
         </Grid>
     </ScrollViewer>

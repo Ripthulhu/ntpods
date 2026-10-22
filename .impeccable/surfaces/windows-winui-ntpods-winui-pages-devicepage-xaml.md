@@ -13,7 +13,7 @@ Mode: Operate. Native WinUI main window, device page and app settings.
 
 Use one centered column: 640 DIP of controls plus 24 DIP padding on each side.
 Place the device name and connection status above the artwork and battery rings.
-Follow with listening modes and grouped settings. Put less-used controls in
+Follow with Listen on, listening modes and grouped settings. Put less-used controls in
 native expanders and app settings in the device header's three-dot menu.
 The scroll area spans the window, including the side margins. Keep the scrollbar
 at the window edge. Symmetric header action columns and reserved name/status
@@ -35,6 +35,11 @@ and never send automatically when loaded.
 Require explicit Apply for audiogram changes; debounce tuning gestures and
 preserve untouched settings from the current pair's confirmed profile.
 
+Reuse Hearing assistance and Hardware checks below the native-only settings for
+USB dongles. Prefer a connected native session; otherwise use the dongle's own
+reported model and session, without exposing unrelated native controls. Changing
+the USB target clears drafts and confirmations. Keep the experimental opt-in.
+
 ## Listening modes
 
 Modes share one draggable glass capsule. Adaptive expands within the rail to
@@ -42,6 +47,25 @@ expose its continuous 0–100 strength range. Show Off according to the model an
 Allow Off setting; hide it while Adaptive is expanded. Keep requested and
 confirmed values separate, coalesce changes during dragging and send the final
 value on release. Preserve the geometry and motion documented in DESIGN.md.
+
+## Listen on
+
+Place one compact card directly after the batteries and before listening modes
+for a linked phone matching the selected pair. Reuse `Card` and `QuietButton`:
+12 DIP card padding, equal destination columns with an 8 DIP gap, and Phone and
+This PC actions with native icons, wrapping 16-DIP labels and 48-DIP minimum
+height. Keep both actions neutral; neither indicates the current audio owner.
+Reserve a 20-DIP progress slot beside the title so transfer progress does not
+shift the content. Animate it only during an active transfer. Routine pending,
+busy and unavailable guidance belongs in tooltips and accessible help. Show an
+unconfirmed switch once as an inline error.
+
+Use companion-link readiness independently of PC audio ownership. Require the
+selected pair and current session; disable actions during microphone use,
+pending playback changes or a transfer. Clear pending requests on pair or session
+changes and accept only matching results. After 80 seconds without a result,
+request fresh status once before allowing another explicit choice. Never retry
+the audio transfer automatically.
 
 ## State changes
 

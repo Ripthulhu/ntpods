@@ -118,6 +118,22 @@ impl AudioEncoder {
             Mode::Eld => Encoder::start_with_format(mode, bitrate, variable, format).map(Self::Eld),
         }
     }
+    pub fn new_with_budget(
+        mode: Mode,
+        bitrate: u32,
+        variable: bool,
+        format: SampleFormat,
+        budget: Option<u32>,
+    ) -> io::Result<Self> {
+        match mode {
+            Mode::Aac => {
+                Encoder::start_with_budget(mode, bitrate, variable, format, budget).map(Self::Aac)
+            }
+            Mode::Eld => {
+                Encoder::start_with_budget(mode, bitrate, variable, format, budget).map(Self::Eld)
+            }
+        }
+    }
     pub fn write(&mut self, pcm: Vec<u8>) -> io::Result<()> {
         match self {
             Self::Aac(encoder) => encoder.write(pcm),
@@ -182,6 +198,12 @@ impl MediaPackets {
             pending.clear();
             *timestamp = 0;
             *epoch = None;
+        }
+    }
+    pub fn pending_units(&self) -> usize {
+        match self {
+            Self::Aac { .. } => 0,
+            Self::Eld { pending, .. } => pending.len(),
         }
     }
     pub fn start(&mut self, at: Instant) {
@@ -301,7 +323,7 @@ mod tests {
 
     #[test]
     fn eld_frame_counts_follow_sample_time_and_reset_with_the_encoder() {
-        for aus in [1, 2] {
+        for aus in [1, 2, 3] {
             for (clock, ticks_per_au) in [
                 (EldRtpClock::Samples48000, 480),
                 (EldRtpClock::Samples1000, 10),
@@ -318,7 +340,7 @@ mod tests {
                 let mut stamped = second.clone();
                 packets.stamp(&mut stamped, Instant::now()).unwrap();
                 assert_eq!(stamped, second);
-                if aus == 2 {
+                for _ in 1..aus {
                     assert!(packets.push(vec![4; 40], 1023).unwrap().is_empty());
                 }
                 packets.clear();
@@ -343,8 +365,57 @@ mod tests {
     }
 
     #[test]
+    fn three_au_packet_keeps_each_frame_and_its_length() {
+        let mut packets = eld_packets(3, EldRtpClock::Samples48000, 0x11223344);
+        assert!(packets.push(vec![0xaa], 1023).unwrap().is_empty());
+        assert!(packets.push(vec![0xbb; 2], 1023).unwrap().is_empty());
+        let packet = packets.push(vec![0xcc; 3], 1023).unwrap().remove(0);
+        assert_eq!(
+            packet,
+            [
+                0x80, 0x60, 0, 0, 0, 0, 0, 0, 0x11, 0x22, 0x33, 0x44, 0xb0, 1, 0x10, 1, 0xaa, 0xb0,
+                2, 0x10, 2, 0xbb, 0xbb, 0xb0, 3, 0x10, 3, 0xcc, 0xcc, 0xcc,
+            ]
+        );
+        let next = eld_batch(&mut packets, 3);
+        assert_eq!(&next[4..8], &1440u32.to_be_bytes());
+        assert_eq!(&next[12..14], &[0xb0, 4]);
+    }
+
+    #[test]
+    fn pending_units_tracks_incomplete_groups_and_reset() {
+        for aus in [1, 2, 3] {
+            let mut packets = eld_packets(aus, EldRtpClock::Samples48000, 0);
+            assert_eq!(packets.pending_units(), 0);
+            for pending in 1..aus {
+                assert!(packets.push(vec![pending as u8], 1023).unwrap().is_empty());
+                assert_eq!(packets.pending_units(), pending);
+            }
+            assert_eq!(packets.push(vec![9], 1023).unwrap().len(), 1);
+            assert_eq!(packets.pending_units(), 0);
+            for _ in 1..aus {
+                assert!(packets.push(vec![1], 1023).unwrap().is_empty());
+            }
+            packets.clear();
+            assert_eq!(packets.pending_units(), 0);
+            for _ in 1..aus {
+                assert!(packets.push(vec![2], 1023).unwrap().is_empty());
+            }
+            packets.start(Instant::now());
+            assert_eq!(packets.pending_units(), 0);
+        }
+        let mut aac = MediaPackets::Aac {
+            writer: aac_protocol::Packetizer::new(&[0x11, 0x90]).unwrap(),
+            timestamp: 0,
+        };
+        assert_eq!(aac.pending_units(), 0);
+        aac.push(vec![0; 256], 48).unwrap();
+        assert_eq!(aac.pending_units(), 0);
+    }
+
+    #[test]
     fn eld_clock_comparison_changes_only_timestamp_bytes() {
-        for aus in [1, 2] {
+        for aus in [1, 2, 3] {
             let mut streams = [EldRtpClock::Samples48000, EldRtpClock::Samples1000]
                 .map(|clock| eld_packets(aus, clock, 0x11223344));
             for frame in 0..6 {
@@ -363,9 +434,9 @@ mod tests {
     }
 
     #[test]
-    fn monotonic_stamp_uses_current_submission_time_for_either_group_size() {
+    fn monotonic_stamp_uses_current_submission_time_for_all_group_sizes() {
         let epoch = Instant::now();
-        for aus in [1, 2] {
+        for aus in [1, 2, 3] {
             let mut packets = eld_packets(aus, EldRtpClock::Monotonic, 0);
             packets.start(epoch);
             for (index, millis) in [274, 293, 334, 354, 394].into_iter().enumerate() {
@@ -388,25 +459,29 @@ mod tests {
     #[test]
     fn new_stream_discards_partial_groups_and_excludes_the_pause_from_its_epoch() {
         let epoch = Instant::now();
-        let mut packets = eld_packets(2, EldRtpClock::Monotonic, 0);
-        packets.start(epoch);
-        let mut first = eld_batch(&mut packets, 2);
-        packets
-            .stamp(&mut first, epoch + Duration::from_millis(7))
-            .unwrap();
-        assert!(packets.push(vec![9; 40], 1023).unwrap().is_empty());
-        packets.clear();
-        assert!(packets
-            .stamp(&mut first, epoch + Duration::from_secs(60))
-            .is_err());
-        let resumed = epoch + Duration::from_secs(120);
-        packets.start(resumed);
-        let mut next = eld_batch(&mut packets, 2);
-        packets
-            .stamp(&mut next, resumed + Duration::from_millis(7))
-            .unwrap();
-        assert_eq!(&next[2..4], &1u16.to_be_bytes());
-        assert_eq!(&next[4..], &first[4..]);
+        for aus in [2, 3] {
+            let mut packets = eld_packets(aus, EldRtpClock::Monotonic, 0);
+            packets.start(epoch);
+            let mut first = eld_batch(&mut packets, aus);
+            packets
+                .stamp(&mut first, epoch + Duration::from_millis(7))
+                .unwrap();
+            for _ in 1..aus {
+                assert!(packets.push(vec![9; 40], 1023).unwrap().is_empty());
+            }
+            packets.clear();
+            assert!(packets
+                .stamp(&mut first, epoch + Duration::from_secs(60))
+                .is_err());
+            let resumed = epoch + Duration::from_secs(120);
+            packets.start(resumed);
+            let mut next = eld_batch(&mut packets, aus);
+            packets
+                .stamp(&mut next, resumed + Duration::from_millis(7))
+                .unwrap();
+            assert_eq!(&next[2..4], &1u16.to_be_bytes());
+            assert_eq!(&next[4..], &first[4..]);
+        }
     }
 
     #[test]

@@ -1,8 +1,10 @@
 using System.Diagnostics;
+using System.Collections.Concurrent;
 using System.IO.Pipes;
 using System.Text;
 using System.Text.Json;
 using NTPods.WinUI.Ipc;
+using NTPods.WinUI.Controls;
 
 static void Check(bool value, string message)
 {
@@ -63,6 +65,83 @@ if (args is ["--recovering", var recoveringChildName])
 }
 
 Check(OperatingSystem.IsWindows(), "Named-pipe process identity tests require Windows.");
+var companionName = "ntpods-companion-test-" + Guid.NewGuid().ToString("N");
+await using (var client = new DaemonClient(companionName + "-events", companionName + "-cmds", () => null))
+using (var fixture = new Fixture(companionName))
+{
+    var controls = new CompanionControls();
+    var callbacks = new ConcurrentQueue<Action>();
+    var completedIds = new List<ulong>();
+    // Exercise the window's queued delivery boundaries, rather than calling Complete directly.
+    client.SnapshotReceived += snapshot => callbacks.Enqueue(() => controls.Update(snapshot));
+    client.ConnectionChanged += connected =>
+    {
+        ulong epoch = client.SessionEpoch;
+        callbacks.Enqueue(() =>
+        {
+            if (epoch == client.SessionEpoch) controls.SetSession(epoch, connected && client.IsReady);
+        });
+    };
+    client.CompanionStatusReceived += status =>
+    {
+        ulong epoch = client.SessionEpoch;
+        callbacks.Enqueue(() =>
+        {
+            if (epoch == client.SessionEpoch && client.IsReady) controls.Apply(status);
+        });
+    };
+    client.CommandResultReceived += result =>
+    {
+        if (result.Command != "companion_switch") return;
+        ulong epoch = client.SessionEpoch;
+        callbacks.Enqueue(() =>
+        {
+            if (epoch != client.SessionEpoch || !client.IsReady) return;
+            completedIds.Add(result.RequestId);
+            Check(controls.Complete(result, epoch), "A current matching terminal result must reach the pending control.");
+        });
+    };
+    Task DrainUntil(Func<bool> predicate) => Until(() =>
+    {
+        while (callbacks.TryDequeue(out var callback)) callback();
+        return predicate();
+    });
+    Task Status(string phase) => fixture.Event(JsonSerializer.Serialize(new
+    {
+        @event = "companion_status",
+        status = new { linked = true, connected = true, device_id = "001122334455", phase }
+    }));
+    client.Start();
+    await fixture.Connect();
+    await fixture.ReadHandshake();
+    await fixture.Event("{\"event\":\"state\",\"device_id\":\"001122334455\",\"connected\":true}");
+    await Status("idle");
+    await DrainUntil(() => controls.CanSwitch);
+    foreach (var (target, id) in new[] { ("android", ulong.MaxValue), ("pc", 9_007_199_254_740_993UL) })
+    {
+        var command = controls.Begin(target, id);
+        Check(command is not null && client.Send(command), "The pending control must send its exact request through the client.");
+        using var sent = JsonDocument.Parse((await fixture.Read())!);
+        ulong sentId = sent.RootElement.GetProperty("request_id").GetUInt64();
+        Check(sentId == id && sent.RootElement.GetProperty("target").GetString() == target,
+            "Neither full-width IDs nor odd IDs above 2^53 may change on the command pipe.");
+        await Status("acquire_" + target);
+        await fixture.Event("{\"event\":\"state\",\"device_id\":\"001122334455\",\"connected\":false}");
+        await DrainUntil(() => controls.HelpKey == "Companion.Pending");
+        Check(controls.Pending == id && !controls.CanSwitch,
+            "A disconnected audio snapshot and repeated ready callback must preserve the in-flight request.");
+        await fixture.Event(JsonSerializer.Serialize(new
+        {
+            @event = "command_result", command = "companion_switch", request_id = sentId,
+            ok = true, message = "The destination audio route is connected."
+        }));
+        await Status("idle");
+        await DrainUntil(() => controls.Pending is null && controls.CanSwitch);
+        Check(completedIds[^1] == id && controls.HelpKey == "Companion.Help" && controls.ErrorKey is null,
+            "Parsed terminal result followed by idle status must clear Switching for both large request IDs.");
+    }
+    Console.WriteLine("Companion completion pipe-to-queued-control checks passed.");
+}
 var name = "ntpods-test-" + Guid.NewGuid().ToString("N");
 await using (var client = new DaemonClient(name + "-events", name + "-cmds", () => null))
 {
@@ -70,20 +149,66 @@ await using (var client = new DaemonClient(name + "-events", name + "-cmds", () 
     ulong firstEpoch = 0, secondEpoch = 0;
     Snapshot? last = null;
     DaemonEvent.PairedLid? lastLid = null;
+    CompanionStatus? lastCompanion = null;
+    CompanionPreferences? lastPreferences = null;
     client.ConnectionChanged += connected => { if (!connected) Interlocked.Increment(ref disconnected); };
     client.SnapshotReceived += snapshot => Volatile.Write(ref last, snapshot);
     client.PairedLidReceived += lid => Volatile.Write(ref lastLid, lid);
+    client.CompanionStatusReceived += status => Volatile.Write(ref lastCompanion, status);
+    client.CompanionPreferencesReceived += preferences => Volatile.Write(ref lastPreferences, preferences);
     Check(!client.Send(new SetVolumeCmd { Percent = 99 }), "Offline commands must be rejected.");
+    Check(!client.RequestCompanionStatus(), "An offline companion query must not be queued for a later session.");
     using (var first = new Fixture(name))
     {
         client.Start();
         await first.Connect();
         await first.ReadHandshake();
         Check(!client.IsReady && !client.Send(new SetVolumeCmd { Percent = 98 }), "Two connected pipes are not ready before a fresh snapshot.");
+        Check(!client.RequestCompanionStatus(), "A companion query requires authoritative state readiness.");
+        Check(!client.SetCompanionPreference("theme", "dark"), "Offline preference edits must not enter a reconnecting command queue.");
         await first.State();
         await Until(() => client.IsReady);
+        await first.Event("{\"event\":\"companion_preferences\",\"preferences\":{\"device_id\":\"001122334455\",\"records\":[{\"key\":\"call_takeover_enabled\",\"rev\":\"ffffffffffffffff\",\"origin\":\"android\",\"value\":true}],\"local_call_consent\":false,\"peer_prefs\":true,\"peer_calls\":true,\"error\":null}}");
+        await Until(() => Volatile.Read(ref lastPreferences) is { Records.Length: 1 });
+        Check(Volatile.Read(ref lastPreferences) is { LocalCallTakeoverEnabled: false, PeerCalls: true },
+            "A remote enabled call preference reaches the app without granting local consent.");
+        Check(client.Send(new PingCmd()), "Receipt-only projection must leave the command queue idle.");
+        Check((await first.Read()) == "{\"cmd\":\"ping\"}", "Receiving a preference must not echo it as an edit.");
+        Check(client.SetCompanionPreference("conversation_policy", new ConversationPolicy
+            { Mode = "relative", First = "43.25", Second = "19.8", PauseMedia = true }, "001122334455", ulong.MaxValue),
+            "An explicit selected-pair preference can enter the current ready session.");
+        using (var preferenceCommand = JsonDocument.Parse((await first.Read())!))
+        {
+            var command = preferenceCommand.RootElement;
+            Check(command.GetProperty("cmd").GetString() == "companion_set_preference" &&
+                command.GetProperty("device_id").GetString() == "001122334455" &&
+                command.GetProperty("request_id").GetUInt64() == ulong.MaxValue &&
+                command.GetProperty("value").GetProperty("first").GetString() == "43.25",
+                "The real writer must preserve canonical strings, selected pair and full request correlation.");
+        }
         firstEpoch = client.SessionEpoch;
         Check(firstEpoch > 0, "The first pipe session needs an identity for queued UI callbacks.");
+        Check(client.RequestCompanionStatus(), "A ready session can request its companion status.");
+        using (var query = JsonDocument.Parse((await first.Read())!))
+            Check(query.RootElement.GetProperty("cmd").GetString() == "companion_status",
+                "The companion status helper must send the typed query command.");
+        await first.Event("{\"event\":\"companion_status\",\"status\":{\"linked\":true,\"connected\":true,\"device_id\":\"001122334455\",\"peer_address\":\"AA:BB:CC:DD:EE:FF\",\"held_away\":true,\"phase\":\"idle\",\"error\":null}}");
+        await Until(() => Volatile.Read(ref lastCompanion) is { Linked: true });
+        Check(Volatile.Read(ref lastCompanion) is { Linked: true, Connected: true, DeviceId: "001122334455",
+            PeerAddress: "AA:BB:CC:DD:EE:FF", HeldAway: true, Phase: "idle", Error: null },
+            "Companion status must reach subscribers with its exact owner, link and hold state.");
+        foreach (string target in new[] { "pc", "android" })
+        {
+            Check(client.Send(new CompanionSwitchCmd { DeviceId = "001122334455", Target = target, RequestId = ulong.MaxValue }),
+                "Both explicit companion destinations can be sent through a ready session.");
+            using var sent = JsonDocument.Parse((await first.Read())!);
+            var root = sent.RootElement;
+            Check(root.GetProperty("cmd").GetString() == "companion_switch" &&
+                root.GetProperty("device_id").GetString() == "001122334455" &&
+                root.GetProperty("target").GetString() == target &&
+                root.GetProperty("request_id").GetUInt64() == ulong.MaxValue,
+                "The companion writer must preserve selected pair, destination and full-width request ID.");
+        }
         await first.Event("{\"event\":\"paired_lid\",\"device_id\":\"001122334455\",\"lid_open\":false,\"sequence\":2}");
         await Until(() => Volatile.Read(ref lastLid) is not null);
         Check(Volatile.Read(ref lastLid) is DaemonEvent.PairedLid("001122334455", false, 2),
@@ -95,6 +220,10 @@ await using (var client = new DaemonClient(name + "-events", name + "-cmds", () 
         // No user command: the idle probe must notice a closed command direction.
         await Until(() => Volatile.Read(ref disconnected) > before);
         Check(!client.IsReady && Volatile.Read(ref last) is { Connected: false }, "Command-pipe loss must invalidate the whole session.");
+        Check(Volatile.Read(ref lastPreferences) is { Records.Length: 0, LocalCallTakeoverEnabled: false, PeerCalls: false },
+            "Pipe loss must retire preference capabilities and local automation presentation from that session.");
+        Check(Volatile.Read(ref lastCompanion) is { Linked: false, Connected: false, DeviceId: null, HeldAway: false },
+            "Command-pipe loss must immediately retire the previous session's companion status.");
         Check(!client.Send(new SetVolumeCmd { Percent = 97 }), "Commands during reconnect must not be stored for later.");
     }
     using (var second = new Fixture(name))
@@ -106,6 +235,12 @@ await using (var client = new DaemonClient(name + "-events", name + "-cmds", () 
         await Until(() => client.IsReady);
         secondEpoch = client.SessionEpoch;
         Check(secondEpoch > firstEpoch, "A replacement pipe session must retire queued callbacks from the previous one.");
+        Check(Volatile.Read(ref lastCompanion) is { Linked: false },
+            "A fresh snapshot must not revive companion status from the previous session.");
+        await second.Event("{\"event\":\"companion_status\",\"status\":{\"linked\":true,\"connected\":false,\"device_id\":\"aabbccddeeff\",\"held_away\":false,\"phase\":\"waiting\",\"error\":\"unavailable\"}}");
+        await Until(() => Volatile.Read(ref lastCompanion) is { DeviceId: "aabbccddeeff" });
+        Check(Volatile.Read(ref lastCompanion) is { Connected: false, Phase: "waiting", Error: "unavailable" },
+            "Replacement companion status is forwarded without inventing a connected phone.");
         client.Send(new SetVolumeCmd { Percent = 55 });
         Check((await second.Read())!.Contains("\"percent\":55"), "Queued commands from the old session must not replay.");
         int before = Volatile.Read(ref disconnected);
@@ -113,6 +248,8 @@ await using (var client = new DaemonClient(name + "-events", name + "-cmds", () 
         second.Events.Dispose();
         await Until(() => Volatile.Read(ref disconnected) > before);
         Check(!client.IsReady, "Events-pipe loss must also disable commands.");
+        Check(Volatile.Read(ref lastCompanion) is { Linked: false, DeviceId: null },
+            "Events-pipe loss must also clear the linked companion and owner.");
     }
     using (var third = new Fixture(name))
     {
@@ -259,7 +396,7 @@ foreach (bool spawnedHere in new[] { false, true })
         if (!spawnedHere) process?.Dispose();
     }
 }
-Console.WriteLine("IPC session checks passed: readiness, both pipe failures, no stale replay, shutdown delivery, absent/exited backends, startup guards and bounded recovery failure.");
+Console.WriteLine("IPC session checks passed: readiness, companion forwarding and loss, both pipe failures, no stale replay, shutdown delivery, absent/exited backends, startup guards and bounded recovery failure.");
 
 sealed class Fixture : IDisposable
 {

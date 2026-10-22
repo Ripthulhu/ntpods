@@ -116,21 +116,53 @@ AVDTP does not prove this bridge is ready. Startup diagnostics report the first
 nonzero PCM frame separately. The wait includes any silence supplied by the
 source and is not an acoustic latency measurement.
 
-Windows can also hold the render endpoint unavailable for its 20-second Bluetooth
-endpoint-unification timeout while waiting for the legacy hands-free endpoint.
-On Pro 3 / 9A348 with Intel AX200, disabling only that pair's HFP service reduced
-the wait for the first Windows producer from about 20.8 seconds to 259 ms; the
-listener confirmed prompt, clean playback. This measures stream startup, not
-acoustic latency.
+Windows can hold the render endpoint unavailable for its 20-second Bluetooth
+endpoint-unification timeout. On Pro 3 / 9A348 with Intel AX200, the native AVDTP
+session was ready but HFP had never established its service-level connection.
+The endpoint-builder trace rejected the disconnected HFP candidates before
+checking mux classification, jack status or formats. Bluetooth captures showed
+no RFCOMM connection attempt. Enabling the legacy Sound entries did not remove
+the delay. Enabling an HFP service is distinct from connecting it; A2DP's
+coordinator request starts AVRCP, not HFP.
 
-For a supported HQ microphone and native playback route, NTPods disables HFP
-before making the render provider ready. A separate helper saves the original
-service state and checks Windows' readback. It restores only changes NTPods owns
-on explicit Disconnect, pair/driver change, replacement-microphone failure or
-parent exit. Temporary case sleep retains isolation without requesting audio.
-A saved journal also permits recovery after a helper crash. An already-disabled
-service stays disabled. The Windows
-endpoint-unification timeout is left unchanged.
+For an explicit native connection, NTPods requests
+[`KSPROPERTY_ONESHOT_RECONNECT`](https://learn.microsoft.com/en-us/windows-hardware/drivers/audio/ksproperty-oneshot-reconnect)
+on the selected pair's verified Windows HFP filter before blocking AAP setup.
+It checks the exact connection and audio-request generations, runs once per
+connection request, and skips passive control connections. Native playback
+checks HFP again before publishing readiness. Request acknowledgement and actual
+jack connection are separate results, with cancellation and a two-second
+deadline. This establishes HFP control without opening SCO audio.
+Unsupported requests retain ordinary playback. Sound choices, formats, volume
+and the Windows timeout remain unchanged. HFP stays available for older buds;
+startup recovery restores only changes recorded by earlier NTPods versions.
+
+A companion handoff also releases the selected HFP service. The native-reset
+shortcut on return previously skipped restoring it, allowing playback to start
+before the earbuds later ended the connection. The return path now completes
+the existing serialized service-enable operation before AAP setup. On Pro 3 /
+9A348, the fixed preview completed HFP negotiation before AAP and remained ready
+through an 89-second idle check; listening afterward was clean. HFP itself
+closed and reopened during the capture while the native audio connection held.
+This confirms the tested repair, not continuous HFP connectivity or every
+possible disconnect cause. See [companion handoff evidence](COMPANION-PROTOCOL.md).
+
+Windows profile suspension also stops HQ microphone capture. NTPods acknowledges
+the handoff only after the receiver confirms quiet, including any reserved
+microphone start. The wait is limited to five seconds; failure does not report
+completion or rebuild HFP services. Saved microphone demand survives suspension
+and is checked again after Windows releases it. An MPM suspension request alone
+does not prove that SCO audio is streaming.
+
+The Pro 3 probe completed HFP negotiation in 254 ms without SCO. A preview with
+the request at native playback startup passed five automatic case returns:
+HFP readiness took 202–760 ms and Windows supplied playback 1.56–1.99 seconds
+after provider readiness. The listener reported prompt, clean playback on all
+five returns. The disabled capture choice survived the four returns covered
+by endpoint monitoring; the final return has daemon timing only. The one-second
+endpoint target is not established. Earlier priming, enabled legacy entries,
+HQ microphone recovery and Pro 1 HFP compatibility still need hardware checks.
+These are connection and endpoint observations, not acoustic latency measurements.
 
 The optional read-only render diagnostics request (`0x00226418`, version 1,
 128 bytes) separates missing submissions, source-zero packets and packets

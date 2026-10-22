@@ -7,10 +7,10 @@
 > everyday or work PC is a bad idea. Use a dedicated test PC. Save your BitLocker
 > recovery key before changing Test Mode or Secure Boot.
 
-This build targets Windows 11 x64 with ACX audio drivers. Building does not
-install or load drivers. Hardware testing and Microsoft signing are required
-before production deployment. See [THIRD_PARTY.md](../THIRD_PARTY.md) for licensing
-issues.
+This build targets Windows 11 x64. USB dongles use Microsoft's built-in USB
+audio, HID and serial drivers; they do not need Test Mode. Direct Bluetooth
+support uses the optional experimental drivers. Building does not install or
+load drivers. See [THIRD_PARTY.md](../THIRD_PARTY.md) for licensing issues.
 
 ## Toolchain
 
@@ -61,6 +61,7 @@ off unless selected. Upgrades preserve the current app setting, including off.
 For a major app-only upgrade with unchanged, already installed drivers, pass
 `APPONLYUPGRADE=1` to MSI and keep `Drivers,MicAcx` in `ADDLOCAL`. This skips driver
 replacement and its reboot request while preserving driver removal on uninstall.
+It also leaves the existing host Bluetooth identity and helper tasks untouched.
 The flag has no effect on fresh installs or repairs. Verify driver package hashes
 and the installed drivers before choosing this path.
 
@@ -90,11 +91,23 @@ whether they came from a branch or a version tag.
 
 ## Development installation
 
-Use a test setup already configured for test-signed drivers. This installer does
-not change Secure Boot, Memory Integrity, or Test Mode. Both MSI and ZIP install
-executables and elevated helpers under `%ProgramFiles%\NTPods`. The installing
-account's SID is bound to the driver control devices; SYSTEM is also allowed.
-This build accepts ordinary local/domain account SIDs, not Entra-only SIDs.
+For a USB dongle, use the MSI's default app-only selection or run the ZIP's
+`install.ps1` as administrator without `-Drivers`. New app-only installations
+do not install NTPods drivers, certificates or elevated driver tasks, and do not
+change the PC's Bluetooth identity. An app-only ZIP update leaves existing
+drivers in place. MSI upgrades retain the installed feature selection.
+If you deselect drivers during a major MSI upgrade, their installed packages and
+Bluetooth identity also stay in place, with ownership retained for full uninstall.
+To remove them while keeping the app, remove the driver feature through the
+installed MSI's **Modify** option before upgrading.
+
+For the PC's Bluetooth adapter, select **Direct Bluetooth drivers (Test Mode)**
+in the MSI or run `install.ps1 -Drivers`. This requires a test setup already
+configured for test-signed drivers. Neither installer changes Secure Boot,
+Memory Integrity, or Test Mode. Executables and helpers go under
+`%ProgramFiles%\NTPods`. Direct Bluetooth setup binds the installing account's SID
+to the driver control devices; SYSTEM is also allowed. This build accepts
+ordinary local/domain account SIDs, not Entra-only SIDs.
 
 Test Mode must remain enabled while using the NTPods drivers. Secure Boot can
 prevent enabling it, and changing boot settings can prompt for a BitLocker
@@ -122,8 +135,10 @@ Pairs first connected after installation may bind automatically. Without a saved
 prior binding, restoration uses Microsoft's Bluetooth audio driver.
 
 Remove MSI installations through Windows Settings > Apps. ZIP installations
-include an elevated `uninstall.ps1`, which removes programs, tasks, driver-store
-packages, SID policy and development certificates. Saved settings/history remain
+include an elevated `uninstall.ps1`. Both remove programs and, when owned by that
+installation, tasks, driver-store packages, SID policy and development
+certificates. Removing the MSI's direct Bluetooth feature also restores the
+saved host Bluetooth identity. Saved settings/history remain
 in the user's `%LOCALAPPDATA%\NTPods` and can be deleted from that user's normal
 unelevated session. Development toolchains remain installed for future rebuilds.
 Boot settings are never automatically changed.
@@ -143,6 +158,6 @@ ZIP upgrades stage the application before changing drivers and retain the previo
 files until setup succeeds. A failed upgrade restores them; if that restoration
 fails, the backup remains under `%ProgramFiles%\NTPods.setup\previous`.
 
-Normal deployment must use Microsoft-signed driver packages verified on a clean
-Secure Boot/Memory Integrity system. This installer uses test signing and is
-for development only.
+Direct Bluetooth deployment requires Microsoft-signed driver packages verified
+on a clean Secure Boot/Memory Integrity system. The optional drivers in this
+installer use test signing and are for development only.

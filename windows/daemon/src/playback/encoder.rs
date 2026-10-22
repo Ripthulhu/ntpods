@@ -66,6 +66,28 @@ fn maximum_au(mode: Mode, bitrate: u32) -> io::Result<usize> {
     })
 }
 
+fn worker_maximum(
+    mode: Mode,
+    bitrate: u32,
+    variable: bool,
+    budget: Option<u32>,
+) -> io::Result<usize> {
+    let maximum = maximum_au(mode, bitrate)?;
+    if variable && (mode != Mode::Eld || bitrate != 256_000) {
+        return Err(invalid("Unsupported variable bitrate configuration"));
+    }
+    match budget {
+        None => Ok(maximum),
+        Some(kbps) if variable && (128..=256).contains(&kbps) => {
+            // Match the byte-aligned per-frame budget; it is not an average bitrate.
+            Ok((kbps * 10 / 8) as usize)
+        }
+        Some(_) => Err(invalid(
+            "AAC-ELD link budget requires Variable mode and 128 to 256 kbps",
+        )),
+    }
+}
+
 fn float_preamble(mode: Mode) -> [u8; 16] {
     let mut preamble = *b"NPF32001\x80\xbb\0\0\x02\0\0\0";
     preamble[14..16].copy_from_slice(&(mode.frame_samples() as u16).to_le_bytes());
@@ -97,12 +119,22 @@ impl Encoder {
         variable: bool,
         format: SampleFormat,
     ) -> io::Result<Self> {
+        Self::start_with_budget(mode, bitrate, variable, format, None)
+    }
+
+    pub fn start_with_budget(
+        mode: Mode,
+        bitrate: u32,
+        variable: bool,
+        format: SampleFormat,
+        budget: Option<u32>,
+    ) -> io::Result<Self> {
         let name = match mode {
             Mode::Aac => "ntpods-aac-encoder.exe",
             Mode::Eld => "ntpods-eld-encoder.exe",
         };
         let executable = std::env::current_exe()?.with_file_name(name);
-        Self::start_at_with_format(&executable, mode, bitrate, variable, format)
+        Self::start_at_with_budget(&executable, mode, bitrate, variable, format, budget)
     }
 
     pub fn config(&self) -> &[u8] {
@@ -121,10 +153,18 @@ impl Encoder {
         variable: bool,
         format: SampleFormat,
     ) -> io::Result<Self> {
-        let maximum = maximum_au(mode, bitrate)?;
-        if variable && (mode != Mode::Eld || bitrate != 256_000) {
-            return Err(invalid("Unsupported variable bitrate configuration"));
-        }
+        Self::start_at_with_budget(executable, mode, bitrate, variable, format, None)
+    }
+
+    fn start_at_with_budget(
+        executable: &Path,
+        mode: Mode,
+        bitrate: u32,
+        variable: bool,
+        format: SampleFormat,
+        budget: Option<u32>,
+    ) -> io::Result<Self> {
+        let maximum = worker_maximum(mode, bitrate, variable, budget)?;
         let mut command = Command::new(executable);
         let float_worker = format == SampleFormat::Float32;
         if float_worker {
@@ -134,6 +174,9 @@ impl Encoder {
             command.arg("--vbr");
         } else {
             command.args(["--bitrate", &bitrate.to_string()]);
+        }
+        if let Some(kbps) = budget {
+            command.args(["--link-budget", &kbps.to_string()]);
         }
         let mut child = command
             .creation_flags(0x0800_0000)
@@ -367,6 +410,45 @@ mod tests {
     }
 
     #[test]
+    fn link_budget_preserves_defaults_and_rejects_other_codec_profiles() {
+        for (mode, variable) in [(Mode::Aac, false), (Mode::Eld, false), (Mode::Eld, true)] {
+            assert_eq!(
+                worker_maximum(mode, 256_000, variable, None).unwrap(),
+                maximum_au(mode, 256_000).unwrap()
+            );
+        }
+        for (kbps, bytes) in [(128, 160), (129, 161), (160, 200), (174, 217), (256, 320)] {
+            assert_eq!(
+                worker_maximum(Mode::Eld, 256_000, true, Some(kbps)).unwrap(),
+                bytes
+            );
+        }
+        for (mode, bitrate, variable, budget) in [
+            (Mode::Aac, 256_000, false, 174),
+            (Mode::Aac, 256_000, true, 174),
+            (Mode::Eld, 256_000, false, 174),
+            (Mode::Eld, 192_000, true, 174),
+            (Mode::Eld, 256_000, true, 127),
+            (Mode::Eld, 256_000, true, 257),
+            (Mode::Eld, 256_000, true, u32::MAX),
+        ] {
+            assert!(worker_maximum(mode, bitrate, variable, Some(budget)).is_err());
+            // Validation must finish before spawning a worker.
+            let error = Encoder::start_at_with_budget(
+                Path::new("missing-worker.exe"),
+                mode,
+                bitrate,
+                variable,
+                SampleFormat::Float32,
+                Some(budget),
+            )
+            .err()
+            .unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        }
+    }
+
+    #[test]
     #[ignore = "requires the local FDK worker via NTPODS_ELD_ENCODER_TEST_PATH"]
     fn accepts_every_exposed_worker_bitrate() {
         let executable =
@@ -383,13 +465,23 @@ mod tests {
     #[ignore = "requires the local FDK worker via NTPODS_ELD_ENCODER_TEST_PATH"]
     fn streams_real_worker_and_drops_it() {
         for mode in [Mode::Aac, Mode::Eld] {
-            stream_and_drop(mode, false, SampleFormat::S16);
-            stream_and_drop(mode, false, SampleFormat::Float32);
+            stream_and_drop(mode, false, SampleFormat::S16, None);
+            stream_and_drop(mode, false, SampleFormat::Float32, None);
             drop_with_blocked_pipes(mode);
             output_wakes_consumer(mode);
         }
-        stream_and_drop(Mode::Eld, true, SampleFormat::S16);
-        stream_and_drop(Mode::Eld, true, SampleFormat::Float32);
+        stream_and_drop(Mode::Eld, true, SampleFormat::S16, None);
+        stream_and_drop(Mode::Eld, true, SampleFormat::Float32, None);
+    }
+
+    #[test]
+    #[ignore = "requires the local FDK worker via NTPODS_ELD_ENCODER_TEST_PATH"]
+    fn streams_link_budgets_with_bounded_output_and_cleanup() {
+        for budget in [128, 160, 174, 256] {
+            for format in [SampleFormat::S16, SampleFormat::Float32] {
+                stream_and_drop(Mode::Eld, true, format, Some(budget));
+            }
+        }
     }
 
     fn output_wakes_consumer(mode: Mode) {
@@ -468,7 +560,7 @@ mod tests {
         );
     }
 
-    fn stream_and_drop(mode: Mode, variable: bool, format: SampleFormat) {
+    fn stream_and_drop(mode: Mode, variable: bool, format: SampleFormat, budget: Option<u32>) {
         let worker_path_variable = match mode {
             Mode::Aac => "NTPODS_AAC_ENCODER_TEST_PATH",
             Mode::Eld => "NTPODS_ELD_ENCODER_TEST_PATH",
@@ -477,8 +569,9 @@ mod tests {
             std::env::var_os(worker_path_variable).expect(worker_path_variable),
         );
         assert!(executable.is_absolute());
-        let encoder = Encoder::start_at_with_format(&executable, mode, 256_000, variable, format)
-            .expect("Worker must return a supported ASC");
+        let encoder =
+            Encoder::start_at_with_budget(&executable, mode, 256_000, variable, format, budget)
+                .expect("Worker must return a supported ASC");
         let process = encoder.child.as_handle().try_clone_to_owned().unwrap();
         if format == SampleFormat::Float32 {
             let mut invalid = vec![0; mode.frame_samples() * format.frame_bytes()];
@@ -507,7 +600,10 @@ mod tests {
                 mode.frame_samples() as f64 / 48000.0,
             ));
             while let Some(unit) = encoder.read().expect("Worker must keep its output open") {
-                assert!(!unit.is_empty() && unit.len() <= maximum_au(mode, 256000).unwrap());
+                assert!(
+                    !unit.is_empty()
+                        && unit.len() <= worker_maximum(mode, 256000, variable, budget).unwrap()
+                );
                 units += 1;
             }
             if frame == 19 {
@@ -521,7 +617,10 @@ mod tests {
         };
         while units < expected && Instant::now() < deadline {
             if let Some(unit) = encoder.read().unwrap() {
-                assert!(!unit.is_empty() && unit.len() <= maximum_au(mode, 256000).unwrap());
+                assert!(
+                    !unit.is_empty()
+                        && unit.len() <= worker_maximum(mode, 256000, variable, budget).unwrap()
+                );
                 units += 1;
             } else {
                 thread::sleep(Duration::from_millis(1));

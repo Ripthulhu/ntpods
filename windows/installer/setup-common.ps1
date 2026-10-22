@@ -620,6 +620,12 @@ function Remove-MicDriverPackages {
     }
 }
 
+# ZIP releases before the dongle option always installed direct Bluetooth drivers.
+function Test-NTPodsZipDriverOwnership($installed) {
+    $installed -and $installed.InstallKind -eq 'zip' -and
+        ($null -eq $installed.DirectBluetoothDrivers -or $installed.DirectBluetoothDrivers -eq 1)
+}
+
 # The daemon requests elevated driver recovery and mic renaming through these tasks.
 # Run as the installing user, whose LOCALAPPDATA holds the request files.
 function Register-NTPodsTasks([string]$scriptDir, [string]$userSid) {

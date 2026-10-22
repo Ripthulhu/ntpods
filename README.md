@@ -8,8 +8,9 @@ Based on [arctumn/NTPods](https://github.com/arctumn/ntpods) and
 [LibrePods](https://github.com/librepods-org/librepods).
 
 > [!WARNING]
-> These experimental builds require Windows **Test Mode (test signing)**. The
-> drivers are not Microsoft production-signed; setup signs them locally with a
+> The optional **Direct Bluetooth** drivers require Windows **Test Mode (test signing)**.
+> App-only installation and the USB dongle do not require Test Mode. The direct
+> Bluetooth drivers are not Microsoft production-signed; setup signs them locally with a
 > test certificate. Test Mode weakens Windows' normal driver-signature checks.
 > Enabling it for an everyday or work PC is a bad idea. Use a dedicated test PC.
 > Secure Boot can block Test Mode, and changing either setting can trigger
@@ -42,6 +43,14 @@ https://github.com/user-attachments/assets/44b47894-22f6-49f1-a891-99ce0b7346bc
 
 ## Features
 
+These features describe the direct Bluetooth path. The experimental Pico 2 W
+dongle uses Windows' standard USB audio and HID drivers, with its own pairing,
+reconnect, battery and ANC/transparency controls in NTPods. Its USB interface also
+supports hearing assistance, profile edits, saved diagnostics, read-only hearing
+metadata and guarded in-case checks. Sensors and companion switching are not yet
+available through the dongle.
+Dongle hardware validation is pending.
+
 - Listening-mode controls with an adjustable Adaptive slider.
 - Earbud and case battery levels, including nearby charging updates.
 - Find nearby with signal strength, trend and last-heard time for your paired AirPods.
@@ -57,13 +66,24 @@ https://github.com/user-attachments/assets/44b47894-22f6-49f1-a891-99ce0b7346bc
 - Hearing Aid and Media Assist switches for a profile already set up on an iPhone, under experimental settings.
 - A live head-movement graph and heart-rate monitoring on supported models.
 - A Dynamic Island popup and Start with Windows.
+- Audio transfer and shared app preferences with a linked LibrePods phone.
+- Optional incoming mobile-call takeover and return to the interrupted PC player.
+  NTPods resumes only the same player it paused, with no newer user choice.
+
+Update both apps together for companion v2. Call takeover requires an explicit
+opt-in in each app and phone-state permission on Android; synced preferences
+cannot grant consent or permissions. Return defaults on but stays inactive until
+takeover is enabled. The new v2 settings and call flow have not been validated on
+hardware. See [the companion contract](docs/COMPANION-PROTOCOL.md) for the shared
+settings, host-specific exclusions and transfer limits.
 
 ### Low-latency playback
 
 AAC-ELD is the default, with AAC fallback for pairs without a supported AAC-ELD
-profile. Low-latency tuning runs automatically on supported devices and adjusts
-for microphone use. Choose the codec and bitrate under **Playback and microphone**;
-upgrades keep your saved choices. See [audio latency](docs/WINDOWS-AUDIO-LATENCY.md)
+profile. **Game Mode** reduces the receiver buffer on supported devices and
+adjusts for microphone use; it is enabled by default. Choose the codec, bitrate,
+Game Mode and Wi-Fi coexistence under **Playback and microphone**. Choices are
+saved across restarts. See [audio latency](docs/WINDOWS-AUDIO-LATENCY.md)
 for supported devices, technical details and limits.
 
 ### Compatibility
@@ -80,16 +100,19 @@ For Android or Linux, use [LibrePods](https://github.com/librepods-org/librepods
 
 Download **NTPods.msi** for guided setup or **NTPods-Windows.zip** for manual installation from
 [releases](https://github.com/Ripthulhu/ntpods/releases). Both include the app and
-drivers and require Test Mode. Source archives and checksums are included.
+drivers. Fresh installations default to **app only**, suitable for the USB dongle.
+Select **Direct Bluetooth** during setup to install the optional test-signed
+drivers for a PC Bluetooth adapter. Existing driver installations retain their
+upgrade choices. Source archives and checksums are included.
 See the [installation guide](windows/README.md) and [release notes](docs/WINDOWS-RELEASE-NOTES.md).
 Upstream nightly builds do not include this fork's changes.
 
-Setup configures an [Apple Bluetooth identity](docs/BLUETOOTH-HOST-IDENTITY.md)
+Direct Bluetooth setup configures an [Apple Bluetooth identity](docs/BLUETOOTH-HOST-IDENTITY.md)
 for AirPods features such as Custom Transparency. This affects the PC's identity
 to all Bluetooth devices and requires a Windows restart when first applied.
 Uninstall restores the original values.
 
-Both downloads include an experimental playback driver for AirPods 1–4,
+The optional Direct Bluetooth feature includes an experimental playback driver for AirPods 1–4,
 Pro 1–3 and the original Max (Lightning and USB-C). See the
 [playback model list](docs/WINDOWS-MODEL-SUPPORT.md#native-playback) for test status.
 It replaces the paired AirPods output driver. NTPods must stay running for
@@ -98,12 +121,10 @@ connected during uninstall to restore their saved driver, or Windows playback
 when no prior binding was saved; see the
 [playback test guide](windows/playback/TESTING.md).
 
-With native playback and a supported high-quality microphone, NTPods disables
-the pair's legacy hands-free profile to avoid Windows' audio startup delay.
-It stays disabled through case sleep and while the NTPods microphone switch is
-off. Disconnecting in NTPods or quitting restores changes made by the app.
-Models without high-quality microphone support keep their hands-free devices.
-Restart Discord if its device list still shows an old entry.
+NTPods leaves Windows' hands-free service and audio endpoints available.
+You can disable unwanted legacy hands-free entries in the Sound control panel;
+keep the NTPods playback and high-quality microphone endpoints enabled.
+NTPods preserves those manual choices.
 
 ## Contributing
 

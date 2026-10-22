@@ -2,6 +2,18 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using NTPods.WinUI.Ipc;
 
+if (args is ["--dongle", var dongleInput, var dongleOutput])
+{
+    DongleChecks.Run(dongleInput, dongleOutput);
+    return;
+}
+
+if (args is ["--preferences", var preferenceInput, var preferenceOutput])
+{
+    CompanionPreferenceChecks.Run(preferenceInput, preferenceOutput);
+    return;
+}
+
 static void Check(bool condition, string message)
 {
     if (!condition) throw new InvalidOperationException(message);
@@ -9,7 +21,10 @@ static void Check(bool condition, string message)
 
 Check(args.Length == 2, "usage: IpcContract INPUT OUTPUT");
 string[] phases = ["idle", "starting", "capturing", "stopping", "recovering", "unavailable", "error", "waiting_for_ear"];
-var lines = File.ReadAllLines(args[0]);
+var allLines = File.ReadAllLines(args[0]);
+Check(allLines.Length >= 2, "Expected two companion status fixtures");
+var companionLines = allLines[^2..];
+var lines = allLines[..^2];
 Check(lines.Length == phases.Length + 3, "Expected lifecycle states, one legacy state and two lid events");
 var output = new List<string>();
 for (var index = 0; index < lines.Length - 2; ++index)
@@ -33,6 +48,10 @@ for (var index = 0; index < lines.Length - 2; ++index)
     }
     Check(s.PlaybackBitrateKbps == (raw.RootElement.TryGetProperty("playback_bitrate_kbps", out var actualBitrate) && actualBitrate.ValueKind != JsonValueKind.Null
         ? actualBitrate.GetUInt32() : (uint?)null), "The active bitrate must remain separate from the saved preferences.");
+    Check(s.PlaybackLink == (raw.RootElement.TryGetProperty("playback_link", out var link) && link.ValueKind != JsonValueKind.Null
+        ? link.Deserialize<PlaybackLinkSettings>() : null), "The saved frame policy must survive IPC; older backends leave it unavailable.");
+    Check(s.PlaybackGameMode == (raw.RootElement.TryGetProperty("playback_game_mode", out var gameMode) && gameMode.ValueKind != JsonValueKind.Null
+        ? gameMode.GetBoolean() : (bool?)null), "Game Mode preference must survive IPC without inventing support on older backends.");
     Check(s.PlaybackDelayReporting == (raw.RootElement.TryGetProperty("playback_delay_reporting", out var delayReporting) && delayReporting.GetBoolean()) &&
         s.PlaybackDelayTenthsMs == (raw.RootElement.TryGetProperty("playback_delay_tenths_ms", out var delay) && delay.ValueKind != JsonValueKind.Null
             ? delay.GetUInt16() : (ushort?)null) &&
@@ -630,6 +649,10 @@ foreach (object command in new object[] {
         "A control action must retain the exact device displayed when it was requested.");
     output.Add(line.TrimEnd('\n'));
 }
+foreach (string mode in new[] { "off", "automatic", "manual" })
+    output.Add(Wire.ToLine(new SetPlaybackLinkCmd { Settings = new() { Mode = mode, Kbps = 174 } }).TrimEnd('\n'));
+foreach (bool enabled in new[] { false, true })
+    output.Add(Wire.ToLine(new SetPlaybackGameModeCmd { Enabled = enabled }).TrimEnd('\n'));
 foreach (string target in new[] { "", "not-a-device", "00112233445g" })
 foreach (object command in new object[] {
     new SetAncCmd { Mode = 3, DeviceId = target },
@@ -710,8 +733,51 @@ foreach (JsonNode? malformedProbeId in new JsonNode?[] { null, JsonValue.Create(
 output.Add(Wire.ToLine(new GetHearingMetadataCmd { DeviceId = "001122334455" }).TrimEnd('\n'));
 output.Add(Wire.ToLine(new StartHardwareCheckCmd { RequestId = ulong.MaxValue, DeviceId = "001122334455", BudsInCaseConfirmed = true }).TrimEnd('\n'));
 output.Add(Wire.ToLine(new CancelHardwareCheckCmd { RequestId = ulong.MaxValue, DeviceId = "001122334455" }).TrimEnd('\n'));
+const string companionSecret = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+for (var index = 0; index < companionLines.Length; ++index)
+{
+    Check(Wire.ParseEvent(companionLines[index]) is DaemonEvent.Companion, "Companion status must dispatch to its typed event");
+    var status = ((DaemonEvent.Companion)Wire.ParseEvent(companionLines[index])!).Status;
+    Check(status.Linked == (index == 0) && status.Connected == (index == 0) && status.HeldAway == (index == 0) &&
+        status.DeviceId == (index == 0 ? "001122334455" : null) &&
+        status.PeerAddress == (index == 0 ? "AA:BB:CC:DD:EE:FF" : null) &&
+        status.Phase == (index == 0 ? "released" : "idle") &&
+        status.Error == (index == 0 ? "Transfer \"stopped\".\nTry again." : null),
+        "Companion approval, held-away intent, phase, nulls and escaped errors must retain their values");
+    string line = JsonSerializer.Serialize(new { @event = "companion_status", status }, Wire.Json);
+    using var raw = JsonDocument.Parse(line);
+    Check(raw.RootElement.GetProperty("status").EnumerateObject().Select(field => field.Name).Order().SequenceEqual(
+        new[] { "linked", "connected", "device_id", "peer_address", "held_away", "phase", "error" }.Order()) &&
+        !line.Contains(companionSecret, StringComparison.Ordinal), "Companion events must contain public status only, without approval secrets");
+    output.Add(line);
+}
+foreach (string malformedCompanion in new[] {
+    "{\"event\":\"companion_status\"}",
+    "{\"event\":\"companion_status\",\"status\":null}",
+    "{\"event\":\"companion_status\",\"status\":true}",
+    "{\"event\":\"companion_status\",\"status\":{\"linked\":1}}"
+}) Check(Wire.ParseEvent(malformedCompanion) is null, "Malformed companion status must not reach its UI");
+string linkLine = Wire.ToLine(new CompanionLinkCmd {
+    PeerAddress = "AA:BB:CC:DD:EE:FF", SecretHex = companionSecret, DeviceId = "001122334455"
+});
+var linkedCommand = JsonSerializer.Deserialize<CompanionLinkCmd>(linkLine)!;
+Check(linkedCommand.PeerAddress == "AA:BB:CC:DD:EE:FF" && linkedCommand.SecretHex == companionSecret &&
+    linkedCommand.DeviceId == "001122334455", "Explicit link approval must carry the intended peer, accessory and full secret");
+output.Add(linkLine.TrimEnd('\n'));
+Check(Wire.ToLine(new CompanionStatusCmd()) == "{\"cmd\":\"companion_status\"}\n", "Status requests must have no audio action or secret payload");
+output.Add(Wire.ToLine(new CompanionStatusCmd()).TrimEnd('\n'));
+foreach (string target in new[] { "pc", "android" })
+{
+    string line = Wire.ToLine(new CompanionSwitchCmd { Target = target, DeviceId = "001122334455", RequestId = ulong.MaxValue });
+    var command = JsonSerializer.Deserialize<CompanionSwitchCmd>(line)!;
+    Check(command.Target == target && command.DeviceId == "001122334455" && command.RequestId == ulong.MaxValue,
+        "Either transfer direction must preserve the exact accessory and full-width request correlation");
+    output.Add(line.TrimEnd('\n'));
+}
+Check(Wire.ToLine(new CompanionForgetCmd()) == "{\"cmd\":\"companion_forget\"}\n", "Forgetting approval must remain a separate command");
+output.Add(Wire.ToLine(new CompanionForgetCmd()).TrimEnd('\n'));
 File.WriteAllLines(args[1], output);
-Console.WriteLine($"C#: {lines.Length} production/legacy events, VBR/Transparency roundtrips and malformed-input checks passed");
+Console.WriteLine($"C#: {lines.Length} production/legacy events, two companion events, five companion commands and malformed-input checks passed");
 
 static TransparencySettings Transparency(bool enabled) => new() {
     Enabled = enabled, LeftAmplification = -1, RightAmplification = 1, LeftTone = -0.25f, RightTone = 0.5f,

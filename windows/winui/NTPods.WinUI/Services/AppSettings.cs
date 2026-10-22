@@ -13,6 +13,9 @@ public static class AppSettings
     {
         // 0 = System (Default), 1 = Light, 2 = Dark — the ThemeButtons indices.
         public int ThemeIndex { get; set; }
+        public int? PendingThemeIndex { get; set; }
+        public Dictionary<string, bool> ConnectionPopups { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, bool> DisconnectedBatteryCache { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
         // Hearing assistance and Custom Transparency are opt-in.
         public bool EnableExperimental { get; set; }
@@ -116,6 +119,36 @@ public static class AppSettings
 
     /// Persist the chosen theme index.
     public static bool SetThemeIndex(int index) => Update(m => m.ThemeIndex = index);
+    public static int? PendingThemeIndex => Load().PendingThemeIndex is >= 0 and <= 2 ? Load().PendingThemeIndex : null;
+    public static bool SetLocalThemeIndex(int index) => index is >= 0 and <= 2 &&
+        Update(m => { m.ThemeIndex = index; m.PendingThemeIndex = index; });
+    public static bool AcknowledgeTheme(int index) => Update(m =>
+    {
+        m.ThemeIndex = index;
+        if (m.PendingThemeIndex == index) m.PendingThemeIndex = null;
+    });
+    public static bool ConnectionPopupEnabled(string deviceId) => Load().ConnectionPopups is not { } popups ||
+        !popups.TryGetValue(deviceId.Replace(":", "").ToUpperInvariant(), out bool enabled) || enabled;
+    public static bool SetConnectionPopupEnabled(string deviceId, bool enabled) => Update(m =>
+    {
+        string key = deviceId.Replace(":", "").ToUpperInvariant();
+        if (key.Length != 12) return;
+        m.ConnectionPopups ??= new(StringComparer.OrdinalIgnoreCase);
+        if (!m.ConnectionPopups.ContainsKey(key) && m.ConnectionPopups.Count >= 64)
+            m.ConnectionPopups.Remove(m.ConnectionPopups.Keys.First());
+        m.ConnectionPopups[key] = enabled;
+    });
+    public static bool CacheDisconnectedBattery(string deviceId) => Load().DisconnectedBatteryCache is not { } cache ||
+        !cache.TryGetValue(deviceId.Replace(":", "").ToUpperInvariant(), out bool enabled) || enabled;
+    public static bool SetCacheDisconnectedBattery(string deviceId, bool enabled) => Update(m =>
+    {
+        string key = deviceId.Replace(":", "").ToUpperInvariant();
+        if (key.Length != 12) return;
+        m.DisconnectedBatteryCache ??= new(StringComparer.OrdinalIgnoreCase);
+        if (!m.DisconnectedBatteryCache.ContainsKey(key) && m.DisconnectedBatteryCache.Count >= 64)
+            m.DisconnectedBatteryCache.Remove(m.DisconnectedBatteryCache.Keys.First());
+        m.DisconnectedBatteryCache[key] = enabled;
+    });
 
     /// Whether experimental settings are shown (off by default).
     public static bool EnableExperimental => Load().EnableExperimental;

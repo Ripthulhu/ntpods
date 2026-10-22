@@ -68,6 +68,7 @@ impl Ctx {
                 connected: true,
                 playback_native_driver: true,
                 playback_state: "ready".into(),
+                playback_game_mode: Some(true),
                 playback_delay_reporting: true,
                 playback_delay_tenths_ms: Some(1500),
                 ..Snapshot::default()
@@ -950,6 +951,46 @@ fn automatic_setup_reopens_before_start_and_does_not_restart_audible_playback() 
             assert_eq!(session.flush_ms, 200);
             assert_eq!(ctx.state.lock().unwrap().playback_buffer_target_ms, None);
         }
+    }
+}
+
+#[test]
+fn saved_game_mode_off_keeps_the_normal_stream_and_on_uses_existing_policy() {
+    for enabled in [false, true] {
+        let hardware = Arc::new(Mutex::new(Hardware::default()));
+        let ctx = Ctx::new(hardware.clone());
+        {
+            let mut state = ctx.state.lock().unwrap();
+            state.model = "A3064".into();
+            state.playback_game_mode = Some(enabled);
+        }
+        let render = render::Render(hardware.clone());
+        let mut session = session::Session {
+            gaming_supported: Some(true),
+            mode: codec::Mode::Eld,
+            delay_serial: 1,
+            delay_report: Some(1500),
+            delay_reporting: true,
+            flush_ms: 200,
+            hardware: hardware.clone(),
+        };
+        let mut stream = buffer::Stream::new(&ctx, 1, 7, driver::Driver(hardware.clone()));
+        stream.prepare(&mut session, &render).unwrap();
+        assert_eq!(session.flush_ms, if enabled { 60 } else { 200 });
+        assert_eq!(
+            ctx.state.lock().unwrap().playback_buffer_target_ms,
+            enabled.then_some(60)
+        );
+        stream
+            .cleanup_before(&render, || session.restore_media_timeout())
+            .unwrap();
+        assert_eq!(session.flush_ms, 200);
+        assert_eq!(ctx.state.lock().unwrap().playback_buffer_target_ms, None);
+        assert!(!hardware
+            .lock()
+            .unwrap()
+            .events
+            .contains(&Event::Control(60)));
     }
 }
 

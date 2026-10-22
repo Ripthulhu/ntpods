@@ -60,6 +60,20 @@ The worker validates the requested bitrate, generated core format
 and each encoded packet before sending it.
 This is lossy audio; it does not implement Apple's wireless lossless mode.
 
+For a guarded link-budget comparison, `--vbr --link-budget <kbps>` accepts
+128–256. It caps each frame at `floor(kbps * 10 / 8)` bytes: 174 gives a
+217-byte ceiling. The corresponding byte-aligned rate is passed to FDK's peak
+bitrate control. Bandwidth is limited to 15,500 Hz at 128 kbps, 17,500 Hz at
+129–160 kbps and 20,000 Hz above 160 kbps. FDK selects quality mode 4 below
+192 kbps and mode 5 at or above it; their nominal stereo rates are 128 and
+192 kbps. This controls frame size and bandwidth, not average bitrate, and is
+not equivalent to Apple's converter. The worker checks the effective mode,
+peak and bandwidth before emitting its header, then rejects any oversized AU.
+The option cannot be combined with CBR. Omit it to retain normal rate control.
+Offline checks cover every accepted budget, decoder round trips at the
+bandwidth and quality boundaries, and S16/Float32 equivalence. Bluetooth
+playback and coexistence benefits still require hardware checks.
+
 ## Source and licensing
 
 FDK-AAC 2.0.3 is pinned to

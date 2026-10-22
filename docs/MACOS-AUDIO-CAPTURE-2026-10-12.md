@@ -67,6 +67,40 @@ the encoder's AudioSpecificConfig, SBR setting or a minimum playback buffer.
 The timestamp and grouping differences remain unresolved; this capture does not
 establish an error in NTPods' hardware-tested packet format.
 
+### Host encoder link adaptation
+
+Tahoe's `adjustBitRateForMac` at `0x1004477B2` lowers its encoder budget when
+local 2.4 GHz Wi-Fi is active/associated, or two device counters sum to at least
+three. The counters' exact categories remain unresolved. It publishes
+`kBTAudioMsgPropertyLinkAdaptEncoderBitrate`, with observed code values 174 kbps
+for AAC-ELD and 127 kbps for AAC. This is local encoder policy, independent of
+Apple HDR radio support and RTP timestamp units.
+
+The saved x86-64 `BTAudioHALPlugin` consumer at `0x5FCE` dispatches that property
+through A2DPAudioDevice vtable slot `+0x388` to `0x32742`. The setter computes
+`floor(kbps * samples_per_frame * 1000 / sample_rate) & ~7`, logged as bits per
+frame, and passes it to `kAudioCodecPropertyAdjustPacketSizeLimitForVBR`. It also
+sets `kAudioCodecPrivatePropertyBandwidthLimit`: 15,500 Hz at up to 128 kbps,
+17,500 Hz at 129–160 kbps, and 20,000 Hz above that. At 48 kHz with 480-sample
+AAC-ELD frames, 174 kbps yields a 1,736-bit frame budget. These are encoder
+constraints, not measured radio throughput or a fixed average stream bitrate.
+
+The plug-in's universal SHA256 is
+`769658bd9eae5e84d44435b005beb6ecc00eddeaea1621eb3c3c7122252d6571`;
+its exact x86-64 member is
+`4d6878656a6eb48e0793a2fb2779b3d262e621932d3d1a391af422cc1f691292`.
+Native instruction bytes corroborate the property dispatch, setter and daemon
+policy. NTPods provides a guarded
+[encoder-budget comparison](WINDOWS-AUDIO-LATENCY.md#packet-and-source-reserve-overrides)
+that sets FDK's frame ceiling and encoded bandwidth at worker startup. At 174 kbps,
+its ceiling is 217 bytes. FDK also changes VBR quality below 192 kbps, so this is
+not equivalent to Apple's private converter property. An opt-in Wi-Fi policy
+selects this budget from a verified local 2.4 GHz connection at startup, resume
+and recovery. Continuous mid-stream adaptation and the unresolved device-count
+condition remain unimplemented. Offline checks cover parameter readback, frame
+bounds, decoding and policy restoration. AirPods playback and restoration checks
+remain necessary before changing defaults.
+
 ## Delay reporting and low-latency mode
 
 Ordinary AVDTP reports delay in big-endian tenths of a millisecond:

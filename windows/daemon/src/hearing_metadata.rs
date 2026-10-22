@@ -22,7 +22,7 @@ fn floats<const N: usize>(value: &[u8]) -> Result<[f32; N], String> {
     Ok(values)
 }
 
-fn transaction(
+pub(super) fn transaction(
     current: impl Fn() -> bool,
     mut exchange: impl FnMut(&[u8]) -> Result<Vec<u8>, String>,
 ) -> Result<HearingMetadata, String> {
