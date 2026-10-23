@@ -36,6 +36,13 @@ Bluetooth generation. USB acceptance is not device confirmation. No test-signed
 Windows driver is required for this path, but Pico hardware validation remains
 pending; native Bluetooth results do not establish dongle support.
 
+Hearing and diagnostic workflows require the dongle's settings-lease capability
+(`0x20`). One client holds it from baseline reads through writes, verification and
+mode cleanup, so concurrent phone edits cannot overwrite the PC's changes. An
+expired lease cannot be reacquired halfway through an edit. Older firmware needs
+an update; unlocked raw transactions are rejected. Queued typed setting writes
+complete only after local transmission and still need device readback.
+
 An HCI trace shows the host/controller boundary. It can expose L2CAP and media
 payloads after Bluetooth link decryption, but it does not reveal all traffic
 between the earbuds or the earbuds and case. Case state reported through a bud

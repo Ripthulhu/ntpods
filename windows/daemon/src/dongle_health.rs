@@ -1116,6 +1116,10 @@ impl Worker {
         if local_request(command) {
             return self.run_feature(rpc, guard, command);
         }
+        if !is_settings(command) {
+            // Cached mode baselines must belong to the same lease as later writes and cleanup.
+            rpc.acquire_settings_lease()?;
+        }
         self.refresh(guard.ctx, rpc)?;
         if let Some((id, value)) = setting(command) {
             return self.write_setting(rpc, guard, id, value);

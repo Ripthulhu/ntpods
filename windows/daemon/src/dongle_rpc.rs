@@ -8,6 +8,45 @@ use std::{
 const HEADER: [u8; 7] = [3, b'A', b'P', b'D', b'G', 1, 64];
 const LIMIT: usize = 512;
 const CHUNK: usize = 42;
+const LEASE_CAPABILITY: u16 = 0x20;
+
+fn lease_request(action: u8, token: u32) -> [u8; 6] {
+    let mut request = [10, action, 0, 0, 0, 0];
+    request[2..].copy_from_slice(&token.to_le_bytes());
+    request
+}
+
+fn lease_token(reply: &[u8]) -> Result<u32, String> {
+    if reply.len() != 5 || reply[0] != 1 {
+        return Err("Unsupported dongle settings lease.".into());
+    }
+    let token = u32::from_le_bytes(reply[1..].try_into().unwrap());
+    if token == 0 {
+        return Err("Dongle settings lease is unavailable.".into());
+    }
+    Ok(token)
+}
+
+fn lock_transaction(
+    ctx: &Ctx,
+    deadline: Option<Instant>,
+) -> Result<std::sync::MutexGuard<'_, ()>, String> {
+    if let Some(deadline) = deadline {
+        loop {
+            match ctx.dongle.rpc.try_lock() {
+                Ok(transaction) => return Ok(transaction),
+                Err(std::sync::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    return Err("Dongle shutdown cleanup timed out.".into());
+                }
+                Err(error) => panic!("Dongle transaction lock poisoned: {error}"),
+            }
+        }
+    }
+    Ok(ctx.dongle.rpc.lock().unwrap())
+}
 
 pub struct Cached {
     pub age_ms: u32,
@@ -102,6 +141,9 @@ pub struct Session {
     active: bool,
     local: bool,
     cleanup_deadline: Option<Instant>,
+    lease_supported: bool,
+    lease_token: Option<u32>,
+    lease_failed: bool,
 }
 impl Session {
     pub fn open(ctx: Ctx, session: u64, generation: u32) -> Result<Self, String> {
@@ -160,6 +202,9 @@ impl Session {
             active: false,
             local,
             cleanup_deadline,
+            lease_supported: report.state.capabilities & LEASE_CAPABILITY != 0,
+            lease_token: None,
+            lease_failed: false,
         };
         if !result.current() {
             return Err("Dongle connection changed.".into());
@@ -279,24 +324,49 @@ impl Session {
             return Err("Invalid dongle settings payload length.".into());
         }
         let ctx = self.ctx.clone();
-        let _transaction = if let Some(deadline) = self.cleanup_deadline {
-            loop {
-                match ctx.dongle.rpc.try_lock() {
-                    Ok(transaction) => break transaction,
-                    Err(std::sync::TryLockError::WouldBlock) if Instant::now() < deadline => {
-                        thread::sleep(Duration::from_millis(5));
-                    }
-                    Err(std::sync::TryLockError::WouldBlock) => {
-                        return Err("Dongle shutdown cleanup timed out.".into());
-                    }
-                    Err(error) => panic!("Dongle transaction lock poisoned: {error}"),
-                }
+        let _transaction = lock_transaction(&ctx, self.cleanup_deadline)?;
+        self.ensure_lease(matches!(op, 1 | 2))?;
+        self.transact_locked(op, payload)
+    }
+    fn ensure_lease(&mut self, raw: bool) -> Result<(), String> {
+        if self.lease_failed {
+            return Err("Dongle settings lease ended. Read the settings again.".into());
+        }
+        if let Some(token) = self.lease_token {
+            // Keep one lease through read/modify/verify and cached mode-confirmation polling.
+            // A rejected renewal must never acquire a replacement halfway through an edit.
+            self.lease_failed = true;
+            if !self
+                .transact_locked(7, &lease_request(1, token))?
+                .is_empty()
+            {
+                return Err("Unsupported dongle settings lease renewal.".into());
             }
-        } else {
-            ctx.dongle.rpc.lock().unwrap()
-        };
+            self.lease_failed = false;
+        } else if raw {
+            if !self.lease_supported {
+                return Err(
+                    "Update the dongle firmware before reading or changing hearing data.".into(),
+                );
+            }
+            self.lease_failed = true;
+            let reply = self.transact_locked(7, &lease_request(0, 0))?;
+            self.lease_token = Some(lease_token(&reply)?);
+            self.lease_failed = false;
+        }
+        Ok(())
+    }
+    pub fn acquire_settings_lease(&mut self) -> Result<(), String> {
+        let ctx = self.ctx.clone();
+        let _transaction = lock_transaction(&ctx, self.cleanup_deadline)?;
+        self.ensure_lease(true)
+    }
+    fn transact_locked(&mut self, op: u8, payload: &[u8]) -> Result<Vec<u8>, String> {
         if !self.current() {
             return Err("Dongle connection changed.".into());
+        }
+        if self.active {
+            return Err("The previous dongle request has not finished cancelling.".into());
         }
         // Media permission checks share this endpoint with the health worker.
         let initial = parse(
@@ -349,6 +419,40 @@ impl Session {
         }
         result
     }
+    fn release_lease(&mut self) {
+        let Some(token) = self.lease_token.take() else {
+            self.cancel();
+            return;
+        };
+        self.lease_failed = true;
+        let previous = self.cleanup_deadline;
+        self.cleanup_deadline =
+            Some(previous.unwrap_or_else(|| Instant::now() + Duration::from_secs(1)));
+        let ctx = self.ctx.clone();
+        let _ = (|| -> Result<(), String> {
+            let _transaction = lock_transaction(&ctx, self.cleanup_deadline)?;
+            self.cancel();
+            // Cancel is queued; wait for its receipt before staging the release.
+            while self.current() {
+                let reply = parse(
+                    &self
+                        .usb
+                        .read_feature(3)
+                        .map_err(|_| "Could not release dongle settings lease.")?,
+                )?;
+                if reply.generation != self.generation {
+                    break;
+                }
+                if !matches!(reply.phase, 1 | 2) {
+                    self.transact_locked(7, &lease_request(2, token))?;
+                    break;
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+            Ok(())
+        })();
+        self.cleanup_deadline = previous;
+    }
     pub fn exchange(&mut self, pdu: &[u8]) -> Result<Vec<u8>, String> {
         self.transact(1, pdu)
     }
@@ -365,21 +469,56 @@ impl Session {
         cached_report(&self.transact(3, &[slot])?)
     }
     pub fn cancel(&mut self) {
-        if self.active && self.current() {
-            let _ = self.send(5, 0, 0, &[]);
+        if self.active && self.current() && self.send(5, 0, 0, &[]).is_ok() {
+            // SetFeature only queues Cancel. Its receipt must precede cleanup traffic.
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while self.current() && Instant::now() < deadline {
+                let Ok(bytes) = self.usb.read_feature(3) else {
+                    break;
+                };
+                let Ok(reply) = parse(&bytes) else { break };
+                if reply.generation != self.generation {
+                    break;
+                }
+                if reply.sequence == self.sequence && reply.phase == 4 && reply.data == [8] {
+                    self.active = false;
+                    break;
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
         }
-        self.active = false;
     }
 }
 impl Drop for Session {
     fn drop(&mut self) {
-        self.cancel();
+        self.release_lease();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn settings_lease_wire_requires_exact_version_and_a_nonzero_token() {
+        assert_eq!(lease_request(0, 0), [10, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            lease_request(2, 0x7654_3210),
+            [10, 2, 0x10, 0x32, 0x54, 0x76]
+        );
+        assert_eq!(
+            lease_token(&[1, 0x10, 0x32, 0x54, 0x76]).unwrap(),
+            0x7654_3210
+        );
+        for reply in [
+            vec![],
+            vec![1],
+            vec![1, 0, 0, 0, 0],
+            vec![2, 1, 0, 0, 0],
+            vec![1, 1, 0, 0, 0, 0],
+        ] {
+            assert!(lease_token(&reply).is_err());
+        }
+    }
     #[test]
     fn cache_envelope_keeps_report_age_and_revision_separate() {
         assert!(cached_report(&[]).unwrap().is_none());
