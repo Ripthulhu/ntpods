@@ -483,8 +483,11 @@ impl Fixture {
         until(|| !self.ctx.state.lock().unwrap().dongle.usb_playback);
     }
     fn reinsert(&self) {
+        self.wear([0, 0]);
+    }
+    fn wear(&self, statuses: [u8; 2]) {
         let mut h = self.hardware.lock().unwrap();
-        h.ears = [0, 0];
+        h.ears = statuses;
         h.revision += 1;
     }
     fn audio_queries(&self) -> usize {
@@ -587,12 +590,32 @@ fn regression_async_resume_rechecks_ownership_after_it_was_queued() {
 fn regression_async_resume_rejects_a_new_usb_generation() {
     let fixture = Fixture::new();
     fixture.pause();
-    fixture.reinsert();
+    fixture.wear([2, 0]);
     until(|| !PLAYER.lock().unwrap().resumes.is_empty());
     let (_, permission) = PLAYER.lock().unwrap().resumes.pop().unwrap();
     fixture.ctx.state.lock().unwrap().dongle.generation += 1;
     fixture.hardware.lock().unwrap().generation += 1;
     assert!(!permission());
+}
+
+#[test]
+fn regression_either_solo_bud_stays_usable_and_resumes_only_its_owned_case_transition() {
+    for solo in [[0, 2], [2, 0]] {
+        let fixture = Fixture::new();
+        let reads = fixture.hardware.lock().unwrap().ear_reads;
+        fixture.wear(solo);
+        until(|| fixture.hardware.lock().unwrap().ear_reads >= reads + 2);
+        assert_eq!(PLAYER.lock().unwrap().pauses, 0);
+        assert!(PLAYER.lock().unwrap().resumes.is_empty());
+        fixture.wear(solo.map(|status| if status == 2 { 1 } else { status }));
+        until(|| PLAYER.lock().unwrap().pauses == 1);
+        fixture.hardware.lock().unwrap().usb_playback = false;
+        until(|| !fixture.ctx.state.lock().unwrap().dongle.usb_playback);
+        fixture.wear(solo);
+        until(|| !PLAYER.lock().unwrap().resumes.is_empty());
+        let (_, permission) = PLAYER.lock().unwrap().resumes.pop().unwrap();
+        assert!(permission());
+    }
 }
 
 #[test]

@@ -402,6 +402,7 @@ impl Drop for SelectedPause {
 #[cfg(test)]
 mod tests {
     use super::{AutoPausePolicy, PauseClaim};
+    use crate::aap::EarStatus::{InCase, InEar, OutOfEar};
 
     #[test]
     fn native_ear_path_refuses_an_unrelated_output_and_resumes_only_its_owned_player() {
@@ -439,9 +440,9 @@ mod tests {
                 }))
             });
             let mut paused = None;
-            crate::native_ear_media(&ctx, SELECTED, &mut paused, [true; 2], [false, true]);
+            crate::native_ear_media(&ctx, SELECTED, &mut paused, [InEar; 2], [OutOfEar, InEar]);
             assert!(TEST_PAUSE_START.with(|factory| factory.borrow().is_none()));
-            crate::native_ear_media(&ctx, SELECTED, &mut paused, [false, true], [true; 2]);
+            crate::native_ear_media(&ctx, SELECTED, &mut paused, [OutOfEar, InEar], [InCase, InEar]);
             if player_output == SELECTED {
                 let SelectedPauseCommand::Resume(permission) = receive.try_recv().unwrap() else {
                     panic!("Expected owned resume");
@@ -483,7 +484,7 @@ mod tests {
                     resume_requested: false,
                 },
             ));
-            crate::native_ear_media(&ctx, ctx.mac(), &mut paused, [false, true], [true; 2]);
+            crate::native_ear_media(&ctx, ctx.mac(), &mut paused, [InEar, OutOfEar], [InEar, InCase]);
             let SelectedPauseCommand::Resume(permission) = receive.try_recv().unwrap() else {
                 panic!("Expected queued resume");
             };
@@ -526,13 +527,35 @@ mod tests {
             },
         ));
         ctx.connect_requested.store(true, Ordering::Release);
-        crate::native_ear_media(&ctx, ctx.mac(), &mut paused, [false, true], [true; 2]);
+        crate::native_ear_media(&ctx, ctx.mac(), &mut paused, [OutOfEar, InEar], [InCase, InEar]);
         assert!(paused.is_none());
         assert!(cancelled.load(Ordering::Acquire));
         assert!(!matches!(
             receive.try_recv(),
             Ok(SelectedPauseCommand::Resume(_))
         ));
+    }
+
+    #[test]
+    fn native_ear_solo_use_neither_pauses_nor_resumes_without_an_owned_pause() {
+        use super::*;
+        for solo in [[InEar, InCase], [InCase, InEar]] {
+            let ctx = crate::Ctx::for_test();
+            ctx.mac.store(0x001122334455, Ordering::Release);
+            {
+                let mut state = ctx.state.lock().unwrap();
+                state.connected = true;
+                state.audio_output_ready = true;
+            }
+            TEST_PAUSE_START.with(|factory| {
+                *factory.borrow_mut() = Some(Box::new(|_| panic!("Solo use must not pause")))
+            });
+            let mut paused = None;
+            crate::native_ear_media(&ctx, ctx.mac(), &mut paused, [InEar; 2], solo);
+            crate::native_ear_media(&ctx, ctx.mac(), &mut paused, [OutOfEar; 2], solo);
+            assert!(paused.is_none());
+            TEST_PAUSE_START.with(|factory| assert!(factory.borrow_mut().take().is_some()));
+        }
     }
 
     #[test]

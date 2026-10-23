@@ -142,27 +142,34 @@ pub fn audio_request(codec: u8, variable: bool, bitrate: u32) -> Result<[u8; 7],
     Ok(request)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EarAction {
-    Pause,
-    Resume,
-}
+pub use crate::aap::EarAction;
 
 #[derive(Default)]
 pub struct Ears {
     revision: Option<u32>,
-    wearing: Option<[bool; 2]>,
+    wearing: Option<[crate::aap::EarStatus; 2]>,
 }
 impl Ears {
     pub fn observe(
         &mut self,
         packet: Option<&crate::dongle_rpc::Cached>,
     ) -> Result<Option<EarAction>, ()> {
+        let without_case = |statuses: [crate::aap::EarStatus; 2]| statuses.map(|status| {
+            if status == crate::aap::EarStatus::InCase {
+                crate::aap::EarStatus::Disconnected
+            } else {
+                status
+            }
+        });
         let Some(packet) = packet else {
             self.wearing = None;
             return Err(());
         };
         if self.revision == Some(packet.revision) {
+            if packet.age_ms > 1500 {
+                self.wearing = self.wearing.map(without_case);
+                return Err(());
+            }
             return Ok(None);
         }
         if self
@@ -179,22 +186,17 @@ impl Ears {
             return Err(());
         };
         let previous = self.wearing;
-        let now = crate::aap::in_ear_state(previous.unwrap_or([false; 2]), [left, right]);
+        let now = crate::aap::ear_status_state(
+            previous.unwrap_or([crate::aap::EarStatus::Disconnected; 2]),
+            [left, right],
+        );
         if packet.age_ms > 1500 {
-            // A cached initial baseline can describe steady wear, never an action.
-            self.wearing = initial.then_some(now);
+            // A cached initial baseline preserves worn buds, never case qualification or an action.
+            self.wearing = initial.then_some(without_case(now));
             return Err(());
         }
         self.wearing = Some(now);
-        Ok(previous.filter(|before| *before != now).and_then(|before| {
-            if now == [true; 2] {
-                Some(EarAction::Resume)
-            } else if before.into_iter().any(|in_ear| in_ear) {
-                Some(EarAction::Pause)
-            } else {
-                None
-            }
-        }))
+        Ok(previous.and_then(|before| crate::aap::ear_media_action(before, now)))
     }
 }
 
@@ -377,7 +379,7 @@ mod tests {
             Ok(Some(EarAction::Pause))
         );
         assert_eq!(ears.observe(Some(&report(2, 0, 1, 0))), Ok(None));
-        assert_eq!(ears.observe(Some(&report(2, 60000, 1, 0))), Ok(None));
+        assert_eq!(ears.observe(Some(&report(2, 60000, 1, 0))), Err(()));
         assert_eq!(ears.observe(Some(&report(1, 0, 0, 0))), Ok(None));
         assert_eq!(ears.observe(Some(&report(3, 0, 4, 0))), Ok(None));
         assert_eq!(
@@ -394,9 +396,47 @@ mod tests {
             after_microphone.observe(Some(&report(10, 60000, 0, 0))),
             Err(())
         );
+        assert_eq!(after_microphone.observe(Some(&report(10, 61000, 0, 0))), Err(()));
         assert_eq!(
             after_microphone.observe(Some(&report(11, 0, 1, 0))),
             Ok(Some(EarAction::Pause))
         );
+    }
+
+    #[test]
+    fn one_bud_case_transitions_keep_the_other_bud_usable_in_both_orientations() {
+        for solo in [[0, 2], [2, 0]] {
+            let report = |revision, statuses: [u8; 2]| crate::dongle_rpc::Cached {
+                revision, age_ms: 0,
+                packet: vec![4, 0, 4, 0, 6, 0, statuses[0], statuses[1]],
+            };
+            let removed = solo.map(|status| if status == 2 { 1 } else { status });
+            let mut ears = Ears::default();
+            assert_eq!(ears.observe(Some(&report(1, [0, 0]))), Ok(None));
+            assert_eq!(ears.observe(Some(&report(2, solo))), Ok(None));
+            assert_eq!(ears.observe(Some(&report(3, removed))), Ok(Some(EarAction::Pause)));
+            assert_eq!(ears.observe(Some(&report(4, solo))), Ok(Some(EarAction::Resume)));
+            assert_eq!(ears.observe(Some(&report(5, [2, 2]))), Ok(Some(EarAction::Pause)));
+            assert_eq!(ears.observe(Some(&report(6, solo))), Ok(Some(EarAction::Resume)));
+        }
+    }
+
+    #[test]
+    fn stale_case_state_and_report_gaps_cannot_qualify_a_transitional_partner() {
+        let report = |revision, age_ms, first, second| crate::dongle_rpc::Cached {
+            revision, age_ms, packet: vec![4, 0, 4, 0, 6, 0, first, second],
+        };
+        let mut ears = Ears::default();
+        assert_eq!(ears.observe(Some(&report(1, 0, 2, 0))), Ok(None));
+        assert_eq!(ears.observe(Some(&report(2, 0, 2, 1))), Ok(Some(EarAction::Pause)));
+        assert_eq!(ears.observe(Some(&report(2, 1501, 2, 1))), Err(()));
+        assert_eq!(ears.observe(Some(&report(3, 0, 4, 0))), Ok(None));
+        assert_eq!(ears.wearing, Some([crate::aap::EarStatus::Disconnected, crate::aap::EarStatus::InEar]));
+        assert_eq!(ears.observe(None), Err(()));
+        assert_eq!(ears.observe(Some(&report(4, 0, 0, 3))), Ok(None));
+        let mut reconnected = Ears::default();
+        assert_eq!(reconnected.observe(Some(&report(1, 60000, 2, 0))), Err(()));
+        assert_eq!(reconnected.observe(Some(&report(2, 0, 4, 0))), Ok(None));
+        assert_eq!(reconnected.wearing, Some([crate::aap::EarStatus::Disconnected, crate::aap::EarStatus::InEar]));
     }
 }

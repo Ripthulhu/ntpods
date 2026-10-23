@@ -593,7 +593,7 @@ pub fn parse_ear_detection(data: &[u8]) -> Option<(EarStatus, EarStatus)> {
     }
 }
 
-/// In-motion reports retain the last stable state for playback and mic decoding.
+/// In-motion reports retain the last worn state for microphone decoding.
 pub fn in_ear_state(previous: [bool; 2], current: [EarStatus; 2]) -> [bool; 2] {
     std::array::from_fn(|i| {
         if current[i].is_transitional() {
@@ -602,6 +602,39 @@ pub fn in_ear_state(previous: [bool; 2], current: [EarStatus; 2]) -> [bool; 2] {
             current[i].in_ear()
         }
     })
+}
+
+pub fn ear_status_state(previous: [EarStatus; 2], current: [EarStatus; 2]) -> [EarStatus; 2] {
+    std::array::from_fn(|i| {
+        if current[i].is_transitional() {
+            previous[i]
+        } else {
+            current[i]
+        }
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EarAction {
+    Pause,
+    Resume,
+}
+
+pub fn ear_media_action(previous: [EarStatus; 2], current: [EarStatus; 2]) -> Option<EarAction> {
+    use EarStatus::*;
+    let ready = |state: [EarStatus; 2]| {
+        matches!(state, [InEar, InEar] | [InEar, InCase] | [InCase, InEar])
+    };
+    if ready(current) {
+        (!ready(previous)).then_some(EarAction::Resume)
+    } else if previous.into_iter().any(EarStatus::in_ear)
+        && (ready(previous)
+            || previous.map(EarStatus::in_ear) != current.map(EarStatus::in_ear))
+    {
+        Some(EarAction::Pause)
+    } else {
+        None
+    }
 }
 
 /// Model, public firmware version and serial from the information packet.
@@ -987,6 +1020,50 @@ mod tests {
             assert_eq!(current != previous, changed);
             previous = current;
         }
+    }
+
+    #[test]
+    fn playback_accepts_either_worn_bud_only_with_an_explicitly_cased_partner() {
+        use EarStatus::*;
+        for first in [InEar, OutOfEar, InCase, Disconnected] {
+            for second in [InEar, OutOfEar, InCase, Disconnected] {
+                let current = [first, second];
+                let expected =
+                    matches!(current, [InEar, InEar] | [InEar, InCase] | [InCase, InEar])
+                        .then_some(EarAction::Resume);
+                assert_eq!(ear_media_action([Disconnected; 2], current), expected);
+            }
+        }
+        for solo in [[InEar, InCase], [InCase, InEar]] {
+            let removed = solo.map(|status| if status == InCase { OutOfEar } else { status });
+            assert_eq!(ear_media_action([InEar; 2], solo), None);
+            assert_eq!(ear_media_action(solo, [InEar; 2]), None);
+            assert_eq!(
+                ear_media_action([InEar; 2], removed),
+                Some(EarAction::Pause)
+            );
+            assert_eq!(ear_media_action(removed, solo), Some(EarAction::Resume));
+            assert_eq!(ear_media_action(solo, [InCase; 2]), Some(EarAction::Pause));
+            assert_eq!(ear_media_action([InCase; 2], solo), Some(EarAction::Resume));
+            let disconnected = removed.map(|status| if status == OutOfEar { Disconnected } else { status });
+            assert_eq!(ear_media_action(removed, disconnected), None);
+            assert_eq!(ear_media_action(solo, disconnected), Some(EarAction::Pause));
+        }
+    }
+
+    #[test]
+    fn transitional_reports_retain_case_identity_only_from_the_same_stable_history() {
+        use EarStatus::*;
+        for solo in [[InEar, InCase], [InCase, InEar]] {
+            assert_eq!(ear_status_state(solo, [Transitional; 2]), solo);
+            assert_eq!(
+                ear_media_action(solo, ear_status_state(solo, [Transitional; 2])),
+                None
+            );
+        }
+        let unknown_partner = ear_status_state([Disconnected; 2], [InEar, Transitional]);
+        assert_eq!(unknown_partner, [InEar, Disconnected]);
+        assert_eq!(ear_media_action([Disconnected; 2], unknown_partner), None);
     }
     #[test]
     fn feature_status_requires_a_complete_known_reply() {

@@ -3193,8 +3193,8 @@ fn native_ear_media(
     ctx: &Ctx,
     address: u64,
     paused: &mut Option<(u64, u64, u64, media::SelectedPause)>,
-    previous: [bool; 2],
-    current: [bool; 2],
+    previous: [aap::EarStatus; 2],
+    current: [aap::EarStatus; 2],
 ) {
     if paused.as_ref().is_some_and(|(_, request, intent, ticket)| {
         !ctx.connect_requested.is_current(*request)
@@ -3209,7 +3209,8 @@ fn native_ear_media(
         *paused = None;
         return;
     };
-    if current == [true; 2] {
+    let action = aap::ear_media_action(previous, current);
+    if action == Some(aap::EarAction::Resume) {
         if let Some((recorded, request, intent, ticket)) = paused.as_mut() {
             if *recorded == permission {
                 let recorded = *recorded;
@@ -3226,7 +3227,7 @@ fn native_ear_media(
                 *paused = None;
             }
         }
-    } else if previous.into_iter().any(|wearing| wearing) && paused.is_none() {
+    } else if action == Some(aap::EarAction::Pause) && paused.is_none() {
         *paused = Some((
             permission,
             ctx.connect_requested.snapshot(),
@@ -5493,7 +5494,7 @@ fn run_receiver(ctx: Ctx) {
                                     break; // one overlay even if both go in at once
                                 }
                             }
-                            prev_status = now;
+                            let new_status = aap::ear_status_state(prev_status, now);
                             let new_ear = aap::in_ear_state(prev_ear, [primary, secondary]);
                             mic_ears.observe(
                                 [primary, secondary]
@@ -5522,8 +5523,11 @@ fn run_receiver(ctx: Ctx) {
                                     }
                                     log("mic: ear state changed; decoder and queued PCM reset");
                                 }
-                                native_ear_media(&ctx, mac, &mut we_paused, prev_ear, new_ear);
                                 prev_ear = new_ear;
+                            }
+                            if new_status != prev_status {
+                                native_ear_media(&ctx, mac, &mut we_paused, prev_status, new_status);
+                                prev_status = new_status;
                             }
                         }
                     }
