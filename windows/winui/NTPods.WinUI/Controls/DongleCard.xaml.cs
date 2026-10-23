@@ -63,7 +63,7 @@ public sealed partial class DongleCard : UserControl
         {
             labels[i].Text = levels[i] is byte level ? $"{level}%" : "—";
             uint? age = i < _state.BatteryAgeMs.Length ? _state.BatteryAgeMs[i] : null;
-            labels[i].Style = age is <= 30000 ? null : (Style)Resources["StaleBatteryReading"];
+            labels[i].Style = DongleHealthPresentation.BatteryIsCurrent(_state, i) ? null : (Style)Resources["StaleBatteryReading"];
             ToolTipService.SetToolTip(labels[i], age is uint ms
                 ? string.Format(Localize.Get("Dongle_BatteryAge"), ms / 1000) : Localize.Get("Dongle_Unknown"));
         }

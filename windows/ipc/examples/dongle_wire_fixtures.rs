@@ -27,8 +27,10 @@ fn state() -> DongleState {
             ..Default::default()
         },
         battery_age_ms: [Some(1234), Some(u32::MAX - 1), None],
+        battery_present: 1,
+        battery_case_source: 2,
         codec: 3,
-        capabilities: 31,
+        capabilities: 95,
         pending: true,
         error: Some("timeout".into()),
         health: DongleHealthState {

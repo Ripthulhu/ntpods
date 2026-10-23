@@ -76,6 +76,13 @@ internal static class BatteryFreshnessChecks
         state.BatteryLive = true;
         Check(BatteryPresentation.Reading(state, BatteryPart.Left, false) == 70,
             "Live nearby BLE readings remain visible without a control connection.");
+        state.BatterySource = "ble_case";
+        Check(BatteryPresentation.IsLive(state, BatteryPart.Left) && !state.Connected &&
+            BatteryPresentation.Reading(state, BatteryPart.Right, false) is null,
+            "Case-layout readings display passive battery data without reviving an absent bud or connecting audio.");
+        state.BatteryLive = false;
+        Check(!BatteryPresentation.IsLive(state) && !BatteryPresentation.IsCharging(state),
+            "Expired case-layout observations cannot show charging.");
     }
 
     private static void CheckSharedAge()

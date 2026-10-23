@@ -22,6 +22,27 @@ internal static class DongleChecks
         var legacy = JsonNode.Parse(lines[1])!.AsObject(); legacy.Remove("dongle");
         if ((Wire.ParseEvent(legacy.ToJsonString()) as DaemonEvent.State)?.Snapshot.Dongle is not { Present: false, Session: 0 })
             throw new InvalidOperationException("Older daemons must not invent a dongle.");
+        foreach (string field in new[] { "battery_present", "battery_case_source" })
+        {
+            var broken = JsonNode.Parse(lines[0])!.AsObject();
+            broken["dongle"]![field] = 8;
+            if (Wire.ParseEvent(broken.ToJsonString()) is not null)
+                throw new InvalidOperationException("Unknown dongle battery-mask bits must be rejected.");
+        }
+        foreach (string field in new[] { "left", "left_charging", "battery_age_ms" })
+        {
+            var broken = JsonNode.Parse(lines[0])!.AsObject();
+            if (field == "battery_age_ms") broken["dongle"]![field]![0] = null;
+            else if (field == "left") broken["dongle"]!["battery"]![field] = null;
+            else broken["dongle"]!["battery"]!["right_charging"] = true;
+            if (Wire.ParseEvent(broken.ToJsonString()) is not null)
+                throw new InvalidOperationException("Presence requires a level and age; absent components cannot charge.");
+        }
+        var old = JsonNode.Parse(lines[1])!.AsObject();
+        old["dongle"]!.AsObject().Remove("battery_present");
+        old["dongle"]!.AsObject().Remove("battery_case_source");
+        if (Wire.ParseEvent(old.ToJsonString()) is not DaemonEvent.State)
+            throw new InvalidOperationException("Older dongle snapshots remain readable without battery masks.");
         result.Add(Wire.ToLine(new DongleControlCmd { Session = ulong.MaxValue, Generation = uint.MaxValue, Opcode = 3, Argument = 2 }).TrimEnd('\n'));
         object[] healthCommands = [
             new SetHearingAidModeCmd { RequestId = ulong.MaxValue, On = false },

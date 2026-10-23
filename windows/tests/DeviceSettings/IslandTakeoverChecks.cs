@@ -13,6 +13,10 @@ internal static class IslandTakeoverChecks
         policy.ObserveSnapshot(snapshot, 0);
         check(policy.State(snapshot, 0) == IslandConnectState.Ready,
             "AACP control without an audio output still offers Connect.");
+        snapshot.BatterySource = "ble_case";
+        check(policy.State(snapshot, 0) == IslandConnectState.Hidden && !policy.BeginConnect(snapshot, 0),
+            "A case-layout battery association cannot offer an audio-takeover invitation.");
+        snapshot.BatterySource = "ble";
 
         policy.PairingSucceeded(first);
         check(!policy.MayShow(snapshot), "Pairing suppresses a duplicate connection island for that pair.");

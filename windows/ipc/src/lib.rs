@@ -434,11 +434,25 @@ pub struct DongleState {
     pub anc: u8,
     pub battery: Battery,
     pub battery_age_ms: [Option<u32>; 3],
+    #[serde(deserialize_with = "deserialize_battery_mask")]
+    pub battery_present: u8,
+    #[serde(deserialize_with = "deserialize_battery_mask")]
+    pub battery_case_source: u8,
     pub codec: u8,
     pub capabilities: u16,
     pub pending: bool,
     pub error: Option<String>,
     pub health: DongleHealthState,
+}
+
+fn deserialize_battery_mask<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u8, D::Error> {
+    let mask = u8::deserialize(d)?;
+    if mask & !7 != 0 {
+        return Err(serde::de::Error::custom(
+            "battery mask must fit three components",
+        ));
+    }
+    Ok(mask)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -458,13 +472,13 @@ pub struct Snapshot {
     /// Independent report ages; None identifies a legacy snapshot without this metadata.
     #[serde(default)]
     pub battery_freshness: Option<BatteryFreshness>,
-    /// A current paired AAP session or a recent identity-verified BLE report.
+    /// A current AAP session or a recent BLE battery observation; source identifies assurance.
     #[serde(default)]
     pub battery_live: bool,
     /// Unix milliseconds of the last battery report; cached levels retain their age.
     #[serde(default)]
     pub battery_timestamp_ms: Option<u64>,
-    /// Empty before a report, then "aap" or "ble". BLE does not imply audio connection.
+    /// Empty, "aap", IRK-verified "ble", or keyed-layout "ble_case". BLE never implies audio connection.
     #[serde(default)]
     pub battery_source: String,
     /// Allow passive nearby-battery scans during playback; capture still inhibits scanning.
@@ -1233,6 +1247,26 @@ pub fn from_line<T: for<'de> Deserialize<'de>>(line: &str) -> Option<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dongle_battery_masks_are_bounded_and_legacy_snapshots_default_safely() {
+        let state = DongleState::default();
+        let mut value = serde_json::to_value(&state).unwrap();
+        for field in ["battery_present", "battery_case_source"] {
+            for invalid in ["8", "255", "-1", "256", "null", "true", "\"1\""] {
+                let mut bad = value.clone();
+                bad[field] = serde_json::from_str(invalid).unwrap();
+                assert!(
+                    serde_json::from_value::<DongleState>(bad).is_err(),
+                    "{field}: {invalid}"
+                );
+            }
+            value.as_object_mut().unwrap().remove(field);
+        }
+        let legacy: DongleState = serde_json::from_value(value).unwrap();
+        assert_eq!((legacy.battery_present, legacy.battery_case_source), (0, 0));
+    }
+
 
     #[test]
     fn game_mode_requires_an_explicit_boolean() {

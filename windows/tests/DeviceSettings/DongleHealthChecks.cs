@@ -5,6 +5,21 @@ internal static class DongleHealthChecks
 {
     public static void Run(Action<bool, string> check)
     {
+        var observation = new DongleState { Capabilities = 64, BatteryPresent = 5, BatteryCaseSource = 7,
+            Battery = new Battery { Left = 94, Right = 93, Case = 61 },
+            BatteryAgeMs = [89_999, 1000, 90_000] };
+        check(DongleHealthPresentation.BatteryIsCurrent(observation, 0) &&
+            !DongleHealthPresentation.BatteryIsCurrent(observation, 1) &&
+            !DongleHealthPresentation.BatteryIsCurrent(observation, 2),
+            "Case readings expire at 90 seconds; an absent bud stays dim even with a recently retained percentage.");
+        check(observation.Battery.Right == 93 && observation.BatteryAgeMs[1] == 1000,
+            "Presentation retains the original absent-bud percentage and age.");
+        observation.Capabilities = observation.BatteryCaseSource = 0;
+        observation.BatteryAgeMs = [30_000, 30_001, null];
+        check(DongleHealthPresentation.BatteryIsCurrent(observation, 0) &&
+            !DongleHealthPresentation.BatteryIsCurrent(observation, 1) &&
+            !DongleHealthPresentation.BatteryIsCurrent(observation, 2),
+            "Legacy firmware keeps its existing age behavior without assuming new presence flags.");
         var native = new Snapshot { DeviceId = "native", Model = "A2084", Connected = true, HearingAidError = "native error" };
         var dongle = native.Dongle;
         dongle.Present = dongle.Selected = dongle.Connected = dongle.ControlsReady = true;

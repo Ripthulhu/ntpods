@@ -14,7 +14,7 @@ internal static class IslandBatteryPresentation
     public static DateTimeOffset? CaseGraceExpiresAt(Snapshot snapshot, DateTimeOffset utcNow)
     {
         // The case may go silent while the buds remain available; its charging state stays strict.
-        if (string.IsNullOrEmpty(snapshot.DeviceId) || snapshot.BatterySource is not ("aap" or "ble") ||
+        if (string.IsNullOrEmpty(snapshot.DeviceId) || snapshot.BatterySource is not ("aap" or "ble" or "ble_case") ||
             !snapshot.BatteryLive || BatteryPresentation.Reading(snapshot, BatteryPart.Case) is null ||
             snapshot.BatteryFreshness?.Case is not { Present: false, TimestampMs: > 0 } observation)
             return null;

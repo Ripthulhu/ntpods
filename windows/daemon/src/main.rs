@@ -186,6 +186,7 @@ struct Ctx {
     state: Arc<Mutex<Snapshot>>,
     battery_keys: Arc<Mutex<Option<battery_ble::Keys>>>,
     battery_cache: Arc<Mutex<battery_ble::Cache>>,
+    case_battery_cache: Arc<Mutex<battery_ble::CaseCache>>,
     settings_pending: Arc<Mutex<device_settings::PendingSettings>>,
     settings_write: Arc<Mutex<()>>,
     mic_preference: Arc<Mutex<()>>,
@@ -373,6 +374,7 @@ impl Ctx {
                 .lock()
                 .unwrap()
                 .restore(&mut s, unix_millis());
+            self.case_battery_cache.lock().unwrap().restore(self.mac(), &mut s, unix_millis());
             battery_ble::refresh_live(&mut s, unix_millis());
             s.dev_name = self.dev_name.lock().unwrap().clone();
             s.clone()
@@ -4253,6 +4255,7 @@ fn select_paired_device(ctx: &Ctx, mac: u64, name: &str, request: Option<u64>) -
         state.playback_available = native_bound;
     }
     *ctx.battery_cache.lock().unwrap() = battery_ble::Cache::default();
+    *ctx.case_battery_cache.lock().unwrap() = battery_ble::CaseCache::default();
     *ctx.battery_keys.lock().unwrap() = keys;
     *ctx.dev_name.lock().unwrap() = name.into();
     ctx.mac.store(mac, Ordering::Release);
@@ -5017,16 +5020,33 @@ fn run_receiver(ctx: Ctx) {
                     }
                     let data = &buf[..n];
                     if battery_ble::is_key_response(data) {
-                        if let Some(keys) = battery_ble::parse_keys(mac, data) {
+                        let next = battery_ble::parse_keys(mac, data);
+                        let available = next.is_some();
+                        let changed = {
+                            // Same order as case decoding: a report cannot outlive its keys.
+                            let mut state = ctx.state.lock().unwrap();
                             let mut current = ctx.battery_keys.lock().unwrap();
-                            if current.as_ref() != Some(&keys) {
-                                if keys.save().is_err() {
+                            let mut cache = ctx.case_battery_cache.lock().unwrap();
+                            if ctx.mac() == mac
+                                && battery_ble::replace_keys(&mut current, next, &mut cache)
+                            {
+                                *ctx.battery_cache.lock().unwrap() = battery_ble::Cache::default();
+                                if state.battery_source == "ble_case"
+                                    || state.battery_source == "ble"
+                                {
+                                    battery_ble::invalidate(&mut state);
+                                }
+                                if current.as_ref().is_some_and(|keys| keys.save().is_err()) {
                                     log("battery: paired BLE keys available for this session; saving failed");
                                 }
-                                *current = Some(keys);
+                                true
+                            } else {
+                                false
                             }
-                            drop(current);
-                            refresh_nearby_identity(&ctx, mac, true);
+                        };
+                        refresh_nearby_identity(&ctx, mac, available);
+                        if changed {
+                            ctx.push_state();
                         }
                         buf[..n].fill(0);
                         continue;
@@ -5940,6 +5960,7 @@ fn main() {
         companion_actions: Arc::new(Mutex::new(())),
         battery_keys: Arc::new(Mutex::new(battery_keys)),
         battery_cache: Arc::new(Mutex::new(battery_ble::Cache::default())),
+        case_battery_cache: Arc::new(Mutex::new(battery_ble::CaseCache::default())),
         state: Arc::new(Mutex::new(Snapshot {
             dev_name: dev_name.clone(),
             device_id: if mac == 0 {
@@ -6059,6 +6080,58 @@ fn main() {
                         return;
                     }
                     let paired_mac = c.mac();
+                    // Case layouts only update battery history; even a coincidental
+                    // IRK match must not authorize finder, pairing or audio return.
+                    if battery_ble::is_case_advertisement(data) {
+                        let now_ms = unix_millis();
+                        let finder_scan = c.nearby_finder.lock().unwrap().scanning();
+                        let mut published = last_published.lock().unwrap();
+                        let (restored, changed) = {
+                            let mut state = c.state.lock().unwrap();
+                            if c.mac() != paired_mac
+                                || !battery_ble::scan_allowed(
+                                    state.ble_scan_while_connected || finder_scan,
+                                    state.connected,
+                                    state.mic_capture_active
+                                        || c.capture_active.load(Ordering::Acquire),
+                                    state.mic_uplink_active || c.mic_on.load(Ordering::Acquire),
+                                )
+                            {
+                                return;
+                            }
+                            // Hold the current key lock through acceptance. Key replacement
+                            // takes the same state/key/cache order and clears this history.
+                            let keys = c.battery_keys.lock().unwrap();
+                            let Some(report) = keys
+                                .as_ref()
+                                .and_then(|keys| keys.decode_case(paired_mac, &state.model, data))
+                            else {
+                                return;
+                            };
+                            let before = (
+                                state.battery,
+                                state.battery_live,
+                                state.battery_source.clone(),
+                                state.battery_freshness,
+                            );
+                            let mut cache = c.case_battery_cache.lock().unwrap();
+                            cache.observe(paired_mac, report, now_ms);
+                            let restored = cache.restore(paired_mac, &mut state, now_ms);
+                            let changed = before
+                                != (
+                                    state.battery,
+                                    state.battery_live,
+                                    state.battery_source.clone(),
+                                    state.battery_freshness,
+                                );
+                            (restored, changed)
+                        };
+                        if should_publish_ble(restored, changed, false, now_ms, *published) {
+                            *published = now_ms;
+                            c.push_state();
+                        }
+                        return;
+                    }
                     let (owned, report) = {
                         let keys = c.battery_keys.lock().unwrap();
                         let keys = keys.as_ref().filter(|keys| keys.mac == paired_mac);

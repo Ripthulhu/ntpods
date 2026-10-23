@@ -24,7 +24,7 @@ internal static class BatteryPresentation
     public static bool IsLive(Snapshot snapshot) => snapshot.BatterySource switch
     {
         "" => snapshot.Connected && !snapshot.LinkStale,
-        "aap" or "ble" => snapshot.BatteryLive,
+        "aap" or "ble" or "ble_case" => snapshot.BatteryLive,
         _ => false,
     };
 

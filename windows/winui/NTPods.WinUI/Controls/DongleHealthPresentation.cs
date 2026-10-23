@@ -5,6 +5,12 @@ namespace NTPods.WinUI.Controls;
 
 internal static class DongleHealthPresentation
 {
+    public static bool BatteryIsCurrent(DongleState state, int component) => component is >= 0 and < 3 &&
+        BatteryPresentation.Present(component switch { 0 => state.Battery.Left, 1 => state.Battery.Right, _ => state.Battery.Case }) is not null &&
+        ((state.Capabilities & 64) == 0 || (state.BatteryPresent & (1 << component)) != 0) &&
+        state.BatteryAgeMs is { Length: 3 } && state.BatteryAgeMs[component] is uint age &&
+        ((state.BatteryCaseSource & (1 << component)) != 0 ? age < 90_000u : age <= 30_000u);
+
     public static bool Busy(DongleHealthState health) => health.HearingAidPending ||
         health.DeviceSettingsPending ||
         health.HardwareDiagnosticsPending || health.HearingMetadataPending ||

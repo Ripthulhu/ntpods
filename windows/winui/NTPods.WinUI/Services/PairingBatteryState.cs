@@ -22,7 +22,7 @@ internal static class PairingBatteryState
 
     public static PairingBatteryLevels? Read(Snapshot snapshot, string address, ulong attemptStartedAtMs, ulong nowMs)
     {
-        if (DeviceId(address) is not { } deviceId ||
+        if (snapshot.BatterySource == "ble_case" || DeviceId(address) is not { } deviceId ||
             !string.Equals(deviceId, snapshot.DeviceId, StringComparison.OrdinalIgnoreCase))
             return null;
 

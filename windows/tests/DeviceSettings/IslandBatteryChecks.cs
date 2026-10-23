@@ -46,7 +46,7 @@ internal static class IslandBatteryChecks
             BatteryPresentation.SharedFreshnessText(state, false),
             "After grace, the island retains the existing shared-age rendering.");
 
-        foreach (string source in new[] { "aap", "ble" })
+        foreach (string source in new[] { "aap", "ble", "ble_case" })
         {
             state = Case(); state.BatterySource = source;
             check(IslandBatteryPresentation.IsCurrentForDisplay(state, BatteryPart.Case, At(1)),

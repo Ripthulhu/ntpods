@@ -12,6 +12,7 @@ impl Ctx {
             state: Arc::new(Mutex::new(Snapshot::default())),
             battery_keys: Arc::default(),
             battery_cache: Arc::default(),
+            case_battery_cache: Arc::default(),
             settings_pending: Arc::default(),
             settings_write: Arc::default(),
             mic_preference: Arc::default(),

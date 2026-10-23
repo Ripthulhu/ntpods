@@ -317,8 +317,8 @@
   <data name="DeviceControls.Longer" xml:space="preserve"><value>Longer</value></data>
   <data name="DeviceControls.Longest" xml:space="preserve"><value>Longest</value></data>
   <data name="DeviceControls.CallControls" xml:space="preserve"><value>Call controls</value></data>
-  <data name="DeviceControls.CallDefault" xml:space="preserve"><value>Press once to mute, twice to end</value></data>
-  <data name="DeviceControls.CallSwapped" xml:space="preserve"><value>Press twice to mute, once to end</value></data>
+  <data name="DeviceControls.CallDefault" xml:space="preserve"><value>Press twice to end the call</value></data>
+  <data name="DeviceControls.CallSwapped" xml:space="preserve"><value>Press once to end the call</value></data>
   <data name="DeviceControls.CallHint" xml:space="preserve"><value>Stores the device’s call setting. These gestures do not control the NTPods microphone or Windows apps.</value></data>
   <data name="DeviceControls.OneBudAnc" xml:space="preserve"><value>Noise cancellation with one AirPod</value></data>
   <data name="DeviceControls.ToneVolume" xml:space="preserve"><value>Tone volume</value></data>

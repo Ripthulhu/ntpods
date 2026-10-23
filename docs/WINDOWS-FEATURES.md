@@ -4,6 +4,19 @@ Controls depend on the connected model, firmware and settings reported by the
 AirPods. See the [model list](WINDOWS-MODEL-SUPPORT.md) for capability gates and
 [validation results](WINDOWS-VALIDATION.md) for hardware coverage.
 
+The USB dongle's version-1 status report can advertise capability `0x0040` for
+per-component battery observations. Bytes 44 and 45 carry left/right/case bit
+masks (`1/2/4`) for presence and short-case-report provenance; bytes 46–63 remain
+zero. A present component requires a known percentage and sample age, and an
+absent component cannot claim charging. Case provenance may remain set for an
+absent component without a prior percentage. Without this capability, bytes
+44–45 remain zero and the existing battery display behavior is preserved.
+IPC carries these masks as `dongle.battery_present` and
+`dongle.battery_case_source`, alongside independent `battery_age_ms` values.
+Absent components retain cached percentages and age but appear dim. Case-sourced
+readings expire at 90 seconds; other dongle readings keep the existing 30-second
+display window. These flags never establish an AACP connection or pair identity.
+
 | Area | Controls |
 | --- | --- |
 | Sound | Noise cancellation, Transparency, Adaptive strength, Conversation Awareness, personalized volume and native three-band EQ |

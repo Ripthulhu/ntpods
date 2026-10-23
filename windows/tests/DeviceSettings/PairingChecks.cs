@@ -390,6 +390,10 @@ internal static class PairingChecks
         var levels = PairingBatteryState.Read(snapshot, "01:23:45:67:89:ab", attemptStartedAtMs, bondCompletedAtMs);
         check(levels is { Left: 73, LeftCharging: true, Right: null, Case: null, NextExpiryMs: 92000 },
             "A verified same-pair reading during the attempt is eligible when bonding finishes; equal and older observations are not.");
+        snapshot.BatterySource = "ble_case";
+        check(PairingBatteryState.Read(snapshot, "0123456789ab", attemptStartedAtMs, bondCompletedAtMs) is null,
+            "A case-layout association cannot confirm pairing-card battery identity.");
+        snapshot.BatterySource = "ble";
         check(PairingBatteryState.Read(snapshot, "01:23:45:67:89:ac", attemptStartedAtMs, bondCompletedAtMs) is null,
             "An observation during pairing cannot supply another pair's completed card.");
         levels = PairingBatteryState.Read(snapshot, "0123456789ab", 3000, bondCompletedAtMs);

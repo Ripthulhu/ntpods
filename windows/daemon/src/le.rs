@@ -1,5 +1,6 @@
 //! Passive Apple advertisements. The caller verifies the paired device's IRK
-//! before using its signal, battery data or case-wake reports.
+//! before using signal or case-wake reports. Short encrypted case battery
+//! reports follow a separate, weaker keyed-layout association without routing authority.
 //!
 //! Scanning is PASSIVE (listen only, no scan requests) and only runs while
 //! `should_scan` permits it. Connected scanning requires an explicit setting

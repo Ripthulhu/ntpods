@@ -35,7 +35,7 @@ settings or paired state fields.
 | `0x1F` | Chime Volume | First byte 0–100, second byte `0x50` in LibrePods' Android rewrite writer. |
 | `0x20` | Connect Automatically | `0x01` = enabled, `0x02` = disabled. |
 | `0x23` | VolumeSwipeInterval | `0x00` = Default, `0x01` = Longer, `0x02` = Longest. |
-| `0x24` | Call Management Config | `[0x00, 0x03]` = usual single/double-press layout; `[0x00, 0x02]` = flipped. This device setting alone does not integrate call gestures with Windows apps. |
+| `0x24` | Call Management Config | Legacy `00 03 00 00` = double press to end a call; `00 02 00 00` = single press to end. These do not establish a complementary mute gesture. Newer packed versions have independent fields; see [call management](WINDOWS-AIRPODS-CONTROL-PROTOCOL.md#call-management). |
 | `0x25` | VolumeSwipeMode | `0x01` = enabled, `0x02` = disabled |
 | `0x26` | Adaptive Volume Config | `0x01` = enabled, `0x02` = disabled |
 | `0x27` | Software Mute config | One byte; values unverified. |

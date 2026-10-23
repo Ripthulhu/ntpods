@@ -80,6 +80,10 @@ pub struct Cache(Option<(u64, Battery, BatteryFreshness)>);
 
 impl Cache {
     pub fn observe(&mut self, battery: Battery, at_ms: u64) {
+        self.observe_report(battery, at_ms, true);
+    }
+
+    fn observe_report(&mut self, battery: Battery, at_ms: u64, headphone: bool) {
         if self.0.is_none_or(|(previous, _, _)| at_ms >= previous) {
             let (at, levels, freshness) = self.0.get_or_insert_with(Default::default);
             merge_report(
@@ -90,7 +94,11 @@ impl Cache {
                     left: observation(battery.left, at_ms),
                     right: observation(battery.right, at_ms),
                     case: observation(battery.case, at_ms),
-                    headphone: observation(battery.headphone, at_ms),
+                    headphone: if headphone {
+                        observation(battery.headphone, at_ms)
+                    } else {
+                        BatteryObservation::default()
+                    },
                 },
             );
             *at = at_ms;
@@ -98,6 +106,10 @@ impl Cache {
     }
 
     pub fn restore(&self, state: &mut Snapshot, now_ms: u64) -> bool {
+        self.restore_as(state, now_ms, "ble")
+    }
+
+    fn restore_as(&self, state: &mut Snapshot, now_ms: u64, source: &str) -> bool {
         let Some((at, battery, observations)) = self.0 else {
             return false;
         };
@@ -115,7 +127,10 @@ impl Cache {
             || now_ms < at
             || now_ms - at >= FRESH_MS
             || state.battery_timestamp_ms.is_some_and(|current| {
-                current > at || (current == at && state.battery_source == "ble" && !invalidated)
+                current > at
+                    || (current == at
+                        && ((state.battery_source == source && !invalidated)
+                            || (source == "ble_case" && state.battery_source != source)))
             })
         {
             return false;
@@ -126,11 +141,104 @@ impl Cache {
             battery,
             observations,
         );
-        state.battery_source = "ble".into();
+        state.battery_source = source.into();
         state.battery_timestamp_ms = Some(at);
         refresh_live(state, now_ms);
         true
     }
+}
+
+/// Associated by the selected pair's advertising key and layout, never by its IRK.
+#[derive(PartialEq, Eq)]
+pub struct CaseReport {
+    pub battery: Battery,
+    block: [u8; 16],
+}
+
+#[derive(Default)]
+pub struct CaseCache {
+    mac: u64,
+    last_block: Option<[u8; 16]>,
+    cache: Cache,
+}
+
+impl CaseCache {
+    pub fn observe(&mut self, mac: u64, report: CaseReport, at_ms: u64) -> bool {
+        if self.mac != mac {
+            *self = Self {
+                mac,
+                ..Self::default()
+            };
+        }
+        // Repeated platform callbacks are not new samples, even after expiry or address rotation.
+        if self.last_block == Some(report.block) {
+            return false;
+        }
+        if self
+            .cache
+            .0
+            .is_some_and(|(previous, _, _)| at_ms < previous)
+        {
+            return false;
+        }
+        self.last_block = Some(report.block);
+        self.cache.observe_report(report.battery, at_ms, false);
+        true
+    }
+
+    pub fn restore(&self, mac: u64, state: &mut Snapshot, now_ms: u64) -> bool {
+        self.mac == mac
+            && case_model(&state.model)
+            && self.cache.restore_as(state, now_ms, "ble_case")
+    }
+}
+
+fn case_model(model: &str) -> bool {
+    ["A3063", "A3064", "A3065"]
+        .iter()
+        .any(|m| model.trim().eq_ignore_ascii_case(m))
+}
+
+pub fn is_case_advertisement(mut data: &[u8]) -> bool {
+    while data.len() >= 2 {
+        if data[..2] == [7, 17] {
+            return true;
+        }
+        let Some(rest) = data.get(data[1] as usize + 2..) else {
+            break;
+        };
+        data = rest;
+    }
+    false
+}
+
+fn case_record(mut data: &[u8]) -> Option<&[u8]> {
+    if data.len() > 254 {
+        return None;
+    }
+    let mut found = None;
+    while !data.is_empty() {
+        let size = *data.get(1)? as usize + 2;
+        let record = data.get(..size)?;
+        if record[0] == 7 {
+            if found.is_some() || record.len() != 19 || record[2] != 6 {
+                return None;
+            }
+            found = Some(record);
+        }
+        data = &data[size..];
+    }
+    found
+}
+
+/// Call while holding the same key lock used through case decode and acceptance.
+pub fn replace_keys(current: &mut Option<Keys>, next: Option<Keys>, cache: &mut CaseCache) -> bool {
+    if *current == next {
+        return false;
+    }
+    *cache = CaseCache::default();
+    *current = next;
+    true
 }
 
 fn merge_report(
@@ -173,6 +281,9 @@ fn merge_report(
             &mut freshness.headphone,
         ),
     ] {
+        if observation.present.is_none() {
+            continue;
+        }
         let newer = value.is_some() && observation.timestamp_ms >= age.timestamp_ms;
         if newer {
             *dest = value;
@@ -357,6 +468,43 @@ fn aes_block(key: &[u8; 16], input: &[u8; 16], decrypt: bool) -> Option<[u8; 16]
 }
 
 impl Keys {
+    pub fn decode_case(&self, mac: u64, model: &str, manufacturer: &[u8]) -> Option<CaseReport> {
+        if mac != self.mac || !case_model(model) {
+            return None;
+        }
+        let record = case_record(manufacturer)?;
+        let block = aes_block(&self.encryption, record[3..].try_into().ok()?, true)?;
+        if block[..2] != [0x29, 0x20]
+            || block[2] & 0xf0 != 0
+            || [block[8], block[10], block[11]] != [0, 0, 0]
+        {
+            return None;
+        }
+        let component = |raw: u8| {
+            if raw == 0xff {
+                Some((None, false))
+            } else {
+                let level = raw & 0x7f;
+                (level <= 100).then_some((Some(level), raw & 0x80 != 0))
+            }
+        };
+        let (case, case_charging) = component(block[3])?;
+        let (left, left_charging) = component(block[4])?;
+        let (right, right_charging) = component(block[5])?;
+        Some(CaseReport {
+            battery: Battery {
+                left,
+                right,
+                case,
+                left_charging,
+                right_charging,
+                case_charging,
+                ..Default::default()
+            },
+            block,
+        })
+    }
+
     pub fn matches_address(&self, address: u64) -> bool {
         if address > 0xffff_ffff_ffff || (address >> 46) != 1 {
             return false;
@@ -606,7 +754,7 @@ fn proximity_record(mut data: &[u8]) -> Option<&[u8]> {
 pub fn refresh_live(state: &mut Snapshot, now: u64) -> bool {
     let source_live = match state.battery_source.as_str() {
         "aap" => state.connected && !state.link_stale && state.battery_timestamp_ms.is_some(),
-        "ble" => state
+        "ble" | "ble_case" => state
             .battery_timestamp_ms
             .is_some_and(|at| now >= at && now - at < FRESH_MS),
         _ => false,
@@ -642,6 +790,216 @@ pub fn refresh_live(state: &mut Snapshot, now: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const CASE_PLAIN: [u8; 16] = [
+        0x29, 0x20, 0x0a, 0x3d, 0xde, 0xdd, 0x51, 0x0b, 0, 0, 0, 0, 0xf7, 0x82, 0x16, 0,
+    ];
+
+    fn case_keys() -> Keys {
+        Keys {
+            encryption: std::array::from_fn(|i| i as u8),
+            ..keys()
+        }
+    }
+
+    fn case_advertisement(plain: [u8; 16]) -> Vec<u8> {
+        let mut data = vec![7, 17, 6];
+        data.extend(aes_block(&case_keys().encryption, &plain, false).unwrap());
+        data
+    }
+
+    fn case_report(plain: [u8; 16]) -> CaseReport {
+        case_keys()
+            .decode_case(keys().mac, "A3063", &case_advertisement(plain))
+            .unwrap()
+    }
+
+    #[test]
+    fn case_layout_decodes_independent_cipher_fixture_without_bud_identity_or_lid_authority() {
+        // stuffz/airpods 8bd0354: public test key 00..0f and redacted Pro 3 plaintext;
+        // ciphertext independently produced by .NET AES-ECB, not this helper.
+        let data = [
+            7, 17, 6, 0xae, 0xa2, 0x48, 0x93, 0x3e, 0x21, 0x59, 0x87, 0x2f, 0x2c, 0x5a, 0xe5, 0xc8,
+            0xbf, 0x0f, 0x31,
+        ];
+        let k = case_keys();
+        for model in ["A3063", "A3064", "A3065"] {
+            let report = k.decode_case(k.mac, model, &data).unwrap();
+            assert_eq!(
+                report.battery,
+                Battery {
+                    left: Some(94),
+                    right: Some(93),
+                    case: Some(61),
+                    left_charging: true,
+                    right_charging: true,
+                    ..Default::default()
+                }
+            );
+            assert_eq!(report.block, CASE_PLAIN);
+        }
+        assert!(k.decode(k.mac, 0x5a162b91d1cd, &data).is_none());
+        assert!(k.decode_case(k.mac + 1, "A3063", &data).is_none());
+        for model in ["", "AirPods Pro 3", "A2084", "A3047", "unknown"] {
+            assert!(k.decode_case(k.mac, model, &data).is_none());
+        }
+        let foreign = Keys {
+            encryption: [0x42; 16],
+            ..k.clone()
+        };
+        assert!(foreign.decode_case(k.mac, "A3063", &data).is_none());
+    }
+
+    #[test]
+    fn case_layout_rejects_malformed_records_and_percentages_but_keeps_opaque_bytes() {
+        let k = case_keys();
+        let data = case_advertisement(CASE_PLAIN);
+        for size in 0..data.len() {
+            assert!(k.decode_case(k.mac, "A3063", &data[..size]).is_none());
+        }
+        for (at, value) in [(0, 8), (1, 16), (1, 18), (2, 1), (2, 7)] {
+            let mut bad = data.clone();
+            bad[at] = value;
+            assert!(k.decode_case(k.mac, "A3063", &bad).is_none());
+        }
+        for (at, value) in [(0, 0x28), (1, 0x21), (2, 0x10), (8, 1), (10, 1), (11, 1)] {
+            let mut bad = CASE_PLAIN;
+            bad[at] = value;
+            assert!(k
+                .decode_case(k.mac, "A3063", &case_advertisement(bad))
+                .is_none());
+        }
+        for at in 3..=5 {
+            for level in 0..=255u8 {
+                let mut plain = CASE_PLAIN;
+                plain[at] = level;
+                assert_eq!(
+                    k.decode_case(k.mac, "A3063", &case_advertisement(plain))
+                        .is_some(),
+                    level == 255 || level & 127 <= 100
+                );
+            }
+        }
+        for at in [6, 7, 9, 12, 13, 14, 15] {
+            for value in [0, 1, 0x7f, 0x80, 0xff] {
+                let mut changed = CASE_PLAIN;
+                changed[at] = value;
+                assert!(k
+                    .decode_case(k.mac, "A3063", &case_advertisement(changed))
+                    .is_some());
+            }
+        }
+        for compound in [
+            [vec![0x10, 1, 0x42], data.clone()].concat(),
+            [data.clone(), vec![0x15, 0]].concat(),
+        ] {
+            assert!(is_case_advertisement(&compound));
+            assert!(k.decode_case(k.mac, "A3063", &compound).is_some());
+        }
+        for malformed in [
+            [data.clone(), data.clone()].concat(),
+            [data.clone(), advertisement(0x24, [50, 50, 50])].concat(),
+            [data.clone(), vec![0x15, 1]].concat(),
+            [data.clone(), vec![0x15]].concat(),
+            [data.clone(), vec![0x15, 235], vec![0; 235]].concat(),
+        ] {
+            assert!(is_case_advertisement(&malformed));
+            assert!(k.decode_case(k.mac, "A3063", &malformed).is_none());
+        }
+    }
+
+    #[test]
+    fn replacement_and_malformed_keys_clear_case_history_and_duplicate_suppression() {
+        let first = case_keys();
+        let mut current = Some(first.clone());
+        let mut cache = CaseCache::default();
+        let mut state = Snapshot {
+            model: "A3063".into(),
+            ..Default::default()
+        };
+        cache.observe(first.mac, case_report(CASE_PLAIN), 1000);
+        assert!(!replace_keys(&mut current, Some(first.clone()), &mut cache));
+        assert!(!cache.observe(first.mac, case_report(CASE_PLAIN), 1100));
+        let mut second = first.clone();
+        second.encryption[0] ^= 1;
+        assert!(replace_keys(&mut current, Some(second.clone()), &mut cache));
+        assert!(!cache.restore(first.mac, &mut state, 1100));
+        assert!(current
+            .as_ref()
+            .unwrap()
+            .decode_case(first.mac, "A3063", &case_advertisement(CASE_PLAIN))
+            .is_none());
+        assert!(replace_keys(&mut current, None, &mut cache));
+        assert!(!cache.restore(first.mac, &mut state, 1100));
+        assert!(replace_keys(&mut current, Some(first.clone()), &mut cache));
+        assert!(cache.observe(first.mac, case_report(CASE_PLAIN), 1200));
+        assert!(cache.restore(first.mac, &mut state, 1200));
+    }
+
+    #[test]
+    fn case_cache_deduplicates_across_reception_and_expires_without_rejuvenating_absent_parts() {
+        let mac = keys().mac;
+        let mut cache = CaseCache::default();
+        let mut state = Snapshot {
+            model: "A3063".into(),
+            ..Default::default()
+        };
+        assert!(cache.observe(mac, case_report(CASE_PLAIN), 1000));
+        assert!(cache.restore(mac, &mut state, 1000));
+        assert_eq!(state.battery_source, "ble_case");
+        assert!(state.battery.left_charging && state.battery_live);
+        assert!(!cache.observe(mac, case_report(CASE_PLAIN), 1000 + FRESH_MS));
+        refresh_live(&mut state, 1000 + FRESH_MS);
+        assert!(!state.battery_live && !state.battery_freshness.unwrap().left.live);
+        assert!(!cache.restore(mac, &mut state, 1000 + FRESH_MS));
+        assert_eq!(
+            state.battery_freshness.unwrap().left.timestamp_ms,
+            Some(1000)
+        );
+        let mut absent = CASE_PLAIN;
+        absent[4] = 0xff;
+        absent[12] = 0;
+        assert!(cache.observe(mac, case_report(absent), 1001 + FRESH_MS)); // A reset counter is opaque.
+        assert!(cache.restore(mac, &mut state, 1001 + FRESH_MS));
+        assert_eq!(state.battery.left, Some(94));
+        assert!(!state.battery.left_charging);
+        let age = state.battery_freshness.unwrap().left;
+        assert_eq!(
+            (age.timestamp_ms, age.present, age.live),
+            (Some(1000), Some(false), false)
+        );
+        assert!(!cache.observe(mac, case_report(CASE_PLAIN), 999));
+        assert!(!cache.restore(mac + 1, &mut state, 1002 + FRESH_MS));
+        state.model = "A2084".into();
+        assert!(!cache.restore(mac, &mut state, 1002 + FRESH_MS));
+    }
+
+    #[test]
+    fn case_cache_preserves_healthy_or_newer_control_and_verified_ble_readings() {
+        let mac = keys().mac;
+        let mut cache = CaseCache::default();
+        cache.observe(mac, case_report(CASE_PLAIN), 2000);
+        let mut state = Snapshot {
+            model: "A3063".into(),
+            connected: true,
+            battery_source: "aap".into(),
+            battery_timestamp_ms: Some(1000),
+            ..Default::default()
+        };
+        assert!(!cache.restore(mac, &mut state, 3000));
+        state.link_stale = true;
+        state.battery_timestamp_ms = Some(3000);
+        assert!(!cache.restore(mac, &mut state, 3000));
+        state.connected = false;
+        state.battery_source = "ble".into();
+        state.battery_timestamp_ms = Some(2000);
+        assert!(!cache.restore(mac, &mut state, 3000));
+        state.battery_timestamp_ms = Some(1999);
+        assert!(cache.restore(mac, &mut state, 3000));
+        invalidate(&mut state);
+        assert!(cache.restore(mac, &mut state, 3001));
+        assert_eq!(state.battery_timestamp_ms, Some(2000));
+    }
 
     fn keys() -> Keys {
         Keys {

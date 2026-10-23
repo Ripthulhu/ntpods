@@ -209,7 +209,7 @@ every model supports every ID.
 | `0x1F` | Tone volume | `v0=0..100`, `v1=0x50`, `v2=v3=0` |
 | `0x20` | Connect automatically | `1` enabled, `2` disabled; device preference, not the Windows reconnect switch |
 | `0x23` | Volume-swipe duration | `0` Default, `1` Longer, `2` Longest |
-| `0x24` | Call gesture layout | `00 03 00 00` default, `00 02 00 00` swapped; no Windows call integration implied |
+| `0x24` | End-call gesture | Legacy `00 03 00 00` double press, `00 02 00 00` single press; mute assignment is not established |
 | `0x25` | Volume swipe | `1` enabled, `2` disabled |
 | `0x26` | Personalized Volume | `1` enabled, `2` disabled |
 | `0x28` | Conversation Awareness | `1` enabled, `2` disabled |
@@ -234,6 +234,21 @@ low two bytes and zeroes in the high two. Apple's
 also reports the previous right/left actions in the high bytes. NTPods validates
 and retains only the current low pair; previous-action bytes never enter a new
 command. This incoming form has not been captured on Windows.
+
+The `0x1A` mask is shared by both stems assigned to noise control. For example,
+`0x0B` selects Off, ANC and Adaptive, excluding Transparency. It selects mode
+membership, not cycle order, and does not change the `0x16` hold assignments.
+Off and Adaptive retain their separate model, firmware and Allow Off gates.
+
+All 16 hold-action and 32 cycle-mask packets in the 45 saved Tahoe captures are
+host-to-AirPods writes. The initialization capture
+`20261015T184734Z-91b4ace1` has outgoing `0x16` at frame 4158 and `0x1A` at
+4169/4488, alongside genuine incoming reports for other controls. No marked stem
+configuration change was recorded. In the pinned `25G241` binary, receive
+dispatcher `0x1002A1DD0` handles `0x16` at `0x1002A2284`, but routes `0x1A` to
+Unsupported control type at `0x1002A269C`. Its cycle getter `0x1004B9BAE` reads
+the host cache at device offset `0x334`; it does not request a Bluetooth value.
+Neither these captures nor that getter establishes cycle-mask readback.
 
 Model allowlists and firmware checks in
 [device_models.rs](../windows/daemon/src/device_models.rs) apply in addition to
@@ -272,6 +287,37 @@ EQ mode `1` is recommended sound; mode `2` selects custom low/mid/high values,
 each `0..100`. The implementation requires a matching EQ-capable profile and
 public firmware major at least 9. This is opcode `0x63`; the older `0x53`
 [PME format](#pme-record-aacp-0x53) is separate from the app's EQ writer.
+
+### Call management
+
+Control `0x24` is a versioned packed setting. The current NTPods write allowlist
+accepts only legacy values `00 03 00 00` (double press to end a call) and
+`00 02 00 00` (single press to end). They do not establish a complementary
+mute/unmute assignment. Cached iOS 26.1 code decodes version 0 end-call fields
+and version 1 independent end-call and mute fields. Its sender updates end-call
+bits 8–11 and mute bits 16–19 separately. Complete version/status semantics and
+a working version-1 write remain unverified. A newer or unknown report must not
+be flattened into a legacy value; preserve its independent fields rather than
+inferring the mute choice from the end-call choice.
+
+On 2026-10-23, Pro 3 A3063 / firmware 9A348 with LibrePods Pixel89 on Android 17
+(SDK 37) and stock Phone freshly reported legacy `00 03`. Double press ended a
+call, but single press did not change Phone's mute state, including after a
+manual mute/unmute synchronization check. The other party confirmed that voice
+remained audible after the stem press. A 120-second monitor collected 108
+filtered application metadata lines, including Call Management but no Software
+Mute (`0x27`) report. This was not a complete HFP wire capture; it does not
+identify the missing initialization or prove that no mute request was sent.
+
+The pinned
+[Android 17 HFP implementation](https://android.googlesource.com/platform/packages/modules/Bluetooth/+/c77db469de80f86660bc053bec4dee0c5d4b947c/android/app/src/com/android/bluetooth/hfp/HeadsetStateMachine.java#1974)
+maps microphone gain zero to mute and nonzero to unmute. That source alone does
+not establish which request these AirPods sent or the Pixel's shipped behavior.
+Apple's [WWDC23 session 10233](https://developer.apple.com/videos/play/wwdc2023/10233/)
+also distinguishes host handling: iOS mutes uplink and informs the calling app;
+macOS requires the app to mute its input. Storing the preference is not a mute
+implementation. NTPods does not integrate these gestures with Windows calling
+apps, and ordinary playback mute and HQ microphone recording are separate paths.
 
 ## Ear and conversation events
 
@@ -361,6 +407,49 @@ changing unpaired invitation state. Removing its Windows bond permits
 invitations again even when cached keys remain. Verified paired-lid events
 follow a separate path.
 
+### Short encrypted case battery reports
+
+The separate layout identified in [stuffz/airpods at `8bd03545`](https://github.com/stuffz/airpods/tree/8bd035451668388860e62fcc0a4a624a608d9d3a)
+is accepted only for the selected Pro 3 pair (`A3063`, `A3064`, `A3065`). The
+manufacturer payload must contain exactly one type-`07` record, `07 11 06`
+followed by one 16-byte AES-ECB block. Other complete type/length records may
+surround it, within the 254-byte manufacturer-data bound. It uses the selected
+pair's cached advertising encryption key directly.
+
+| Decrypted offset | Accepted meaning or guard |
+| --- | --- |
+| 0–1 | Exact header `29 20` |
+| 2 | Upper nibble zero; remaining bits are not used for connection policy |
+| 3, 4, 5 | Case, left, right battery: `FF` absent; otherwise bit 7 charging and low seven bits `0..100` |
+| 8, 10, 11 | Zero |
+| 6–7, 9, 12–15 | Opaque; no required variant, counter value, or ordering |
+
+The public synthetic AES vector uses key `000102030405060708090a0b0c0d0e0f`,
+plaintext `29200a3ddedd510b00000000f7821600`, and ciphertext
+`aea248933e2159872f2c5ae5c8bf0f31`. Parsers reject duplicate or mixed type-`07`
+records, malformed surrounding records, truncated blocks, invalid guards and
+masked percentages `101..127`.
+
+This is probabilistic association through a key and plausible layout, not
+IRK verification or an authenticated message. IPC labels it `ble_case`, separate
+from IRK-verified `ble`. It can supply battery fallback only: it never updates
+Find nearby, pairing invitations or completion, wear detection, automatic case
+return, audio ownership or connection identity, even if its address happens to
+resolve with the IRK. Healthy connected AAP and newer reports retain priority.
+Hardware confirmation of this short layout remains pending.
+
+An A3063/9A348 check with the Intel adapter received 686 Apple advertisements
+over three minutes, including a two-minute closed-case interval, but no `07 11`
+records. Ordinary bud battery reports continued. This does not establish that
+the case lacks support or identify an advertising prerequisite.
+
+The cache suppresses repeated identical complete decrypted blocks across radio
+addresses, including after expiry. A changed block is eligible without assuming
+that its opaque counter increases. Each component retains its own percentage
+timestamp; an absent component retains its last known percentage and age, loses
+presence and charging, and cannot refresh another component. Case observations
+expire after 90 seconds; rebroadcasting an unchanged block does not renew them.
+
 ### Freshness and connection policy
 
 Battery cache values last for the daemon session and remain tied to the selected
@@ -399,6 +488,9 @@ Signal uses a seven-sample median followed by exponential smoothing; trend
 compares five smoothed readings with a 3 dB threshold. The UI retains the last
 signal and its age when reports stop. Signal strength does not establish distance,
 direction or which part of the pair transmitted.
+
+Short `07 11` case records are excluded before finder observation, including
+rejected layouts and records whose address happens to resolve with the IRK.
 
 Start and Stop require the selected device ID. The command-pipe owner holds the
 session; an old client's Stop or disconnect cannot stop a newer session. Closing

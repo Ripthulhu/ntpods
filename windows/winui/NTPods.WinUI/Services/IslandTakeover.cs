@@ -124,7 +124,7 @@ internal sealed class IslandTakeover
 
     public IslandConnectState State(Snapshot snapshot, long now)
     {
-        if (!MayShow(snapshot) || snapshot.AudioOutputReady || snapshot.MicCaptureActive ||
+        if (snapshot.BatterySource == "ble_case" || !MayShow(snapshot) || snapshot.AudioOutputReady || snapshot.MicCaptureActive ||
             !BatteryPresentation.IsLive(snapshot) || !BatteryPresentation.HasData(snapshot))
             return IslandConnectState.Hidden;
         if (_connecting)

@@ -22,7 +22,12 @@ pub fn parse(bytes: &[u8]) -> Option<Report> {
         || bytes[23] > 3
         || bytes[40] > 6
         || bytes[41] > 4
-        || bytes[44..].iter().any(|b| *b != 0)
+        || bytes[46..].iter().any(|b| *b != 0)
+        || (if bytes[42] & 64 != 0 {
+            bytes[44] & !7 != 0 || bytes[45] & !7 != 0
+        } else {
+            bytes[44] != 0 || bytes[45] != 0
+        })
         || bytes[19..22].iter().any(|b| *b > 100 && *b != 255)
     {
         return None;
@@ -31,6 +36,21 @@ pub fn parse(bytes: &[u8]) -> Option<Report> {
     let flags = bytes[7];
     let ages = [24, 28, 32].map(|i| (u32_at(i) != u32::MAX).then(|| u32_at(i)));
     let level = |i| (bytes[i] <= 100).then_some(bytes[i]);
+    if bytes[42] & 64 != 0
+        && (bytes[22] & !bytes[44] != 0
+            || (0..3).any(|i| {
+                bytes[44] & (1 << i) != 0 && (level(19 + i).is_none() || ages[i].is_none())
+            }))
+    {
+        return None;
+    }
+    let present = if bytes[42] & 64 != 0 {
+        bytes[44]
+    } else {
+        (0..3).fold(0u8, |mask, i| {
+            mask | if level(19 + i).is_some() { 1 << i } else { 0 }
+        })
+    };
     Some(Report {
         state: DongleState {
             present: true,
@@ -48,12 +68,14 @@ pub fn parse(bytes: &[u8]) -> Option<Report> {
                 left: level(19),
                 right: level(20),
                 case: level(21),
-                left_charging: bytes[22] & 1 != 0,
-                right_charging: bytes[22] & 2 != 0,
-                case_charging: bytes[22] & 4 != 0,
+                left_charging: bytes[22] & present & 1 != 0 && level(19).is_some(),
+                right_charging: bytes[22] & present & 2 != 0 && level(20).is_some(),
+                case_charging: bytes[22] & present & 4 != 0 && level(21).is_some(),
                 ..Default::default()
             },
             battery_age_ms: ages,
+            battery_present: present,
+            battery_case_source: bytes[45],
             codec: bytes[23],
             capabilities: u16::from_le_bytes([bytes[42], bytes[43]]),
             ..Default::default()
@@ -197,6 +219,77 @@ mod tests {
         let s = parse(&good).unwrap();
         assert_eq!(s.state.battery.left, None);
         assert_eq!(s.state.battery_age_ms, [None; 3]);
+    }
+    #[test]
+    fn battery_observation_flags_preserve_cached_levels_and_age_without_presence_or_identity() {
+        let mut bytes = status();
+        bytes[42] |= 64;
+        bytes[19..22].copy_from_slice(&[94, 93, 61]);
+        bytes[22] = 5;
+        bytes[24..28].copy_from_slice(&1000u32.to_le_bytes());
+        bytes[28..32].copy_from_slice(&90001u32.to_le_bytes());
+        bytes[32..36].copy_from_slice(&2000u32.to_le_bytes());
+        bytes[44] = 5;
+        bytes[45] = 7;
+        let report = parse(&bytes).unwrap();
+        assert_eq!(report.state.battery_present, 5);
+        assert_eq!(report.state.battery_case_source, 7);
+        assert_eq!(report.state.battery.right, Some(93));
+        assert_eq!(
+            report.state.battery_age_ms,
+            [Some(1000), Some(90001), Some(2000)]
+        );
+        assert!(report.state.battery.left_charging && report.state.battery.case_charging);
+        assert!(!report.state.battery.right_charging);
+        let mut bad = bytes;
+        bad[22] = 7;
+        assert!(
+            parse(&bad).is_none(),
+            "absent components cannot claim charging"
+        );
+        for i in [0, 2] {
+            let mut bad = bytes;
+            bad[19 + i] = 255;
+            assert!(
+                parse(&bad).is_none(),
+                "presence requires a known percentage"
+            );
+            let mut bad = bytes;
+            bad[24 + i * 4..28 + i * 4].fill(255);
+            assert!(
+                parse(&bad).is_none(),
+                "presence requires a known sample age"
+            );
+        }
+        let mut empty = bytes;
+        empty[19..22].fill(255);
+        empty[22] = 0;
+        empty[24..36].fill(255);
+        empty[44] = 0;
+        assert!(
+            parse(&empty).is_some(),
+            "case provenance can report absence without history"
+        );
+        bytes[7] = 0;
+        let report = parse(&bytes).unwrap();
+        assert!(!report.state.connected && !report.state.controls_ready && !report.state.streaming);
+        for at in 44..SIZE {
+            let mut bad = bytes;
+            bad[at] = if at < 46 { 8 } else { 1 };
+            assert!(parse(&bad).is_none());
+        }
+        bytes[42] &= !64;
+        assert!(parse(&bytes).is_none());
+        bytes[44] = 0;
+        bytes[45] = 0;
+        let legacy = parse(&bytes).unwrap();
+        assert_eq!(
+            (
+                legacy.state.battery_present,
+                legacy.state.battery_case_source
+            ),
+            (7, 0)
+        );
     }
     #[test]
     fn commands_pin_identity_and_reject_stale_generation() {

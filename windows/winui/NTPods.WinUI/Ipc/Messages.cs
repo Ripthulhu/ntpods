@@ -275,11 +275,22 @@ public sealed class DongleState
     [JsonPropertyName("anc")] public byte Anc { get; set; }
     [JsonPropertyName("battery")] public Battery Battery { get; set; } = new();
     [JsonPropertyName("battery_age_ms")] public uint?[] BatteryAgeMs { get; set; } = [null, null, null];
+    [JsonPropertyName("battery_present")] public byte BatteryPresent { get; set; }
+    [JsonPropertyName("battery_case_source")] public byte BatteryCaseSource { get; set; }
     [JsonPropertyName("codec")] public byte Codec { get; set; }
     [JsonPropertyName("capabilities")] public ushort Capabilities { get; set; }
     [JsonPropertyName("pending")] public bool Pending { get; set; }
     [JsonPropertyName("error")] public string? Error { get; set; }
     [JsonPropertyName("health")] public DongleHealthState Health { get; set; } = new();
+    [JsonIgnore] public bool IsValid => Battery is not null && BatteryAgeMs is { Length: 3 } &&
+        (BatteryPresent & ~7) == 0 && (BatteryCaseSource & ~7) == 0 &&
+        ((Capabilities & 64) != 0 ?
+            ValidBatteryObservation(1, Battery.Left, Battery.LeftCharging, 0) &&
+            ValidBatteryObservation(2, Battery.Right, Battery.RightCharging, 1) &&
+            ValidBatteryObservation(4, Battery.Case, Battery.CaseCharging, 2) : BatteryCaseSource == 0);
+
+    private bool ValidBatteryObservation(int bit, int? level, bool charging, int component) =>
+        (BatteryPresent & bit) != 0 ? level is >= 0 and <= 100 && BatteryAgeMs[component] is not null : !charging;
 }
 
 public sealed class Snapshot
@@ -994,7 +1005,7 @@ public static class Wire
                 case "state":
                     // Serde flattens Snapshot beside the event tag; deserialize the whole object.
                     var snap = root.Deserialize<Snapshot>(Json) ?? new Snapshot();
-                    if (snap.Dongle is null || snap.Dongle.Health is not { IsValid: true } ||
+                    if (snap.Dongle is not { IsValid: true } || snap.Dongle.Health is not { IsValid: true } ||
                         snap.Battery is null || snap.BatterySource is null || snap.BatteryFreshness is { IsValid: false } ||
                         snap.DeviceControls is null || snap.DeviceControlsRequested is null || snap.DeviceControlsPending is null || snap.AacpCapabilities is null ||
                         snap.MicMode is not ("automatic" or "keep_active" or "manual") || snap.MicStopDelaySecs > 3600 ||
