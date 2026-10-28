@@ -257,6 +257,10 @@ Manual settings that do not fit fail.
 
 On Suspend/restart, the ELD packetizer discards pending AUs and resets its
 AU sequence and timestamp counter; RTP packet sequence continues within that session.
+This is the current NTPods behavior. The captured Tahoe HFP return instead
+resets RTP sequence to 1 as well as its AU/timestamp epoch on the retained media
+channel; see [the capture comparison](MACOS-AUDIO-CAPTURE-2026-10-12.md#microphone-and-return-to-playback).
+The capture does not establish the corresponding AACP `0x58` recovery behavior.
 With the monotonic override, its epoch begins immediately before Start, so the
 first media packet includes negotiation and priming time. Pauses do not carry
 into a new epoch.

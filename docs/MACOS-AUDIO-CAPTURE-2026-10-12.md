@@ -44,6 +44,14 @@ Playback was started separately, so the gap before Start does not measure
 recovery delay. Simultaneous stereo playback during capture and acoustic channel
 separation afterward remain unverified.
 
+The retained media channel does not imply continuous packet counters. In the
+merged trace, the last earlier playback packet is frame 14048: RTP sequence
+325, timestamp 10045, ending with AU sequences 973 and 974. The first packet
+after the later Start is frame 26876: RTP sequence 1, timestamp 386, AU sequences
+1, 2 and 3, with SSRC still zero. Tahoe therefore starts a new RTP and AU counter
+epoch on that retained channel. This is HFP/CVSD recovery evidence, not an
+observed AACP `0x58` recovery sequence.
+
 ## AAC-ELD playback comparison
 
 Pairing frame 5177 requests vendor `0x004C`, codec `0x8001`; frame 5194 accepts
