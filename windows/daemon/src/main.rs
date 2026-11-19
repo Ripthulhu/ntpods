@@ -173,7 +173,7 @@ fn should_publish_ble(
 }
 
 /// Each client has its own writer thread so a slow client cannot block the session.
-type ClientTx = std::sync::mpsc::SyncSender<Vec<u8>>;
+use ipc_server::ClientTx;
 
 /// Everything the session, poll and IPC threads share.
 #[derive(Clone)]
@@ -284,11 +284,11 @@ impl Ctx {
         battery_ble::scan_allowed(permitted, connected, capture, uplink)
             && (permitted || self.mac() == 0 || !bt::is_connected(self.mac()))
     }
-    /// Queue without waiting for writers; drop disconnected clients or full queues.
+    /// Slow writers coalesce consecutive head poses. Control events retain their ordering.
     fn send_event(&self, ev: &Event) {
         let bytes = to_line(ev).into_bytes();
         let mut clients = self.clients.lock().unwrap();
-        clients.retain(|tx| tx.try_send(bytes.clone()).is_ok());
+        clients.retain_mut(|client| client.enqueue(&bytes, matches!(ev, Event::HeadTracking { .. })));
     }
 
     /// Broadcast the current state (with the live mic/auto flags folded in).

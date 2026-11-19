@@ -215,21 +215,68 @@ unsafe fn serve(name: &str, mut connected: impl FnMut(Arc<Pipe>)) {
     }
 }
 
+pub(super) enum QueuedEvent {
+    Control(Vec<u8>),
+    Motion(Arc<std::sync::Mutex<Vec<u8>>>),
+}
+
+impl QueuedEvent {
+    pub(super) fn bytes(self) -> Vec<u8> {
+        match self {
+            Self::Control(bytes) => bytes,
+            Self::Motion(slot) => std::mem::take(&mut *slot.lock().unwrap()),
+        }
+    }
+}
+
+pub(super) struct ClientTx {
+    sender: std::sync::mpsc::SyncSender<QueuedEvent>,
+    pending: std::sync::Weak<std::sync::Mutex<Vec<u8>>>,
+}
+
+impl ClientTx {
+    pub(super) fn new(sender: std::sync::mpsc::SyncSender<QueuedEvent>) -> Self {
+        Self { sender, pending: Default::default() }
+    }
+
+    pub(super) fn enqueue(&mut self, bytes: &[u8], motion: bool) -> bool {
+        use std::sync::mpsc::TrySendError;
+        if !motion {
+            self.pending = Default::default();
+            return self.sender.try_send(QueuedEvent::Control(bytes.to_vec())).is_ok();
+        }
+        if let Some(slot) = self.pending.upgrade() {
+            let mut pending = slot.lock().unwrap();
+            if !pending.is_empty() {
+                pending.clear();
+                pending.extend_from_slice(bytes);
+                return true;
+            }
+        }
+        let slot = Arc::new(std::sync::Mutex::new(bytes.to_vec()));
+        self.pending = Arc::downgrade(&slot);
+        match self.sender.try_send(QueuedEvent::Motion(slot)) {
+            Ok(()) | Err(TrySendError::Full(_)) => true,
+            Err(TrySendError::Disconnected(_)) => false,
+        }
+    }
+}
+
 /// Separate event writers avoid serialization with command reads on synchronous handles.
 /// Each client has a bounded queue and its own writer thread.
 pub(super) unsafe fn events_server(ctx: Ctx) {
     serve(PIPE_EVENTS, |pipe| {
-        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(32);
+        let (tx, rx) = std::sync::mpsc::sync_channel(32);
         let n = {
             let mut cl = ctx.clients.lock().unwrap();
-            cl.push(tx);
+            cl.push(ClientTx::new(tx));
             cl.len()
         };
         log(&format!("events: client connected ({n} total)"));
         let p = pipe.clone();
         thread::spawn(move || {
             for msg in rx {
-                if !unsafe { write_all(p.0, &msg) } {
+                if !unsafe { write_all(p.0, &msg.bytes()) } {
                     break;
                 }
             }
@@ -252,6 +299,21 @@ mod tests {
     use super::*;
     use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, GENERIC_READ, GENERIC_WRITE};
     use windows_sys::Win32::Storage::FileSystem::{CreateFileW, OPEN_EXISTING};
+
+    #[test]
+    fn slow_motion_reader_receives_latest_pose_and_ordered_controls() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(2);
+        let mut client = ClientTx::new(sender);
+        for pose in 1..100 { assert!(client.enqueue(&[pose], true)); }
+        assert!(client.enqueue(b"stop", false));
+        assert!(client.enqueue(b"obsolete", true));
+        assert_eq!(receiver.recv().unwrap().bytes(), vec![99]);
+        assert!(client.enqueue(b"fresh", true));
+        assert_eq!(receiver.recv().unwrap().bytes(), b"stop");
+        assert_eq!(receiver.recv().unwrap().bytes(), b"fresh");
+        drop(receiver);
+        assert!(!client.enqueue(b"gone", true));
+    }
 
     fn test_pipe_name() -> Vec<u16> {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

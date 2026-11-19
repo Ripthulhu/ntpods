@@ -8,6 +8,10 @@
 > Secure Boot can block Test Mode. Save your BitLocker recovery key before
 > changing either setting; Windows may ask for it at the next boot.
 
+## Head tracking
+
+A Windows client that briefly falls behind now receives the newest pending head pose. A burst of motion reports leaves the client connected and preserves the order of control events.
+
 ## Installation
 
 Use **NTPods.msi** for the setup wizard. **NTPods-Windows.zip** contains the same
