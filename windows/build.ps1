@@ -33,6 +33,7 @@ try {
     if ($LASTEXITCODE) { throw 'WinUI build failed.' }
     Copy-Item -LiteralPath windows/daemon/target/release/ntpodsd.exe -Destination (Join-Path $package 'ntpodsd-dongle.exe')
     Copy-Item -LiteralPath LICENSE, THIRD_PARTY.md -Destination $package
+    Copy-Item -LiteralPath licenses -Destination $package -Recurse
     if (-not (Test-Path -LiteralPath (Join-Path $package 'ntpods-winui.exe'))) { throw 'Missing WinUI executable.' }
     foreach ($sceneFile in 'index.html', 'room.css', 'geometry.js', 'studio.js', 'room.js') {
         if (-not (Test-Path -LiteralPath (Join-Path $package "Assets/SpatialRoom/$sceneFile"))) {

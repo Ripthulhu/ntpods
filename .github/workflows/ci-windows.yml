@@ -42,3 +42,72 @@ jobs:
           ./windows/build.ps1
       - name: Check room geometry and speaker gestures
         run: node --test windows/tests/SpatialRoom/geometry.test.cjs windows/tests/SpatialRoom/gestures.test.cjs
+      - name: Prepare downloads
+        if: vars.NTPODS_PUBLISH_BUILDS == 'true'
+        shell: pwsh
+        run: |
+          $preview = @(Get-ChildItem windows/build-output/NTPods-Dongle-*.zip -File)
+          if ($preview.Count -ne 1) { throw "Expected one tested preview ZIP, found $($preview.Count)." }
+          $downloads = New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/dongle-downloads"
+          Copy-Item -LiteralPath $preview[0].FullName -Destination "$downloads/NTPods-Dongle-Windows-x64.zip"
+          git archive --format=zip "--output=$downloads/NTPods-Dongle-source.zip" $env:GITHUB_SHA
+          if ($LASTEXITCODE) { throw 'Could not archive the source commit.' }
+          $hashes = Get-ChildItem "$downloads/*.zip" | Get-FileHash -Algorithm SHA256 | ForEach-Object {
+            "$($_.Hash.ToLowerInvariant())  $([IO.Path]::GetFileName($_.Path))"
+          }
+          [IO.File]::WriteAllText("$downloads/SHA256SUMS.txt", ($hashes -join "`n") + "`n")
+      - name: Upload dongle preview
+        if: vars.NTPODS_PUBLISH_BUILDS == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ntpods-dongle-windows-${{ github.run_number }}
+          path: ${{ runner.temp }}/dongle-downloads/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+          overwrite: true
+
+  publish:
+    needs: preview
+    if: >-
+      vars.NTPODS_PUBLISH_BUILDS == 'true' &&
+      github.repository == 'Ripthulhu/ntpods' &&
+      github.event_name != 'pull_request' && github.ref == 'refs/heads/dongle-only'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency: publish-dongle-nightly
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ntpods-dongle-windows-${{ github.run_number }}
+          path: downloads
+      - name: Publish dongle nightly
+        working-directory: downloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum --check SHA256SUMS.txt
+          head=$(gh api "repos/$GH_REPO/git/ref/heads/dongle-only" --jq .object.sha)
+          if [[ "$head" != "$GITHUB_SHA" ]]; then
+            echo "A newer commit is on dongle-only. Skipping the nightly update."
+            exit 0
+          fi
+          tag=dongle-nightly
+          title="NTPods USB dongle nightly (build $GITHUB_RUN_NUMBER)"
+          notes="$RUNNER_TEMP/dongle-release.md"
+          echo 'Extract NTPods-Dongle-Windows-x64.zip and open `ntpods-winui.exe`. Windows supplies the USB audio and HID drivers.' > "$notes"
+          echo >> "$notes"
+          echo "[Source]($GITHUB_SERVER_URL/$GH_REPO/tree/$GITHUB_SHA) · [Build]($GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID)" >> "$notes"
+          assets=(NTPods-Dongle-Windows-x64.zip NTPods-Dongle-source.zip SHA256SUMS.txt)
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "${assets[@]}" --clobber
+            gh api --method PATCH "repos/$GH_REPO/git/refs/tags/$tag" -f sha="$GITHUB_SHA" --silent
+            gh release edit "$tag" --title "$title" --notes-file "$notes" --prerelease --latest=false
+          else
+            gh release create "$tag" "${assets[@]}" --target "$GITHUB_SHA" --title "$title" --notes-file "$notes" --prerelease --latest=false
+          fi

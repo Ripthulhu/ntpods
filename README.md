@@ -14,8 +14,8 @@ AirPods Pro 3 settings include spatial audio, calibration and an ear profile
 comparison. The ZIP includes the Steam Audio renderer. Select Steam Streaming
 Speakers in the game or player to feed it a surround mix.
 
-This branch builds a portable Windows x64 preview. Extract the ZIP and
-open `ntpods-winui.exe`. Keep the companion daemon and WinUI runtime in
+Download the [Windows x64 dongle preview](https://github.com/Ripthulhu/ntpods/releases/download/dongle-nightly/NTPods-Dongle-Windows-x64.zip).
+Extract the ZIP and open `ntpods-winui.exe`. Keep the companion daemon and WinUI runtime in
 the extracted directory. Windows provides the USB audio and HID drivers.
 
 [Build the preview](docs/BUILD-WINDOWS.md) · [Dongle setup and controls](docs/PICO-DONGLE.md)
