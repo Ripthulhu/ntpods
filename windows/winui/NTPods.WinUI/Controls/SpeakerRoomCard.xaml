@@ -24,11 +24,12 @@
                     <Line x:Name="Heading" Stroke="{ThemeResource NTPodsAccentBrush}" StrokeThickness="4" StrokeEndLineCap="Round"/>
                     <Line x:Name="EarLine" Stroke="{ThemeResource TextFillColorPrimaryBrush}" StrokeThickness="2" StrokeEndLineCap="Round" StrokeStartLineCap="Round"/>
                 </Canvas>
+                <TextBlock Text="{Binding [Room_SelectionHint], Source={StaticResource Loc}}" FontSize="12" TextWrapping="Wrap" Foreground="{ThemeResource AppleSecondaryBrush}"/>
                 </StackPanel>
                 </Grid>
                 <Grid x:Name="SceneTools" Visibility="Collapsed" ColumnSpacing="8" Margin="0,3,0,4">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                    <TextBlock Text="{Binding [Room_OrbitHint], Source={StaticResource Loc}}"
+                    <TextBlock x:Name="SceneHint"
                                FontSize="12" VerticalAlignment="Center" TextWrapping="Wrap" Foreground="{ThemeResource AppleSecondaryBrush}"/>
                     <Button Grid.Column="1" x:Name="ResetView" VerticalAlignment="Center"
                             Style="{StaticResource QuietButton}" Click="ResetView_Click"
@@ -45,12 +46,22 @@
                     <TextBlock Text="{Binding [Room_Width], Source={StaticResource Loc}}" FontWeight="SemiBold"/>
                     <TextBlock x:Name="WidthValue" HorizontalAlignment="Right"/>
                 </Grid>
-                <Slider x:Name="WidthSlider" Minimum="50" Maximum="300" StepFrequency="1" ValueChanged="Edit_Changed"
+                <Slider x:Name="WidthSlider" Minimum="50" Maximum="500" StepFrequency="1" ValueChanged="Edit_Changed"
                         AutomationProperties.Name="{Binding [Room_Width], Source={StaticResource Loc}}"
                         AutomationProperties.HelpText="{Binding [Room_WidthHelp], Source={StaticResource Loc}}"
                         ToolTipService.ToolTip="{Binding [Room_WidthHelp], Source={StaticResource Loc}}"/>
-                <ComboBox x:Name="Channel" HorizontalAlignment="Stretch" SelectionChanged="Channel_Changed"
-                          AutomationProperties.Name="{Binding [Room_Speaker], Source={StaticResource Loc}}"/>
+                <DropDownButton x:Name="Channel" HorizontalAlignment="Stretch">
+                    <DropDownButton.Content>
+                        <TextBlock x:Name="ChannelLabel" TextWrapping="Wrap"/>
+                    </DropDownButton.Content>
+                    <DropDownButton.Flyout>
+                        <Flyout>
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel x:Name="ChannelChoices" Spacing="2"/>
+                            </ScrollViewer>
+                        </Flyout>
+                    </DropDownButton.Flyout>
+                </DropDownButton>
                 <StackPanel x:Name="PositionControls" Spacing="4">
                     <Grid><TextBlock Text="{Binding [Room_Azimuth], Source={StaticResource Loc}}"/><TextBlock x:Name="AzValue" HorizontalAlignment="Right"/></Grid>
                     <Slider x:Name="Az" Minimum="-180" Maximum="180" StepFrequency="1" ValueChanged="Edit_Changed"
@@ -59,9 +70,11 @@
                     <Slider x:Name="El" Minimum="-90" Maximum="90" StepFrequency="1" ValueChanged="Edit_Changed"
                             AutomationProperties.Name="{Binding [Room_Elevation], Source={StaticResource Loc}}"/>
                 </StackPanel>
-                <Grid><TextBlock Text="{Binding [Room_Level], Source={StaticResource Loc}}"/><TextBlock x:Name="GainValue" HorizontalAlignment="Right"/></Grid>
-                <Slider x:Name="Gain" Minimum="-24" Maximum="0" StepFrequency="1" ValueChanged="Edit_Changed"
-                        AutomationProperties.Name="{Binding [Room_Level], Source={StaticResource Loc}}"/>
+                <StackPanel x:Name="GainControls" Spacing="4">
+                    <Grid><TextBlock Text="{Binding [Room_Level], Source={StaticResource Loc}}"/><TextBlock x:Name="GainValue" HorizontalAlignment="Right"/></Grid>
+                    <Slider x:Name="Gain" Minimum="-24" Maximum="0" StepFrequency="1" ValueChanged="Edit_Changed"
+                            AutomationProperties.Name="{Binding [Room_Level], Source={StaticResource Loc}}"/>
+                </StackPanel>
                 <Button Style="{StaticResource QuietButton}" Click="Reset_Click" Content="{Binding [Room_Reset], Source={StaticResource Loc}}"/>
             </StackPanel>
         </Expander>

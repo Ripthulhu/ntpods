@@ -14,6 +14,7 @@ public sealed partial class SpeakerRoomCard
     private const string SceneUrl = "https://" + SceneHostName + "/index.html";
     private readonly AccessibilitySettings _accessibility = new();
     private WebView2? _scene;
+    private int _sceneDrag = -1;
     private bool _sceneVisible, _sceneReady;
     private bool _windowVisible = true;
 
@@ -80,6 +81,7 @@ public sealed partial class SpeakerRoomCard
         var view = _scene;
         _scene = null;
         _sceneReady = false;
+        _sceneDrag = -1;
         SceneTools.Visibility = SceneContainer.Visibility = Visibility.Collapsed;
         PlanView.Visibility = Visibility.Visible;
         if (view != null)
@@ -116,23 +118,19 @@ public sealed partial class SpeakerRoomCard
                 case "move":
                     if (!_sceneReady || !data.TryGetProperty("bit", out var id) || id.ValueKind != JsonValueKind.Number ||
                         !id.TryGetInt32(out int bit) || !_nodes.ContainsKey(bit)) return;
-                    if (bit != _selected)
-                        Channel.SelectedItem = Channel.Items.OfType<ComboBoxItem>().First(item => (int)item.Tag == bit);
                     if (t.GetString() == "select")
                     {
+                        bool dragging = data.TryGetProperty("drag", out var drag) && drag.ValueKind == JsonValueKind.True;
+                        bool toggle = data.TryGetProperty("toggle", out var ctrl) && ctrl.ValueKind == JsonValueKind.True;
+                        SelectSpeaker(bit, toggle, dragging);
+                        if (dragging) _sceneDrag = bit;
                         if (data.TryGetProperty("edit", out var edit) && edit.ValueKind == JsonValueKind.True) Placement.IsExpanded = true;
                         return;
                     }
-                    if (!ReadDegrees(data, "az", 180, out double az) || !ReadDegrees(data, "el", 90, out double el)) return;
-                    double radians = az * Math.PI / 180;
-                    var previous = _room.Get(bit);
-                    var position = previous with { Azimuth = _room.AzimuthAt(Math.Sin(radians), Math.Cos(radians)), Elevation = (int)Math.Round(el) };
-                    if (previous != position)
-                    {
-                        _room.Set(bit, position);
-                        SyncControls();
-                        Changed();
-                    }
+                    if (_sceneDrag != bit || _selection.Active != bit ||
+                        !ReadDegrees(data, "az", 180, out double az) || !ReadDegrees(data, "el", 90, out double el)) return;
+                    if (_room.DragSelection(_selection.Mask, bit, az, (int)Math.Round(el))) Changed();
+                    else UpdateScene();
                     return;
             }
         }
@@ -156,10 +154,10 @@ public sealed partial class SpeakerRoomCard
         });
         SendScene(JsonSerializer.Serialize(new
         {
-            type = "room", speakers, selected = _selected, yaw = _frame?.Yaw, pitch = _frame?.Pitch, roll = _frame?.Roll,
+            type = "room", speakers, selectedMask = _selection.Mask, yaw = _frame?.Yaw, pitch = _frame?.Pitch, roll = _frame?.Roll,
             theme = _accessibility.HighContrast ? "contrast" : ActualTheme == ElementTheme.Dark ? "dark" : "light",
             title = Localize.Get("Room_Title"), lang = Loc.Instance.CurrentCulture,
-            screen = Localize.Get("Room_Screen"), hint = Localize.Get("Room_OrbitHint") + " " + Localize.Get("Room_CameraKeys")
+            screen = Localize.Get("Room_Screen"), hint = SceneHint.Text + " " + Localize.Get("Room_CameraKeys")
         }));
     }
 

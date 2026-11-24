@@ -28,8 +28,8 @@ Audio SDK. The ZIP includes the renderer, its runtime and both verified SADIE II
 profiles so comparison works without a separate download. [Spatial audio setup](PICO-DONGLE.md#spatial-audio)
 
 The 3D listening room loads its bundled HTML, JavaScript and shaders through
-WebView2. CI runs `node --test windows/tests/SpatialRoom/geometry.test.cjs`
-for coordinate conventions, pointer picking and speaker dragging. For a
+WebView2. Run `node --test windows/tests/SpatialRoom/*.test.cjs` for the
+coordinate, picking and group-drag checks used in CI. For a
 release screen check, open Spatial audio in the unpackaged preview, orbit
 the room, move one speaker, and confirm its native azimuth and elevation
 follow. **Reset view** should return the camera and keep that placement.

@@ -776,8 +776,10 @@
   <data name="Room_Title" xml:space="preserve"><value>Sala de escucha</value></data>
   <data name="Room_Placement" xml:space="preserve"><value>Posición de los altavoces</value></data>
   <data name="Room_Width" xml:space="preserve"><value>Anchura del campo sonoro</value></data>
-  <data name="Room_WidthHelp" xml:space="preserve"><value>Al 100 %, los altavoces mantienen los ángulos elegidos. Un valor mayor los desplaza hacia los lados.</value></data>
-  <data name="Room_Speaker" xml:space="preserve"><value>Altavoz</value></data>
+  <data name="Room_WidthHelp" xml:space="preserve"><value>Al 100 %, los altavoces mantienen los ángulos elegidos. Por encima del 300 %, se separan más los dos altavoces frontales.</value></data>
+  <data name="Room_SelectSpeakers" xml:space="preserve"><value>Seleccionar altavoces</value></data>
+  <data name="Room_Selected" xml:space="preserve"><value>Seleccionado</value></data>
+  <data name="Room_SelectionHint" xml:space="preserve"><value>Pulsa Ctrl y haz clic en un altavoz para añadirlo a la selección o quitarlo.</value></data>
   <data name="Room_Azimuth" xml:space="preserve"><value>Acimut</value></data>
   <data name="Room_Elevation" xml:space="preserve"><value>Elevación</value></data>
   <data name="Room_Level" xml:space="preserve"><value>Nivel del canal</value></data>

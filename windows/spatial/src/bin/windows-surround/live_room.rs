@@ -32,7 +32,7 @@ impl Layout {
             return None;
         }
         let width = words.next()?.parse().ok()?;
-        if !(50..=300).contains(&width) {
+        if !(50..=500).contains(&width) {
             return None;
         }
         let mut layout = Self {
@@ -66,7 +66,17 @@ impl Layout {
             (f32::from(az), f32::from(el), f32::from(db))
         });
         let (s, c) = az.to_radians().sin_cos();
-        let (s, c) = (s * f32::from(self.width) / 100.).atan2(c).sin_cos();
+        let mut bearing = (s * f32::from(self.width.min(300)) / 100.).atan2(c);
+        if self.width > 300 {
+            // Extend only the front pair, where Windows places stereo content in a 7.1 mix.
+            let extra = (f32::from(self.width - 300) * 0.15).to_radians();
+            match bit {
+                1 => bearing -= extra,
+                2 => bearing += extra,
+                _ => {}
+            }
+        }
+        let (s, c) = bearing.sin_cos();
         let (height, horizontal) = el.to_radians().sin_cos();
         (
             [s * horizontal, height, -c * horizontal],
@@ -177,7 +187,7 @@ mod tests {
 
     #[test]
     fn initial_settings_follow_actual_mix_and_levels_retain_each_channels_peak() {
-        let layouts = ["ROOM 75", "ROOM 151", "ROOM 300"].map(str::to_owned);
+        let layouts = ["ROOM 75", "ROOM 151", "ROOM 500"].map(str::to_owned);
         let room = LiveRoom::open(io::empty(), &layouts).unwrap();
         assert_eq!(
             (
@@ -185,7 +195,7 @@ mod tests {
                 room.initial(0x60f).width,
                 room.initial(0x63f).width
             ),
-            (75, 151, 300)
+            (75, 151, 500)
         );
         room.publish_peaks([0.5, 0., 0.1, 0., 1.2, 0., 0., 0.]);
         room.publish_peaks([0.001, 0., 0., 0., 0., 0.0001, 0., 0.]);
@@ -195,23 +205,50 @@ mod tests {
         assert_eq!(room.take_levels(0x60f), (0, [-60; 8]));
     }
     #[test]
-    fn maximum_width_renders_the_expected_seven_bearings_and_preserves_lfe() -> Result<()> {
+    fn maximum_width_places_default_fronts_at_their_corresponding_sides() {
+        let max = Layout::parse(b"ROOM 500").unwrap();
+        for (front, front_angle, side, side_angle) in [(1, -30., 0x200, -90.), (2, 30., 0x400, 90.)]
+        {
+            let (front, front_gain) = max.placement(front, front_angle);
+            let (side, side_gain) = max.placement(side, side_angle);
+            assert_eq!(front_gain, side_gain);
+            assert!(front.iter().zip(side).all(|(a, b)| (a - b).abs() < 1e-6));
+        }
+    }
+    #[test]
+    fn wide_layouts_render_the_configured_front_pair_and_preserve_surrounds_and_lfe() -> Result<()>
+    {
+        for (width, front) in [(300, 60), (400, 75), (500, 90)] {
+            check_rendered_bearings(width, front)?;
+        }
+        Ok(())
+    }
+    fn check_rendered_bearings(width: u16, front: i16) -> Result<()> {
         let mut room = RenderBed::new(Surround::new(8, 0x63f)?, 0x63f);
         let mut reference = Surround::new(8, 0x63f)?;
         room.renderer.set_layout(
-            Layout::parse(b"ROOM 300").unwrap(),
+            Layout::parse(format!("ROOM {width} 0,-30,15,-6 1,30,0,-3").as_bytes()).unwrap(),
             &room.speaker_bits,
             0x63f,
         )?;
         reference.set_layout(
-            Layout::parse(b"ROOM 100 0,-60,0,0 1,60,0,0 4,-120,0,0 5,120,0,0").unwrap(),
+            Layout::parse(
+                format!("ROOM 100 0,-{front},15,-6 1,{front},0,-3 4,-120,0,0 5,120,0,0").as_bytes(),
+            )
+            .unwrap(),
             &room.speaker_bits,
             0x63f,
         )?;
         let mut peak_error = 0_f32;
-        for channel in 0..8 {
+        // Check stereo content on just FL/FR as well as each of the eight discrete channels.
+        for channel in 0..=8 {
             let mut input = [0.; BLOCK * 8];
-            input[channel] = 0.4;
+            if channel == 8 {
+                input[0] = 0.4;
+                input[8 * (BLOCK / 2) + 1] = -0.3;
+            } else {
+                input[channel] = 0.4;
+            }
             let mut out = [[0.; 2]; BLOCK];
             let mut expected = [[0.; 2]; BLOCK];
             room.renderer
@@ -231,7 +268,7 @@ mod tests {
             peak_error = peak_error.max(difference);
         }
         println!(
-            "300% width compared with explicit 7.1 bearings: peak PCM difference {peak_error:e}"
+            "{width}% width compared with explicit 7.1 bearings: peak PCM difference {peak_error:e}"
         );
         Ok(())
     }
@@ -272,10 +309,10 @@ mod tests {
     }
     #[test]
     fn eof_releases_session_and_oversized_or_invalid_edits_leave_last_layout() {
-        let good = b"ROOM 300 0,-45,20,-9";
+        let good = b"ROOM 500 0,-45,20,-9";
         let mut stream = [good.as_slice(), b"\nROOM 50"].concat();
         stream.extend([b' '; 300]);
-        stream.extend_from_slice(b"\nROOM 99 1,0,91\nROOM 301\n");
+        stream.extend_from_slice(b"\nROOM 99 1,0,91\nROOM 501\n");
         let room = LiveRoom::open(io::Cursor::new(stream), &[]).unwrap();
         let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while !room.stop.load(Ordering::Acquire) {
@@ -294,7 +331,7 @@ mod tests {
         assert!((cfg.placement(8, 0.).1 - 0.0630957).abs() < 1e-5);
         for bad in [
             "ROOM 49",
-            "ROOM 301",
+            "ROOM 501",
             "ROOM 80 3,3,0",
             "ROOM 100 0,0,0 0,0,0",
             "ROOM 100 0,0,0,1",

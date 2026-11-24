@@ -40,5 +40,5 @@ jobs:
             throw 'The runner is missing x64 LLVM.'
           }
           ./windows/build.ps1
-      - name: Check room camera, head pose and speaker picking
-        run: node --test windows/tests/SpatialRoom/geometry.test.cjs
+      - name: Check room geometry and speaker gestures
+        run: node --test windows/tests/SpatialRoom/geometry.test.cjs windows/tests/SpatialRoom/gestures.test.cjs

@@ -10,7 +10,6 @@
         shortNames = ["FL", "FR", "C", "LFE", "BL", "BR", "FLC", "FRC", "BC", "SL", "SR"];
   let state = {
     speakers: [],
-    selected: null,
     yaw: null,
     pitch: null,
     roll: null,
@@ -44,12 +43,12 @@
     if (!xy.visible)
       return;
     const margin = width / 2 + 2;
-    const offsets = [0, -17, 17, -34, 34];
+    const offsets = [0, -21, 21, -42, 42];
     const free = offsets.find(dy => {
       const y = xy.y + dy;
       return xy.x >= margin && xy.x <= cam.width - margin && y >= 9 && y <= cam.height - 9
           && occupied.every(
-              r => Math.abs(xy.x - r.x) >= margin + r.margin || Math.abs(y - r.y) >= 17);
+              r => Math.abs(xy.x - r.x) >= margin + r.margin || Math.abs(y - r.y) >= 21);
     });
     if (free === undefined)
       return;
@@ -77,7 +76,7 @@
       }
       tag.textContent = shortNames[s.bit] || s.label;
       tag.title = s.name || s.label;
-      tag.dataset.selected = String(s.bit === state.selected);
+      tag.dataset.selected = String(s.selected);
       tag.dataset.active = String(Boolean(s.active));
       tag.style.setProperty("--strength", G.clamp(((s.level ?? -60) + 60) / 60, 0, 1).toFixed(2));
       // Place labels above cabinets in screen space and use the same bounds for tapping.
@@ -108,16 +107,20 @@
               used.add(s.bit);
               return true;
             })
-            .map(s => ({...s, az: G.clamp(s.az, -180, 180), el: G.clamp(s.el, -90, 90)}));
-    // Keep a dragged speaker under the pointer across asynchronously echoed native snapshots.
-    if (gesture?.moving && gesture.position) {
+            .map(s => ({
+              ...s, az: G.clamp(s.az, -180, 180), el: G.clamp(s.el, -90, 90),
+              selected: Boolean(data.selectedMask & (1 << s.bit))
+            }));
+    if (gesture?.bit != null && !used.has(gesture.bit))
+      gesture = null;
+    // Single cabinets follow the pointer immediately; groups move together in the host snapshot.
+    if (gesture?.moving && gesture.previewSingle && gesture.position) {
       const dragged = speakers.find(s => s.bit === gesture.bit);
       if (dragged)
         Object.assign(dragged, gesture.position);
     }
     state = {
       speakers,
-      selected: data.selected,
       yaw: data.yaw,
       pitch: data.pitch,
       roll: data.roll,
@@ -157,20 +160,17 @@
   function hit(x, y) {
     if (!cam)
       return null;
-    // Prefer a real cabinet hit in the foreground, including when labels overlap.
-    const box = G.pick(G.ray(cam, x, y), boxes);
-    if (box !== null)
-      return box;
+    // Labels sit above the cabinets and can distinguish speakers at the same position.
     const origin = canvas.getBoundingClientRect();
     for (const [bit, tag] of labels) {
       if (tag.hidden)
         continue;
       const r = tag.getBoundingClientRect();
-      if (x + origin.left >= r.left - 2 && x + origin.left <= r.right + 2
-          && y + origin.top >= r.top - 2 && y + origin.top <= r.bottom + 2)
+      if (x + origin.left >= r.left && x + origin.left <= r.right
+          && y + origin.top >= r.top && y + origin.top <= r.bottom)
         return bit;
     }
-    return null;
+    return G.pick(G.ray(cam, x, y), boxes);
   }
   function setZoom(factor) {
     view.zoom = G.clamp(view.zoom * factor, .7, 1.8);
@@ -193,11 +193,6 @@
       return;
     send({type: "move", bit: g.bit, az: g.position.az, el: g.position.el});
     g.lastSend = now;
-  }
-  function select(bit, edit = false) {
-    state.selected = bit;
-    send(edit ? {type: "select", bit, edit: true} : {type: "select", bit});
-    invalidate();
   }
   canvas.addEventListener("pointerdown", event => {
     if (event.button !== 0)
@@ -228,6 +223,8 @@
       start: p,
       last: p,
       bit,
+      toggle: event.ctrlKey,
+      previewSingle: !s?.selected || !state.speakers.some(other => other.selected && other.bit !== bit),
       initial: s ? {az: s.az, el: s.el} : null,
       grab,
       lastSend: -Infinity,
@@ -256,7 +253,7 @@
         return;
       g.moving = true;
       if (g.bit !== null)
-        select(g.bit);
+        send({type: "select", bit: g.bit, drag: true});
     }
     if (g.bit === null || g.bit === 3)
       orbit(p.x - g.last.x, p.y - g.last.y);
@@ -270,7 +267,7 @@
       const el = delta ? g.initial.el + delta.el - g.grab.el : previous.el - (p.y - g.last.y) * .28;
       g.position = {az: Math.round(wrap(az)), el: Math.round(G.clamp(el, -90, 90))};
       const s = state.speakers.find(s => s.bit === g.bit);
-      if (s)
+      if (s && g.previewSingle)
         Object.assign(s, g.position);
       invalidate();
       sendPosition(g, false);
@@ -285,7 +282,7 @@
       if (g.moving)
         sendPosition(g, true);
       else if (!cancelled && g.bit !== null)
-        select(g.bit, true);
+        send({type: "select", bit: g.bit, toggle: g.toggle, edit: true});
     }
     pointers.delete(event.pointerId);
     gesture = null;

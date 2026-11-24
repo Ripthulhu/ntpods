@@ -84,15 +84,19 @@ If the audio connection closes, the room waits for the same AirPods and
 dongle. Playback resumes when their Windows audio output returns and the
 microphone is idle. Choose **Stop head tracking** to cancel the wait.
 
-Drag a speaker to reposition it, or select it
-to open **Speaker placement**. Adjust soundstage width from 50% to 300%,
-set a speaker's azimuth and elevation in degrees, or trim its level by up
-to 24 dB. The low-frequency effects channel has a level control. Use the
-speaker picker for overlapping markers or keyboard adjustments. Changes
-take effect during playback. NTPods saves each Windows speaker layout
-separately (5.1 rear, 5.1 side and 7.1), including its channel levels.
-At 100%, speakers keep their configured bearings. At 300%, the default front
-speakers move from 30° to 60° either side of center. The center stays ahead.
+Click a speaker or its label to open **Speaker placement**. Ctrl-click to add
+or remove speakers, then drag any selected speaker to move the group. The
+speaker picker also lets you select channels by name. Azimuth, elevation
+and level adjustments preserve the differences between selected speakers.
+The low-frequency effects channel supports level adjustment only. Changes
+take effect during playback and are saved separately for each Windows layout
+(5.1 rear, 5.1 side and 7.1).
+
+**Soundstage width** runs from 50% to 500%. With the default layout, the front
+pair sits at ±30° at 100%, ±60° at 300%, and ±90° at 500%. For stereo music,
+500% puts left and right directly beside you. Above 300%, only the front pair
+moves. In 7.1, click the separate channel labels or use the speaker picker
+where the front and side speakers overlap.
 **Reset this layout** restores the current layout to its factory placement.
 If WebView2 or WebGL is unavailable, the app shows a native top-down
 diagram and keeps the placement controls available.

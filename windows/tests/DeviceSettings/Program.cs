@@ -16,29 +16,37 @@ PairingChecks.Run(Check);
 PairingArtworkChecks.Run(Check);
 HeadTrackingChecks.Run(Check);
 SpeakerMapLabelChecks.Run(Check);
+SpeakerSelectionChecks.Run(Check);
 var room = SpatialRoomLayout.Load(0x63f, "ROOM 150 0,-42,25,-4 3,0,0,-8");
 Check(room.Command() == "ROOM 150 0,-42,25,-4 3,0,0,-8" && room.Bearing(0) < -42 * Math.PI / 180,
     "The diagram uses the saved width and the renderer's clockwise speaker angles.");
-foreach (int width in new[] { 50, 100, 150, 151, 200, 299, 300 })
+foreach (int width in new[] { 50, 100, 150, 151, 200, 299, 300, 301, 400, 499, 500 })
 {
     foreach (int mask in new[] { 0x3f, 0x60f, 0x63f })
     {
         string saved = $"ROOM {width} 0,-42,25,-4";
         var layout = SpatialRoomLayout.Load(mask, saved);
         Check(layout.Command() == saved, "Saved widths and speaker overrides round-trip in every channel layout.");
+        foreach (var (bit, _) in SpatialRoomLayout.Channels.Where(c => layout.Includes(c.Bit) && c.Bit != 3))
         foreach (int angle in new[] { -179, -175, -90, -30, 0, 90, 150, 179 })
         {
-            layout.Set(0, new(angle, 25, -4));
-            double bearing = layout.Bearing(0);
-            Check(layout.AzimuthAt(Math.Sin(bearing), Math.Cos(bearing)) == angle,
+            layout.Set(bit, new(angle, 25, -4));
+            Check(layout.AzimuthAt(bit, layout.Bearing(bit)) == angle,
                 "Dragging a speaker to its displayed bearing preserves the configured angle at every width.");
         }
     }
 }
 var wide = SpatialRoomLayout.Load(0x63f, "ROOM 300");
 foreach (var (bit, degrees) in new[] { (0, -60), (1, 60), (2, 0), (9, -90), (10, 90), (4, -120), (5, 120) })
-    Check(Math.Abs(wide.Bearing(bit) * 180 / Math.PI - degrees) < 1e-9, "Maximum width gives every 7.1 speaker its own bearing.");
-Check(SpatialRoomLayout.Load(0x63f, "ROOM 301").Width == 100, "An out-of-range saved width falls back to the default.");
+    Check(Math.Abs(wide.Bearing(bit) * 180 / Math.PI - degrees) < 1e-9, "Existing 300% layouts retain every bearing.");
+foreach (int width in new[] { 301, 400, 499, 500 })
+{
+    wide.Width = width;
+    double front = 60 + (width - 300) * 0.15;
+    foreach (var (bit, degrees) in new[] { (0, -front), (1, front), (2, 0), (4, -120), (5, 120), (9, -90), (10, 90) })
+        Check(Math.Abs(wide.Bearing(bit) * 180 / Math.PI - degrees) < 1e-9, "The final stretch moves stereo out to the side channels.");
+}
+Check(SpatialRoomLayout.Load(0x63f, "ROOM 501").Width == 100, "An out-of-range saved width falls back to the default.");
 Check(SpatialRoomLayout.Load(0x60f, "ROOM 100").Get(10).Azimuth == 110 && room.Get(10).Azimuth == 90,
     "Side speakers retain the native 5.1 and 7.1 placements.");
 Check(SpatialRoomLayout.Load(0x63f, "ROOM 70 3,30,0,-8").Command() == "ROOM 100" &&

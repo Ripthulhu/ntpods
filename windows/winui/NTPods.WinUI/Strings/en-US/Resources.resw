@@ -780,8 +780,10 @@
   <data name="Room_Title" xml:space="preserve"><value>Listening room</value></data>
   <data name="Room_Placement" xml:space="preserve"><value>Speaker placement</value></data>
   <data name="Room_Width" xml:space="preserve"><value>Soundstage width</value></data>
-  <data name="Room_WidthHelp" xml:space="preserve"><value>100% uses your chosen speaker angles. Higher values move speakers toward the sides.</value></data>
-  <data name="Room_Speaker" xml:space="preserve"><value>Speaker</value></data>
+  <data name="Room_WidthHelp" xml:space="preserve"><value>100% uses your chosen speaker angles. Increasing the width beyond 300% spreads the front pair farther apart.</value></data>
+  <data name="Room_SelectSpeakers" xml:space="preserve"><value>Select speakers</value></data>
+  <data name="Room_Selected" xml:space="preserve"><value>Selected</value></data>
+  <data name="Room_SelectionHint" xml:space="preserve"><value>Ctrl-click a speaker to add or remove it from the selection.</value></data>
   <data name="Room_Azimuth" xml:space="preserve"><value>Azimuth</value></data>
   <data name="Room_Elevation" xml:space="preserve"><value>Elevation</value></data>
   <data name="Room_Level" xml:space="preserve"><value>Channel level</value></data>

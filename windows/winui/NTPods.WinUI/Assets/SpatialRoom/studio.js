@@ -280,8 +280,8 @@ function createStudio(canvas) {
       part(wing, box, 0, 0, 0, .013, .008, .045, mark, .4, .65);
     }
   }
-  function makeCabinet(s, boxData, state, floor) {
-    const b = boxData.matrix, [w, h, d] = boxData.half, selected = state.selected === s.bit;
+  function makeCabinet(s, boxData, floor) {
+    const b = boxData.matrix, [w, h, d] = boxData.half, selected = s.selected;
     const supportHeight = boxData.origin[1] - h - floor;
     if (supportHeight > .10) {
       part(
@@ -355,7 +355,7 @@ function createStudio(canvas) {
     part(I, box, 0, screenY - .575, screenZ, .041, .093, .029, rim, .6);
     part(I, box, 0, screenY - .67, screenZ, .23, .012, .09, rim, .6);
     makeHead(state);
-    boxes.forEach((b, i) => makeCabinet(state.speakers[i], b, state, floor));
+    boxes.forEach((b, i) => makeCabinet(state.speakers[i], b, floor));
   }
   return {frame};
 }

@@ -22,6 +22,8 @@ camera orbits. Reserve glass for controls around the scene. Live channel
 levels belong on the speakers, and exact values and keyboard edits belong
 in the native placement controls. When 3D rendering is unavailable, the
 native room diagram still supports selection and editing.
+Use the same selection highlight for every member of a group. Keep speaker
+labels individually selectable when a wide stereo pair overlaps the sides.
 Firmware counters appear when experimental controls are enabled.
 
 Use the shared acrylic capsule for Back, More, Connect and phone setup. Pairing

@@ -1,3 +1,4 @@
+using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
@@ -6,6 +7,8 @@ using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
 using NTPods.WinUI.Services;
+using Windows.System;
+using Windows.UI.Core;
 using RectangleF = System.Drawing.RectangleF;
 
 namespace NTPods.WinUI.Controls;
@@ -21,7 +24,7 @@ public sealed partial class SpeakerRoomCard : UserControl
     private readonly DispatcherTimer _send = new() { Interval = TimeSpan.FromMilliseconds(60) };
     private bool _sync = true;
     private RoomFrame? _frame;
-    private int _selected;
+    private readonly SpeakerSelection _selection = new();
     internal event Action<string>? LayoutChanged;
     internal string Command => _room.Command();
     internal bool HasStreamFormat => _frame != null;
@@ -74,13 +77,17 @@ public sealed partial class SpeakerRoomCard : UserControl
             Map.Children.Remove(speaker.Pin);
         }
         _nodes.Clear();
-        Channel.Items.Clear();
+        _sceneDrag = -1;
+        _selection.Reconcile(_room.Mask);
+        ChannelChoices.Children.Clear();
+        SceneHint.Text = Localize.Get("Room_OrbitHint") + " " + Localize.Get("Room_SelectionHint");
         foreach (var (bit, label) in SpatialRoomLayout.Channels.Where(s => _room.Includes(s.Bit)))
         {
             string name = Localize.Get("Room_" + label);
-            var item = new ComboBoxItem { Tag = bit, Content = name };
-            Channel.Items.Add(item);
-            if (_selected == bit) Channel.SelectedItem = item;
+            var item = new CheckBox { Tag = bit, Content = name };
+            item.Checked += ChannelChoiceChanged;
+            item.Unchecked += ChannelChoiceChanged;
+            ChannelChoices.Children.Add(item);
             if (bit == 3) continue;
             var dot = new Ellipse { Width = 5, Height = 5 };
             var meter = new Grid { Width = 13, Height = 13, VerticalAlignment = VerticalAlignment.Center };
@@ -91,31 +98,9 @@ public sealed partial class SpeakerRoomCard : UserControl
             var button = new Button { Content = stack, Tag = bit, MinWidth = 44, MinHeight = 36,
                 Padding = new Thickness(5, 0, 5, 0), CornerRadius = new CornerRadius(18) };
             AutomationProperties.SetName(button, name);
+            AutomationProperties.SetHelpText(button, Localize.Get("Room_SelectionHint"));
             ToolTipService.SetToolTip(button, name);
-            button.Click += (_, _) => { Channel.SelectedItem = item; Placement.IsExpanded = true; };
-            button.ManipulationMode = ManipulationModes.TranslateX | ManipulationModes.TranslateY;
-            button.ManipulationStarting += (_, args) => args.Container = Map;
-            double startX = 0, startForward = 0;
-            button.ManipulationStarted += (_, _) =>
-            {
-                Channel.SelectedItem = item;
-                double bearing = _room.Bearing(bit);
-                startX = Math.Sin(bearing);
-                startForward = Math.Cos(bearing);
-            };
-            button.ManipulationDelta += (_, args) =>
-            {
-                var position = _room.Get(bit);
-                double horizontal = Math.Cos(position.Elevation * Math.PI / 180);
-                double radius = Math.Min(Map.ActualWidth / 2 - 28, 200);
-                if (horizontal < .1 || radius <= 0) return;
-                var translation = args.Cumulative.Translation;
-                double right = startX + translation.X / (radius * horizontal);
-                double forward = startForward - translation.Y / (OrbitDepth * horizontal);
-                if (right * right + forward * forward < .01) return;
-                Az.Value = _room.AzimuthAt(right, forward);
-                args.Handled = true;
-            };
+            BindMapInput(button, bit);
             var height = new Line { StrokeThickness = 1, IsHitTestVisible = false };
             var leader = new Line { StrokeThickness = 1, Opacity = .75, IsHitTestVisible = false };
             var pin = new Ellipse { Width = 4, Height = 4, IsHitTestVisible = false };
@@ -127,60 +112,171 @@ public sealed partial class SpeakerRoomCard : UserControl
             _nodes.Add(bit, new(button, dot, height, leader, pin));
             button.SizeChanged += (_, _) => LayoutAndDraw();
         }
-        if (Channel.SelectedIndex < 0) Channel.SelectedIndex = 0;
-        _selected = (int)((ComboBoxItem)Channel.SelectedItem).Tag;
+        SyncSelection();
+    }
+
+    private static bool ControlDown() =>
+        (InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control) & CoreVirtualKeyStates.Down) != 0;
+
+    private void BindMapInput(Button button, int bit)
+    {
+        uint? pointer = null;
+        Windows.Foundation.Point start = default;
+        double bearing = 0;
+        bool dragged = false;
+        button.ManipulationMode = ManipulationModes.None;
+        button.AddHandler(PointerPressedEvent, new PointerEventHandler((_, e) =>
+        {
+            var point = e.GetCurrentPoint(Map);
+            if (pointer != null || !point.Properties.IsLeftButtonPressed) return;
+            pointer = e.Pointer.PointerId;
+            start = point.Position;
+            bearing = _room.Bearing(bit);
+            dragged = false;
+        }), true);
+        button.AddHandler(PointerMovedEvent, new PointerEventHandler((_, e) =>
+        {
+            if (pointer != e.Pointer.PointerId) return;
+            var current = e.GetCurrentPoint(Map).Position;
+            double dx = current.X - start.X, dy = current.Y - start.Y;
+            if (!dragged)
+            {
+                if (dx * dx + dy * dy < 25) return;
+                dragged = true;
+                SelectSpeaker(bit, drag: true);
+            }
+            if (_selection.Active != bit) return;
+            int elevation = _room.Get(bit).Elevation;
+            double horizontal = Math.Cos(elevation * Math.PI / 180);
+            double radius = Math.Min(Map.ActualWidth / 2 - 28, 200);
+            if (horizontal < .1 || radius <= 0) return;
+            double right = Math.Sin(bearing) + dx / (radius * horizontal);
+            double forward = Math.Cos(bearing) - dy / (OrbitDepth * horizontal);
+            if (right * right + forward * forward >= .01 &&
+                _room.DragSelection(_selection.Mask, bit, Math.Atan2(right, forward) * 180 / Math.PI, elevation))
+                Changed();
+        }), true);
+        foreach (var end in new[] { PointerReleasedEvent, PointerCaptureLostEvent, PointerCanceledEvent })
+            button.AddHandler(end, new PointerEventHandler((_, e) =>
+            {
+                if (pointer != e.Pointer.PointerId) return;
+                pointer = null;
+                // Ignore a Click synthesized during release, then allow keyboard and automation again.
+                if (dragged) DispatcherQueue.TryEnqueue(() => { if (pointer == null) dragged = false; });
+            }), true);
+        button.PreviewKeyDown += (_, e) =>
+        {
+            dragged = false;
+            if (!ControlDown() || e.Key is not (VirtualKey.Space or VirtualKey.Enter)) return;
+            e.Handled = true;
+            if (!e.KeyStatus.WasKeyDown)
+            {
+                SelectSpeaker(bit, toggle: true);
+                Placement.IsExpanded = true;
+            }
+        };
+        button.Click += (_, _) =>
+        {
+            if (dragged) return;
+            SelectSpeaker(bit, toggle: ControlDown());
+            Placement.IsExpanded = true;
+        };
+    }
+
+    private void SelectSpeaker(int bit, bool toggle = false, bool drag = false)
+    {
+        _sceneDrag = -1;
+        if (drag)
+        {
+            _selection.ForDrag(bit);
+            _room.BeginDrag();
+        }
+        else _selection.Select(bit, toggle);
+        SyncSelection();
+    }
+
+    private void ChannelChoiceChanged(object sender, RoutedEventArgs e)
+    {
+        if (!_sync && sender is CheckBox { Tag: int bit } item && item.IsChecked != _selection.Contains(bit))
+            SelectSpeaker(bit, toggle: true);
+    }
+
+    private void SyncSelection()
+    {
+        _sync = true;
+        var selected = SpatialRoomLayout.Channels.Where(s => _selection.Contains(s.Bit)).ToArray();
+        var names = selected.Select(s => Localize.Get("Room_" + s.Label)).ToArray();
+        string prompt = Localize.Get("Room_SelectSpeakers");
+        ChannelLabel.Text = selected.Length switch
+        {
+            0 => prompt,
+            1 => names[0],
+            _ => string.Join(" · ", selected.Select(s => s.Label))
+        };
+        AutomationProperties.SetName(Channel, names.Length == 0 ? prompt : prompt + ", " + string.Join(", ", names));
+        foreach (var item in ChannelChoices.Children.OfType<CheckBox>()) item.IsChecked = _selection.Contains((int)item.Tag);
+        foreach (var (bit, speaker) in _nodes)
+            AutomationProperties.SetItemStatus(speaker.Node, _selection.Contains(bit) ? Localize.Get("Room_Selected") : "");
+        PositionControls.Visibility = _selection.PositionAnchor < 0 ? Visibility.Collapsed : Visibility.Visible;
+        GainControls.Visibility = _selection.Active < 0 ? Visibility.Collapsed : Visibility.Visible;
         SyncControls();
     }
 
     private void SyncControls()
     {
         _sync = true;
-        var p = _room.Get(_selected);
         WidthSlider.Value = _room.Width;
-        Az.Value = p.Azimuth;
-        El.Value = p.Elevation;
-        Gain.Value = p.Gain;
-        PositionControls.Visibility = _selected == 3 ? Visibility.Collapsed : Visibility.Visible;
-        _sync = false;
-        Labels();
-        LayoutAndDraw();
-    }
-
-    private void Labels()
-    {
         WidthValue.Text = $"{_room.Width}%";
-        var p = _room.Get(_selected);
-        AzValue.Text = $"{p.Azimuth}°";
-        ElValue.Text = $"{p.Elevation}°";
-        GainValue.Text = $"{p.Gain} dB";
-    }
-
-    private void Channel_Changed(object sender, SelectionChangedEventArgs e)
-    {
-        if (_sync || Channel.SelectedItem is not ComboBoxItem { Tag: int bit }) return;
-        _selected = bit;
-        SyncControls();
+        string AnchorSuffix(int bit) => System.Numerics.BitOperations.PopCount((uint)_selection.Mask) > 1
+            ? $" ({SpatialRoomLayout.Channels.First(s => s.Bit == bit).Label})" : "";
+        if (_selection.PositionAnchor >= 0)
+        {
+            var p = _room.Get(_selection.PositionAnchor);
+            string anchor = AnchorSuffix(_selection.PositionAnchor);
+            Az.Value = p.Azimuth;
+            El.Value = p.Elevation;
+            AzValue.Text = $"{p.Azimuth}°{anchor}";
+            ElValue.Text = $"{p.Elevation}°{anchor}";
+        }
+        if (_selection.Active >= 0)
+        {
+            int gain = _room.Get(_selection.Active).Gain;
+            Gain.Value = gain;
+            GainValue.Text = $"{gain} dB{AnchorSuffix(_selection.Active)}";
+        }
+        _sync = false;
+        LayoutAndDraw();
     }
 
     private void Edit_Changed(object sender, RangeBaseValueChangedEventArgs e)
     {
-        if (_sync) return;
-        _room.Width = (int)Math.Round(WidthSlider.Value);
-        _room.Set(_selected, new((int)Math.Round(Az.Value), (int)Math.Round(El.Value), (int)Math.Round(Gain.Value)));
-        Changed();
+        if (_sync || sender is not Slider slider) return;
+        bool changed;
+        if (slider == WidthSlider)
+        {
+            int width = (int)Math.Round(WidthSlider.Value);
+            changed = width != _room.Width;
+            _room.Width = width;
+        }
+        else if (slider == Gain && _selection.Active >= 0)
+            changed = _room.AdjustGain(_selection.Mask, _selection.Active, (int)Math.Round(Gain.Value));
+        else if ((slider == Az || slider == El) && _selection.PositionAnchor >= 0)
+            changed = _room.MoveSelection(_selection.Mask, _selection.PositionAnchor,
+                (int)Math.Round(Az.Value), (int)Math.Round(El.Value));
+        else return;
+        if (changed) Changed();
+        else SyncControls();
     }
 
     private void Reset_Click(object sender, RoutedEventArgs e)
     {
         _room = new(_room.Mask);
-        SyncControls();
         Changed();
     }
 
     private void Changed()
     {
-        Labels();
-        LayoutAndDraw();
+        SyncControls();
         if (!_send.IsEnabled) _send.Start();
         _save.Stop();
         _save.Start();
@@ -290,8 +386,8 @@ public sealed partial class SpeakerRoomCard : UserControl
         {
             var node = speaker.Node;
             var dot = speaker.Dot;
-            Canvas.SetZIndex(node, bit == _selected ? 2 : 1);
-            node.BorderBrush = bit == _selected ? accent : outline;
+            Canvas.SetZIndex(node, _selection.Active == bit ? 3 : _selection.Contains(bit) ? 2 : 1);
+            node.BorderBrush = _selection.Contains(bit) ? accent : outline;
             bool active = ((_frame?.Active ?? 0) & (1 << bit)) != 0;
             dot.Fill = active ? accent : secondary;
             double strength = ((_frame?.Level(bit) ?? -60) + 60) / 60.0;

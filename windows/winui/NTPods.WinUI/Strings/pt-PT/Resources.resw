@@ -776,8 +776,10 @@
   <data name="Room_Title" xml:space="preserve"><value>Sala de audição</value></data>
   <data name="Room_Placement" xml:space="preserve"><value>Posição das colunas</value></data>
   <data name="Room_Width" xml:space="preserve"><value>Largura do palco sonoro</value></data>
-  <data name="Room_WidthHelp" xml:space="preserve"><value>A 100%, as colunas mantêm os ângulos escolhidos. Um valor mais alto desloca-as para os lados.</value></data>
-  <data name="Room_Speaker" xml:space="preserve"><value>Coluna</value></data>
+  <data name="Room_WidthHelp" xml:space="preserve"><value>A 100%, as colunas mantêm os ângulos escolhidos. Acima de 300%, as duas colunas frontais afastam-se mais uma da outra.</value></data>
+  <data name="Room_SelectSpeakers" xml:space="preserve"><value>Selecionar colunas</value></data>
+  <data name="Room_Selected" xml:space="preserve"><value>Selecionada</value></data>
+  <data name="Room_SelectionHint" xml:space="preserve"><value>Mantenha Ctrl premido e clique numa coluna para a adicionar à seleção ou remover dela.</value></data>
   <data name="Room_Azimuth" xml:space="preserve"><value>Azimute</value></data>
   <data name="Room_Elevation" xml:space="preserve"><value>Elevação</value></data>
   <data name="Room_Level" xml:space="preserve"><value>Nível do canal</value></data>
