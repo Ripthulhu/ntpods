@@ -863,7 +863,12 @@ fn main() -> Result<()> {
                 };
                 println!("{retry}");
             }
-            if matches!(result, Ok(true)) {
+            if let Ok(Some(bud)) = &result {
+                let saved = match bud {
+                    motion::PrimaryBud::Left => "CAL_SAVED_LEFT",
+                    motion::PrimaryBud::Right => "CAL_SAVED_RIGHT",
+                };
+                println!("{saved}");
                 println!("CAL_SAVED");
             }
             return result.map(|_| ());

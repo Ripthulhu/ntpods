@@ -756,11 +756,16 @@
   <data name="Spatial_Playing" xml:space="preserve"><value>El seguimiento de la cabeza está activo para este adaptador.</value></data>
   <data name="Spatial_Stopping" xml:space="preserve"><value>Deteniendo el seguimiento de la cabeza…</value></data>
   <data name="Spatial_Starting" xml:space="preserve"><value>Iniciando el audio espacial…</value></data>
-  <data name="Spatial_WaitMotion" xml:space="preserve"><value>Esperando movimiento. Ponte los AirPods y mira la pantalla.</value></data>
+  <data name="Spatial_WaitMotion" xml:space="preserve"><value>Esperando movimiento. Mira la pantalla. Para calibrar un AirPod concreto, deja el otro en el estuche.</value></data>
+  <data name="Spatial_CalibrationHelp" xml:space="preserve"><value>Calibra cada AirPod una vez. Para elegir un lado, ponte ese AirPod y deja el otro en el estuche.</value></data>
   <data name="Spatial_Face" xml:space="preserve"><value>Mira la pantalla sin moverte.</value></data>
   <data name="Spatial_LookUp" xml:space="preserve"><value>Levanta la cabeza unos 25 grados y mantén la posición.</value></data>
   <data name="Spatial_FaceAgain" xml:space="preserve"><value>Vuelve a la postura inicial. Mira el mismo punto y mantén la posición hasta que se cierre la guía.</value></data>
   <data name="Spatial_Calibrated" xml:space="preserve"><value>Calibración guardada.</value></data>
+  <data name="Spatial_CalibratedLeft" xml:space="preserve"><value>Calibración del AirPod izquierdo guardada.</value></data>
+  <data name="Spatial_CalibratedRight" xml:space="preserve"><value>Calibración del AirPod derecho guardada.</value></data>
+  <data name="Spatial_CalibrateLeft" xml:space="preserve"><value>El AirPod izquierdo sigue los giros de la cabeza. Para que también siga la inclinación, detén el seguimiento y calibra ese AirPod.</value></data>
+  <data name="Spatial_CalibrateRight" xml:space="preserve"><value>El AirPod derecho sigue los giros de la cabeza. Para que también siga la inclinación, detén el seguimiento y calibra ese AirPod.</value></data>
   <data name="Spatial_ProfileReady" xml:space="preserve"><value>Elige A, B o C. Escucha cada perfil y guarda tu favorito.</value></data>
   <data name="Spatial_ProfilePlaying" xml:space="preserve"><value>Escucha la voz y los pasos.</value></data>
   <data name="Spatial_ProfileSaved" xml:space="preserve"><value>Perfil auditivo guardado.</value></data>
@@ -772,7 +777,7 @@
   <data name="Spatial_RetryFace" xml:space="preserve"><value>Mira la pantalla sin moverte y espera a que aparezca la flecha hacia arriba.</value></data>
   <data name="Spatial_RetryUp" xml:space="preserve"><value>Levanta la barbilla unos 25 grados sin girar ni inclinar la cabeza hacia un lado.</value></data>
   <data name="Spatial_RetryReturn" xml:space="preserve"><value>Repite la calibración. Vuelve a colocar la barbilla a la altura inicial y mira el mismo punto de la pantalla.</value></data>
-  <data name="Spatial_RetryMotion" xml:space="preserve"><value>No se detectó movimiento. Ponte ambos AirPods, deja de usar el micrófono y vuelve a conectarlos al adaptador antes de reintentar.</value></data>
+  <data name="Spatial_RetryMotion" xml:space="preserve"><value>No se detectó movimiento. Ponte el AirPod que quieras calibrar, deja de usar el micrófono y vuelve a conectarlo al adaptador antes de intentarlo de nuevo.</value></data>
   <data name="Room_Title" xml:space="preserve"><value>Sala de escucha</value></data>
   <data name="Room_Placement" xml:space="preserve"><value>Posición de los altavoces</value></data>
   <data name="Room_Width" xml:space="preserve"><value>Anchura del campo sonoro</value></data>

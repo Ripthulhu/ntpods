@@ -16,6 +16,8 @@ a pair is selected, when the device settings are hidden. The device header
 reconnects the saved pair through the selected dongle.
 Spatial audio uses a standard navigation row for a selected AirPods Pro 3
 pair. Its page groups playback above calibration and ear profile comparison.
+The playback status names the active AirPod when it needs calibration for tilt.
+Keep this guidance in the room so a bud change can leave playback running.
 The listening room uses a shaded three-dimensional studio to show surround
 channels and head movement. Keep the screen fixed in the room while the
 camera orbits. Reserve glass for controls around the scene. Live channel

@@ -2,7 +2,7 @@ use super::super::{
     Result,
     pose::{Calibration, CalibrationSample},
 };
-use super::{Lease, NO_PAIRED_MOTION, open_collection};
+use super::{Lease, NO_PAIRED_MOTION, PrimaryBud, open_collection};
 use hidapi::HidDevice;
 use std::{
     fs::{self, File},
@@ -26,11 +26,11 @@ fn parse_pair(r: &[u8]) -> Option<Pair> {
     (session != 0 && address != [0; 6] && address != [255; 6]).then_some(Pair { address, session })
 }
 
-fn read_pair(control: &HidDevice) -> Option<Pair> {
+fn read_pair(control: &HidDevice) -> hidapi::HidResult<Option<Pair>> {
     let mut r = [0u8; 64];
     r[0] = 2;
-    let n = control.get_feature_report(&mut r).ok()?;
-    parse_pair(r.get(..n)?)
+    let n = control.get_feature_report(&mut r)?;
+    Ok(r.get(..n).and_then(parse_pair))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -115,8 +115,14 @@ fn save(root: &Path, pair: Pair, calibration: &Calibration) -> Result<()> {
 
 pub(super) struct Mounts {
     control: Option<HidDevice>,
+    retry_control: Instant,
     root: Option<PathBuf>,
     binding: Binding,
+}
+
+pub(super) struct BoundMount<'a> {
+    pub(super) role: [u8; 4],
+    pub(super) profile: Option<&'a Calibration>,
 }
 
 #[derive(Default)]
@@ -129,21 +135,39 @@ struct Binding {
 }
 
 impl Mounts {
-    pub(super) fn open(serial: &str) -> Self {
+    pub(super) fn new() -> Self {
         Self {
-            control: open_collection(serial, 1).ok(),
+            control: None,
+            retry_control: Instant::now(),
             root: directory(),
             binding: Binding::default(),
         }
     }
 
-    pub(super) fn for_report(&mut self, report: &[u8], now: Instant) -> Option<&Calibration> {
+    pub(super) fn for_report(
+        &mut self,
+        serial: &str,
+        report: &[u8],
+        now: Instant,
+    ) -> Option<BoundMount<'_>> {
         let root = self.root.as_deref()?;
-        let control = self.control.as_ref()?;
         self.binding.for_source(
             source(report),
             now,
-            || read_pair(control),
+            || {
+                if self.control.is_none() && now >= self.retry_control {
+                    self.retry_control = now + Duration::from_secs(1);
+                    self.control = open_collection(serial, 1).ok();
+                }
+                match read_pair(self.control.as_ref()?) {
+                    Ok(pair) => pair,
+                    Err(_) => {
+                        self.control = None;
+                        self.retry_control = now + Duration::from_secs(1);
+                        None
+                    }
+                }
+            },
             |pair, role| load(root, pair, role),
         )
     }
@@ -158,7 +182,7 @@ impl Binding {
         now: Instant,
         read: impl FnOnce() -> Option<Pair>,
         lookup: impl FnOnce(Pair, [u8; 4]) -> Option<Calibration>,
-    ) -> Option<&Calibration> {
+    ) -> Option<BoundMount<'_>> {
         if self.scope != src {
             *self = Self {
                 scope: src,
@@ -178,10 +202,10 @@ impl Binding {
             let current = read();
             match current {
                 Some(pair) if Some(pair) == self.observed => {
-                    if !self.confirmed {
+                    if self.profile.is_none() {
                         self.profile = lookup(pair, src.role);
-                        self.confirmed = true;
                     }
+                    self.confirmed = true;
                 }
                 _ => {
                     self.profile = None;
@@ -191,7 +215,10 @@ impl Binding {
             self.observed = current;
             self.checked = Some(now);
         }
-        self.profile.as_ref()
+        self.confirmed.then(|| BoundMount {
+            role: src.role,
+            profile: self.profile.as_ref(),
+        })
     }
 }
 
@@ -199,7 +226,7 @@ pub(super) fn calibrate(
     serial: &str,
     prompt: impl Fn(u8, u64),
     cancel: impl Fn() -> bool,
-) -> Result<bool> {
+) -> Result<Option<PrimaryBud>> {
     let root = directory().ok_or("Windows local application data is unavailable")?;
     let control = open_collection(serial, 1)?;
     println!(
@@ -213,12 +240,12 @@ pub(super) fn calibrate(
     let deadline = Instant::now() + Duration::from_secs(18);
     let (pair, origin) = loop {
         if cancel() {
-            return Ok(false);
+            return Ok(None);
         }
         lease.renew()?;
         let n = lease.device.read_timeout(&mut report, 50)?;
         if let Some(origin) = source(&report[..n])
-            && let Some(pair) = read_pair(&control)
+            && let Ok(Some(pair)) = read_pair(&control)
         {
             break (pair, origin);
         }
@@ -252,7 +279,7 @@ pub(super) fn calibrate(
         let mut check_return = started + Duration::from_secs(3);
         while Instant::now() < end {
             if cancel() {
-                return Ok(false);
+                return Ok(None);
             }
             lease.renew()?;
             let n = lease.device.read_timeout(&mut report, 35)?;
@@ -285,7 +312,7 @@ pub(super) fn calibrate(
                 }
             }
         }
-        if read_pair(&control) != Some(pair) {
+        if read_pair(&control)? != Some(pair) {
             return Err(
                 "The AirPods connection changed during calibration. Reconnect and retry.".into(),
             );
@@ -296,14 +323,14 @@ pub(super) fn calibrate(
         None => Calibration::from_holds(&phases[0], &phases[1], &phases[2])?,
     };
     if cancel() {
-        return Ok(false);
+        return Ok(None);
     }
     save(&root, pair, &calibration)?;
     println!(
         "Saved three-axis calibration for the {} primary bud. Start head tracking and face forward.",
         if origin.role[0] == 1 { "left" } else { "right" }
     );
-    Ok(true)
+    Ok(PrimaryBud::from_role(origin.role))
 }
 
 #[cfg(test)]
@@ -382,6 +409,7 @@ mod tests {
                     })
                 },
             )
+            .and_then(|mount| mount.profile)
             .is_some()
         };
         assert!(!bound(0, Some(src), Some(pair)));
@@ -406,6 +434,47 @@ mod tests {
         assert!(!bound(3220, Some(src), Some(other)));
         assert!(!bound(3240, None, Some(pair)));
         assert!(!bound(3300, Some(src), None));
+    }
+
+    #[test]
+    fn missing_mount_is_rechecked_after_control_recovers_without_reopening_motion() {
+        let start = Instant::now();
+        let src = Source {
+            role: [2, 0, 1, 0],
+            generation: 3,
+        };
+        let pair = Pair {
+            address: [9; 6],
+            session: 7,
+        };
+        let mut binding = Binding::default();
+        let mut lookups = 0;
+        let mut check = |ms, peer, saved| {
+            binding
+                .for_source(
+                    Some(src),
+                    start + Duration::from_millis(ms),
+                    || peer,
+                    |p, role| {
+                        assert_eq!((p, role), (pair, src.role));
+                        lookups += 1;
+                        if saved {
+                            Calibration::from_rows(role, [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]])
+                        } else {
+                            None
+                        }
+                    },
+                )
+                .map(|mount| mount.profile.is_some())
+        };
+        assert_eq!(check(0, None, false), None);
+        assert_eq!(check(1000, Some(pair), false), None);
+        assert_eq!(check(1200, Some(pair), false), Some(false));
+        assert_eq!(check(1500, Some(pair), true), Some(false));
+        assert_eq!(check(2200, Some(pair), true), Some(true));
+        assert_eq!(check(3200, Some(pair), true), Some(true));
+        assert_eq!(check(4200, None, true), None);
+        assert_eq!(lookups, 2);
     }
 
     #[test]

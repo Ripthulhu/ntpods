@@ -1,5 +1,5 @@
 use super::Result;
-use super::pose::{Calibration, Orientation, Pose};
+use super::pose::{Orientation, Pose};
 use hidapi::{HidApi, HidDevice};
 use std::{
     cell::Cell,
@@ -16,11 +16,27 @@ use std::{
 mod mounts;
 pub(super) const NO_PAIRED_MOTION: &str = "No paired AirPods motion source";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PrimaryBud {
+    Left,
+    Right,
+}
+
+impl PrimaryBud {
+    fn from_role(role: [u8; 4]) -> Option<Self> {
+        match role[0] {
+            1 => Some(Self::Left),
+            2 => Some(Self::Right),
+            _ => None,
+        }
+    }
+}
+
 pub(super) fn calibrate(
     serial: &str,
     prompt: impl Fn(u8, u64),
     cancel: impl Fn() -> bool,
-) -> Result<bool> {
+) -> Result<Option<PrimaryBud>> {
     mounts::calibrate(serial, prompt, cancel)
 }
 
@@ -85,7 +101,7 @@ impl Lease {
     }
 
     fn read_motion(&mut self, serial: &str, state: &Shared) -> Result<()> {
-        let mut profiles = mounts::Mounts::open(serial);
+        let mut profiles = mounts::Mounts::new();
         let mut pose = Pose::default();
         let mut ticket = 0;
         let mut report = [0u8; 64];
@@ -106,8 +122,8 @@ impl Lease {
             let count = self.device.read_timeout(&mut report, 25)?;
             if count != 0 {
                 let now = Instant::now();
-                let profile = profiles.for_report(&report[..count], now);
-                state.record(&mut pose, ticket, &report[..count], profile, now);
+                let mount = profiles.for_report(serial, &report[..count], now);
+                state.record(&mut pose, ticket, &report[..count], mount, now);
             }
         }
         Ok(())
@@ -185,9 +201,22 @@ impl fmt::Display for MotionStats {
 #[derive(Clone, Copy)]
 struct Sample {
     ticket: u64,
+    primary: Option<PrimaryBud>,
     calibrated: bool,
     orientation: Orientation,
     arrival: Instant,
+}
+
+impl Sample {
+    fn calibration_status(sample: Option<Self>) -> &'static str {
+        match sample.map(|s| (s.primary, s.calibrated)) {
+            Some((Some(PrimaryBud::Left), true)) => "CAL_STATUS_LEFT_READY",
+            Some((Some(PrimaryBud::Right), true)) => "CAL_STATUS_RIGHT_READY",
+            Some((Some(PrimaryBud::Left), false)) => "CAL_STATUS_LEFT_MISSING",
+            Some((Some(PrimaryBud::Right), false)) => "CAL_STATUS_RIGHT_MISSING",
+            _ => "CAL_STATUS_PENDING",
+        }
+    }
 }
 
 #[derive(Default)]
@@ -206,7 +235,7 @@ impl Shared {
         pose: &mut Pose,
         ticket: u64,
         report: &[u8],
-        profile: Option<&Calibration>,
+        mount: Option<mounts::BoundMount<'_>>,
         now: Instant,
     ) {
         let mut stats = self.stats.lock().unwrap();
@@ -218,6 +247,8 @@ impl Shared {
             stats.ignored += 1;
             return;
         }
+        let mount = mount.filter(|m| Some(m.role) == pose.role());
+        let profile = mount.as_ref().and_then(|m| m.profile);
         let orientation = pose.orientation(profile);
         let yaw = orientation.yaw_degrees();
         let calibrated = profile.is_some_and(|p| pose.role() == Some(p.role));
@@ -225,6 +256,7 @@ impl Shared {
             orientation,
             ticket,
             calibrated,
+            primary: mount.and_then(|m| PrimaryBud::from_role(m.role)),
             arrival: now,
         });
         stats.error = None;
@@ -257,6 +289,15 @@ impl Shared {
         stats.samples += 1;
         stats.min_yaw = stats.min_yaw.min(yaw);
         stats.max_yaw = stats.max_yaw.max(yaw);
+    }
+
+    fn fresh_sample(&self, now: Instant) -> Option<Sample> {
+        let ticket = self.requested_center.load(Ordering::Acquire);
+        (*self.latest.lock().unwrap()).filter(|s| {
+            s.ticket == ticket
+                && self.applied_center.load(Ordering::Acquire) == ticket.wrapping_add(1)
+                && now.saturating_duration_since(s.arrival) < Duration::from_millis(250)
+        })
     }
 }
 
@@ -330,20 +371,23 @@ impl Motion {
                 let mut fresh = Instant::now();
                 let mut waiting = false;
                 let mut previous = None;
-                while !state.stop.load(Ordering::Acquire) && !room.stop.load(Ordering::Acquire) {
+                let mut previous_calibration = None;
+                loop {
                     thread::sleep(Duration::from_millis(100));
+                    if state.stop.load(Ordering::Acquire) || room.stop.load(Ordering::Acquire) {
+                        break;
+                    }
                     let mask = room.format.load(Ordering::Acquire);
+                    let sample = state.fresh_sample(Instant::now());
+                    let calibration = Sample::calibration_status(sample);
+                    if previous_calibration != Some(calibration) {
+                        println!("{calibration}");
+                        previous_calibration = Some(calibration);
+                    }
                     if mask == 0 {
                         fresh = Instant::now();
                         continue;
                     }
-                    let ticket = state.requested_center.load(Ordering::Acquire);
-                    let sample = (*state.latest.lock().unwrap()).filter(|sample| {
-                        sample.ticket == ticket
-                            && state.applied_center.load(Ordering::Acquire)
-                                == ticket.wrapping_add(1)
-                            && sample.arrival.elapsed() < Duration::from_millis(250)
-                    });
                     if sample.is_some() {
                         fresh = Instant::now();
                         if waiting {
@@ -397,7 +441,7 @@ impl Motion {
                     return Err(error.into());
                 }
                 return Err(
-                    "No fresh head pose. Wear both AirPods and face forward on the selected dongle"
+                    "No fresh head pose. Wear your AirPods and face forward on the selected dongle"
                         .into(),
                 );
             }
@@ -442,6 +486,51 @@ mod tests {
         report[31..33].copy_from_slice(&z.to_le_bytes());
         report[49..51].copy_from_slice(&(-4096i16).to_le_bytes());
         report
+    }
+
+    #[test]
+    fn room_calibration_status_requires_a_fresh_pose_from_the_confirmed_role() {
+        use super::super::pose::Calibration;
+        let state = Shared::default();
+        let now = Instant::now();
+        let at = |tick| now + Duration::from_millis(30 * u64::from(tick));
+        let status = |tick| Sample::calibration_status(state.fresh_sample(at(tick)));
+        let mut pose = Pose::default();
+        let rows = [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]];
+        assert_eq!(status(0), "CAL_STATUS_PENDING");
+        for (side, tick, missing, ready) in [
+            (1, 1, "CAL_STATUS_LEFT_MISSING", "CAL_STATUS_LEFT_READY"),
+            (2, 4, "CAL_STATUS_RIGHT_MISSING", "CAL_STATUS_RIGHT_READY"),
+        ] {
+            let role = [side, 0, 0, 0];
+            let basis = Calibration::from_rows(role, rows).unwrap();
+            let mut sample = |tick, mount| {
+                let mut r = report(30., tick);
+                r[3] = side;
+                state.record(&mut pose, 0, &r, mount, at(tick));
+            };
+            sample(tick, None);
+            assert_eq!(status(tick), "CAL_STATUS_PENDING");
+            sample(
+                tick + 1,
+                Some(mounts::BoundMount {
+                    role,
+                    profile: None,
+                }),
+            );
+            assert_eq!(status(tick + 1), missing);
+            sample(
+                tick + 2,
+                Some(mounts::BoundMount {
+                    role,
+                    profile: Some(&basis),
+                }),
+            );
+            assert_eq!(status(tick + 2), ready);
+        }
+        assert_eq!(status(15), "CAL_STATUS_PENDING"); // pose has aged out
+        state.applied_center.store(0, Ordering::Release);
+        assert_eq!(status(6), "CAL_STATUS_PENDING"); // reader disconnected
     }
 
     #[test]
@@ -543,6 +632,7 @@ mod tests {
         motion.shared.stats.lock().unwrap().last = Some(Instant::now());
         *motion.shared.latest.lock().unwrap() = Some(Sample {
             ticket: 0,
+            primary: None,
             calibrated: false,
             orientation: Orientation::default(),
             arrival: Instant::now(),
@@ -566,6 +656,7 @@ mod tests {
         };
         let old = Sample {
             ticket: 0,
+            primary: None,
             calibrated: false,
             orientation: Orientation::from_yaw(-45.0),
             arrival: now,

@@ -62,9 +62,16 @@ clock-control loop.
 
 Open **Spatial audio** in the device settings for a selected AirPods Pro 3
 pair. Start, calibration and ear profile comparison all target the selected
-dongle. The renderer keeps its per-bud calibration and re-centers when media
-resumes. It requests up to 100 Hz motion, with the firmware cap of 30 Hz
-during Game Mode.
+dongle. The room re-centers when media resumes. It requests up to 100 Hz
+motion, or 30 Hz in Game Mode.
+
+For turning, nodding and tilting with either AirPod, calibrate each side once.
+Wear the left AirPod with the right one in the case, choose **Calibrate head
+tracking**, and follow the guide. Repeat with only the right AirPod. If one
+side already has a saved calibration, do just the other side. When the AirPods
+change which bud supplies motion, the room loads that bud’s calibration
+automatically. If it needs calibration, the room names the bud and continues
+tracking horizontal turns during playback.
 
 Set Steam Streaming Speakers to 5.1 or 7.1 and route the game or player there.
 Keep the dongle microphone idle. Start and stop playback in NTPods.

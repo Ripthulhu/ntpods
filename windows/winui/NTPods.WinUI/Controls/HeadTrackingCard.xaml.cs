@@ -14,6 +14,7 @@ public sealed partial class HeadTrackingCard : UserControl
     private static readonly string Renderer = Path.Combine(AppContext.BaseDirectory, "spatial", "windows-surround.exe");
     private DongleState _dongle = new();
     private readonly SpatialPlaybackReturn _return = new();
+    private SpatialTrackingStatus _tracking = new();
     private string? _returningPair;
     internal bool WaitingForRoute => _return.Waiting;
     private Process? _session;
@@ -23,7 +24,7 @@ public sealed partial class HeadTrackingCard : UserControl
     private bool _profileReady;
     private bool _saving;
     private string? _calibrationFailure;
-    private bool _saved;
+    private bool _profileSaved;
     private readonly DispatcherTimer _calibrationTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
     private readonly Stopwatch _calibrationClock = new();
     private int _phase;
@@ -114,8 +115,9 @@ public sealed partial class HeadTrackingCard : UserControl
         CalibrationArrow.Visibility = _phase >= 2 ? Visibility.Visible : Visibility.Collapsed;
         CalibrationArrow.Glyph = _phase == 2 ? "\uE70E" : "\uE70D";
         CalibrationProgress.Visibility = _phase > 0 ? Visibility.Visible : Visibility.Collapsed;
-        string status = Localize.Get(_return.Waiting ? "Spatial_WaitRoute" : _stopping ? "Spatial_Stopping" : _status ??
-            (!installed ? "Spatial_Missing" : Serial is null ? "Spatial_Connect" : "Spatial_Route"));
+        string status = Localize.Get(_return.Waiting ? "Spatial_WaitRoute" : _stopping ? "Spatial_Stopping" :
+            !installed ? "Spatial_Missing" : Serial is null ? "Spatial_Connect" :
+            (playback ? _tracking.PlaybackKey : null) ?? _status ?? "Spatial_Route");
         Status.Visibility = calibrating ? Visibility.Collapsed : Visibility.Visible;
         if (calibrating && CalibrationInstruction.Text != status) CalibrationInstruction.Text = status;
         if (!calibrating && Status.Text != status) Status.Text = status;
@@ -178,7 +180,8 @@ public sealed partial class HeadTrackingCard : UserControl
 
     private void OnRendererOutput(Process process, string? line)
     {
-        if (line?.StartsWith("ROOM_POSE ", StringComparison.Ordinal) == true)
+        if (line is null) return;
+        if (line.StartsWith("ROOM_POSE ", StringComparison.Ordinal))
         {
             if (RoomFrame.Parse(line) is not { } frame) return;
             lock (_frameLock)
@@ -191,9 +194,6 @@ public sealed partial class HeadTrackingCard : UserControl
         }
         string? status = line switch
         {
-            "SPATIAL_READY" => "Spatial_Playing",
-            "SPATIAL_MOTION_WAIT" => "Room_Recovering",
-            "SPATIAL_MOTION_READY" => "Spatial_Playing",
             "CAL_RETRY_FACE" => "Spatial_RetryFace",
             "CAL_RETRY_UP" => "Spatial_RetryUp",
             "CAL_RETRY_RETURN" => "Spatial_RetryReturn",
@@ -202,17 +202,34 @@ public sealed partial class HeadTrackingCard : UserControl
             "PROFILE_PLAYING" => "Spatial_ProfilePlaying",
             _ => null
         };
-        var fields = line?.Split('_');
+        bool playback = line.StartsWith("SPATIAL_", StringComparison.Ordinal) || line.StartsWith("CAL_STATUS_", StringComparison.Ordinal);
+        bool calibrationSave = line.StartsWith("CAL_SAVED", StringComparison.Ordinal);
+        var fields = line.Split('_');
         int phase = 0, seconds = 0;
         bool stage = fields is ["CAL", _, _] && int.TryParse(fields[1], out phase) && phase is >= 1 and <= 3
             && int.TryParse(fields[2], out seconds) && seconds is >= 1 and <= 10;
         if (stage) status = phase == 1 ? "Spatial_Face" : phase == 2 ? "Spatial_LookUp" : "Spatial_FaceAgain";
-        bool saved = line is "CAL_SAVED" or "PROFILE_SAVED";
-        if (status is null && !saved) return;
+        if (status is null && !playback && !calibrationSave && line != "PROFILE_SAVED") return;
         DispatcherQueue.TryEnqueue(() =>
         {
             if (!ReferenceEquals(_session, process) || _stopping) return;
-            if (saved) { _saved = true; return; }
+            if (playback)
+            {
+                if (_activity != Activity.Playback || !_tracking.ReadPlayback(line)) return;
+                if (line == "SPATIAL_READY")
+                {
+                    _return.Arm(_dongle);
+                    _returningPair = null;
+                }
+                Render();
+                return;
+            }
+            if (calibrationSave)
+            {
+                if (_activity == Activity.Calibration) _tracking.ReadSaved(line);
+                return;
+            }
+            if (line == "PROFILE_SAVED") { _profileSaved = _activity == Activity.Comparison; return; }
             if (_saving || status is null) return;
             if (status.StartsWith("Spatial_Retry", StringComparison.Ordinal)) _calibrationFailure = status;
             if (stage)
@@ -222,11 +239,6 @@ public sealed partial class HeadTrackingCard : UserControl
                 CalibrationProgress.Maximum = seconds;
                 _calibrationClock.Restart();
                 _calibrationTimer.Start();
-            }
-            if (line == "SPATIAL_READY" && _activity == Activity.Playback)
-            {
-                _return.Arm(_dongle);
-                _returningPair = null;
             }
             _profileReady = line == "PROFILE_READY";
             _status = status;
@@ -274,9 +286,9 @@ public sealed partial class HeadTrackingCard : UserControl
             DispatcherQueue.TryEnqueue(() =>
             {
                 if (!ReferenceEquals(_session, process)) return;
-                _status = _stopping ? null : process.ExitCode != 0 || (_activity == Activity.Calibration && !_saved)
+                _status = _stopping ? null : process.ExitCode != 0 || (_activity == Activity.Calibration && _tracking.SavedKey is null)
                     ? (_activity == Activity.Playback ? "Spatial_Error" : _calibrationFailure ?? "Spatial_SetupError")
-                    : _activity == Activity.Calibration ? "Spatial_Calibrated" : _saved ? "Spatial_ProfileSaved" : null;
+                    : _activity == Activity.Calibration ? _tracking.SavedKey : _profileSaved ? "Spatial_ProfileSaved" : null;
                 if (_return.Armed) _return.Exited(Environment.TickCount64);
                 _session = null;
                 _returningPair = null;
@@ -294,7 +306,8 @@ public sealed partial class HeadTrackingCard : UserControl
             _returningPair = command == "listen-managed-return" ? _dongle.PairedDeviceId : null;
             _activity = activity;
             _phase = 0;
-            _saved = false;
+            _tracking = new();
+            _profileSaved = false;
             _calibrationFailure = null;
             _status = activity == Activity.Calibration ? "Spatial_WaitMotion" : "Spatial_Starting";
             process.BeginOutputReadLine();

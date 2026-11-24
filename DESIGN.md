@@ -120,6 +120,7 @@ Keep the AirPods Dongle card below the shared settings. It stays reachable befor
 a pair is selected, when the device settings are hidden. The device header
 reconnects the saved pair through the selected dongle.
 Spatial audio uses the shared navigation row and a single inset action group.
+When a bud needs calibration, name that side in the room’s playback status.
 In the listening room, highlight each selected speaker. Ctrl-click toggles
 individual channels, and the native speaker picker exposes the same selection.
 Keep firmware counters behind the experimental settings preference.

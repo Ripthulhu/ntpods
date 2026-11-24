@@ -16,6 +16,8 @@
         <Border Style="{StaticResource Card}" Padding="16">
             <StackPanel Spacing="8">
                 <Button x:Name="CalibrateButton" Click="Calibrate_Click" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" MinHeight="44"
+                        ToolTipService.ToolTip="{Binding [Spatial_CalibrationHelp], Source={StaticResource Loc}}"
+                        AutomationProperties.HelpText="{Binding [Spatial_CalibrationHelp], Source={StaticResource Loc}}"
                         Style="{StaticResource QuietButton}">
                     <TextBlock Text="{Binding [Spatial_Calibrate], Source={StaticResource Loc}}" TextWrapping="Wrap" />
                 </Button>
