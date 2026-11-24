@@ -233,7 +233,7 @@ public sealed partial class MainWindow
         _pairingBatteryExpiry.Stop();
         prompt.UpdatePairedBattery(levels?.Left, levels?.Right, levels?.Case,
             levels?.LeftCharging ?? false, levels?.RightCharging ?? false, levels?.CaseCharging ?? false,
-            _pairedPromptHeadphone, levels?.Headphone, levels?.HeadphoneCharging ?? false);
+            _pairedPromptHeadphone, levels?.Headphone, levels?.HeadphoneCharging ?? false, levels?.CaseLive ?? false);
         if (levels?.NextExpiryMs is { } expiry && expiry > now)
         {
             _pairingBatteryExpiry.Interval = TimeSpan.FromMilliseconds(expiry - now + 1);

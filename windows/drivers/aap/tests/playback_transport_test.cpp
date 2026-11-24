@@ -347,6 +347,8 @@ static std::atomic<unsigned> openCalls, closeCalls, transferCalls;
 static uintptr_t nextHandle = 1;
 static bool failClose, timeoutRead, failOpenAfterHandle, disconnectDuringOpen, cancelOpen, wrongFlush;
 static bool lateCloseSuccess;
+static NTSTATUS sendStatus = STATUS_SUCCESS;
+static ULONG sendSize = UINT32_MAX;
 static USHORT expectedMediaFlush = 200;
 static std::vector<L2CAP_CHANNEL_HANDLE> closedHandles;
 static std::mutex readMutex;
@@ -414,6 +416,10 @@ static NTSTATUS LpSubmitBrbSync(PDEVICE_CONTEXT ctx, PBRB brb, WDFREQUEST r)
         }
         if (timeoutRead) return STATUS_IO_TIMEOUT;
         brb->BrbL2caAclTransfer.BufferSize = 4;
+    } else {
+        assert(r && !r->completed && brb->BrbL2caAclTransfer.Buffer);
+        if (sendSize != UINT32_MAX) brb->BrbL2caAclTransfer.BufferSize = sendSize;
+        return sendStatus;
     }
     return STATUS_SUCCESS;
 }
@@ -493,6 +499,42 @@ static void closeMedia(PDEVICE_CONTEXT c) {
     Request r; payload(r, LP_PLAYBACK_CLOSE_INPUT{2, 1});
     submit(c, r, IOCTL_LP_PLAYBACK_CLOSE);
     assert(r.status == STATUS_SUCCESS && r.count == 0 && !c->Playback.Channels[1].Handle);
+}
+static void sendCompletionContract(PDEVICE_CONTEXT c) {
+    struct Completion { NTSTATUS status; ULONG bytes; NTSTATUS expected; };
+    const Completion completions[] = {
+        {STATUS_UNSUCCESSFUL, 8, STATUS_UNSUCCESSFUL},
+        {STATUS_DEVICE_BUSY, 8, STATUS_DEVICE_BUSY},
+        {STATUS_IO_TIMEOUT, 8, STATUS_IO_TIMEOUT},
+        {STATUS_CANCELLED, 8, STATUS_CANCELLED},
+        {STATUS_SUCCESS, 0, STATUS_DATA_ERROR},
+        {STATUS_SUCCESS, 3, STATUS_DATA_ERROR},
+        {STATUS_SUCCESS, 9, STATUS_DATA_ERROR},
+        {STATUS_SUCCESS, 8, STATUS_SUCCESS},
+    };
+    for (ULONG channel : {LP_PLAYBACK_SIGNALING, LP_PLAYBACK_MEDIA}) {
+        for (const auto& completion : completions) {
+            sendStatus = completion.status;
+            sendSize = completion.bytes;
+            Request r; payload(r, LP_PLAYBACK_SEND_INPUT{1, channel});
+            r.input.insert(r.input.end(), {0x80, 0x60, 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc});
+            const auto original = r.input;
+            const auto calls = transferCalls.load();
+            ULONG transferred = UINT32_MAX;
+            auto status = LpPlaybackTransfer(c, channel, FALSE,
+                r.input.data() + sizeof(LP_PLAYBACK_SEND_INPUT), 8, 0, &transferred, &r, 0);
+            assert(status == completion.expected && !r.completed);
+            assert(transferred == (NT_SUCCESS(status) ? 8u : 0u));
+            assert(r.input == original && transferCalls == calls + 1);
+
+            // Send IOCTLs have no output bytes, including after a full transfer.
+            submit(c, r, IOCTL_LP_PLAYBACK_SEND);
+            assert(r.completed && r.status == completion.expected && r.count == 0);
+            assert(r.input == original && transferCalls == calls + 2);
+        }
+    }
+    sendStatus = STATUS_SUCCESS;
+    sendSize = UINT32_MAX;
 }
 static LP_PLAYBACK_MPM_OUTPUT mpmControl(PDEVICE_CONTEXT c, ULONG operation,
     ULONG flags = 0, ULONG ack = 0, NTSTATUS expected = STATUS_SUCCESS)
@@ -1139,6 +1181,7 @@ int main()
     submit(&c,oversize,IOCTL_LP_PLAYBACK_SEND); assert(oversize.status == STATUS_INVALID_BUFFER_SIZE && transferCalls == 0);
     Request send; payload(send,LP_PLAYBACK_SEND_INPUT{1,1}); send.input.resize(8+672);
     submit(&c,send,IOCTL_LP_PLAYBACK_SEND); assert(send.status == 0 && send.count == 0);
+    sendCompletionContract(&c);
     Request read; payload(read,LP_PLAYBACK_RECEIVE_INPUT{1,0,10000}); read.output.resize(8192);
     blockRead = true;
     auto pending = std::async(std::launch::async,[&] { submit(&c,read,IOCTL_LP_PLAYBACK_RECEIVE); });

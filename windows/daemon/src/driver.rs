@@ -377,6 +377,11 @@ impl Driver {
         Ok(())
     }
 
+    pub(crate) fn send_settings(&self, data: &[u8]) -> io::Result<()> {
+        ioctl_with_timeout(self.handle.0, IOCTL_LP_SEND, data, &mut [], 2_000)?;
+        Ok(())
+    }
+
     pub fn send_sensor(&self, data: &[u8]) -> io::Result<()> {
         // Optional sensors must leave time for microphone cleanup during shutdown.
         ioctl_with_timeout(self.handle.0, IOCTL_LP_SEND, data, &mut [], 2_000)?;

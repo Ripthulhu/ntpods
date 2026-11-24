@@ -1,5 +1,35 @@
 use super::*;
 
+#[test]
+fn call_preferences_and_local_consent_bind_the_selected_dongle_pair() {
+    use std::sync::atomic::Ordering;
+    let fixture = Fixture::new();
+    let ctx = Ctx::for_test();
+    *ctx.companion_preferences.lock().unwrap() = fixture.load();
+    ctx.mac.store(2,Ordering::Release);
+    {
+        let mut state = ctx.state.lock().unwrap();
+        state.dongle = ntpods_ipc::DongleState {
+            present: true, selected: true, session: 1, capabilities: 512,
+            paired_device_id: Some("001122334455".into()), ..Default::default()
+        };
+    }
+    let address = 0x001122334455;
+    assert_eq!(selected_address(&ctx),Some(address));
+    assert!(apply_local(&ctx,&Command::CompanionSetPreference {
+        key:"call_takeover_enabled".into(), value:json!(true), device_id:Some("001122334455".into()), request_id:1,
+    }));
+    assert_eq!(value(&ctx,"call_takeover_enabled"),Some(json!(true)));
+    assert!(ctx.companion_preferences.lock().unwrap().get(2,"call_takeover_enabled").is_none());
+    assert!(apply_local(&ctx,&Command::CompanionCallConsent { enabled:true, device_id:"001122334455".into(),request_id:2 }));
+    assert!(ctx.companion_preferences.lock().unwrap().consent());
+    ctx.state.lock().unwrap().dongle.ambiguous=true;
+    assert!(selected_address(&ctx).is_none());
+    apply_local(&ctx,&Command::CompanionCallConsent { enabled:false,device_id:"001122334455".into(),request_id:3 });
+    assert!(ctx.companion_preferences.lock().unwrap().consent());
+    assert_eq!(value(&ctx,"call_takeover_enabled"),None);
+}
+
 struct Fixture {
     directory: PathBuf,
     path: PathBuf,
@@ -29,6 +59,27 @@ impl Drop for Fixture {
         let _ = std::fs::remove_file(self.directory.join("blocked"));
         let _ = std::fs::remove_dir(&self.directory);
     }
+}
+
+#[test]
+fn selected_dongle_persists_locally_without_changing_or_exporting_shared_preferences() {
+    let fixture = Fixture::new();
+    let mut store = fixture.load();
+    let records = store.records(0);
+    assert_eq!(store.selected_dongle(), None);
+    store.set_selected_dongle("BOARD-A").unwrap();
+    let loaded = fixture.load();
+    assert_eq!(loaded.selected_dongle(), Some("BOARD-A"));
+    assert_eq!(loaded.records(0), records);
+    assert!(!KEYS.contains(&"selected_dongle"));
+    assert!(store.set_selected_dongle("not a serial").is_err());
+    assert_eq!(store.selected_dongle(), Some("BOARD-A"));
+    let mut saved: Value = serde_json::from_slice(&std::fs::read(&fixture.path).unwrap()).unwrap();
+    saved["selected_dongle"] = json!("bad serial");
+    std::fs::write(&fixture.path, serde_json::to_vec(&saved).unwrap()).unwrap();
+    let invalid = fixture.load();
+    assert!(invalid.error.is_some());
+    assert_eq!(invalid.selected_dongle(), None);
 }
 
 #[test]
@@ -104,6 +155,27 @@ fn desired_choices_round_trip_without_inventing_confirmed_values() {
     assert!(from_control(22, 0x0100).is_none());
     assert!(from_control(64, 101).is_none());
     assert!(from_control(0xff, 1).is_none());
+}
+
+#[test]
+fn hold_choices_use_primary_action_values_and_preserve_left_right_wire_order() {
+    for (left, right, raw) in [
+        ("listening", "assistant", 0x0501),
+        ("assistant", "listening", 0x0105),
+        ("listening", "listening", 0x0505),
+        ("assistant", "assistant", 0x0101),
+    ] {
+        let saved = json!({"left":left,"right":right});
+        assert_eq!(
+            to_control("desired_hold_actions", &saved),
+            Some((0x16, Some(raw)))
+        );
+        assert_eq!(
+            from_control(0x16, raw),
+            Some(("desired_hold_actions", saved))
+        );
+    }
+    assert!(from_control(0x16, 0x01050501).is_none());
 }
 
 #[test]

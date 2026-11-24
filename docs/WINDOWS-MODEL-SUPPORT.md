@@ -78,10 +78,17 @@ found Max 2 motion on advertised service 6; NTPods' descriptor discovery still
 needs a check on that model. Motion hardware alone does not establish NTPods graph
 support. NTPods does not provide head-tracked spatial playback.
 
+Ordinary AirPods 3 A2564/A2565 instead uses the model-gated RemoteHID path and
+exact XML motion declaration in [sensor contract v1](SENSOR-PROTOCOL.md). It never
+guesses WX service 14/16. This descriptor gate accepts internal firmware names;
+other models retain their public-firmware rules. AP3 raw parsing and ownership are
+covered by public/synthetic fixtures; live Windows AP3 streaming is not yet tested.
+
 Firmware gates accept public build strings and legacy dotted versions. Metadata
 also decodes release-only packed values such as `6619472` to `6F21`; that layout
 is inferred from matching release reports, with unknown prerelease forms left
-unknown. Internal build numbers must not enable newer microphone or sensor paths.
+unknown. Internal build numbers must not enable newer microphone or unverified
+sensor paths; the separately model/descriptor-gated AP3 path above is explicit.
 
 Pro 1 press-speed changes applied on the test pair, but did not echo or replay
 after another notification request. Refresh device settings reads the value

@@ -8,7 +8,7 @@
         <StackPanel Spacing="12">
             <Grid Margin="8,4,8,0" ColumnSpacing="12">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="20"/></Grid.ColumnDefinitions>
-                <TextBlock Text="{Binding [Companion_Title], Source={StaticResource Loc}}" FontSize="16"
+                <TextBlock Text="{Binding [Companion_Title], Source={StaticResource Loc}}" FontSize="14"
                            TextWrapping="Wrap" VerticalAlignment="Center" />
                 <Grid Grid.Column="1" Width="20" Height="20">
                     <ProgressRing x:Name="SwitchingProgress" Width="20" Height="20" IsActive="False" Visibility="Collapsed"
@@ -17,32 +17,34 @@
                                   AutomationProperties.HelpText="{Binding [Companion_Pending], Source={StaticResource Loc}}" />
                 </Grid>
             </Grid>
-            <Grid ColumnSpacing="8">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                <Button x:Name="CompanionPhone" Style="{StaticResource QuietButton}" HorizontalAlignment="Stretch" MinHeight="48"
-                        Foreground="{ThemeResource NTPodsAccentBrush}" HorizontalContentAlignment="Center"
-                        AutomationProperties.Name="{Binding [Companion_Phone], Source={StaticResource Loc}}" Click="CompanionPhone_Click">
-                    <Grid ColumnSpacing="10">
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                        <SymbolIcon Symbol="CellPhone" Width="20" VerticalAlignment="Center" IsHitTestVisible="False"
-                                    AutomationProperties.AccessibilityView="Raw" />
-                        <TextBlock Grid.Column="1" Text="{Binding [Companion_Phone], Source={StaticResource Loc}}" FontSize="16"
+            <Border Style="{StaticResource GlassActionGroup}">
+                <Grid ColumnSpacing="8">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                    <Button x:Name="CompanionPhone" Style="{StaticResource QuietButton}" HorizontalAlignment="Stretch" MinHeight="48"
+                            Foreground="{ThemeResource NTPodsAccentBrush}" HorizontalContentAlignment="Center"
+                            AutomationProperties.Name="{Binding [Companion_Phone], Source={StaticResource Loc}}" Click="CompanionPhone_Click">
+                        <Grid ColumnSpacing="10">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                            <SymbolIcon Symbol="CellPhone" Width="20" VerticalAlignment="Center" IsHitTestVisible="False"
+                                        AutomationProperties.AccessibilityView="Raw" />
+                            <TextBlock Grid.Column="1" Text="{Binding [Companion_Phone], Source={StaticResource Loc}}" FontSize="14"
                                    TextWrapping="Wrap" VerticalAlignment="Center" TextAlignment="Center" />
-                    </Grid>
-                </Button>
-                <Button x:Name="CompanionPc" Grid.Column="1" Style="{StaticResource QuietButton}" HorizontalAlignment="Stretch" MinHeight="48"
-                        Foreground="{ThemeResource NTPodsAccentBrush}" HorizontalContentAlignment="Center"
-                        AutomationProperties.Name="{Binding [Companion_ThisPC], Source={StaticResource Loc}}" Click="CompanionPc_Click">
-                    <Grid ColumnSpacing="10">
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                        <FontIcon Glyph="&#xE977;" FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="20" Width="20"
+                        </Grid>
+                    </Button>
+                    <Button x:Name="CompanionPc" Grid.Column="1" Style="{StaticResource QuietButton}" HorizontalAlignment="Stretch" MinHeight="48"
+                            Foreground="{ThemeResource NTPodsAccentBrush}" HorizontalContentAlignment="Center"
+                            AutomationProperties.Name="{Binding [Companion_ThisPC], Source={StaticResource Loc}}" Click="CompanionPc_Click">
+                        <Grid ColumnSpacing="10">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                            <FontIcon Glyph="&#xE977;" FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="20" Width="20"
                                   VerticalAlignment="Center" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw" />
-                        <TextBlock Grid.Column="1" Text="{Binding [Companion_ThisPC], Source={StaticResource Loc}}" FontSize="16"
+                            <TextBlock Grid.Column="1" Text="{Binding [Companion_ThisPC], Source={StaticResource Loc}}" FontSize="14"
                                    TextWrapping="Wrap" VerticalAlignment="Center" TextAlignment="Center" />
-                    </Grid>
-                </Button>
-            </Grid>
-            <TextBlock x:Name="CompanionError" FontSize="13" TextWrapping="Wrap" Foreground="{ThemeResource AppleSecondaryBrush}"
+                        </Grid>
+                    </Button>
+                </Grid>
+            </Border>
+            <TextBlock x:Name="CompanionError" FontSize="12" TextWrapping="Wrap" Foreground="{ThemeResource AppleSecondaryBrush}"
                        Margin="8,0" Visibility="Collapsed" AutomationProperties.LiveSetting="Polite" />
         </StackPanel>
     </Border>
@@ -51,14 +53,14 @@
         <StackPanel Spacing="16">
             <Grid ColumnSpacing="16" MinHeight="48">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <TextBlock Text="{Binding [CompanionSettings_Calls], Source={StaticResource Loc}}" FontSize="16" TextWrapping="Wrap" VerticalAlignment="Center" />
+                <TextBlock Text="{Binding [CompanionSettings_Calls], Source={StaticResource Loc}}" FontSize="14" TextWrapping="Wrap" VerticalAlignment="Center" />
                 <ToggleSwitch x:Name="TakeCallsSwitch" Grid.Column="1" Style="{StaticResource SettingToggle}" VerticalAlignment="Center"
                               AutomationProperties.Name="{Binding [CompanionSettings_Calls], Source={StaticResource Loc}}"
                               AutomationProperties.HelpText="{Binding [CompanionSettings_CallsHelp], Source={StaticResource Loc}}" Toggled="TakeCalls_Toggled" />
             </Grid>
             <Grid ColumnSpacing="16" MinHeight="48">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <TextBlock Text="{Binding [CompanionSettings_Return], Source={StaticResource Loc}}" FontSize="16" TextWrapping="Wrap" VerticalAlignment="Center" />
+                <TextBlock Text="{Binding [CompanionSettings_Return], Source={StaticResource Loc}}" FontSize="14" TextWrapping="Wrap" VerticalAlignment="Center" />
                 <ToggleSwitch x:Name="ReturnAfterCallSwitch" Grid.Column="1" Style="{StaticResource SettingToggle}" VerticalAlignment="Center"
                               AutomationProperties.Name="{Binding [CompanionSettings_Return], Source={StaticResource Loc}}"
                               AutomationProperties.HelpText="{Binding [CompanionSettings_ReturnHelp], Source={StaticResource Loc}}" Toggled="ReturnAfterCall_Toggled" />
@@ -66,17 +68,17 @@
             <Border Style="{StaticResource InsetDivider}" />
             <Grid ColumnSpacing="16" MinHeight="48">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <TextBlock Text="{Binding [CompanionSettings_Popups], Source={StaticResource Loc}}" FontSize="16" TextWrapping="Wrap" VerticalAlignment="Center" />
+                <TextBlock Text="{Binding [CompanionSettings_Popups], Source={StaticResource Loc}}" FontSize="14" TextWrapping="Wrap" VerticalAlignment="Center" />
                 <ToggleSwitch x:Name="ConnectionPopupsSwitch" Grid.Column="1" Style="{StaticResource SettingToggle}" VerticalAlignment="Center"
                               AutomationProperties.Name="{Binding [CompanionSettings_Popups], Source={StaticResource Loc}}" Toggled="ConnectionPopups_Toggled" />
             </Grid>
             <Grid ColumnSpacing="16" MinHeight="48">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <TextBlock Text="{Binding [CompanionSettings_BatteryCache], Source={StaticResource Loc}}" FontSize="16" TextWrapping="Wrap" VerticalAlignment="Center" />
+                <TextBlock Text="{Binding [CompanionSettings_BatteryCache], Source={StaticResource Loc}}" FontSize="14" TextWrapping="Wrap" VerticalAlignment="Center" />
                 <ToggleSwitch x:Name="BatteryCacheSwitch" Grid.Column="1" Style="{StaticResource SettingToggle}" VerticalAlignment="Center"
                               AutomationProperties.Name="{Binding [CompanionSettings_BatteryCache], Source={StaticResource Loc}}" Toggled="BatteryCache_Toggled" />
             </Grid>
-            <TextBlock x:Name="SharedSettingsError" FontSize="13" TextWrapping="Wrap" Visibility="Collapsed"
+            <TextBlock x:Name="SharedSettingsError" FontSize="12" TextWrapping="Wrap" Visibility="Collapsed"
                        Foreground="{ThemeResource AppleSecondaryBrush}" AutomationProperties.LiveSetting="Polite" />
         </StackPanel>
     </Expander>

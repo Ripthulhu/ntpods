@@ -196,6 +196,22 @@ pub fn toggle_value(id: u8, on: bool) -> u32 {
     }
 }
 
+/// Reports are raw device data; a known setting can acquire a new value schema.
+pub fn known_control(id: u8) -> bool {
+    is_toggle(id)
+        || matches!(
+            id,
+            0x01 | 0x0D | 0x16 | 0x17 | 0x18 | 0x1A | 0x1C | 0x1F | 0x23 | 0x24 | 0x2E | 0x40
+        )
+}
+
+/// Decode only a schema the legacy editor understands, without replacing the raw report.
+pub fn current_control_value(id: u8, raw: u32) -> Option<u32> {
+    // Hold reports also include the previous actions in the upper two bytes.
+    let current = if id == 0x16 { raw & 0xFFFF } else { raw };
+    valid_control(id, current).then_some(current)
+}
+
 pub fn valid_control(id: u8, value: u32) -> bool {
     if is_toggle(id) {
         return matches!(value, 1 | 2);
@@ -304,7 +320,12 @@ impl PendingSettings {
         token: WriteToken,
     ) -> bool {
         token.session == self.session
-            && (!self.reported_during(id, token) || state.device_controls.get(&id) == Some(&value))
+            && (!self.reported_during(id, token)
+                || state
+                    .device_controls
+                    .get(&id)
+                    .and_then(|raw| current_control_value(id, *raw))
+                    == Some(value))
     }
 
     pub fn begin_control(
@@ -437,16 +458,18 @@ impl PendingSettings {
     }
 
     pub fn confirm_control(&mut self, state: &mut Snapshot, id: u8, value: u32) -> bool {
-        if !valid_control(id, value) {
+        if !known_control(id) {
             return false;
         }
+        let current = current_control_value(id, value);
         let count = self.reports.entry(id).or_default();
         *count = count.wrapping_add(1);
         let strength_reported = id == 0x2E && state.adaptive_strength_requested.take().is_some();
         let allow_off_reported = id == 0x34 && state.allow_off_requested.take().is_some();
         let changed = state.device_controls.insert(id, value) != Some(value);
         let requested_cleared = state.device_controls_requested.remove(&id).is_some();
-        let matched = state.device_controls_pending.get(&id) == Some(&value);
+        let matched =
+            current.is_some_and(|value| state.device_controls_pending.get(&id) == Some(&value));
         if matched {
             state.device_controls_pending.remove(&id);
             self.controls.remove(&id);
@@ -454,16 +477,16 @@ impl PendingSettings {
                 state.conversational_awareness_pending = None;
             }
         }
-        let anc_confirmed = id == 0x0D && self.unconfirmed_anc == Some(value);
+        let anc_confirmed = id == 0x0D && current.is_some() && self.unconfirmed_anc == current;
         if anc_confirmed {
             self.unconfirmed_anc = None;
             state.anc_unconfirmed = false;
         }
-        match id {
-            0x0D => state.anc = value as u8,
-            0x26 => state.adaptive_volume = value == 1,
-            0x28 => state.conversational_awareness = value == 1,
-            0x34 => state.allow_off = value == 1,
+        match (id, current) {
+            (0x0D, Some(value)) => state.anc = value as u8,
+            (0x26, Some(value)) => state.adaptive_volume = value == 1,
+            (0x28, Some(value)) => state.conversational_awareness = value == 1,
+            (0x34, Some(value)) => state.allow_off = value == 1,
             _ => (),
         }
         changed
@@ -568,26 +591,13 @@ mod tests {
                 let mut extra = record.to_vec();
                 extra.push(0);
                 malformed.push(extra);
-                let mut invalid_values = vec![
-                    0xFF,
-                    baseline | 0x100,
-                    baseline | 0x10000,
-                    baseline | 0x1000000,
-                    if id == 0x2E { 101 } else { 3 },
-                ];
-                if id != 0x2E {
-                    invalid_values.push(0);
-                }
-                for value in invalid_values {
-                    let mut packet = record;
-                    packet[7..].copy_from_slice(&value.to_le_bytes());
-                    malformed.push(packet.to_vec());
-                    assert!(!pending.confirm_control(&mut state, id, value));
-                    assert_eq!(state, before);
-                    assert_eq!(pending.token(id).report, report_count);
-                }
-                if id == 0x2E {
-                    assert!(malformed.contains(&vec![4, 0, 4, 0, 9, 0, 0x2E, 0xFF, 0, 0, 0]));
+                let mut unknown_id = record;
+                unknown_id[6] = 0x03;
+                malformed.push(unknown_id.to_vec());
+                for offset in 0..6 {
+                    let mut invalid_header = record;
+                    invalid_header[offset] ^= 0xFF;
+                    malformed.push(invalid_header.to_vec());
                 }
                 for packet in malformed {
                     let decoded = crate::aap::parse_device_control(&packet);
@@ -612,6 +622,45 @@ mod tests {
                 assert!(state.allow_off_requested.is_none());
             }
         }
+    }
+
+    #[test]
+    fn unfamiliar_reports_remain_raw_read_only_and_cannot_confirm_legacy_requests() {
+        let mut pending = PendingSettings::default();
+        let mut state = pro_three();
+        for (id, baseline, requested, raw) in [
+            (0x24, 0x0200, 0x0300, 0x00022301),
+            (0x28, 1, 2, 0x0102),
+            (0x0D, 2, 3, 0x0103),
+        ] {
+            pending.confirm_control(&mut state, id, baseline);
+            let token = pending.begin_control(&mut state, id, requested, false);
+            pending.finish_control(&mut state, id, requested, token, true);
+            let before = (state.anc, state.conversational_awareness);
+            assert!(pending.confirm_control(&mut state, id, raw));
+            assert_eq!(state.device_controls[&id], raw);
+            assert_eq!((state.anc, state.conversational_awareness), before);
+            if id != 0x28 {
+                assert_eq!(state.device_controls_pending.get(&id), Some(&requested));
+            }
+            assert!(!pending.can_remember_choice(&state, id, requested, token));
+            assert!(!crate::device_models::control(&state, id, requested));
+        }
+        assert!(!pending.confirm_control(&mut state, 0x03, 1));
+    }
+
+    #[test]
+    fn hold_current_actions_confirm_without_losing_the_raw_previous_actions() {
+        let mut pending = PendingSettings::default();
+        let mut state = pro_three();
+        let token = pending.begin_control(&mut state, 0x16, 0x0501, true);
+        assert!(pending.confirm_control(&mut state, 0x16, 0x01050501));
+        pending.finish_control(&mut state, 0x16, 0x0501, token, true);
+        assert_eq!(state.device_controls[&0x16], 0x01050501);
+        assert!(state.device_controls_requested.is_empty());
+        assert!(pending.can_remember_choice(&state, 0x16, 0x0501, token));
+        assert!(crate::device_models::control(&state, 0x16, 0x0105));
+        assert!(!crate::device_models::control(&state, 0x16, 0x01050501));
     }
 
     #[test]
@@ -976,8 +1025,10 @@ mod tests {
             assert!(!pending.expire(&mut state, now + CONFIRM_TIMEOUT));
             assert!(state.device_settings_error.is_none());
 
-            assert!(!pending.confirm_control(&mut state, 0x34, 0));
-            assert_eq!(state.allow_off_requested, Some(true));
+            assert!(pending.confirm_control(&mut state, 0x34, 0));
+            assert_eq!(state.device_controls.get(&0x34), Some(&0));
+            assert!(state.allow_off_requested.is_none() && !state.allow_off);
+            assert!(!crate::device_models::control(&state, 0x34, 1));
             assert!(pending.confirm_control(&mut state, 0x34, 1));
             assert!(state.allow_off && state.allow_off_requested.is_none());
 
@@ -1048,8 +1099,9 @@ mod tests {
         assert!(state.adaptive_strength_requested.is_none());
 
         pending.control_sent(&mut state, 0x2E, 25, now);
-        assert!(!pending.confirm_control(&mut state, 0x2E, 101));
-        assert_eq!(state.adaptive_strength_requested, Some(25));
+        assert!(pending.confirm_control(&mut state, 0x2E, 101));
+        assert_eq!(state.device_controls.get(&0x2E), Some(&101));
+        assert!(state.adaptive_strength_requested.is_none());
         assert!(pending.confirm_control(&mut state, 0x2E, 50));
         assert!(state.adaptive_strength_requested.is_none());
         assert_eq!(state.device_controls.get(&0x2E), Some(&50));
@@ -1097,8 +1149,9 @@ mod tests {
             assert_eq!(state.device_controls.get(&id), Some(&value));
             assert!(state.device_controls_pending.is_empty());
         }
-        assert!(!pending.confirm_control(&mut state, id, 3));
-        assert_eq!(state.device_controls.get(&id), Some(&2));
+        assert!(pending.confirm_control(&mut state, id, 3));
+        assert_eq!(state.device_controls.get(&id), Some(&3));
+        assert!(!valid_control(id, 3));
     }
 
     #[test]
@@ -1189,6 +1242,9 @@ mod tests {
         assert!(!pending.expire(&mut state, now + CONFIRM_TIMEOUT));
         state.transparency = Some(ntpods_ipc::TransparencySettings {
             enabled: true,
+            left_eq: [0.; 8],
+            right_eq: [0.; 8],
+            own_voice: 0.5,
             left_amplification: 0.2,
             right_amplification: 0.3,
             left_tone: 0.0,
@@ -1314,7 +1370,7 @@ mod tests {
         ] {
             assert!(!pending.confirm_eq(&mut state, eq));
         }
-        assert!(!pending.confirm_control(&mut state, 0x23, 3));
+        assert!(!pending.confirm_control(&mut state, 0x03, 1));
         assert!(state.eq.is_none() && state.device_controls.is_empty());
     }
 

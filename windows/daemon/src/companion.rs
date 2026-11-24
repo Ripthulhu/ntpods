@@ -5,6 +5,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 #[path = "companion_calls.rs"]
 mod calls;
+#[path = "companion_media.rs"]
+mod media_policy;
+#[path = "companion_pairing.rs"]
+mod pairing;
+#[path = "dongle_presence.rs"]
+mod presence;
 use std::io;
 use std::mem::{size_of, zeroed};
 use std::path::PathBuf;
@@ -55,6 +61,10 @@ pub(crate) struct State {
     release: Option<Release>,
     native_counter: u64,
     native_open: Option<(u64, u64, u64)>,
+    pairing: pairing::Pairing,
+    output_override: u64,
+    presentation: Option<std::sync::Arc<presence::Lease>>,
+    presentation_peer: presence::Peer,
 }
 
 struct Release {
@@ -180,13 +190,18 @@ impl State {
                 self.phase.clone()
             },
             error: self.error.clone(),
+            pairing: self.pairing.status(),
         }
     }
 }
 
 pub fn publish(ctx: &Ctx) {
-    let status = ctx.companion.lock().unwrap().status();
-    ctx.send_event(&Event::CompanionStatus { status });
+    publish_status(&ctx.companion, |status| ctx.send_event(&Event::CompanionStatus { status }));
+}
+fn publish_status(companion: &Mutex<State>, send: impl FnOnce(CompanionStatus)) {
+    // Keep publication ordered with approval/window changes and their acknowledgements.
+    let state = companion.lock().unwrap();
+    send(state.status());
 }
 
 pub fn serializes(command: &Command) -> bool {
@@ -207,7 +222,10 @@ pub fn serializes(command: &Command) -> bool {
             | Command::SetPlaybackBitrate { .. }
             | Command::SetPlaybackLink { .. }
             | Command::SetPlaybackGameMode { .. }
-            | Command::DongleControl { opcode: 1 | 2 | 4, .. }
+            | Command::DongleControl {
+                opcode: 1 | 2 | 4,
+                ..
+            }
     )
 }
 
@@ -217,10 +235,13 @@ pub fn local_override(ctx: &Ctx, command: &Command) {
     }
     let mut state = ctx.companion.lock().unwrap();
     state.generation = state.generation.wrapping_add(1);
+    state.output_override = state.output_override.wrapping_add(1);
     state.queued = None;
     state.release = None;
     state.phase = if state.connected { "idle" } else { "waiting" }.into();
 }
+
+pub fn pairing_override(ctx: &Ctx, command: &Command) { pairing::observe_local(ctx, command); }
 
 pub fn local_connected(ctx: &Ctx) {
     let mut state = ctx.companion.lock().unwrap();
@@ -235,6 +256,7 @@ pub fn local_connected(ctx: &Ctx) {
 pub fn microphone_started(ctx: &Ctx) {
     let mut state = ctx.companion.lock().unwrap();
     state.generation = state.generation.wrapping_add(1);
+    state.output_override = state.output_override.wrapping_add(1);
     state.queued = None;
     state.release = None;
     state.phase = if state.connected { "idle" } else { "waiting" }.into();
@@ -248,12 +270,40 @@ pub struct ResumeGuard {
     request: u64,
     intent: u64,
     native: Option<(u64, u64, u64)>,
+    route: Option<MediaRoute>,
 }
 
 impl ResumeGuard {
     pub fn capture(ctx: &Ctx) -> Option<Self> {
-        let address = ctx.mac();
-        if !selected_ready(ctx, address) || busy(ctx, address) {
+        Self::capture_for(ctx, ctx.mac(), None)
+    }
+
+    fn capture_for(ctx: &Ctx, address: u64, route: Option<&MediaRoute>) -> Option<Self> {
+        let route = match crate::dongle_routing::selected(ctx, address) {
+            Some(Ok(_)) => Some(
+                route
+                    .filter(|(ticket, status, at)| {
+                        ticket.current(ctx)
+                            && at.elapsed() <= Duration::from_secs(1)
+                            && status.peer == address.to_be_bytes()[2..]
+                            && status.connected
+                            && status.owned
+                            && status.controls_ready
+                            && !status.pending
+                            && !status.releasing
+                            && !status.busy
+                    })?
+                    .clone(),
+            ),
+            Some(Err(_)) => return None,
+            None => {
+                if !selected_ready(ctx, address) {
+                    return None;
+                }
+                None
+            }
+        };
+        if busy(ctx, address) {
             return None;
         }
         let state = ctx.companion.lock().unwrap();
@@ -264,10 +314,15 @@ impl ResumeGuard {
             request: ctx.connect_requested.snapshot(),
             intent: bt::playback_intent(),
             native: state.native_open,
+            route,
         })
     }
 
     pub fn current(&self, ctx: &Ctx) -> bool {
+        self.current_route(ctx, self.route.as_ref())
+    }
+
+    fn current_route(&self, ctx: &Ctx, route: Option<&MediaRoute>) -> bool {
         let state = ctx.companion.lock().unwrap();
         let current = state.generation == self.generation
             && state.authorization == self.authorization
@@ -275,11 +330,28 @@ impl ResumeGuard {
             && state.native_open == self.native;
         drop(state);
         current
-            && ctx.mac() == self.address
+            && selected_pair(ctx, self.address)
             && !ctx.shutting_down.load(Ordering::Acquire)
             && ctx.connect_requested.is_current(self.request)
             && bt::playback_intent() == self.intent
-            && selected_ready(ctx, self.address)
+            && match &self.route {
+                Some((ticket, expected, _)) => {
+                    ticket.current(ctx)
+                        && route.is_some_and(|(current, status, at)| {
+                            current.current(ctx)
+                                && at.elapsed() <= Duration::from_secs(1)
+                                && status.peer == expected.peer
+                                && status.revision == expected.revision
+                                && status.connected
+                                && status.owned
+                                && status.controls_ready
+                                && !status.pending
+                                && !status.releasing
+                                && !status.busy
+                        })
+                }
+                None => selected_ready(ctx, self.address),
+            }
             && !busy(ctx, self.address)
     }
 }
@@ -310,6 +382,7 @@ fn selected_ready(ctx: &Ctx, address: u64) -> bool {
 }
 
 pub fn apply_local(ctx: &Ctx, command: &Command) -> bool {
+    if pairing::apply_local(ctx, command) { return true; }
     let result = match command {
         Command::CompanionStatus => {
             publish(ctx);
@@ -320,6 +393,7 @@ pub fn apply_local(ctx: &Ctx, command: &Command) -> bool {
             peer_address,
             secret_hex,
             device_id,
+            request_id,
         } => {
             let _actions = ctx.companion_actions.lock().unwrap();
             let result = (|| {
@@ -329,11 +403,7 @@ pub fn apply_local(ctx: &Ctx, command: &Command) -> bool {
                     .ok_or("Select the paired AirPods before linking.")?;
                 let secret = decode_hex::<32>(secret_hex)
                     .ok_or("Use a 32-byte lowercase hexadecimal companion secret.")?;
-                if device != ctx.mac()
-                    || peer == device
-                    || !bonded(peer)
-                    || bt::paired_aap_name(device).is_none()
-                {
+                if !selected_pair(ctx, device) || peer == device || !bonded(peer) {
                     return Err("Both the phone and selected AirPods must already be bonded.");
                 }
                 ctx.companion_preferences.lock().unwrap().set_consent(false)
@@ -352,6 +422,7 @@ pub fn apply_local(ctx: &Ctx, command: &Command) -> bool {
                 }
                 state.generation = state.generation.wrapping_add(1);
                 state.authorization = state.authorization.wrapping_add(1);
+                state.presentation_peer = presence::Peer::default();
                 state.connected = false;
                 state.queued = None;
                 state.release = None;
@@ -359,14 +430,15 @@ pub fn apply_local(ctx: &Ctx, command: &Command) -> bool {
                 state.phase = "waiting".into();
                 Ok(())
             })();
-            Some(("companion_link", 0, result))
+            Some(("companion_link", *request_id, result))
         }
-        Command::CompanionForget => {
+        Command::CompanionForget { request_id } => {
             let _actions = ctx.companion_actions.lock().unwrap();
             let _ = ctx.companion_preferences.lock().unwrap().set_consent(false);
             let mut state = ctx.companion.lock().unwrap();
             state.generation = state.generation.wrapping_add(1);
             state.authorization = state.authorization.wrapping_add(1);
+            state.presentation_peer = presence::Peer::default();
             state.connected = false;
             state.queued = None;
             state.release = None;
@@ -375,7 +447,7 @@ pub fn apply_local(ctx: &Ctx, command: &Command) -> bool {
             let result = state
                 .save()
                 .map_err(|_| "Could not remove the protected companion approval.");
-            Some(("companion_forget", 0, result))
+            Some(("companion_forget", *request_id, result))
         }
         Command::CompanionSwitch {
             target,
@@ -383,12 +455,11 @@ pub fn apply_local(ctx: &Ctx, command: &Command) -> bool {
             request_id,
         } => {
             let _actions = ctx.companion_actions.lock().unwrap();
+            let selected =
+                parse_device_id(device_id).filter(|address| selected_pair(ctx, *address));
             let mut state = ctx.companion.lock().unwrap();
-            let result = if parse_device_id(device_id) != Some(ctx.mac())
-                || !state
-                    .link
-                    .as_ref()
-                    .is_some_and(|link| link.device == ctx.mac())
+            let result = if selected.is_none()
+                || state.link.as_ref().map(|link| link.device) != selected
             {
                 Err("The companion is not linked for the selected AirPods.")
             } else if !state.connected {
@@ -511,6 +582,19 @@ fn reserve_authorized<'a>(
     Ok(reservation)
 }
 
+fn selected_pair(ctx: &Ctx, address: u64) -> bool {
+    match crate::dongle_routing::selected(ctx, address) {
+        Some(ticket) => ticket.is_ok(),
+        None => ctx.mac() == address,
+    }
+}
+fn route_connected(ctx: &Ctx, address: u64) -> bool {
+    match crate::dongle_routing::selected(ctx, address) {
+        Some(Ok(_)) => ctx.state.lock().unwrap().dongle.connected,
+        Some(Err(_)) => false,
+        None => selected_ready(ctx, address),
+    }
+}
 fn busy(ctx: &Ctx, address: u64) -> bool {
     let snapshot = ctx.state.lock().unwrap().clone();
     ctx.capture_active.load(Ordering::Acquire)
@@ -524,15 +608,20 @@ fn busy(ctx: &Ctx, address: u64) -> bool {
         || snapshot.playback_buffer_target_ms.is_some()
         || crate::diagnostic_controls::active(&snapshot)
         || ctx.nearby_finder.lock().unwrap().active()
-        || crate::hfp_endpoints::Endpoints::new()
-            .and_then(|endpoints| endpoints.busy(address))
-            .unwrap_or(true)
+        || match crate::dongle_routing::selected(ctx, address) {
+            Some(Ok(_)) => snapshot.dongle.microphone_active || snapshot.dongle.pending,
+            Some(Err(_)) => true,
+            None => crate::hfp_endpoints::Endpoints::new()
+                .and_then(|endpoints| endpoints.busy(address))
+                .unwrap_or(true),
+        }
 }
 
 fn eligible(ctx: &Ctx, link: &Link) -> Result<(), &'static str> {
     if ctx.shutting_down.load(Ordering::Acquire)
-        || ctx.mac() != link.device
-        || bt::paired_aap_name(link.device).is_none()
+        || !selected_pair(ctx, link.device)
+        || (crate::dongle_routing::selected(ctx, link.device).is_none()
+            && bt::paired_aap_name(link.device).is_none())
         || !bonded(link.peer)
     {
         return Err("unavailable");
@@ -615,6 +704,20 @@ struct Frame {
     sco: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     all_idle: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    probe: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    generation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    event: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    playing: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    known: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    available: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    media_gen: Option<String>,
 }
 
 impl Frame {
@@ -656,6 +759,13 @@ impl Frame {
             hfp_ready: None,
             sco: None,
             all_idle: None,
+            probe: None,
+            generation: None,
+            event: None,
+            playing: None,
+            known: None,
+            available: None,
+            media_gen: None,
         }
     }
 
@@ -704,6 +814,26 @@ impl Frame {
             "authenticated" | "ping" | "release" | "acquire" => &["sid"],
             "status" => &["sid", "connected", "busy", "can_release", "can_acquire"],
             "switch" => &["sid", "target"],
+            "media_query" => &["sid", "probe"],
+            "media_state" => &[
+                "sid",
+                "probe",
+                "generation",
+                "event",
+                "playing",
+                "known",
+                "connected",
+                "available",
+            ],
+            "prepare" if frame.purpose.as_deref() == Some("media") => &[
+                "sid",
+                "target",
+                "purpose",
+                "episode",
+                "call_gen",
+                "origin_token",
+                "media_gen",
+            ],
             "prepare" => &[
                 "sid",
                 "target",
@@ -774,6 +904,8 @@ impl Frame {
                 | "call_origin"
                 | "call_state"
                 | "call_end"
+                | "media_query"
+                | "media_state"
         );
         if (frame.tx == ZERO_TX) != zero
             || frame
@@ -853,7 +985,7 @@ impl Frame {
                 .caps
                 .as_deref()
                 .and_then(decode_hex::<1>)
-                .is_none_or(|v| v[0] & !3 != 0)
+                .is_none_or(|v| v[0] & !7 != 0)
         {
             return Err(invalid());
         }
@@ -908,6 +1040,26 @@ impl Frame {
         {
             return Err(invalid());
         }
+        if matches!(frame.kind.as_str(), "media_query" | "media_state") {
+            if frame
+                .probe
+                .as_deref()
+                .and_then(decode_hex::<8>)
+                .is_none_or(|v| v == [0; 8])
+            {
+                return Err(invalid());
+            }
+            if frame.kind == "media_state"
+                && (frame
+                    .generation
+                    .as_deref()
+                    .and_then(decode_hex::<8>)
+                    .is_none_or(|v| v == [0; 8])
+                    || frame.event.as_deref().and_then(decode_hex::<8>).is_none())
+            {
+                return Err(invalid());
+            }
+        }
         if frame.kind == "prepare" {
             let ep = frame
                 .episode
@@ -926,6 +1078,16 @@ impl Frame {
                 .ok_or_else(invalid)?;
             let valid = match frame.purpose.as_deref() {
                 Some("manual") => ep == [0; 16] && gen == [0; 8] && origin == [0; 16],
+                Some("media") => {
+                    ep == [0; 16]
+                        && gen == [0; 8]
+                        && origin == [0; 16]
+                        && frame
+                            .media_gen
+                            .as_deref()
+                            .and_then(decode_hex::<8>)
+                            .is_some_and(|v| v != [0; 8])
+                }
                 Some("call_takeover") => {
                     frame.target == Some(CompanionTarget::Android)
                         && ep != [0; 16]
@@ -1224,9 +1386,13 @@ struct Listener {
     socket: Socket,
     address: SOCKADDR_BTH,
     _winsock: Winsock,
+    service_id: GUID,
 }
 impl Listener {
     fn open() -> io::Result<Self> {
+        Self::open_service(SERVICE_ID)
+    }
+    fn open_service(service_id: GUID) -> io::Result<Self> {
         let winsock = Winsock::open()?;
         let raw = unsafe { socket(AF_BTH as i32, SOCK_STREAM, BTHPROTO_RFCOMM as i32) };
         if raw == INVALID_SOCKET {
@@ -1260,6 +1426,7 @@ impl Listener {
             socket,
             address,
             _winsock: winsock,
+            service_id,
         };
         server.advertise(RNRSERVICE_REGISTER)?;
         Ok(server)
@@ -1267,7 +1434,7 @@ impl Listener {
 
     fn advertise(&mut self, operation: WSAESETSERVICEOP) -> io::Result<()> {
         let mut name = crate::wide("NTPods Companion");
-        let mut service = SERVICE_ID;
+        let mut service = self.service_id;
         let mut location: CSADDR_INFO = unsafe { zeroed() };
         location.LocalAddr.lpSockaddr = (&mut self.address as *mut SOCKADDR_BTH).cast();
         location.LocalAddr.iSockaddrLength = size_of::<SOCKADDR_BTH>() as i32;
@@ -1332,8 +1499,11 @@ struct Framed {
 }
 impl Framed {
     fn poll(&mut self, device: u64, sid: Option<&str>) -> io::Result<Option<Frame>> {
+        self.poll_line()?.map(|line| Frame::parse(&line, device, sid)).transpose()
+    }
+    fn poll_line(&mut self) -> io::Result<Option<Vec<u8>>> {
         if let Some(line) = take_line(&mut self.pending)? {
-            return Frame::parse(&line, device, sid).map(Some);
+            return Ok(Some(line));
         }
         let mut bytes = [0u8; 2048];
         let count = unsafe { recv(self.socket.0, bytes.as_mut_ptr(), bytes.len() as i32, 0) };
@@ -1352,11 +1522,12 @@ impl Framed {
             };
         }
         self.pending.extend_from_slice(&bytes[..count as usize]);
-        take_line(&mut self.pending)?
-            .map(|line| Frame::parse(&line, device, sid))
-            .transpose()
+        take_line(&mut self.pending)
     }
     fn send(&self, frame: &Frame) -> io::Result<()> {
+        self.send_json(frame)
+    }
+    fn send_json(&self, frame: &impl Serialize) -> io::Result<()> {
         let mut data = serde_json::to_vec(frame).map_err(|_| invalid())?;
         if data.len() > MAX_FRAME {
             return Err(invalid());
@@ -1391,7 +1562,11 @@ impl Framed {
         Ok(())
     }
     fn wait(&mut self, device: u64, sid: Option<&str>, deadline: Instant) -> io::Result<Frame> {
+        self.wait_current(device, sid, deadline, &|| true)
+    }
+    fn wait_current(&mut self, device: u64, sid: Option<&str>, deadline: Instant, current: &impl Fn() -> bool) -> io::Result<Frame> {
         loop {
+            if !current() { unsafe { shutdown(self.socket.0, SD_BOTH); } return Err(invalid()); }
             if Instant::now() >= deadline {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
@@ -1421,29 +1596,36 @@ fn take_line(pending: &mut Vec<u8>) -> io::Result<Option<Vec<u8>>> {
 }
 
 fn authenticate(stream: &mut Framed, link: &Link) -> io::Result<(String, u8)> {
+    authenticate_committing(stream, link, || true, || Ok(()))
+}
+fn authenticate_committing(stream: &mut Framed, link: &Link, current: impl Fn() -> bool, commit: impl FnOnce() -> io::Result<()>) -> io::Result<(String, u8)> {
     let deadline = Instant::now() + Duration::from_secs(10);
-    let hello = stream.wait(link.device, None, deadline)?;
+    let hello = stream.wait_current(link.device, None, deadline, &current)?;
     if hello.kind != "hello" {
         return Err(invalid());
     }
     let server_nonce = hex(&random::<32>()?);
+    let server_caps = format!(
+        "{:02x}",
+        decode_hex::<1>(hello.caps.as_deref().ok_or_else(invalid)?).ok_or_else(invalid)?[0] & 7
+    );
     let transcript = transcript(
         link.device,
         hello.nonce.as_deref().ok_or_else(invalid)?,
         &server_nonce,
         hello.caps.as_deref().ok_or_else(invalid)?,
-        "03",
+        &server_caps,
     );
     let sid = hex(&digest(None, &transcript)?);
     let mut challenge = Frame::new("challenge", ZERO_TX, link.device, Some(&sid));
     challenge.nonce = Some(server_nonce);
-    challenge.caps = Some("03".into());
+    challenge.caps = Some(server_caps);
     challenge.proof = Some(hex(&digest(
         Some(&link.secret),
         &[b"server\n".as_slice(), &transcript].concat(),
     )?));
     stream.send(&challenge)?;
-    let auth = stream.wait(link.device, Some(&sid), deadline)?;
+    let auth = stream.wait_current(link.device, Some(&sid), deadline, &current)?;
     let expected = digest(
         Some(&link.secret),
         &[b"client\n".as_slice(), &transcript].concat(),
@@ -1456,6 +1638,7 @@ fn authenticate(stream: &mut Framed, link: &Link) -> io::Result<(String, u8)> {
     {
         return Err(invalid());
     }
+    commit()?;
     stream.send(&Frame::new(
         "authenticated",
         ZERO_TX,
@@ -1464,12 +1647,13 @@ fn authenticate(stream: &mut Framed, link: &Link) -> io::Result<(String, u8)> {
     ))?;
     Ok((
         sid,
-        decode_hex::<1>(hello.caps.as_deref().ok_or_else(invalid)?).ok_or_else(invalid)?[0] & 3,
+        decode_hex::<1>(hello.caps.as_deref().ok_or_else(invalid)?).ok_or_else(invalid)?[0] & 7,
     ))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
+    RouteProbe,
     Pause,
     Prepare,
     PhoneRelease,
@@ -1481,7 +1665,7 @@ enum Phase {
 impl Phase {
     fn status_name(self) -> &'static str {
         match self {
-            Self::Pause | Self::Prepare => "prepare",
+            Self::RouteProbe | Self::Pause | Self::Prepare => "prepare",
             Self::PhoneRelease => "release_android",
             Self::PcRelease => "release_pc",
             Self::PhoneAcquire => "acquire_android",
@@ -1495,10 +1679,58 @@ fn publish_phase(ctx: &Ctx, phase: Phase) {
     crate::log(&format!("companion: phase={}", phase.status_name()));
     publish(ctx);
 }
+struct DongleTransfer {
+    ticket: crate::dongle_routing::Ticket,
+    revision: u32,
+    revision_at: Instant,
+    preparing: bool,
+    job: Mutex<Option<crate::dongle_routing::Job>>,
+    result: Mutex<Option<Result<crate::dongle_routing::Status, &'static str>>>,
+}
+impl DongleTransfer {
+    fn observed_current(&self, observed: Option<&MediaRoute>) -> bool {
+        if self.preparing || self.revision == 0 {
+            return true;
+        }
+        if self.poll().as_ref().is_some_and(Result::is_err) {
+            return false;
+        }
+        let Some((ticket, status, _)) = observed else {
+            return true;
+        };
+        if !ticket.same_physical(&self.ticket) {
+            return false;
+        }
+        let latest = self.result.lock().unwrap();
+        let expected = latest
+            .as_ref()
+            .and_then(|result| result.as_ref().ok())
+            .map_or((self.revision, self.revision_at), |status| {
+                (status.revision, status.received)
+            });
+        media_policy::routing_current(
+            expected,
+            (status.revision, status.received),
+            self.ticket.pending_receipt(),
+            status.receipt(),
+        )
+    }
+    fn poll(&self) -> Option<Result<crate::dongle_routing::Status, &'static str>> {
+        let mut result = self.result.lock().unwrap();
+        if result.is_none() {
+            *result = self.job.lock().unwrap().as_ref().and_then(|job| job.poll());
+        }
+        result.clone()
+    }
+}
 struct Transfer {
     tx: String,
     target: CompanionTarget,
     call: Option<calls::Context>,
+    media_gen: Option<u64>,
+    media_source_gen: Option<u64>,
+    dongle: Option<DongleTransfer>,
+    media_fence: Option<std::sync::Arc<Mutex<(bool, Instant)>>>,
     authorization: u64,
     request_id: Option<u64>,
     generation: u64,
@@ -1520,13 +1752,36 @@ impl Transfer {
             (state.generation, state.authorization)
         };
         authorization == self.authorization
-            && ctx.mac() == link.device
+            && self.media_current()
+            && (selected_pair(ctx, link.device) || self.transitioning(ctx))
+            && self.dongle.as_ref().is_none_or(|route| {
+                route.ticket.current(ctx)
+                    && route
+                        .result
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .is_none_or(Result::is_ok)
+            })
             && !ctx.shutting_down.load(Ordering::Acquire)
             && self.tokens_current(
                 generation,
                 ctx.connect_requested.snapshot(),
                 bt::playback_intent(),
             )
+    }
+    fn transitioning(&self, ctx: &Ctx) -> bool {
+        self.dongle.as_ref().is_some_and(|route| {
+            route.ticket.transitioning(ctx)
+                && route.job.lock().unwrap().is_some()
+                && route.result.lock().unwrap().is_none()
+        })
+    }
+    fn media_current(&self) -> bool {
+        self.media_fence.as_ref().is_none_or(|fence| {
+            let (allowed, at) = *fence.lock().unwrap();
+            allowed && at.elapsed() <= Duration::from_secs(1)
+        })
     }
     fn tokens_current(&self, generation: u64, request: u64, audio_intent: u64) -> bool {
         generation == self.generation
@@ -1558,13 +1813,10 @@ impl Transfer {
 }
 
 fn status_frame(ctx: &Ctx, link: &Link, sid: &str) -> Frame {
-    let snapshot = ctx.state.lock().unwrap().clone();
-    let unavailable = ctx.mac() != link.device
-        || !bonded(link.peer)
-        || bt::paired_aap_name(link.device).is_none();
+    let unavailable = !selected_pair(ctx, link.device) || !bonded(link.peer);
     let busy = busy(ctx, link.device);
     let mut status = Frame::new("status", ZERO_TX, link.device, Some(sid));
-    status.connected = Some(snapshot.audio_output_ready && ctx.mac() == link.device);
+    status.connected = Some(route_connected(ctx, link.device));
     status.busy = Some(busy);
     status.can_release = Some(!busy && !unavailable);
     status.can_acquire = Some(!busy && !unavailable);
@@ -1615,6 +1867,9 @@ fn notify_local(ctx: &Ctx, request_id: Option<u64>, outcome: Result<(), &str>) {
 }
 
 fn finish(ctx: &Ctx, transfer: &Transfer, outcome: Result<(), &str>) {
+    if let Some(fence) = &transfer.media_fence {
+        *fence.lock().unwrap() = (false, Instant::now());
+    }
     let mut state = ctx.companion.lock().unwrap();
     let receipt_summary = state.release.as_ref().map(|release| {
         format!(
@@ -1658,10 +1913,14 @@ fn begin_transfer(
     eligible(ctx, link)?;
     let mut state = ctx.companion.lock().unwrap();
     state.error = None;
-    Ok(Transfer {
+    let mut transfer = Transfer {
         tx,
         target,
         call: None,
+        media_gen: None,
+        media_source_gen: None,
+        dongle: None,
+        media_fence: None,
         authorization,
         request_id,
         generation: state.generation,
@@ -1670,7 +1929,77 @@ fn begin_transfer(
         phase: Phase::Prepare,
         phase_deadline: started + PHASE_LIMIT,
         total_deadline: started + TOTAL_LIMIT,
-    })
+    };
+    drop(state);
+    if let Some(ticket) = crate::dongle_routing::selected(ctx, link.device) {
+        let ticket = ticket?;
+        transfer.dongle = Some(DongleTransfer {
+            job: Mutex::new(Some(crate::dongle_routing::probe(
+                ctx.clone(),
+                ticket.clone(),
+            ))),
+            ticket,
+            revision: 0,
+            revision_at: Instant::now(),
+            preparing: true,
+            result: Mutex::new(None),
+        });
+        transfer.phase = Phase::RouteProbe;
+    }
+    Ok(transfer)
+}
+
+fn start_dongle_action(
+    ctx: &Ctx,
+    link: &Link,
+    transfer: &mut Transfer,
+    acquire: bool,
+) -> Result<bool, &'static str> {
+    if transfer.dongle.is_none() {
+        return Ok(false);
+    }
+    {
+        let mut state = ctx.companion.lock().unwrap();
+        let link = state.link.as_mut().ok_or("unavailable")?;
+        let previous = link.held_away;
+        link.held_away = !acquire;
+        if state.save().is_err() {
+            state.link.as_mut().unwrap().held_away = previous;
+            return Err("failed");
+        }
+    }
+    let (generation, authorization, request, intent, address) = (
+        transfer.generation,
+        transfer.authorization,
+        transfer.request,
+        transfer.audio_intent,
+        link.device,
+    );
+    let context = ctx.clone();
+    let fence = transfer.media_fence.clone();
+    let route = transfer.dongle.as_mut().unwrap();
+    let ticket = route.ticket.clone();
+    *route.result.lock().unwrap() = None;
+    *route.job.get_mut().unwrap() = Some(crate::dongle_routing::act(
+        ctx.clone(),
+        route.ticket.clone(),
+        route.revision,
+        acquire,
+        move || {
+            let state = context.companion.lock().unwrap();
+            let authorized = state.generation == generation && state.authorization == authorization;
+            drop(state);
+            authorized
+                && (selected_pair(&context, address) || ticket.transitioning(&context))
+                && context.connect_requested.is_current(request)
+                && bt::playback_intent() == intent
+                && fence.as_ref().is_none_or(|fence| {
+                    let (allowed, at) = *fence.lock().unwrap();
+                    allowed && at.elapsed() <= Duration::from_secs(1)
+                })
+        },
+    ));
+    Ok(true)
 }
 
 fn release_pc(ctx: &Ctx, link: &Link, transfer: &mut Transfer) -> Result<(), &'static str> {
@@ -1680,6 +2009,10 @@ fn release_pc(ctx: &Ctx, link: &Link, transfer: &mut Transfer) -> Result<(), &'s
     }
     eligible(ctx, link)?;
     transfer.enter(Phase::PcRelease);
+    if start_dongle_action(ctx, link, transfer, false)? {
+        publish_phase(ctx, Phase::PcRelease);
+        return Ok(());
+    }
     {
         let mut state = ctx.companion.lock().unwrap();
         let old_hold = state.link.as_ref().ok_or("unavailable")?.held_away;
@@ -1710,7 +2043,13 @@ fn release_pc(ctx: &Ctx, link: &Link, transfer: &mut Transfer) -> Result<(), &'s
     Ok(())
 }
 
-fn released_pc(ctx: &Ctx, link: &Link) -> Result<bool, &'static str> {
+fn released_pc(ctx: &Ctx, link: &Link, transfer: &Transfer) -> Result<bool, &'static str> {
+    if let Some(route) = &transfer.dongle {
+        return route
+            .poll()
+            .transpose()
+            .map(|status| status.is_some_and(|s| s.released && !s.connected && !s.owned));
+    }
     let driver_open = ctx.driver_cell.lock().unwrap().is_some();
     let microphone_quiet = ctx.hq_mic_quiet.load(Ordering::Acquire);
     let cleanup_pending = ctx.pending_audio_disconnect.lock().unwrap().is_pending();
@@ -1741,7 +2080,7 @@ fn released_pc(ctx: &Ctx, link: &Link) -> Result<bool, &'static str> {
 
 fn acquire_pc(ctx: &Ctx, link: &Link, transfer: &mut Transfer) -> Result<(), &'static str> {
     let _actions = ctx.companion_actions.lock().unwrap();
-    if transfer.call.is_some() && crate::dongle::inhibits(ctx, false) {
+    if transfer.call.is_some() && transfer.dongle.is_none() && crate::dongle::inhibits(ctx, false) {
         return Err("superseded");
     }
     if !transfer.current(ctx, link) || transfer.expired(Instant::now()) {
@@ -1749,6 +2088,10 @@ fn acquire_pc(ctx: &Ctx, link: &Link, transfer: &mut Transfer) -> Result<(), &'s
     }
     eligible(ctx, link)?;
     transfer.enter(Phase::PcAcquire);
+    if start_dongle_action(ctx, link, transfer, true)? {
+        publish_phase(ctx, Phase::PcAcquire);
+        return Ok(());
+    }
     let _microphone = ctx.mic_preference.lock().unwrap();
     let mut snapshot = ctx.state.lock().unwrap();
     // A call ending must not pull the AirPods away from a newly attached dongle.
@@ -1776,7 +2119,12 @@ fn acquire_pc(ctx: &Ctx, link: &Link, transfer: &mut Transfer) -> Result<(), &'s
     Ok(())
 }
 
-fn acquired_pc(ctx: &Ctx, link: &Link) -> bool {
+fn acquired_pc(ctx: &Ctx, link: &Link, transfer: &Transfer) -> bool {
+    if let Some(route) = &transfer.dongle {
+        return route.poll().is_some_and(|result| {
+            result.is_ok_and(|s| s.connected && s.controls_ready && s.owned && !s.pending)
+        });
+    }
     let snapshot = ctx.state.lock().unwrap().clone();
     snapshot.device_id == format!("{:012x}", link.device)
         && snapshot.connected
@@ -1801,6 +2149,15 @@ fn send_phase(
         return Err("timeout");
     }
     eligible(ctx, link)?;
+    if kind == "prepare"
+        && transfer
+            .dongle
+            .as_ref()
+            .is_some_and(|route| route.preparing)
+    {
+        transfer.enter(Phase::RouteProbe);
+        return Ok(());
+    }
     if phase != transfer.phase {
         transfer.enter(phase);
     }
@@ -1821,7 +2178,14 @@ fn prepare_frame(link: &Link, sid: &str, transfer: &Transfer) -> Frame {
         transfer
             .call
             .as_ref()
-            .map_or("manual", |call| call.purpose())
+            .map_or(
+                if transfer.media_gen.is_some() {
+                    "media"
+                } else {
+                    "manual"
+                },
+                |call| call.purpose(),
+            )
             .into(),
     );
     frame.episode = Some(
@@ -1838,6 +2202,9 @@ fn prepare_frame(link: &Link, sid: &str, transfer: &Transfer) -> Frame {
             .map_or(ZERO_TX, |call| call.call_gen.as_str())
             .into(),
     );
+    frame.media_gen = transfer
+        .media_gen
+        .map(|generation| format!("{generation:016x}"));
     frame.origin_token = Some(
         transfer
             .call
@@ -1880,7 +2247,9 @@ fn cancel_transfer(
     transfer: Transfer,
     code: &str,
     cancelled: &mut HashSet<String>,
+    calls: &mut calls::Calls,
 ) -> io::Result<()> {
+    calls.retain_media_release(ctx, link, &transfer);
     crate::log(&format!("companion: cancel code={code}"));
     let mut frame = Frame::new("cancel", &transfer.tx, link.device, Some(sid));
     frame.reason = Some(
@@ -1945,7 +2314,7 @@ fn send_preference(
     authorization: u64,
 ) -> io::Result<()> {
     let _reservation = reserve_authorized(&ctx.companion_actions, &ctx.companion, authorization)?;
-    if ctx.mac() != link.device {
+    if !selected_pair(ctx, link.device) {
         return Err(invalid());
     }
     stream.send(&preference_frame(link, sid, record))
@@ -1961,7 +2330,7 @@ fn receive_preference(
     authorization: u64,
 ) -> io::Result<()> {
     let _actions = reserve_authorized(&ctx.companion_actions, &ctx.companion, authorization)?;
-    if ctx.mac() != link.device {
+    if !selected_pair(ctx, link.device) {
         return Err(invalid());
     }
     let record = frame.preference()?;
@@ -2008,6 +2377,74 @@ fn receive_preference(
     Ok(())
 }
 
+type MediaRoute = (
+    crate::dongle_routing::Ticket,
+    crate::dongle_routing::Status,
+    Instant,
+);
+pub(crate) fn retain_dongle_output(
+    ctx: &Ctx,
+    status: &crate::dongle_routing::Status,
+    current: std::sync::Arc<dyn Fn() -> bool + Send + Sync>,
+) -> Result<(), &'static str> {
+    presence::arm(ctx, status, current)
+}
+fn local_media(
+    ctx: &Ctx,
+    link: &Link,
+    observer: &mut media_policy::Observer,
+    route: Option<&MediaRoute>,
+    transitioning: bool,
+) -> media_policy::Sample {
+    let selected = selected_pair(ctx, link.device);
+    let evidence = if selected || transitioning {
+        let address = (!transitioning && crate::dongle_routing::selected(ctx, link.device).is_none())
+            .then_some(link.device);
+        crate::media::companion_evidence(address)
+    } else {
+        crate::media::CompanionEvidence { intent: Err(()), qualified: false }
+    };
+    let fresh = route
+        .filter(|(ticket, _, at)| ticket.current(ctx) && at.elapsed() <= Duration::from_secs(1));
+    let (route_known, connected) = if transitioning {
+        (true, true)
+    } else {
+        match crate::dongle_routing::selected(ctx, link.device) {
+            Some(Ok(_)) => fresh.map_or((false, false), |(_, status, _)| (true, status.connected)),
+            Some(Err(_)) => (false, false),
+            None => {
+                let connected = selected_ready(ctx, link.device);
+                (connected, connected)
+            }
+        }
+    };
+    let dongle = crate::dongle_routing::selected(ctx, link.device).is_some();
+    let stable_output = !dongle || presence::selected_output(ctx);
+    let continuing = transitioning && (!dongle || !presence::supported(ctx));
+    let mut sample = observer.observe_qualified(
+        evidence.intent,
+        connected,
+        selected && !busy(ctx, link.device) && route_known && stable_output,
+        evidence.qualified,
+        continuing,
+    );
+    sample.known = stable_output && route_known && (!connected || sample.known);
+    sample
+}
+fn media_sample(frame: &Frame) -> io::Result<media_policy::Sample> {
+    let number = |value: &Option<String>| {
+        u64::from_str_radix(value.as_deref().ok_or_else(invalid)?, 16).map_err(|_| invalid())
+    };
+    Ok(media_policy::Sample {
+        generation: number(&frame.generation)?,
+        event: number(&frame.event)?,
+        known: frame.known.ok_or_else(invalid)?,
+        playing: frame.playing.ok_or_else(invalid)?,
+        connected: frame.connected.ok_or_else(invalid)?,
+        available: frame.available.ok_or_else(invalid)?,
+    })
+}
+
 fn session(
     stream: &mut Framed,
     ctx: &Ctx,
@@ -2025,6 +2462,19 @@ fn session(
     let mut next_ping = Instant::now() + Duration::from_secs(10);
     let mut next_busy = Instant::now();
     let mut next_origin = Instant::now();
+    let mut media_observer = media_policy::Observer::default();
+    let mut media_policy = media_policy::Policy::default();
+    let trace_flag = std::env::var("NTPODS_COMPANION_MEDIA_TRACE").ok();
+    let mut media_trace = media_policy::Trace::new(trace_flag.as_deref());
+    let mut trace_route = media_policy::TraceRoute::Waiting;
+    let mut trace_choice = None;
+    let mut media_epoch = ctx.companion.lock().unwrap().generation;
+    let mut media_route: Option<MediaRoute> = None;
+    let mut route_probe: Option<(crate::dongle_routing::Ticket, crate::dongle_routing::Job)> = None;
+    let mut local = local_media(ctx, link, &mut media_observer, None, false);
+    let mut phone_media: Option<(media_policy::Sample, Instant)> = None;
+    let mut media_probe: Option<(String, Instant)> = None;
+    let mut next_media = Instant::now();
     {
         let mut store = ctx.companion_preferences.lock().unwrap();
         store.peer_prefs = caps & 1 != 0;
@@ -2044,15 +2494,22 @@ fn session(
         }
     }
     stream.send(&status_frame(ctx, link, sid))?;
+    ctx.companion.lock().unwrap().presentation_peer.activity(Instant::now());
     let result = (|| loop {
         if ctx.shutting_down.load(Ordering::Acquire)
-            || ctx.mac() != link.device
+            || (!selected_pair(ctx, link.device)
+                && !active
+                    .as_ref()
+                    .is_some_and(|transfer| transfer.transitioning(ctx))
+                && !calls.waiting_media_release(ctx, link))
             || ctx.companion.lock().unwrap().authorization != authorization
             || !bonded(link.peer)
         {
             return Err(invalid());
         }
         let now = Instant::now();
+        ctx.companion.lock().unwrap().presentation_peer.transition(
+            (active.is_some() || calls.has_lease()).then_some(now + Duration::from_secs(1)));
         if now.duration_since(last_peer) >= PEER_LIMIT {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
@@ -2076,21 +2533,167 @@ fn session(
             }
         }
         if caps & 2 != 0 && now >= next_origin {
-            calls.origin(stream, ctx, link, sid, active.is_none(), authorization)?;
+            calls.media_origin(ctx, link, active.as_ref());
+            calls.origin(
+                stream,
+                ctx,
+                link,
+                sid,
+                active
+                    .as_ref()
+                    .is_none_or(|transfer| transfer.media_gen.is_some()),
+                authorization,
+                media_route.as_ref(),
+            )?;
             next_origin = now + Duration::from_millis(500);
         }
+        let epoch = ctx.companion.lock().unwrap().generation;
+        if epoch != media_epoch {
+            media_epoch = epoch;
+            media_policy = media_policy::Policy::default();
+            trace_choice = None;
+        }
+        if active.is_some() || calls.has_lease() {
+            media_policy.suspend();
+        }
+        if let Some((ticket, job)) = route_probe.as_ref() {
+            if let Some(result) = job.poll() {
+                trace_route = media_policy::TraceRoute::result(result.as_ref().err().copied());
+                media_route = result
+                    .ok()
+                    .map(|status| (ticket.clone(), status, status.received));
+                route_probe = None;
+            }
+        }
+        if caps & 4 != 0 && now >= next_media {
+            if route_probe.is_none() {
+                if let Some(Ok(ticket)) = crate::dongle_routing::selected(ctx, link.device) {
+                    route_probe = Some((
+                        ticket.clone(),
+                        crate::dongle_routing::probe(ctx.clone(), ticket),
+                    ));
+                }
+            }
+            local = local_media(
+                ctx,
+                link,
+                &mut media_observer,
+                media_route.as_ref(),
+                active
+                    .as_ref()
+                    .is_some_and(|transfer| transfer.transitioning(ctx)),
+            );
+            let probe = hex(&random::<8>()?);
+            if probe != ZERO_TX
+                && media_probe
+                    .as_ref()
+                    .is_none_or(|(_, sent)| sent.elapsed() >= Duration::from_secs(1))
+            {
+                let mut frame = Frame::new("media_query", ZERO_TX, link.device, Some(sid));
+                frame.probe = Some(probe.clone());
+                stream.send(&frame)?;
+                media_probe = Some((probe, Instant::now()));
+            }
+            next_media = now + Duration::from_millis(500);
+        }
+        if let Some(transfer) = active
+            .as_ref()
+            .filter(|transfer| transfer.media_gen.is_some())
+        {
+            let allowed = transfer
+                .dongle
+                .as_ref()
+                .is_none_or(|route| route.observed_current(media_route.as_ref()))
+                && phone_media.as_ref().is_some_and(|(phone, at)| {
+                    at.elapsed() <= Duration::from_secs(1)
+                        && transfer.media_source_gen.is_some_and(|source| {
+                            media_policy::current(
+                                if transfer.target == CompanionTarget::Android {
+                                    media_policy::Target::Phone
+                                } else {
+                                    media_policy::Target::Pc
+                                },
+                                transfer.media_gen.unwrap(),
+                                source,
+                                local,
+                                *phone,
+                            )
+                        })
+                });
+            if let Some(fence) = &transfer.media_fence {
+                *fence.lock().unwrap() = (allowed, Instant::now());
+            }
+        }
+        if let Some(line) = media_trace.record(now, || {
+            let route_fresh = media_route.as_ref().is_some_and(|(ticket, _, at)| ticket.current(ctx) && at.elapsed() <= Duration::from_secs(1));
+            let route = match crate::dongle_routing::selected(ctx, link.device) {
+                None => media_policy::TraceRoute::Native,
+                Some(Err(_)) => media_policy::TraceRoute::Unavailable,
+                Some(Ok(_)) => trace_route,
+            };
+            media_policy::TraceRecord { capable: caps & 4 != 0, pc: local, phone: phone_media.map(|(sample, _)| sample),
+                phone_fresh: phone_media.is_some_and(|(_, at)| at.elapsed() <= Duration::from_secs(1)), route,
+                route_present: media_route.is_some(), route_fresh, probe_pending: route_probe.is_some(),
+                busy: busy(ctx, link.device), call: calls.has_lease(), active: active.is_some(), choice: trace_choice }
+        }) { crate::log(&line); }
         let mut requested = ctx
             .companion
             .lock()
             .unwrap()
             .queued
             .take()
-            .map(|(target, id)| (None, target, Some(id)));
+            .map(|(target, id)| (None, target, Some(id), None));
+        if requested.is_some() {
+            media_policy.suspend();
+        }
         if let Some(frame) = stream.poll(link.device, Some(sid))? {
             last_peer = Instant::now();
+            ctx.companion.lock().unwrap().presentation_peer.activity(last_peer);
             match frame.kind.as_str() {
                 "ping" => stream.send(&status_frame(ctx, link, sid))?,
                 "status" => (),
+                "media_state" if caps & 4 != 0 => {
+                    if media_probe.as_ref().is_some_and(|(probe, sent)| {
+                        frame.probe.as_ref() == Some(probe)
+                            && sent.elapsed() <= Duration::from_secs(1)
+                    }) {
+                        let phone = media_sample(&frame)?;
+                        if phone.known {
+                            ctx.companion.lock().unwrap().presentation_peer.output(phone.connected, Instant::now());
+                        }
+                        phone_media = Some((phone, Instant::now()));
+                        media_probe = None;
+                        local = local_media(
+                            ctx,
+                            link,
+                            &mut media_observer,
+                            media_route.as_ref(),
+                            active
+                                .as_ref()
+                                .is_some_and(|transfer| transfer.transitioning(ctx)),
+                        );
+                        if active.is_none() && requested.is_none() && !calls.has_lease() {
+                            let choice = media_policy.observe(local, phone, Instant::now());
+                            if choice.is_some() { trace_choice = choice; }
+                            if let Some(target) = choice {
+                                requested = Some((
+                                    None,
+                                    match target {
+                                        media_policy::Target::Pc => CompanionTarget::Pc,
+                                        media_policy::Target::Phone => CompanionTarget::Android,
+                                    },
+                                    None,
+                                    Some(match target {
+                                        media_policy::Target::Pc => local.generation,
+                                        media_policy::Target::Phone => phone.generation,
+                                    }),
+                                ));
+                            }
+                        } else {
+                            media_policy.suspend();
+                        }
+                    }
+                }
                 "pref" if caps & 1 != 0 => {
                     if offered.len() >= 512 {
                         return Err(invalid());
@@ -2114,13 +2717,68 @@ fn session(
                     if calls.has_lease() {
                         calls.revoke();
                     }
-                    let outcome = if active.is_some() || requested.is_some() {
+                    let replacing_media = active
+                        .as_ref()
+                        .is_some_and(|transfer| transfer.media_gen.is_some());
+                    let outcome = if active.is_some() && !replacing_media || requested.is_some() {
                         Err("busy")
                     } else {
-                        calls.begin(ctx, link, &frame, authorization)
+                        match calls.begin_from_media_release(
+                            ctx,
+                            link,
+                            &frame,
+                            authorization,
+                            active
+                                .as_ref()
+                                .filter(|transfer| transfer.media_gen.is_some()),
+                        ) {
+                            Err("unavailable") => calls.begin(ctx, link, &frame, authorization),
+                            result => result,
+                        }
                     };
                     match outcome {
-                        Ok(transfer) => active = Some(transfer),
+                        Ok(mut transfer) => {
+                            if replacing_media {
+                                cancel_transfer(
+                                    stream,
+                                    ctx,
+                                    link,
+                                    sid,
+                                    active.take().unwrap(),
+                                    "superseded",
+                                    &mut cancelled,
+                                    &mut calls,
+                                )?;
+                                publish_phase(ctx, transfer.phase);
+                            }
+                            if transfer
+                                .call
+                                .as_ref()
+                                .is_some_and(|call| call.source_released)
+                            {
+                                if let Err(code) = send_phase(
+                                    stream,
+                                    ctx,
+                                    link,
+                                    sid,
+                                    &mut transfer,
+                                    "prepare",
+                                    Phase::Prepare,
+                                ) {
+                                    finish(ctx, &transfer, Err(code));
+                                    calls.revoke();
+                                    stream.send(&result_frame(
+                                        link,
+                                        sid,
+                                        &transfer.tx,
+                                        "complete",
+                                        Err(code),
+                                    ))?;
+                                    continue;
+                                }
+                            }
+                            active = Some(transfer);
+                        }
                         Err(code) => stream.send(&result_frame(
                             link,
                             sid,
@@ -2146,7 +2804,7 @@ fn session(
                         calls.sync(ctx, link, transfer);
                         if transfer.phase == Phase::PcRelease
                             && transfer.current(ctx, link)
-                            && released_pc(ctx, link) == Ok(true)
+                            && released_pc(ctx, link, transfer) == Ok(true)
                         {
                             calls.released(transfer);
                         }
@@ -2161,6 +2819,7 @@ fn session(
                             active.take().unwrap(),
                             "superseded",
                             &mut cancelled,
+                            &mut calls,
                         )?;
                     }
                     match outcome {
@@ -2199,6 +2858,7 @@ fn session(
                                             transfer,
                                             code,
                                             &mut cancelled,
+                                            &mut calls,
                                         )?;
                                         calls.revoke();
                                     } else {
@@ -2217,7 +2877,11 @@ fn session(
                                 }
                             }
                         }
-                        Ok(calls::EndPlan::WaitForPause | calls::EndPlan::ResumeCurrent) => (),
+                        Ok(
+                            calls::EndPlan::Finish
+                            | calls::EndPlan::WaitForPause
+                            | calls::EndPlan::ResumeCurrent,
+                        ) => (),
                         Err(_) => calls.revoke(),
                     }
                 }
@@ -2242,16 +2906,27 @@ fn session(
                         )?;
                         microphone_started(ctx);
                         calls.revoke();
-                        requested = Some((Some(frame.tx), frame.target.ok_or_else(invalid)?, None));
+                        requested = Some((
+                            Some(frame.tx),
+                            frame.target.ok_or_else(invalid)?,
+                            None,
+                            None,
+                        ));
                     }
                 }
                 "cancel" => {
+                    if cancelled.contains(&frame.tx) {
+                        calls.peer_cancelled_media(ctx, link, None, &frame.tx);
+                        continue;
+                    }
                     let Some(transfer) = active.take() else {
                         return Err(invalid());
                     };
                     if transfer.tx != frame.tx {
                         return Err(invalid());
                     }
+                    calls.peer_cancelled_media(ctx, link, Some(&transfer), &frame.tx);
+                    cancelled.insert(transfer.tx.clone());
                     let code = match frame.reason.as_deref() {
                         Some("timeout") => "timeout",
                         Some("user" | "superseded") => "superseded",
@@ -2265,7 +2940,9 @@ fn session(
                         Err(code),
                     ))?;
                     finish(ctx, &transfer, Err(code));
-                    calls.revoke();
+                    if transfer.media_gen.is_none() {
+                        calls.revoke();
+                    }
                 }
                 "result" => {
                     crate::log(&format!(
@@ -2274,7 +2951,7 @@ fn session(
                         frame.ok == Some(true),
                         frame.code.as_deref().unwrap_or("invalid")
                     ));
-                    if frame.phase.as_deref() == Some("cancel") && cancelled.remove(&frame.tx) {
+                    if cancelled.contains(&frame.tx) {
                         continue;
                     }
                     let Some(transfer) = active.as_mut() else {
@@ -2283,7 +2960,13 @@ fn session(
                     if !transfer.accepts_result(&frame) {
                         return Err(invalid());
                     }
-                    if !transfer.current(ctx, link) || transfer.expired(Instant::now()) {
+                    if !transfer.current(ctx, link)
+                        || transfer.expired(Instant::now())
+                        || transfer
+                            .dongle
+                            .as_ref()
+                            .is_some_and(|route| !route.observed_current(media_route.as_ref()))
+                    {
                         cancel_transfer(
                             stream,
                             ctx,
@@ -2292,8 +2975,9 @@ fn session(
                             active.take().unwrap(),
                             "superseded",
                             &mut cancelled,
+                            &mut calls,
                         )?;
-                        calls.revoke();
+                        calls.revoke_preserving_media(ctx, link);
                         continue;
                     }
                     if frame.ok != Some(true) {
@@ -2306,16 +2990,34 @@ fn session(
                             "complete",
                             Err(code),
                         ))?;
+                        calls.retain_media_release(ctx, link, &transfer);
+                        cancelled.insert(transfer.tx.clone());
                         finish(ctx, &transfer, Err(code));
                         // A naturally ended call may still recover a proven released source.
                         if transfer.call.as_ref().is_none_or(|call| call.returning) {
-                            calls.revoke();
+                            calls.revoke_preserving_media(ctx, link);
                         }
                         continue;
                     }
                     let advance = match transfer.phase {
                         Phase::Prepare if transfer.target == CompanionTarget::Android => {
-                            release_pc(ctx, link, transfer)
+                            if transfer
+                                .call
+                                .as_ref()
+                                .is_some_and(|call| call.source_released)
+                            {
+                                send_phase(
+                                    stream,
+                                    ctx,
+                                    link,
+                                    sid,
+                                    transfer,
+                                    "acquire",
+                                    Phase::PhoneAcquire,
+                                )
+                            } else {
+                                release_pc(ctx, link, transfer)
+                            }
                         }
                         Phase::Prepare => send_phase(
                             stream,
@@ -2328,6 +3030,7 @@ fn session(
                         ),
                         Phase::PhoneRelease => acquire_pc(ctx, link, transfer),
                         Phase::PhoneAcquire => {
+                            ctx.companion.lock().unwrap().presentation_peer.output(true, Instant::now());
                             let transfer = active.take().unwrap();
                             if let Err(code) = complete_success(stream, ctx, link, sid, &transfer) {
                                 cancel_transfer(
@@ -2338,8 +3041,9 @@ fn session(
                                     transfer,
                                     code,
                                     &mut cancelled,
+                                    &mut calls,
                                 )?;
-                                calls.revoke();
+                                calls.revoke_preserving_media(ctx, link);
                             }
                             continue;
                         }
@@ -2357,15 +3061,18 @@ fn session(
                             active.take().unwrap(),
                             code,
                             &mut cancelled,
+                            &mut calls,
                         )?;
-                        calls.revoke();
+                        calls.revoke_preserving_media(ctx, link);
                     }
                 }
                 _ => return Err(invalid()),
             }
         }
-        if let Some((tx, target, request_id)) = requested {
-            calls.revoke();
+        if let Some((tx, target, request_id, media_gen)) = requested {
+            if media_gen.is_none() {
+                calls.revoke();
+            }
             if active.is_some() {
                 notify_local(ctx, request_id, Err("busy"));
             } else {
@@ -2380,6 +3087,27 @@ fn session(
                 };
                 match begin_transfer(ctx, link, tx.clone(), target, request_id, authorization) {
                     Ok(mut transfer) => {
+                        transfer.media_gen = media_gen;
+                        transfer.media_source_gen = media_gen.and_then(|_| {
+                            if target == CompanionTarget::Android {
+                                Some(local.generation)
+                            } else {
+                                phone_media.as_ref().map(|(phone, _)| phone.generation)
+                            }
+                        });
+                        if media_gen.is_some() {
+                            if let (Some(route), Some((_, status, at))) =
+                                (transfer.dongle.as_mut(), media_route.as_ref())
+                            {
+                                if at.elapsed() <= Duration::from_secs(1) {
+                                    route.revision = status.revision;
+                                }
+                            }
+                        }
+                        if media_gen.is_some() {
+                            transfer.media_fence =
+                                Some(std::sync::Arc::new(Mutex::new((true, Instant::now()))));
+                        }
                         if let Err(code) = send_phase(
                             stream,
                             ctx,
@@ -2402,6 +3130,56 @@ fn session(
                 }
             }
         }
+        if active
+            .as_ref()
+            .is_some_and(|transfer| transfer.phase == Phase::RouteProbe)
+        {
+            let result = active.as_ref().unwrap().dongle.as_ref().unwrap().poll();
+            if let Some(result) = result {
+                let outcome = result.and_then(|status| {
+                    let transfer = active.as_mut().unwrap();
+                    let route = transfer.dongle.as_mut().unwrap();
+                    if status.busy {
+                        return Err("busy");
+                    }
+                    if route.revision != 0 && route.revision != status.revision {
+                        return Err("superseded");
+                    }
+                    if transfer.media_gen.is_some()
+                        && transfer.target == CompanionTarget::Android
+                        && status.connected
+                        && crate::media::companion_player(None).is_ok_and(|player| player.is_some())
+                    {
+                        return Err("busy");
+                    }
+                    route.revision = status.revision;
+                    route.revision_at = status.received;
+                    route.preparing = false;
+                    *route.job.get_mut().unwrap() = None;
+                    *route.result.lock().unwrap() = None;
+                    transfer.enter(Phase::Prepare);
+                    send_phase(stream, ctx, link, sid, transfer, "prepare", Phase::Prepare)
+                });
+                if let Err(code) = outcome {
+                    cancel_transfer(
+                        stream,
+                        ctx,
+                        link,
+                        sid,
+                        active.take().unwrap(),
+                        code,
+                        &mut cancelled,
+                        &mut calls,
+                    )?;
+                }
+            }
+        }
+        if let Some(transfer) = active.as_ref().filter(|transfer| transfer.call.is_some()) {
+            if let Some(route) = &transfer.dongle {
+                let _ = route.poll();
+            }
+            calls.sync(ctx, link, transfer);
+        }
         let pause_ready = match calls.poll(ctx, link) {
             Ok(ready) => ready,
             Err(_) => false,
@@ -2412,10 +3190,15 @@ fn session(
         if let Some(transfer) = active.as_ref() {
             let code = if transfer.expired(Instant::now()) {
                 Some("timeout")
-            } else if !transfer.current(ctx, link) || transfer.call.is_some() && !calls.has_lease()
+            } else if !transfer.current(ctx, link)
+                || transfer.call.is_some() && !calls.has_lease()
+                || transfer
+                    .dongle
+                    .as_ref()
+                    .is_some_and(|route| !route.observed_current(media_route.as_ref()))
             {
                 Some("superseded")
-            } else if now >= next_busy && busy(ctx, link.device) {
+            } else if now >= next_busy && !transfer.transitioning(ctx) && busy(ctx, link.device) {
                 Some("busy")
             } else {
                 None
@@ -2432,8 +3215,9 @@ fn session(
                     active.take().unwrap(),
                     code,
                     &mut cancelled,
+                    &mut calls,
                 )?;
-                calls.revoke();
+                calls.revoke_preserving_media(ctx, link);
                 continue;
             }
             if transfer.phase == Phase::Pause && pause_ready {
@@ -2454,11 +3238,12 @@ fn session(
                         active.take().unwrap(),
                         code,
                         &mut cancelled,
+                        &mut calls,
                     )?;
-                    calls.revoke();
+                    calls.revoke_preserving_media(ctx, link);
                 }
             } else if transfer.phase == Phase::PcRelease {
-                match released_pc(ctx, link) {
+                match released_pc(ctx, link, transfer) {
                     Ok(true) => {
                         calls.released(transfer);
                         if let Err(code) = send_phase(
@@ -2478,8 +3263,9 @@ fn session(
                                 active.take().unwrap(),
                                 code,
                                 &mut cancelled,
+                                &mut calls,
                             )?;
-                            calls.revoke();
+                            calls.revoke_preserving_media(ctx, link);
                         }
                     }
                     Ok(false) => (),
@@ -2492,25 +3278,37 @@ fn session(
                             active.take().unwrap(),
                             code,
                             &mut cancelled,
+                            &mut calls,
                         )?;
-                        calls.revoke();
+                        calls.revoke_preserving_media(ctx, link);
                     }
                 }
-            } else if transfer.phase == Phase::PcAcquire && acquired_pc(ctx, link) {
+            } else if transfer.phase == Phase::PcAcquire && acquired_pc(ctx, link, transfer) {
+                calls.sync(ctx, link, transfer);
                 let transfer = active.take().unwrap();
                 if let Err(code) = complete_success(stream, ctx, link, sid, &transfer) {
-                    cancel_transfer(stream, ctx, link, sid, transfer, code, &mut cancelled)?;
-                    calls.revoke();
+                    cancel_transfer(
+                        stream,
+                        ctx,
+                        link,
+                        sid,
+                        transfer,
+                        code,
+                        &mut cancelled,
+                        &mut calls,
+                    )?;
+                    calls.revoke_preserving_media(ctx, link);
                 } else if transfer.call.as_ref().is_some_and(|call| call.returning)
                     && calls.resume(ctx, link).is_err()
                 {
-                    calls.revoke();
+                    calls.revoke_preserving_media(ctx, link);
                 }
             }
         }
         thread::sleep(Duration::from_millis(50));
     })();
     calls.revoke();
+    ctx.companion.lock().unwrap().presentation_peer.transition(None);
     if let Some(transfer) = active.take() {
         finish(ctx, &transfer, Err("failed"));
     }
@@ -2533,6 +3331,7 @@ fn fresh_transaction(seen: &mut HashSet<String>) -> io::Result<String> {
 }
 
 pub fn start(ctx: Ctx) {
+    pairing::start(ctx.clone());
     thread::spawn(move || {
         crate::volume::init();
         while !ctx.shutting_down.load(Ordering::Acquire) {
@@ -2544,7 +3343,7 @@ pub fn start(ctx: Ctx) {
                 thread::sleep(Duration::from_millis(250));
                 continue;
             };
-            if ctx.mac() != link.device {
+            if !selected_pair(&ctx, link.device) {
                 thread::sleep(Duration::from_millis(250));
                 continue;
             }
@@ -2552,17 +3351,18 @@ pub fn start(ctx: Ctx) {
                 let server = Listener::open()?;
                 loop {
                     if ctx.shutting_down.load(Ordering::Acquire)
+                        || !selected_pair(&ctx, link.device)
                         || ctx.companion.lock().unwrap().authorization != authorization
-                        || ctx.mac() != link.device
                     {
                         return Ok(());
                     }
                     if let Some(mut stream) = server.accept(link.peer)? {
                         if let Ok((sid, caps)) = authenticate(&mut stream, &link) {
                             {
+                                let selected = selected_pair(&ctx, link.device);
                                 let mut state = ctx.companion.lock().unwrap();
                                 if state.authorization != authorization
-                                    || ctx.mac() != link.device
+                                    || !selected
                                     || !bonded(link.peer)
                                 {
                                     continue;
@@ -2632,6 +3432,10 @@ mod tests {
             tx: "123456789abcdef0".into(),
             target: CompanionTarget::Android,
             call: None,
+            media_gen: None,
+            media_source_gen: None,
+            dongle: None,
+            media_fence: None,
             authorization: 3,
             request_id: Some(1),
             generation: 9,
@@ -2644,6 +3448,34 @@ mod tests {
     }
     fn parsed(frame: &Frame) -> Frame {
         Frame::parse(&serde_json::to_vec(frame).unwrap(), DEVICE, Some(SID)).unwrap()
+    }
+
+    #[test]
+    fn media_prepare_binds_the_destination_generation_without_a_call_lease() {
+        let mut transfer = transfer(Phase::Prepare);
+        transfer.media_gen = Some(17);
+        let frame = parsed(&prepare_frame(&link(), SID, &transfer));
+        assert_eq!(frame.purpose.as_deref(), Some("media"));
+        assert_eq!(frame.media_gen.as_deref(), Some("0000000000000011"));
+        assert_eq!(frame.episode.as_deref(), Some(ZERO_EPISODE));
+        assert_eq!(frame.call_gen.as_deref(), Some(ZERO_TX));
+        assert_eq!(frame.origin_token.as_deref(), Some(ZERO_EPISODE));
+        transfer.media_gen = None;
+        assert!(parsed(&prepare_frame(&link(), SID, &transfer))
+            .media_gen
+            .is_none());
+    }
+
+    #[test]
+    fn expired_or_revoked_media_proof_cannot_authorize_a_delayed_worker() {
+        let mut transfer = transfer(Phase::PcRelease);
+        let fence = std::sync::Arc::new(Mutex::new((true, Instant::now())));
+        transfer.media_fence = Some(fence.clone());
+        assert!(transfer.media_current());
+        *fence.lock().unwrap() = (true, Instant::now() - Duration::from_secs(2));
+        assert!(!transfer.media_current());
+        *fence.lock().unwrap() = (false, Instant::now());
+        assert!(!transfer.media_current());
     }
 
     #[test]
@@ -2660,7 +3492,10 @@ mod tests {
             selected: true,
             session: 7,
             generation: 1,
-            capabilities: 7,
+            capabilities: 7 | 16 | 512,
+            serial: Some("test-board".into()),
+            pair_token: 1,
+            paired_device_id: Some(format!("{DEVICE:012x}")),
             ..Default::default()
         };
         let mut pending = transfer(Phase::PhoneRelease);
@@ -2668,9 +3503,15 @@ mod tests {
         pending.request = ctx.connect_requested.snapshot();
         pending.audio_intent = bt::playback_intent();
         assert!(pending.current(&ctx, &link()));
-        crate::apply_command(&ctx, Command::DongleControl {
-            session: 7, generation: 1, opcode: 1, argument: 0,
-        });
+        crate::apply_command(
+            &ctx,
+            Command::DongleControl {
+                session: 7,
+                generation: 1,
+                opcode: 1,
+                argument: 0,
+            },
+        );
         assert!(ctx.state.lock().unwrap().dongle.pending);
         let release = result_frame(&link(), SID, &pending.tx, "release", Ok(()));
         assert!(pending.accepts_result(&release));
@@ -2701,9 +3542,15 @@ mod tests {
                 ..Default::default()
             };
             let before = ctx.companion.lock().unwrap().generation;
-            crate::apply_command(&ctx, Command::DongleControl {
-                session: 7, generation, opcode, argument,
-            });
+            crate::apply_command(
+                &ctx,
+                Command::DongleControl {
+                    session: 7,
+                    generation,
+                    opcode,
+                    argument,
+                },
+            );
             assert_eq!(ctx.companion.lock().unwrap().generation, before);
         }
     }
@@ -2855,6 +3702,7 @@ mod tests {
             call_gen: "0000000000000003".into(),
             origin_token: "22".repeat(16),
             returning: false,
+            source_released: false,
         });
         assert_eq!(
             parsed(&prepare_frame(&link(), SID, &transfer))
@@ -3024,6 +3872,39 @@ mod tests {
         release.control_closed(DEVICE, 24, true);
         assert_eq!(release.complete(), Err("failed"));
         assert_eq!(release.ready(false, true, false, false), Err("failed"));
+    }
+
+    #[test]
+    fn setup_validation_failures_keep_request_correlation_without_exposing_the_secret() {
+        for request_id in [0, u64::MAX] {
+            for (peer, device, secret) in [
+                ("invalid", "001122334455", "ab".repeat(32)),
+                ("AA:BB:CC:DD:EE:FF", "invalid", "ab".repeat(32)),
+                ("AA:BB:CC:DD:EE:FF", "001122334455", "AB".repeat(32)),
+                ("AA:BB:CC:DD:EE:FF", "001122334455", "ab".repeat(32)),
+            ] {
+                let ctx = Ctx::for_test();
+                let (sender, receiver) = std::sync::mpsc::sync_channel(8);
+                ctx.clients.lock().unwrap().push(crate::ipc_server::ClientTx::new(sender));
+                assert!(apply_local(
+                    &ctx,
+                    &Command::CompanionLink {
+                        peer_address: peer.into(),
+                        device_id: device.into(),
+                        secret_hex: secret.clone(),
+                        request_id,
+                    }
+                ));
+                let event = receiver.try_recv().unwrap().bytes();
+                assert!(!std::str::from_utf8(&event).unwrap().contains(&secret));
+                assert!(
+                    matches!(ntpods_ipc::from_line::<Event>(std::str::from_utf8(&event).unwrap()),
+                    Some(Event::CommandResult { command, request_id: actual, ok: false, .. })
+                    if command == "companion_link" && actual == request_id)
+                );
+                assert!(ctx.companion.lock().unwrap().link.is_none());
+            }
+        }
     }
 
     #[test]

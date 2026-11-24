@@ -308,13 +308,7 @@ pub fn parse_device_control(data: &[u8]) -> Option<(u8, u32)> {
         return None;
     }
     let value = u32::from_le_bytes(data[7..11].try_into().ok()?);
-    // Hold reports include previous actions in the upper bytes; commands do not.
-    let value = if data[6] == 0x16 {
-        value & 0xFFFF
-    } else {
-        value
-    };
-    super::device_settings::valid_control(data[6], value).then_some((data[6], value))
+    super::device_settings::known_control(data[6]).then_some((data[6], value))
 }
 
 pub fn eq_command(eq: ntpods_ipc::Equalizer) -> [u8; 13] {
@@ -353,8 +347,10 @@ pub fn parse_control_value(data: &[u8], id: u8) -> Option<u8> {
 /// Boolean status is confirmed only by a complete control record with value 1/2.
 pub fn parse_feature_status(data: &[u8], id: u8) -> Option<bool> {
     let (reported_id, value) = parse_device_control(data)?;
-    (reported_id == id && super::device_settings::is_toggle(id))
-        .then(|| value == super::device_settings::toggle_value(id, true))
+    (reported_id == id
+        && super::device_settings::is_toggle(id)
+        && super::device_settings::valid_control(id, value))
+    .then(|| value == super::device_settings::toggle_value(id, true))
 }
 
 /// Parse a rename packet the app sends over the proxy: `[HEADER, 0x1A, 0x00,
@@ -622,14 +618,12 @@ pub enum EarAction {
 
 pub fn ear_media_action(previous: [EarStatus; 2], current: [EarStatus; 2]) -> Option<EarAction> {
     use EarStatus::*;
-    let ready = |state: [EarStatus; 2]| {
-        matches!(state, [InEar, InEar] | [InEar, InCase] | [InCase, InEar])
-    };
+    let ready =
+        |state: [EarStatus; 2]| matches!(state, [InEar, InEar] | [InEar, InCase] | [InCase, InEar]);
     if ready(current) {
         (!ready(previous)).then_some(EarAction::Resume)
     } else if previous.into_iter().any(EarStatus::in_ear)
-        && (ready(previous)
-            || previous.map(EarStatus::in_ear) != current.map(EarStatus::in_ear))
+        && (ready(previous) || previous.map(EarStatus::in_ear) != current.map(EarStatus::in_ear))
     {
         Some(EarAction::Pause)
     } else {
@@ -1045,7 +1039,13 @@ mod tests {
             assert_eq!(ear_media_action(removed, solo), Some(EarAction::Resume));
             assert_eq!(ear_media_action(solo, [InCase; 2]), Some(EarAction::Pause));
             assert_eq!(ear_media_action([InCase; 2], solo), Some(EarAction::Resume));
-            let disconnected = removed.map(|status| if status == OutOfEar { Disconnected } else { status });
+            let disconnected = removed.map(|status| {
+                if status == OutOfEar {
+                    Disconnected
+                } else {
+                    status
+                }
+            });
             assert_eq!(ear_media_action(removed, disconnected), None);
             assert_eq!(ear_media_action(solo, disconnected), Some(EarAction::Pause));
         }
@@ -1115,7 +1115,7 @@ mod tests {
     }
 
     #[test]
-    fn device_controls_require_complete_valid_records_and_keep_both_value_bytes() {
+    fn device_controls_require_complete_known_records_and_keep_all_value_bytes() {
         let record = device_control_command(0x24, 0x0200);
         assert_eq!(record, [4, 0, 4, 0, 9, 0, 0x24, 0, 2, 0, 0]);
         assert_eq!(parse_device_control(&record), Some((0x24, 0x0200)));
@@ -1135,29 +1135,44 @@ mod tests {
             parse_device_control(&device_control_command(0x23, 0)),
             Some((0x23, 0))
         );
-        assert_eq!(parse_device_control(&device_control_command(0x23, 3)), None);
-        assert_eq!(
-            parse_device_control(&device_control_command(0x28, 0x0101)),
-            None
-        );
+        for (id, raw) in [(0x23, 3), (0x28, 0x0101), (0x24, 0x00022301)] {
+            assert_eq!(
+                parse_device_control(&device_control_command(id, raw)),
+                Some((id, raw))
+            );
+            assert!(!crate::device_settings::valid_control(id, raw));
+        }
     }
 
     #[test]
-    fn hold_reports_keep_current_actions_without_reusing_previous_action_bytes() {
+    fn hold_reports_preserve_previous_actions_but_commands_use_only_current_actions() {
         let report = [4, 0, 4, 0, 9, 0, 0x16, 1, 5, 5, 1];
-        assert_eq!(parse_device_control(&report), Some((0x16, 0x0501)));
+        assert_eq!(parse_device_control(&report), Some((0x16, 0x01050501)));
         assert!(!crate::device_settings::valid_control(0x16, 0x01050501));
+        let current = crate::device_settings::current_control_value(
+            0x16,
+            parse_device_control(&report).unwrap().1,
+        )
+        .unwrap();
         assert_eq!(
-            device_control_command(0x16, parse_device_control(&report).unwrap().1),
+            device_control_command(0x16, current),
             [4, 0, 4, 0, 9, 0, 0x16, 1, 5, 0, 0]
         );
         let mut opaque_previous = report;
         opaque_previous[9..].copy_from_slice(&[0, 255]);
-        assert_eq!(parse_device_control(&opaque_previous), Some((0x16, 0x0501)));
+        assert_eq!(
+            parse_device_control(&opaque_previous),
+            Some((0x16, 0xFF000501))
+        );
+        assert_eq!(
+            crate::device_settings::current_control_value(0x16, 0xFF000501),
+            Some(0x0501)
+        );
         for (right, left) in [(0, 5), (1, 0), (2, 5), (1, 6), (255, 255)] {
             let mut malformed = report;
             malformed[7..9].copy_from_slice(&[right, left]);
-            assert!(parse_device_control(&malformed).is_none());
+            let (_, raw) = parse_device_control(&malformed).unwrap();
+            assert!(crate::device_settings::current_control_value(0x16, raw).is_none());
         }
         for length in 0..report.len() {
             assert!(parse_device_control(&report[..length]).is_none());

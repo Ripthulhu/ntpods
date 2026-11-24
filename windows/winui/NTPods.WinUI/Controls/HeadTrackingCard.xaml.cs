@@ -1,192 +1,311 @@
+using System.Diagnostics;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Media;
 using NTPods.WinUI.Ipc;
 using NTPods.WinUI.Services;
-using Windows.Foundation;
 
 namespace NTPods.WinUI.Controls;
 
 public sealed partial class HeadTrackingCard : UserControl
 {
-    private readonly HeadTrackingLiveState _live = new();
-    private DaemonClient? _client;
-    private DaemonEvent.HeadTracking? _latest;
-    private bool _subscribed;
-    private bool _rendering;
-    private bool? _requested;
-    private long _requestDeadline;
-    private bool _fresh;
-    private bool _ownsStream;
-    private bool _supported;
-    private long _lastDescription;
+    private enum Activity { Playback, Calibration, Comparison }
 
-    public DaemonClient? Client
-    {
-        get => _client;
-        set
-        {
-            if (ReferenceEquals(_client, value)) return;
-            Stop();
-            Detach();
-            _client = value;
-            if (IsLoaded) Attach();
-        }
-    }
+    private static readonly string Renderer = Path.Combine(AppContext.BaseDirectory, "spatial", "windows-surround.exe");
+    private DongleState _dongle = new();
+    private readonly SpatialPlaybackReturn _return = new();
+    private string? _returningPair;
+    internal bool WaitingForRoute => _return.Waiting;
+    private Process? _session;
+    private Activity _activity;
+    private string? _status;
+    private bool _stopping;
+    private bool _profileReady;
+    private bool _saving;
+    private string? _calibrationFailure;
+    private bool _saved;
+    private readonly DispatcherTimer _calibrationTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
+    private readonly Stopwatch _calibrationClock = new();
+    private int _phase;
+    private readonly object _frameLock = new();
+    private (Process Source, RoomFrame Frame)? _pendingFrame;
+    private bool _frameQueued;
+    private bool _roomPage;
 
     public HeadTrackingCard()
     {
         InitializeComponent();
-        Loaded += (_, _) => { Attach(); RenderStatus(); };
-        Unloaded += (_, _) => { Stop(); Detach(); };
-    }
-
-    private void Attach()
-    {
-        if (_subscribed || _client is null) return;
-        _client.HeadTrackingReceived += OnSample;
-        _subscribed = true;
-    }
-
-    private void Detach()
-    {
-        if (_subscribed && _client is not null) _client.HeadTrackingReceived -= OnSample;
-        _subscribed = false;
-        Interlocked.Exchange(ref _latest, null);
-    }
-
-    // Keep at most one pending sample while the UI thread is busy.
-    private void OnSample(DaemonEvent.HeadTracking sample) => Interlocked.Exchange(ref _latest, sample);
-
-    public void Update(Snapshot snapshot)
-    {
-        _supported = DeviceModels.HeadTracking(snapshot);
-        _live.Update(snapshot);
-        if (!_live.Connected || _requested == _live.Enabled) _requested = null;
-        RenderStatus();
-        Draw();
-        SetRendering(Panel.IsExpanded && (_live.Enabled || _requested is not null));
-    }
-
-    public void Stop(bool notifyDevice = true)
-    {
-        if (_ownsStream && notifyDevice) _client?.Send(new SetHeadTrackingCmd { On = false });
-        _ownsStream = false;
-        _requested = null;
-        Panel.IsExpanded = false;
-        SetRendering(false);
-        Interlocked.Exchange(ref _latest, null);
-    }
-
-    private void Panel_Expanding(Expander sender, ExpanderExpandingEventArgs args)
-    {
-        // Reopening may precede the previous stop's snapshot. Queue the new
-        // intent after that stop, even when the last reported state is enabled.
-        Request(true);
-        Draw();
-    }
-
-    private void Panel_Collapsed(Expander sender, ExpanderCollapsedEventArgs args) => Stop();
-
-    private void Start_Click(object sender, RoutedEventArgs args) => Request(!_live.Enabled);
-
-    private void Request(bool on)
-    {
-        if (on && (!_live.Connected || !_supported) || _client?.Send(new SetHeadTrackingCmd { On = on }) != true) return;
-        _ownsStream = on;
-        _requested = on;
-        _requestDeadline = Environment.TickCount64 + 5_000;
-        RenderStatus();
-        SetRendering(Panel.IsExpanded);
-    }
-
-    private static ulong Now => (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-
-    private void RenderStatus()
-    {
-        bool enabled = _requested ?? _live.Enabled;
-        StartIcon.Glyph = enabled ? "\uE769" : "\uE768";
-        string action = Localize.Get(enabled ? "HeadTracking.Pause" : "HeadTracking.Start");
-        AutomationProperties.SetName(StartButton, action);
-        ToolTipService.SetToolTip(StartButton, action);
-        StartButton.IsEnabled = _requested is null && _client?.IsReady == true && (_live.Connected && _supported || enabled);
-        ErrorText.Text = _live.Error ?? "";
-        ErrorText.Visibility = _live.State == "error" && !string.IsNullOrEmpty(_live.Error) ? Visibility.Visible : Visibility.Collapsed;
-        EmptyText.Visibility = _live.Samples.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        EmptyText.Text = Localize.Get(!_live.Connected ? "HeadTracking.Connect" :
-            _live.State == "waiting_for_ear" ? "HeadTracking.Wear" : enabled ? "HeadTracking.Waiting" : "HeadTracking.Ready");
-        _fresh = _live.IsFresh(Now);
-        HorizontalTrace.Opacity = VerticalTrace.Opacity = _fresh ? 1 : 0.45;
-        if (!_fresh || Environment.TickCount64 - _lastDescription >= 250)
+        Room.LayoutChanged += command =>
         {
-            _lastDescription = Environment.TickCount64;
-            MovementValues.Text = _fresh ? Localize.Get("HeadTracking.Values", _live.Samples[^1].Horizontal, _live.Samples[^1].Vertical) : "—";
-            AutomationProperties.SetName(GraphHost, Localize.Get("HeadTracking_LiveMovement") + ". " +
-                (_fresh ? MovementValues.Text : EmptyText.Text));
+            if (_session is not { } process || _activity != Activity.Playback || _stopping || !Room.HasStreamFormat) return;
+            try { process.StandardInput.WriteLine(command); }
+            catch (IOException) { StopRenderer(); }
+        };
+        Loaded += (_, _) => Render();
+        _calibrationTimer.Tick += (_, _) =>
+        {
+            CalibrationProgress.Value = Math.Min(_calibrationClock.Elapsed.TotalSeconds, CalibrationProgress.Maximum);
+        };
+    }
+
+    public static bool Supports(DongleState d) => d.Selected && d.Health.Model.Trim().ToUpperInvariant() is
+        ("A3063" or "A3064" or "A3065");
+
+    internal void ShowRoom(bool visible)
+    {
+        _roomPage = visible;
+        Room.SetSceneVisible(visible && Room.Visibility == Visibility.Visible);
+    }
+
+    internal void SetRoomWindowVisible(bool visible) => Room.SetWindowVisible(visible);
+
+    private string? Serial => _dongle is { Present: true, Ambiguous: false, Connected: true, UsbAudioAvailable: true,
+        MicrophoneActive: false, Serial: { Length: > 0 } serial } && Supports(_dongle) ? serial : null;
+
+    public void Update(DongleState dongle)
+    {
+        bool hadPlayback = _return.Armed;
+        _return.Observe(dongle, Environment.TickCount64);
+        if (_return.Waiting)
+        {
+            StopRenderer();
+        }
+        else if (_returningPair is not null && (!dongle.Connected || !dongle.UsbAudioAvailable || dongle.MicrophoneActive ||
+                 !dongle.Selected || dongle.Ambiguous || !string.Equals(dongle.PairedDeviceId, _returningPair, StringComparison.OrdinalIgnoreCase)) ||
+                 hadPlayback && !_return.Armed && _session is not null ||
+                 _dongle.Serial != dongle.Serial || _dongle.PairToken != dongle.PairToken)
+        {
+            _status = null;
+            Stop();
+        }
+        _dongle = dongle;
+        TryReturn();
+        Render();
+    }
+
+    private void TryReturn()
+    {
+        if (_session is null && _return.Take(_dongle, Serial is not null))
+            Launch(Activity.Playback, "listen-managed-return");
+    }
+
+    private void Render()
+    {
+        bool active = _session is not null;
+        bool installed = File.Exists(Renderer);
+        bool ready = !active && !_return.Waiting && installed && Serial is not null;
+        bool playback = _return.Waiting || active && _activity == Activity.Playback;
+        StartButton.IsEnabled = ready || playback && (!_stopping || _return.Waiting);
+        CalibrateButton.IsEnabled = CompareButton.IsEnabled = ready;
+        StartLabel.Text = Localize.Get(playback ? "Spatial_Stop" : "Spatial_Start");
+        AutomationProperties.SetName(StartButton, StartLabel.Text);
+        CancelButton.Visibility = active && _activity != Activity.Playback ? Visibility.Visible : Visibility.Collapsed;
+        CancelButton.IsEnabled = !_stopping && !_saving;
+        ProfileChoices.Visibility = active && _activity == Activity.Comparison ? Visibility.Visible : Visibility.Collapsed;
+        ProfilePicker.IsEnabled = PreviewButton.IsEnabled = SaveButton.IsEnabled = _profileReady && !_stopping;
+        bool calibrating = active && _activity == Activity.Calibration && !_stopping;
+        var setup = active && _activity != Activity.Playback;
+        Room.Visibility = StartButton.Visibility = ActionDivider.Visibility = CalibrateButton.Visibility = CompareButton.Visibility =
+            setup ? Visibility.Collapsed : Visibility.Visible;
+        Room.SetSceneVisible(_roomPage && !setup);
+        StartIcon.Glyph = playback ? "\uE71A" : "\uE768";
+        CalibrationGuide.Visibility = calibrating ? Visibility.Visible : Visibility.Collapsed;
+        CalibrationBuds.Visibility = _phase < 2 ? Visibility.Visible : Visibility.Collapsed;
+        CalibrationArrow.Visibility = _phase >= 2 ? Visibility.Visible : Visibility.Collapsed;
+        CalibrationArrow.Glyph = _phase == 2 ? "\uE70E" : "\uE70D";
+        CalibrationProgress.Visibility = _phase > 0 ? Visibility.Visible : Visibility.Collapsed;
+        string status = Localize.Get(_return.Waiting ? "Spatial_WaitRoute" : _stopping ? "Spatial_Stopping" : _status ??
+            (!installed ? "Spatial_Missing" : Serial is null ? "Spatial_Connect" : "Spatial_Route"));
+        Status.Visibility = calibrating ? Visibility.Collapsed : Visibility.Visible;
+        if (calibrating && CalibrationInstruction.Text != status) CalibrationInstruction.Text = status;
+        if (!calibrating && Status.Text != status) Status.Text = status;
+        if (!calibrating) _calibrationTimer.Stop();
+    }
+
+    private void Start_Click(object sender, RoutedEventArgs args)
+    {
+        if (_return.Waiting || _session is not null) Stop();
+        else
+        {
+            _return.Clear();
+            Launch(Activity.Playback, "listen-managed");
         }
     }
 
-    private void SetRendering(bool on)
-    {
-        on &= IsLoaded;
-        if (on == _rendering) return;
-        _rendering = on;
-        if (on) CompositionTarget.Rendering += RenderFrame;
-        else CompositionTarget.Rendering -= RenderFrame;
-    }
+    private void Cancel_Click(object sender, RoutedEventArgs args) => Stop();
+    private void Calibrate_Click(object sender, RoutedEventArgs args) => Launch(Activity.Calibration, "calibrate-managed");
+    private void Compare_Click(object sender, RoutedEventArgs args) => Launch(Activity.Comparison, "compare-managed");
+    private void Preview_Click(object sender, RoutedEventArgs args) => SendProfile(save: false);
+    private void Save_Click(object sender, RoutedEventArgs args) => SendProfile(save: true);
 
-    private void RenderFrame(object? sender, object args)
+    private async void SoundSettings_Click(object sender, RoutedEventArgs args)
     {
-        bool changed = false;
-        if (Interlocked.Exchange(ref _latest, null) is { } sample) changed = _live.Add(sample, Now);
-        if (_requested is not null && Environment.TickCount64 >= _requestDeadline)
+        if (!await Windows.System.Launcher.LaunchUriAsync(new Uri("ms-settings:sound")))
         {
-            _requested = null;
-            _client?.RequestState();
-            changed = true;
+            _status = "Spatial_Route";
+            Render();
         }
-        if (changed) Draw();
-        if (changed || _fresh != _live.IsFresh(Now)) RenderStatus();
-        if (!_live.Enabled && _requested is null) SetRendering(false);
     }
 
-    private void Graph_SizeChanged(object sender, SizeChangedEventArgs args)
+    internal void Stop()
     {
-        double w = GraphHost.ActualWidth, h = GraphHost.ActualHeight;
-        if (w <= 0 || h <= 0) return;
-        Graph.Clip = new RectangleGeometry { Rect = new Rect(0, 0, w, h) };
-        var geometry = new PathGeometry();
-        for (int i = 1; i < 10; i++) AddLine(geometry, new Point(w * i / 10, 0), new Point(w * i / 10, h));
-        for (int i = 1; i < 4; i++) AddLine(geometry, new Point(0, h * i / 4), new Point(w, h * i / 4));
-        Guides.Data = geometry;
-        ZeroLine.X2 = w;
-        ZeroLine.Y1 = ZeroLine.Y2 = h / 2;
-        Draw();
+        _return.Clear();
+        _returningPair = null;
+        _status = null;
+        StopRenderer();
+        Render();
     }
 
-    private static void AddLine(PathGeometry geometry, Point from, Point to)
+    private void StopRenderer()
     {
-        var figure = new PathFigure { StartPoint = from, IsClosed = false };
-        figure.Segments.Add(new LineSegment { Point = to });
-        geometry.Figures.Add(figure);
+        if (_session is not { } session || _stopping) return;
+        _stopping = true;
+        try { session.StandardInput.Close(); }
+        catch (IOException) { }
+        Render();
     }
 
-    private void Draw()
+    private void SendProfile(bool save)
     {
-        double w = GraphHost.ActualWidth, h = GraphHost.ActualHeight;
-        if (w <= 0 || h <= 0) return;
-        var horizontal = new PointCollection();
-        var vertical = new PointCollection();
-        double scale = (h / 2 - 8) / _live.Range;
-        var samples = _live.Samples;
-        for (int i = 0; i < samples.Count; ++i)
+        if (_session is not { } session || !_profileReady || ProfilePicker.SelectedIndex is < 0 or > 2) return;
+        char option = (char)('a' + ProfilePicker.SelectedIndex);
+        _profileReady = false;
+        _saving = save;
+        try { session.StandardInput.WriteLine(save ? $"save {option}" : option.ToString()); }
+        catch (IOException) { Stop(); }
+        Render();
+    }
+
+    private void OnRendererOutput(Process process, string? line)
+    {
+        if (line?.StartsWith("ROOM_POSE ", StringComparison.Ordinal) == true)
         {
-            double x = (HeadTrackingLiveState.Capacity - samples.Count + i) * w / (HeadTrackingLiveState.Capacity - 1);
-            horizontal.Add(new Point(x, h / 2 - samples[i].Horizontal * scale));
-            vertical.Add(new Point(x, h / 2 - samples[i].Vertical * scale));
+            if (RoomFrame.Parse(line) is not { } frame) return;
+            lock (_frameLock)
+            {
+                _pendingFrame = (process, frame);
+                if (_frameQueued) return;
+                _frameQueued = DispatcherQueue.TryEnqueue(DisplayLatestFrame);
+            }
+            return;
         }
-        HorizontalTrace.Points = horizontal;
-        VerticalTrace.Points = vertical;
+        string? status = line switch
+        {
+            "SPATIAL_READY" => "Spatial_Playing",
+            "SPATIAL_MOTION_WAIT" => "Room_Recovering",
+            "SPATIAL_MOTION_READY" => "Spatial_Playing",
+            "CAL_RETRY_FACE" => "Spatial_RetryFace",
+            "CAL_RETRY_UP" => "Spatial_RetryUp",
+            "CAL_RETRY_RETURN" => "Spatial_RetryReturn",
+            "CAL_RETRY_MOTION" => "Spatial_RetryMotion",
+            "PROFILE_READY" => "Spatial_ProfileReady",
+            "PROFILE_PLAYING" => "Spatial_ProfilePlaying",
+            _ => null
+        };
+        var fields = line?.Split('_');
+        int phase = 0, seconds = 0;
+        bool stage = fields is ["CAL", _, _] && int.TryParse(fields[1], out phase) && phase is >= 1 and <= 3
+            && int.TryParse(fields[2], out seconds) && seconds is >= 1 and <= 10;
+        if (stage) status = phase == 1 ? "Spatial_Face" : phase == 2 ? "Spatial_LookUp" : "Spatial_FaceAgain";
+        bool saved = line is "CAL_SAVED" or "PROFILE_SAVED";
+        if (status is null && !saved) return;
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (!ReferenceEquals(_session, process) || _stopping) return;
+            if (saved) { _saved = true; return; }
+            if (_saving || status is null) return;
+            if (status.StartsWith("Spatial_Retry", StringComparison.Ordinal)) _calibrationFailure = status;
+            if (stage)
+            {
+                _phase = phase;
+                CalibrationProgress.Value = 0;
+                CalibrationProgress.Maximum = seconds;
+                _calibrationClock.Restart();
+                _calibrationTimer.Start();
+            }
+            if (line == "SPATIAL_READY" && _activity == Activity.Playback)
+            {
+                _return.Arm(_dongle);
+                _returningPair = null;
+            }
+            _profileReady = line == "PROFILE_READY";
+            _status = status;
+            Render();
+        });
+    }
+
+    private void DisplayLatestFrame()
+    {
+        (Process Source, RoomFrame Frame)? latest;
+        lock (_frameLock)
+        {
+            latest = _pendingFrame;
+            _pendingFrame = null;
+            _frameQueued = false;
+        }
+        if (latest is { } item && ReferenceEquals(_session, item.Source) && !_stopping) Room.ShowFrame(item.Frame);
+    }
+
+    private void Launch(Activity activity, string command)
+    {
+        if (_session is not null || Serial is not { } serial || !File.Exists(Renderer)) return;
+        _return.Clear();
+        var info = new ProcessStartInfo(Renderer)
+        {
+            WorkingDirectory = Path.GetDirectoryName(Renderer)!,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardInput = true,
+            StandardInputEncoding = new System.Text.UTF8Encoding(false),
+            RedirectStandardOutput = true,
+        };
+        info.ArgumentList.Add("--dongle-serial");
+        info.ArgumentList.Add(serial);
+        info.ArgumentList.Add(command);
+        if (activity == Activity.Playback)
+            foreach (int mask in new[] { 0x3f, 0x60f, 0x63f })
+                info.ArgumentList.Add(Room.LayoutFor(mask));
+        var process = new Process { StartInfo = info, EnableRaisingEvents = true };
+        process.OutputDataReceived += (_, args) => OnRendererOutput(process, args.Data);
+        process.Exited += (_, _) =>
+        {
+            // Drain the last calibration message before handling the exit code.
+            process.WaitForExit();
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                if (!ReferenceEquals(_session, process)) return;
+                _status = _stopping ? null : process.ExitCode != 0 || (_activity == Activity.Calibration && !_saved)
+                    ? (_activity == Activity.Playback ? "Spatial_Error" : _calibrationFailure ?? "Spatial_SetupError")
+                    : _activity == Activity.Calibration ? "Spatial_Calibrated" : _saved ? "Spatial_ProfileSaved" : null;
+                if (_return.Armed) _return.Exited(Environment.TickCount64);
+                _session = null;
+                _returningPair = null;
+                Room.ShowFrame(null);
+                _stopping = _profileReady = _saving = false;
+                process.Dispose();
+                TryReturn();
+                Render();
+            });
+        };
+        try
+        {
+            if (!process.Start()) throw new InvalidOperationException();
+            _session = process;
+            _returningPair = command == "listen-managed-return" ? _dongle.PairedDeviceId : null;
+            _activity = activity;
+            _phase = 0;
+            _saved = false;
+            _calibrationFailure = null;
+            _status = activity == Activity.Calibration ? "Spatial_WaitMotion" : "Spatial_Starting";
+            process.BeginOutputReadLine();
+        }
+        catch (Exception error) when (error is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            if (ReferenceEquals(_session, process)) process.StandardInput.Close();
+            _session = null;
+            process.Dispose();
+            _status = "Spatial_Error";
+        }
+        Render();
     }
 }

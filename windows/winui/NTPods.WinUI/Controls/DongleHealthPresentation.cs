@@ -5,22 +5,35 @@ namespace NTPods.WinUI.Controls;
 
 internal static class DongleHealthPresentation
 {
-    public static bool BatteryIsCurrent(DongleState state, int component) => component is >= 0 and < 3 &&
+    public static bool Attached(DongleState state) => state.Present || state.Ambiguous || state.AvailableDevices.Length > 0;
+
+    public static string ConnectionKey(DongleState state) => state.Error == "selected_missing" ? "Dongle_SelectedMissing" :
+        state.PhonePairing ? "Dongle_PhoneWaiting" : state.Connected ? "Dongle_Connected" : "Dongle_NotConnected";
+
+    public static bool ProfileIdle(DongleState state) => !state.Streaming && !state.UsbPlayback && !state.MicrophoneActive &&
+        state.Health.Audio is { Pending: false, Streaming: false, MicrophoneActive: false, GameModeState: not ("pending" or "restoring") };
+
+    public static bool ReconnectPolicyIdle(DongleState state) => !state.Streaming && !state.UsbPlayback && !state.MicrophoneActive &&
+        !state.PhoneConnected && state.Health.Audio is not { Pending: true } and not { GameModeState: "pending" or "restoring" };
+
+    public static bool BatteryIsCurrent(DongleState state, int component) => state.Present && component is >= 0 and < 3 &&
         BatteryPresentation.Present(component switch { 0 => state.Battery.Left, 1 => state.Battery.Right, _ => state.Battery.Case }) is not null &&
         ((state.Capabilities & 64) == 0 || (state.BatteryPresent & (1 << component)) != 0) &&
         state.BatteryAgeMs is { Length: 3 } && state.BatteryAgeMs[component] is uint age &&
         ((state.BatteryCaseSource & (1 << component)) != 0 ? age < 90_000u : age <= 30_000u);
 
-    public static bool Busy(DongleHealthState health) => health.HearingAidPending ||
+    public static bool Busy(DongleHealthState health) => health.HearingAidPending || health.TransparencyPending ||
+        health.HeadphoneAccommodations?.Pending == true ||
         health.DeviceSettingsPending ||
         health.HardwareDiagnosticsPending || health.HearingMetadataPending ||
         HardwareDiagnosticsPresentation.IsRunning(health.HardwareCheck);
 
     public static bool ShowDiagnostics(Snapshot health, bool experimental) => experimental &&
         (DeviceModels.Find(health.Model).HearingAid || HardwareDiagnosticsPresentation.IsRunning(health.HardwareCheck));
+    public static bool ShowHearingProtection(Snapshot state) => !UsesDongle(state) && DeviceModels.Find(state.Model).LoudSoundReduction;
 
     public static bool UsesDongle(Snapshot state) => !state.Connected &&
-        (state.Dongle.Present || state.Dongle.Ambiguous);
+        Attached(state.Dongle);
 
     public static Snapshot Project(Snapshot state)
     {
@@ -41,7 +54,7 @@ internal static class DongleHealthPresentation
             DeviceControlsRequested = new(health.DeviceControlsRequested),
             DeviceControlsPending = new(health.DeviceControlsPending),
             DeviceSettingsError = health.DeviceSettingsError,
-            Anc = (byte)health.DeviceControls.GetValueOrDefault((byte)0x0d),
+            Anc = (byte)(DeviceSettingStatus.CurrentValue(0x0d, health.DeviceControls.GetValueOrDefault((byte)0x0d)) ?? 0),
             AncUnconfirmed = health.AncUnconfirmed,
             ConversationalAwareness = health.DeviceControls.GetValueOrDefault((byte)0x28) == 1,
             ConversationalAwarenessPending = health.DeviceControlsPending.TryGetValue(0x28, out uint ca) ? ca == 1 : null,
@@ -65,6 +78,10 @@ internal static class DongleHealthPresentation
             MicUplinkActive = dongle.MicrophoneActive,
             MicState = dongle.MicrophoneActive ? "capturing" : "idle",
             HearingAidEnabled = health.HearingAidEnabled,
+            Transparency = health.Transparency,
+            TransparencyPending = health.TransparencyPending,
+            TransparencyError = health.TransparencyError,
+            HeadphoneAccommodations = health.HeadphoneAccommodations,
             HearingAidRevision = health.HearingAidRevision,
             HearingAidEnrolled = health.HearingAidEnrolled,
             MediaAssistEnabled = health.MediaAssistEnabled,
@@ -92,6 +109,8 @@ internal static class DongleHealthPresentation
         if (!state.Dongle.Present || state.Dongle.Ambiguous || state.Dongle.Session == 0 ||
             !state.Dongle.Selected || (!selected.Connected && command is not (CancelHardwareCheckCmd or GetDonglePerformanceCmd)) || command is not (
             GetHearingAidCmd or SetHearingAidModeCmd or SetMediaAssistCmd or SetHearingAidCmd or
+            GetHeadphoneAccommodationsCmd or SetHeadphoneAccommodationsCmd or
+            GetTransparencyCmd or SetTransparencyCmd or
             GetHardwareDiagnosticsCmd or GetHearingMetadataCmd or StartHardwareCheckCmd or CancelHardwareCheckCmd or
             SetDeviceControlCmd or SetAncCmd or SetFeatureCmd or SetControlCmd or RefreshDeviceSettingsCmd or
             SetPlaybackModeCmd or SetPlaybackBitrateCmd or SetPlaybackGameModeCmd or SetDongleAudioProfileCmd or GetDonglePerformanceCmd)) return null;

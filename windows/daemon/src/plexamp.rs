@@ -1,6 +1,6 @@
 //! Local Plex Companion control; never send a global Play/Pause toggle.
 
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
@@ -170,21 +170,23 @@ fn plexamp_audio(address: Option<u64>) -> Option<IAudioSessionControl2> {
 }
 
 fn request(path: &str, target: Option<&str>) -> Option<String> {
-    let started = Instant::now();
-    let mut stream = TcpStream::connect_timeout(
-        &SocketAddr::from(([127, 0, 0, 1], 32500)),
-        Duration::from_millis(100),
-    )
-    .ok()?;
-    stream
-        .set_read_timeout(Some(Duration::from_millis(100)))
-        .ok()?;
-    stream
-        .set_write_timeout(Some(Duration::from_millis(100)))
-        .ok()?;
+    request_until(path, target, Instant::now() + Duration::from_millis(300)).ok()
+}
+
+fn request_until(path: &str, target: Option<&str>, deadline: Instant) -> io::Result<String> {
+    let remaining = || {
+        deadline
+            .checked_duration_since(Instant::now())
+            .filter(|left| !left.is_zero())
+            .map(|left| left.min(Duration::from_millis(100)))
+            .ok_or_else(|| io::Error::from(io::ErrorKind::TimedOut))
+    };
+    let mut stream =
+        TcpStream::connect_timeout(&SocketAddr::from(([127, 0, 0, 1], 32500)), remaining()?)?;
+    stream.set_write_timeout(Some(remaining()?))?;
     let target_header = match target {
         Some(id) if valid_player_id(id) => format!("X-Plex-Target-Client-Identifier: {id}\r\n"),
-        Some(_) => return None,
+        Some(_) => return Err(io::ErrorKind::InvalidInput.into()),
         None => String::new(),
     };
     let command = COMMAND_ID.fetch_add(1, Ordering::Relaxed);
@@ -194,21 +196,60 @@ fn request(path: &str, target: Option<&str>) -> Option<String> {
         path.into()
     };
     let pid = std::process::id();
-    write!(stream, "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:32500\r\nX-Plex-Client-Identifier: ntpods-ear-detection-{pid}\r\nX-Plex-Product: NTPods\r\n{target_header}Connection: close\r\n\r\n").ok()?;
+    write!(stream, "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:32500\r\nX-Plex-Client-Identifier: ntpods-ear-detection-{pid}\r\nX-Plex-Product: NTPods\r\n{target_header}Connection: close\r\n\r\n")?;
     let mut bytes = Vec::new();
     loop {
-        if bytes.len() > MAX_RESPONSE || started.elapsed() > Duration::from_millis(300) {
-            return None;
+        let timeout = remaining()?;
+        if bytes.len() > MAX_RESPONSE {
+            return Err(io::ErrorKind::InvalidData.into());
         }
         if let Some(body) = response_body(&bytes) {
-            return Some(body.to_owned());
+            return Ok(body.to_owned());
         }
+        stream.set_read_timeout(Some(timeout))?;
         let mut buffer = [0; 4096];
-        let read = stream.read(&mut buffer).ok()?;
+        let read = stream.read(&mut buffer)?;
         if read == 0 {
-            return None;
+            return Err(io::ErrorKind::UnexpectedEof.into());
         }
         bytes.extend_from_slice(&buffer[..read]);
+    }
+}
+
+pub(crate) fn companion_player(required: bool) -> Result<Option<String>, ()> {
+    read_companion_player(
+        required,
+        Instant::now() + Duration::from_millis(150),
+        request_until,
+    )
+}
+
+fn read_companion_player(
+    required: bool,
+    deadline: Instant,
+    mut get: impl FnMut(&str, Option<&str>, Instant) -> io::Result<String>,
+) -> Result<Option<String>, ()> {
+    if Instant::now() >= deadline {
+        return Err(());
+    }
+    let resources = match get("/resources", None, deadline) {
+        Ok(resources) => resources,
+        Err(error) if !required && error.kind() == io::ErrorKind::ConnectionRefused => {
+            return Ok(None)
+        }
+        Err(_) => return Err(()),
+    };
+    let id = player(&resources).ok_or(())?;
+    let current =
+        timeline(&get("/player/timeline/poll?wait=0", Some(&id), deadline).map_err(|_| ())?)
+            .ok_or(())?;
+    if Instant::now() >= deadline {
+        return Err(());
+    }
+    match current.state.as_str() {
+        "playing" => Ok(Some(format!("plexamp:{id}"))),
+        "paused" | "stopped" => Ok(None),
+        _ => Err(()),
     }
 }
 
@@ -373,6 +414,118 @@ mod tests {
             version: "1".into(),
             time: time.into(),
         }
+    }
+
+    const RESOURCES: &str = "<MediaContainer><Player product='Plexamp' machineIdentifier='test-player'/></MediaContainer>";
+
+    fn companion_timeline(state: &str, key: &str, time: &str) -> String {
+        format!("<MediaContainer><Timeline type='music' state='{state}' key='{key}' playQueueItemID='2' playQueueID='3' playQueueVersion='1' time='{time}'/></MediaContainer>")
+    }
+
+    #[test]
+    fn cached_xml_factories_survive_sequential_disposable_com_workers() {
+        for _ in 0..8 {
+            std::thread::spawn(|| {
+                crate::media::init();
+                assert_eq!(player(RESOURCES).as_deref(), Some("test-player"));
+                assert_eq!(timeline(&companion_timeline("playing", "track", "100")).unwrap().state, "playing");
+            }).join().unwrap();
+        }
+    }
+
+    #[test]
+    fn companion_reads_actual_playback_with_one_shared_deadline_and_stable_identity() {
+        crate::media::init();
+        for (state, expected) in [
+            ("playing", Some("plexamp:test-player")),
+            ("paused", None),
+            ("stopped", None),
+        ] {
+            for (key, time) in [("track-one", "100"), ("track-two", "300")] {
+                let deadline = Instant::now() + Duration::from_secs(1);
+                let mut requests = 0;
+                let found = read_companion_player(true, deadline, |path, target, until| {
+                    assert_eq!(until, deadline);
+                    requests += 1;
+                    match requests {
+                        1 => {
+                            assert_eq!((path, target), ("/resources", None));
+                            Ok(RESOURCES.into())
+                        }
+                        2 => {
+                            assert_eq!(
+                                (path, target),
+                                ("/player/timeline/poll?wait=0", Some("test-player"))
+                            );
+                            Ok(companion_timeline(state, key, time))
+                        }
+                        _ => panic!("only two bounded reads"),
+                    }
+                });
+                assert_eq!(found, Ok(expected.map(str::to_owned)));
+                assert_eq!(requests, 2);
+            }
+        }
+    }
+
+    #[test]
+    fn companion_fails_closed_on_stale_failed_or_ambiguous_playback_evidence() {
+        crate::media::init();
+        assert_eq!(
+            read_companion_player(
+                true,
+                Instant::now() - Duration::from_millis(1),
+                |_, _, _| panic!("expired before I/O")
+            ),
+            Err(())
+        );
+        for required in [true, false] {
+            for failure in [
+                io::ErrorKind::TimedOut,
+                io::ErrorKind::UnexpectedEof,
+                io::ErrorKind::InvalidData,
+            ] {
+                assert_eq!(
+                    read_companion_player(
+                        required,
+                        Instant::now() + Duration::from_secs(1),
+                        |_, _, _| Err(failure.into())
+                    ),
+                    Err(())
+                );
+            }
+        }
+        assert_eq!(
+            read_companion_player(
+                true,
+                Instant::now() + Duration::from_secs(1),
+                |_, _, _| Err(io::ErrorKind::ConnectionRefused.into())
+            ),
+            Err(())
+        );
+        assert_eq!(
+            read_companion_player(false, Instant::now() + Duration::from_secs(1), |_, _, _| {
+                Err(io::ErrorKind::ConnectionRefused.into())
+            }),
+            Ok(None)
+        );
+        for resources in ["<MediaContainer/>", "<MediaContainer><Player product='Plexamp' machineIdentifier='one'/><Player product='Plexamp' machineIdentifier='two'/></MediaContainer>"] {
+            assert_eq!(read_companion_player(true, Instant::now() + Duration::from_secs(1), |_, _, _| Ok(resources.into())), Err(()));
+        }
+        assert_eq!(
+            read_companion_player(
+                true,
+                Instant::now() + Duration::from_secs(1),
+                |path, _, _| {
+                    if path == "/resources" {
+                        Ok(RESOURCES.into())
+                    } else {
+                        Err(io::ErrorKind::TimedOut.into())
+                    }
+                }
+            ),
+            Err(())
+        );
     }
 
     #[test]

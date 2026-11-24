@@ -1,0 +1,21 @@
+<UserControl x:Class="NTPods.WinUI.Controls.CompanionSetupCard"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <StackPanel Spacing="8">
+        <TextBlock Text="{Binding [CompanionSetup_Title], Source={StaticResource Loc}}" Style="{StaticResource SectionTitle}" />
+        <Border Style="{StaticResource Card}">
+            <StackPanel Spacing="12">
+                <TextBlock x:Name="ConnectionStatus" FontSize="14" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+                <TextBlock x:Name="SetupHelp" Text="{Binding [CompanionSetup_AdapterHelp], Source={StaticResource Loc}}"
+                           FontSize="12" Foreground="{ThemeResource AppleSecondaryBrush}" TextWrapping="Wrap" />
+                <Button x:Name="SetupButton" Style="{StaticResource GlassActionButton}" HorizontalAlignment="Stretch"
+                        MinHeight="48" Click="Setup_Click" />
+                <Button x:Name="ForgetButton" Content="{Binding [CompanionSetup_Unlink], Source={StaticResource Loc}}"
+                        Style="{StaticResource QuietButton}" HorizontalAlignment="Stretch" MinHeight="48"
+                        Visibility="Collapsed" Click="Forget_Click" />
+                <TextBlock x:Name="SetupError" FontSize="12" Foreground="{ThemeResource AppleSecondaryBrush}"
+                           TextWrapping="Wrap" Visibility="Collapsed" AutomationProperties.LiveSetting="Polite" />
+            </StackPanel>
+        </Border>
+    </StackPanel>
+</UserControl>

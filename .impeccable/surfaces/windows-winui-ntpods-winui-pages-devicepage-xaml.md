@@ -11,34 +11,116 @@ Mode: Operate. Native WinUI main window, device page and app settings.
 
 ## Layout
 
-Use one centered column: 640 DIP of controls plus 24 DIP padding on each side.
-Place the device name and connection status above the artwork and battery rings.
-Follow with Listen on, listening modes and grouped settings. Put less-used controls in
-native expanders and app settings in the device header's three-dot menu.
-The scroll area spans the window, including the side margins. Keep the scrollbar
-at the window edge. Symmetric header action columns and reserved name/status
-heights keep the device centered when Connect or Repair appears. Keep Connect
-available for a control-only connection until its audio output is ready.
+Keep the AirPods Dongle card below the shared settings. It stays reachable before
+a pair is selected, when the device settings are hidden. The device header
+reconnects the saved pair through the selected dongle.
+Spatial audio uses a standard navigation row for a selected AirPods Pro 3
+pair. Its page groups playback above calibration and ear profile comparison.
+The listening room uses a shaded three-dimensional studio to show surround
+channels and head movement. Keep the screen fixed in the room while the
+camera orbits. Reserve glass for controls around the scene. Live channel
+levels belong on the speakers, and exact values and keyboard edits belong
+in the native placement controls. When 3D rendering is unavailable, the
+native room diagram still supports selection and editing.
+Firmware counters appear when experimental controls are enabled.
 
-Use LibrePods' Apple appearance: a black or light gray page, white device artwork,
-rounded charcoal or white groups, inset dividers, green switches and battery rings.
-Keep native Windows text, keyboard controls and accessibility.
-Expander headings use the same normal-weight body style as setting labels.
-The name and connection status use single-line ellipsis; settings labels wrap.
+Use the shared acrylic capsule for Back, More, Connect and phone setup. Pairing
+and handoff actions each share a single outlined material. Keep settings and
+battery information on the content layer. A 16-DIP scroll-edge fade belongs
+below the fixed header and must pass pointer input through to the list.
+High contrast removes that fade and uses the user's system colors. Switch
+thumbs take on the glass material only while pressed.
 
-Supported unreported preferences allow an explicit choice. Unknown booleans use
-an unselected native On/Off chooser in the same 144 DIP slot as the reported
-switch. Keep sent choices separate from device reports in tooltips and accessible
-help. Require both hold actions before Apply. Saved choices stay with their pair
+
+The visual authority is LibrePods' Apple `StyledScaffold`, `StyledList`,
+`StyledListItem`, `StyledSwitch`, `BatteryView` and Apple settings screens.
+Use their bundled Roboto Flex face, centered 22-DIP bold title, 48-DIP round
+navigation/actions, filled 28-DIP inset groups and 58-DIP list rows. Keep 16-DIP
+side insets and section gaps in a centered 608-DIP maximum outer column.
+Subpage bars are 64 DIP high; the main header reserves connection status below
+the title. Preserve native Windows input, keyboard, focus and automation behavior.
+
+Cap the hero at 350 DIP: grouped buds on the left, case on the right, and gauges
+directly beneath their artwork. Preserve separate per-ear artwork wrappers,
+percentages and freshness; near-equal readings must not be merged. Headphones use
+one centered image and reading. Name follows the hero immediately and shows its
+actual value plus chevron. Group Hearing Health and Press and Hold rows within
+filled cards with inset dividers. Standalone navigation rows use the same filled
+appearance. The listening rail remains outside any group and retains its glass.
+
+Follow the common order: Name, Hearing Health, Listening Mode, Heart Rate, Press
+and Hold AirPods, Call Controls, Audio, ear detection, Microphone Mode, sleep
+pause, Optimized Charge Limit, Accessibility, Off Listening Mode and About.
+Omit unsupported features. Place companion, Windows volume, playback, microphone,
+sensors and checks below these sections under NTPods. Keep one instance of each
+control and preserve its pending and cleanup behavior. Use real subpages with a
+round Back action and centered title. The header gear opens app settings in one
+step. A connected native device with additional actions uses More in that slot.
+The dongle shows the pair name in the header, with the editable Name row reserved
+for routes that support renaming. App Settings starts with appearance and local
+preferences, followed by phone linking.
+
+The scroll area spans the window, including its margins. Keep the scrollbar at
+the window edge. Reserve the main status/action row so Connect or Repair cannot
+shift the title or body. Keep Connect available for a control-only connection
+until its audio output is ready. Settings labels wrap; titles and names trim.
+
+Supported unreported preferences allow an explicit choice. Automatic ear detection
+always uses the standard switch, including when showing the user's saved choice.
+An unknown charging-case sounds setting uses an unselected native On/Off chooser
+in the same 144 DIP slot as the reported switch. Keep sent choices separate from device reports in tooltips and accessible
+help. Send paired hold actions only when both choices are valid. Saved choices stay with their pair
 and never send automatically when loaded.
 
-Require explicit Apply for audiogram changes; debounce tuning gestures and
-preserve untouched settings from the current pair's confirmed profile.
+Read supported settings automatically on connection. Settings have no Apply or
+Read button. Coalesce live gestures with one write in flight and retain the latest
+valid choice for the next write. Numeric edits commit only complete, valid values.
+Preserve untouched settings from the current pair's confirmed profile; retire
+queued edits on failure, a changed pair or connection. Loading a report never writes it.
 
-Reuse Hearing assistance and Hardware checks below the native-only settings for
-USB dongles. Prefer a connected native session; otherwise use the dongle's own
+Reuse Hearing Aid, Headphone Accommodations and Hardware checks through their
+subpages for USB dongles. Prefer a connected native session; otherwise use the dongle's own
 reported model and session, without exposing unrelated native controls. Changing
 the USB target clears drafts and confirmations. Keep the experimental opt-in.
+
+The existing dongle group owns the native board picker. Show it for multiple
+boards or a missing selected board, retaining selection by serial across USB
+re-enumeration. Keep the group visible for control-only attachment. AirPods link,
+control readiness and USB audio availability are separate from route ownership.
+Codec/profile edits require idle audio; Game Mode stays live. Reuse the shared
+insets, text, native focus and wrapping labels without adding a takeover action
+until firmware supplies a guarded request and confirmed ownership readback.
+
+## Headphone Accommodations
+
+Keep the shared path Accessibility → Headphone Accommodations → Transparency.
+Follow the shared Apple page and captured controls: master, Audio tuning
+choice group, fixed Slight / Moderate / Strong Optimization slider for stock choices, independent
+Phone / Media switch rows and Transparency.
+Put Audiogram before the three stock tunings, using the saved hearing profile as
+its validated source without changing that profile. Hide Optimization for Audiogram.
+Unknown curves stay Custom settings; never infer Audiogram or a level from them.
+Remember destination choices per pair while off,
+including across fresh sessions. Send user changes live. Show the last successful local
+choice without a routine warning or reconnect, keeping it separate from device
+readback. Fresh reports supersede it; a changed connection discards it.
+Omit unverified Customize Audio and Play Sample actions.
+Equalizer labels follow the displayed live selection while pending; device
+confirmation stays in accessibility help and tooltips. Use the shared 12-DIP
+helper size for its description, preset label and band summary.
+
+Transparency uses an independent master group, five independent slider groups
+(Amplification, Balance, Tone, Ambient Noise Reduction and Own Voice Amplification),
+then a Conversation Boost group. Do not wrap the subpage in another expander. Follow the verified PersonalAudio
+conversion; preserve noncanonical custom gains and disable only combined sliders
+that cannot represent them. Preserve untouched EQ and per-ear fields. Use live
+edits, shared theme resources and native keyboard input.
+Keep the five native Sliders and two switches exposed to automation and tab focus.
+Transparency and Optimization share the 40-by-24-DIP glass thumb: white at rest, refracting on press, with
+a directional rim and a restrained shadow. The five cards use 24-DIP horizontal
+and 16-DIP vertical padding with an eight-DIP caption-to-track gap. Keep the full
+1.5× pressed thumb inside that inset, with the native high-contrast fallback.
+Optimization retains exactly three stops, with labels aligned beneath the track.
 
 ## Listening modes
 
@@ -50,10 +132,25 @@ value on release. Preserve the geometry and motion documented in DESIGN.md.
 
 ## Listen on
 
-Place one compact card directly after the batteries and before listening modes
-for a linked phone matching the selected pair. Reuse `Card` and `QuietButton`:
+Keep Phone connection discoverable in App Settings and as a navigation row under
+NTPods. Its setup distinguishes the phone-to-PC Windows Bluetooth bond from
+the app link. Use the existing native dialog, paired-phone picker, Bluetooth
+settings action and clear code-copy step, with one explicit provisioning action.
+Keep temporary linking codes out of logs, persistent UI state, clipboard history
+and roaming. Waiting for LibrePods is separate from authenticated connection.
+The corresponding LibrePods setting is PC connection.
+
+The selected route supplies the main header and battery hero, including independent
+reading ages. Header Connect uses the selected dongle's guarded request when
+appropriate. Collapse dongle-specific controls and diagnostics together; show the
+board picker when selection is ambiguous or missing. Label Bluetooth audio-source
+pairing separately from linking LibrePods. Do not repeat ordinary batteries,
+listening modes or reconnect actions inside the dongle group.
+
+Place the compact card below the common device sections, under NTPods, for a
+linked phone matching the selected pair. Reuse `Card`, `GlassActionGroup` and `QuietButton`:
 12 DIP card padding, equal destination columns with an 8 DIP gap, and Phone and
-This PC actions with native icons, wrapping 16-DIP labels and 48-DIP minimum
+This PC actions with native icons, wrapping 14-DIP labels and 48-DIP minimum
 height. Keep both actions neutral; neither indicates the current audio owner.
 Reserve a 20-DIP progress slot beside the title so transfer progress does not
 shift the content. Animate it only during an active transfer. Routine pending,
@@ -105,12 +202,16 @@ unload, pair change or daemon loss. Opening the card must never start scanning o
 take over audio. Reuse native controls and the existing expander motion in every
 theme, including high contrast and reduced motion.
 
-Hardware checks use a collapsed expander and manual Refresh. Show saved per-ear
+Hardware checks use a collapsed expander and load saved data automatically. Show saved per-ear
 results with neutral text and separate device timestamps from the time read.
 Cached flags do not establish a current fault. Keep raw device data in secondary
 details. Confirm sound-producing in-case requests before sending; show the next
 physical action and each ear's new-result progress. Stop waiting only ends host
 observation, so it must not claim to stop the firmware check.
+
+Do not show a blanket missing-audiogram or Experimental warning over a validated
+stored hearing profile. Missing-profile and failed-write handling must reflect
+the actual state; retain backend editing and enrollment guards.
 
 Keep backend behavior, localization, themes and error handling intact. Visual
 tests must use an isolated renderer and must not send commands to AirPods.

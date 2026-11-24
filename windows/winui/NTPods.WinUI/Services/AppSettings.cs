@@ -14,8 +14,10 @@ public static class AppSettings
         // 0 = System (Default), 1 = Light, 2 = Dark — the ThemeButtons indices.
         public int ThemeIndex { get; set; }
         public int? PendingThemeIndex { get; set; }
+        public Dictionary<int, string> SpatialRooms { get; set; } = new();
         public Dictionary<string, bool> ConnectionPopups { get; set; } = new(StringComparer.OrdinalIgnoreCase);
         public Dictionary<string, bool> DisconnectedBatteryCache { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, byte> AccommodationsDestinations { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
         // Hearing assistance and Custom Transparency are opt-in.
         public bool EnableExperimental { get; set; }
@@ -108,6 +110,8 @@ public static class AppSettings
 
     /// The saved theme selector index (0 System / 1 Light / 2 Dark).
     public static int ThemeIndex => Load().ThemeIndex;
+    internal static string? SpatialRoom(int mask) => Load().SpatialRooms?.GetValueOrDefault(mask);
+    internal static bool SaveSpatialRoom(int mask, string layout) => Update(m => (m.SpatialRooms ??= new())[mask] = layout);
 
     /// The saved theme as an ElementTheme for the window root.
     public static ElementTheme Theme => ThemeIndex switch
@@ -149,6 +153,32 @@ public static class AppSettings
             m.DisconnectedBatteryCache.Remove(m.DisconnectedBatteryCache.Keys.First());
         m.DisconnectedBatteryCache[key] = enabled;
     });
+
+    public static (bool Phone, bool Media)? HeadphoneAccommodationsDestinations(string deviceId)
+    {
+        string key = deviceId.Replace(":", "").ToUpperInvariant();
+        lock (_gate)
+            return Load().AccommodationsDestinations is { } choices && choices.TryGetValue(key, out byte value) && value <= 3
+                ? ((value & 1) != 0, (value & 2) != 0) : null;
+    }
+
+    public static bool SetHeadphoneAccommodationsDestinations(string deviceId, bool phone, bool media)
+    {
+        string key = deviceId.Replace(":", "").ToUpperInvariant();
+        if (key.Length != 12 || !key.All(Uri.IsHexDigit)) return false;
+        byte flags = (byte)((phone ? 1 : 0) | (media ? 2 : 0));
+        lock (_gate)
+        {
+            if (Load().AccommodationsDestinations?.GetValueOrDefault(key, (byte)255) == flags) return true;
+            return Update(m =>
+            {
+                m.AccommodationsDestinations ??= new(StringComparer.OrdinalIgnoreCase);
+                if (!m.AccommodationsDestinations.ContainsKey(key) && m.AccommodationsDestinations.Count >= 64)
+                    m.AccommodationsDestinations.Remove(m.AccommodationsDestinations.Keys.First());
+                m.AccommodationsDestinations[key] = flags;
+            });
+        }
+    }
 
     /// Whether experimental settings are shown (off by default).
     public static bool EnableExperimental => Load().EnableExperimental;

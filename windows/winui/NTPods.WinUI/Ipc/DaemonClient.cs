@@ -49,7 +49,7 @@ public sealed class DaemonClient : IDisposable
     private Task? _run;
     private bool _stopping;
 
-    public DaemonClient(bool startDaemon = true) : this("NTPods-events", "NTPods-cmds",
+    public DaemonClient(bool startDaemon = true) : this("NTPodsDongle-events", "NTPodsDongle-cmds",
         startDaemon ? TrySpawnDaemon : () => null, DaemonIsRunning) { }
 
     internal DaemonClient(string eventsPipe, string commandsPipe, Func<Process?> spawnDaemon, Func<bool>? daemonIsRunning = null)
@@ -329,7 +329,7 @@ public sealed class DaemonClient : IDisposable
     {
         try
         {
-            bool exists = Mutex.TryOpenExisting(@"Local\NTPodsDaemonSingleton", out var mutex);
+            bool exists = Mutex.TryOpenExisting(@"Local\NTPodsDongleDaemonSingleton", out var mutex);
             mutex?.Dispose();
             return exists;
         }
@@ -340,9 +340,9 @@ public sealed class DaemonClient : IDisposable
     {
         string[] candidates =
         [
-            Path.Combine(AppContext.BaseDirectory, "ntpodsd.exe"),
-            Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "ntpodsd.exe")),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "NTPods", "ntpodsd.exe"),
+            Path.Combine(AppContext.BaseDirectory, "ntpodsd-dongle.exe"),
+            Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "ntpodsd-dongle.exe")),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "NTPods", "ntpodsd-dongle.exe"),
         ];
         return candidates.FirstOrDefault(File.Exists);
     }

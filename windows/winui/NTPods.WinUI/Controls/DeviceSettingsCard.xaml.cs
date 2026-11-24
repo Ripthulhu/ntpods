@@ -18,7 +18,6 @@ public sealed partial class DeviceSettingsCard : UserControl
     private Snapshot _snapshot = new();
     private string _snapshotDeviceId = "";
     private bool _applying = true;
-    private bool _refreshCoolingDown;
     private bool _deviceChanged;
     private bool _loudSoundReductionRead;
     private readonly PlaybackModeRequest _playbackMode = new();
@@ -34,8 +33,47 @@ public sealed partial class DeviceSettingsCard : UserControl
     public event Action? PlaybackPendingChanged;
     public bool PlaybackPending => _dongleProfileRequested is not null || _playbackMode.Requested is not null || _bitrateRequested is not null || _linkRequested is not null || _gameModeRequested is not null;
     private readonly List<(StackPanel Panel, FrameworkElement Row, Border? Divider, byte Id)> _rows = new();
-    private readonly DispatcherTimer _refreshCooldown = new() { Interval = TimeSpan.FromSeconds(5) };
+    private readonly Dictionary<byte, LiveSettingEdit<LiveControlValue>> _liveControls = new();
+    private readonly LiveSettingEdit<LiveBitrateValue> _bitrateEdit = new();
+    private readonly LiveSettingEdit<PlaybackLinkSettings> _linkEdit = new();
+    private readonly DispatcherTimer _liveDebounce = new() { Interval = TimeSpan.FromMilliseconds(150) };
+    private readonly DispatcherTimer _controlTimeout = new() { Interval = TimeSpan.FromMilliseconds(250) };
+    private string _liveOwner = "";
+    private bool _liveReady;
+    private readonly HashSet<byte> _incompleteControls = new();
     private readonly DispatcherTimer _playbackTimeout = new() { Interval = TimeSpan.FromSeconds(5) };
+    private StackPanel? _leftHoldGroup, _rightHoldGroup;
+    private bool _protectionDetached;
+
+    public void MoveRows(StackPanel destination, params byte[] ids)
+    {
+        foreach (byte id in ids)
+        for (int i = 0; i < _rows.Count; i++)
+        {
+            var row = _rows[i];
+            if (id != row.Id || row.Panel == destination) continue;
+            row.Panel.Children.Remove(row.Row);
+            if (row.Divider is not null) { row.Panel.Children.Remove(row.Divider); destination.Children.Add(row.Divider); }
+            destination.Children.Add(row.Row);
+            _rows[i] = (destination, row.Row, row.Divider, row.Id);
+        }
+    }
+
+    public FrameworkElement TakeHearingProtection()
+    {
+        // The collapsed Expander has no visual parent for this row during construction.
+        LoudSoundReductionPanel.Children.Remove(LoudSoundReductionRow);
+        _protectionDetached = true;
+        return LoudSoundReductionRow;
+    }
+    public void ReadHearingProtection() => ReadLoudSoundReduction();
+    public void PlaceNoiseCycle(StackPanel destination, bool headphone) => MoveRows(headphone ? StemPanel : destination, 0x1A);
+
+    public void ShowHoldSide(bool right)
+    {
+        if (_leftHoldGroup is not null) _leftHoldGroup.Visibility = right ? Visibility.Collapsed : Visibility.Visible;
+        if (_rightHoldGroup is not null) _rightHoldGroup.Visibility = right ? Visibility.Visible : Visibility.Collapsed;
+    }
 
     public DeviceSettingsCard()
     {
@@ -45,6 +83,8 @@ public sealed partial class DeviceSettingsCard : UserControl
             _playbackTimeout.Stop();
             _playbackMode.Cancel();
             _bitrateRequested = null;
+            _bitrateEdit.Cancel();
+            _linkEdit.Cancel();
             _bitrateDirty = false;
             _linkRequested = null;
             _gameModeRequested = null;
@@ -56,11 +96,20 @@ public sealed partial class DeviceSettingsCard : UserControl
         Unloaded += (_, _) => { _playbackTimeout.Stop(); _playbackMode.Cancel(); _bitrateRequested = null; _linkRequested = null; _gameModeRequested = null;
             _dongleProfileRequested = null; _linkDirty = false; };
         ComfortExpander.Expanding += (_, _) => ReadLoudSoundReduction();
-        _refreshCooldown.Tick += (_, _) =>
+        _liveDebounce.Tick += (_, _) => { _liveDebounce.Stop(); _liveReady = true; FlushLive(); };
+        _controlTimeout.Tick += (_, _) =>
         {
-            _refreshCooldown.Stop();
-            _refreshCoolingDown = false;
-            Update(_snapshot);
+            bool expired = false;
+            long now = Environment.TickCount64;
+            foreach (var edit in _liveControls.Values) expired |= edit.Expire(now, 11_000);
+            if (_liveControls.Values.All(edit => edit.Requested is null)) _controlTimeout.Stop();
+            if (expired) { Client?.RequestState(); Update(_snapshot); }
+        };
+        Unloaded += (_, _) =>
+        {
+            _liveDebounce.Stop(); _controlTimeout.Stop(); _liveReady = false;
+            foreach (var edit in _liveControls.Values) edit.Cancel();
+            _bitrateEdit.Cancel(); _linkEdit.Cancel();
         };
         AddToggle(PlaybackPanel, 0x0A, "EarDetection");
         AddToggle(PlaybackPanel, 0x35, "SleepDetection");
@@ -121,20 +170,20 @@ public sealed partial class DeviceSettingsCard : UserControl
 
     private void AddRow(StackPanel panel, FrameworkElement content, byte id)
     {
+        ControlEdit(id);
         var divider = new Border { Style = (Style)Application.Current.Resources["InsetDivider"], Margin = new Thickness(0) };
         panel.Children.Add(divider);
-        content.Margin = new Thickness(0, 14, 0, 14);
+        content.Margin = new Thickness(0, 15, 0, 15);
         panel.Children.Add(content);
         _rows.Add((panel, content, divider, id));
     }
 
     private void AddToggle(StackPanel panel, byte id, string label)
     {
-        bool canChooseWithoutReport = id is 0x0A or 0x31;
         var toggle = new ToggleSwitch { Style = (Style)Application.Current.Resources["SettingToggle"], VerticalAlignment = VerticalAlignment.Center };
         Bind(toggle, AutomationProperties.NameProperty, label);
         ComboBox? choice = null;
-        if (canChooseWithoutReport)
+        if (id == 0x31)
         {
             choice = new ComboBox { MinWidth = 120, PlaceholderText = "—", VerticalAlignment = VerticalAlignment.Center };
             Bind(choice, AutomationProperties.NameProperty, label);
@@ -168,23 +217,13 @@ public sealed partial class DeviceSettingsCard : UserControl
         AddRow(panel, row, id);
         toggle.Toggled += (_, _) =>
         {
-            if (!_applying && DeviceSettingStatus.CanChange(_snapshot, id))
-                Send(new SetDeviceControlCmd { Id = id, Value = DeviceSettingStatus.ToggleValue(id, toggle.IsOn), DeviceId = _snapshot.DeviceId });
+            if (!_applying && CanEditControl(_snapshot, id))
+                QueueControl(id, DeviceSettingStatus.ToggleValue(id, toggle.IsOn));
         };
         if (choice is not null) choice.SelectionChanged += (_, _) =>
         {
-            if (!_applying && choice.SelectedIndex >= 0 && !DeviceSettingStatus.Available(_snapshot, id) &&
-                DeviceSettingStatus.CanChoose(_snapshot, id))
-            {
-                if (Send(new SetDeviceControlCmd
-                    { Id = id, Value = DeviceSettingStatus.ToggleValue(id, choice.SelectedIndex == 0), DeviceId = _snapshot.DeviceId }) != true)
-                {
-                    Update(_snapshot);
-                    return;
-                }
-                choice.IsEnabled = false;
-                AutomationProperties.SetHelpText(choice, Localize.Get("DeviceSetting.Pending"));
-            }
+            if (!_applying && choice.SelectedIndex >= 0 && !DeviceSettingStatus.Available(_snapshot, id) && CanEditControl(_snapshot, id))
+                QueueControl(id, DeviceSettingStatus.ToggleValue(id, choice.SelectedIndex == 0));
         };
         _updates.Add(s =>
         {
@@ -194,17 +233,17 @@ public sealed partial class DeviceSettingsCard : UserControl
                 AutomationProperties.SetName(toggle, text.Text);
             }
             bool reported = s.DeviceControls.ContainsKey(id);
-            var value = DeviceSettingStatus.DisplayValue(s, id);
+            var value = DisplayControl(id);
             if (choice is not null)
             {
                 toggle.Visibility = reported ? Visibility.Visible : Visibility.Collapsed;
                 choice.Visibility = reported ? Visibility.Collapsed : Visibility.Visible;
-                choice.IsEnabled = DeviceSettingStatus.CanChoose(s, id);
+                choice.IsEnabled = CanEditControl(s, id);
                 choice.SelectedIndex = value == DeviceSettingStatus.ToggleValue(id, true) ? 0 :
                     value == DeviceSettingStatus.ToggleValue(id, false) ? 1 : -1;
                 SetStatus(choice, row, s, id);
             }
-            toggle.IsEnabled = DeviceSettingStatus.CanChange(s, id);
+            toggle.IsEnabled = CanEditControl(s, id);
             toggle.IsOn = value == DeviceSettingStatus.ToggleValue(id, true);
             SetStatus(toggle, row, s, id);
         });
@@ -224,69 +263,35 @@ public sealed partial class DeviceSettingsCard : UserControl
                 Bind(text, TextBlock.TextProperty, key);
                 choice.Items.Add(new ComboBoxItem { Content = text });
             }
-            panel.Children.Add(Label(label));
-            panel.Children.Add(choice);
+            var group = new StackPanel { Spacing = 8, Children = { Label(label), choice } };
+            panel.Children.Add(group);
+            if (label == "LeftHold") _leftHoldGroup = group; else _rightHoldGroup = group;
             return choice;
         }
         var left = Picker("LeftHold");
         var right = Picker("RightHold");
-        var apply = new Button();
-        Bind(apply, ContentControl.ContentProperty, "Apply");
-        Bind(apply, AutomationProperties.NameProperty, "ApplyHoldActions");
-        panel.Children.Add(apply);
         AddRow(StemPanel, panel, id);
-        bool dirty = false;
-        string? owner = null;
-        uint? baseline = null;
         void Changed(object sender, SelectionChangedEventArgs e)
         {
-            if (_applying || !DeviceSettingStatus.CanChoose(_snapshot, id)) return;
-            if (!dirty)
-            {
-                owner = _snapshot.DeviceId;
-                baseline = DeviceSettingStatus.DisplayValue(_snapshot, id);
-            }
-            dirty = true;
-            apply.IsEnabled = left.SelectedIndex >= 0 && right.SelectedIndex >= 0;
-            SetStatus(apply, panel, _snapshot, id, dirty);
+            if (_applying || !CanEditControl(_snapshot, id)) return;
+            QueueControl(id, LiveDeviceChoices.Hold(left.SelectedIndex, right.SelectedIndex));
         }
         left.SelectionChanged += Changed;
         right.SelectionChanged += Changed;
-        apply.Click += (_, _) =>
-        {
-            if (!dirty || owner != _snapshot.DeviceId || left.SelectedIndex < 0 || right.SelectedIndex < 0 ||
-                !DeviceSettingStatus.CanChoose(_snapshot, id) || Client is null) return;
-            uint value = ((left.SelectedIndex == 0 ? 1u : 5u) << 8) | (right.SelectedIndex == 0 ? 1u : 5u);
-            if (!Send(new SetDeviceControlCmd { Id = id, Value = value, DeviceId = _snapshot.DeviceId })) return;
-            dirty = false;
-            owner = null;
-            baseline = null;
-            apply.IsEnabled = false;
-            AutomationProperties.SetHelpText(apply, Localize.Get("DeviceSetting.Pending"));
-        };
         _updates.Add(s =>
         {
-            var value = DeviceSettingStatus.DisplayValue(s, id);
-            if (_deviceChanged || !s.Connected || s.LinkStale || dirty && baseline != value)
-            {
-                dirty = false;
-                owner = null;
-                baseline = null;
-            }
-            bool enabled = DeviceSettingStatus.CanChoose(s, id);
-            left.IsEnabled = enabled;
-            right.IsEnabled = enabled;
+            var value = DisplayControl(id);
+            bool enabled = CanEditControl(s, id);
+            left.IsEnabled = right.IsEnabled = enabled;
             ((ComboBoxItem)left.Items[0]).Visibility = DeviceModels.Listening(s) ? Visibility.Visible : Visibility.Collapsed;
             ((ComboBoxItem)right.Items[0]).Visibility = DeviceModels.Listening(s) ? Visibility.Visible : Visibility.Collapsed;
-            if (!dirty)
+            if (ControlEdit(id).Desired is null && !_incompleteControls.Contains(id))
             {
-                left.SelectedIndex = value.HasValue ? ((value.Value >> 8) & 0xFF) switch { 1 => 0, 5 => 1, _ => -1 } : -1;
-                right.SelectedIndex = value.HasValue ? (value.Value & 0xFF) switch { 1 => 0, 5 => 1, _ => -1 } : -1;
+                left.SelectedIndex = LiveDeviceChoices.HoldIndex(value, right: false);
+                right.SelectedIndex = LiveDeviceChoices.HoldIndex(value, right: true);
             }
-            apply.IsEnabled = enabled && dirty && left.SelectedIndex >= 0 && right.SelectedIndex >= 0;
-            SetStatus(left, panel, s, id, dirty);
-            SetStatus(right, panel, s, id, dirty);
-            SetStatus(apply, panel, s, id, dirty);
+            SetStatus(left, panel, s, id, ControlEdit(id).Desired is not null);
+            SetStatus(right, panel, s, id, ControlEdit(id).Desired is not null);
         });
     }
 
@@ -306,20 +311,13 @@ public sealed partial class DeviceSettingsCard : UserControl
         AddRow(panel, row, id);
         choice.SelectionChanged += (_, _) =>
         {
-            if (_applying || choice.SelectedIndex < 0 || !DeviceSettingStatus.CanChoose(_snapshot, id)) return;
-            uint value = values[choice.SelectedIndex];
-            if (Send(new SetDeviceControlCmd { Id = id, Value = value, DeviceId = _snapshot.DeviceId }) != true)
-            {
-                Update(_snapshot);
-                return;
-            }
-            choice.IsEnabled = false;
-            AutomationProperties.SetHelpText(choice, Localize.Get("DeviceSetting.Pending"));
+            if (!_applying && choice.SelectedIndex >= 0 && CanEditControl(_snapshot, id))
+                QueueControl(id, values[choice.SelectedIndex]);
         };
         _updates.Add(s =>
         {
-            choice.IsEnabled = DeviceSettingStatus.CanChoose(s, id);
-            var value = DeviceSettingStatus.DisplayValue(s, id);
+            choice.IsEnabled = CanEditControl(s, id);
+            var value = DisplayControl(id);
             choice.SelectedIndex = value.HasValue ? Array.IndexOf(values, value.Value) : -1;
             SetStatus(choice, row, s, id);
         });
@@ -336,16 +334,8 @@ public sealed partial class DeviceSettingsCard : UserControl
         foreach (var box in options) panel.Children.Add(box);
         var hint = Label("CycleHint", helper: true);
         panel.Children.Add(hint);
-        var apply = new Button();
-        Bind(apply, ContentControl.ContentProperty, "Apply");
-        Bind(apply, AutomationProperties.NameProperty, "ApplyNoiseCycle");
-        panel.Children.Add(apply);
         AddRow(StemPanel, panel, id);
-        bool dirty = false;
-        bool allowOff = false;
-        string? owner = null;
-        uint? baseline = null;
-        int SelectedCount() => options.Count(x => x.Visibility == Visibility.Visible && x.IsChecked == true);
+        bool? allowOff = null;
         foreach (var box in options)
         {
             box.Checked += Changed;
@@ -353,122 +343,73 @@ public sealed partial class DeviceSettingsCard : UserControl
         }
         void Changed(object sender, RoutedEventArgs e)
         {
-            if (_applying || !DeviceSettingStatus.CanChoose(_snapshot, id)) return;
-            if (!dirty)
-            {
-                owner = _snapshot.DeviceId;
-                baseline = DeviceSettingStatus.DisplayValue(_snapshot, id);
-            }
-            dirty = true;
-            apply.IsEnabled = SelectedCount() >= 2;
-            SetStatus(apply, panel, _snapshot, id, dirty);
-        }
-        apply.Click += (_, _) =>
-        {
-            if (!dirty || owner != _snapshot.DeviceId || Client is null ||
-                !DeviceSettingStatus.CanChoose(_snapshot, id) || SelectedCount() < 2) return;
+            if (_applying || !CanEditControl(_snapshot, id)) return;
             uint mask = 0;
             for (int i = 0; i < options.Length; i++)
                 if (options[i].Visibility == Visibility.Visible && options[i].IsChecked == true) mask |= 1u << i;
-            if (!Send(new SetDeviceControlCmd { Id = id, Value = mask, DeviceId = _snapshot.DeviceId })) return;
-            dirty = false;
-            owner = null;
-            baseline = null;
-            apply.IsEnabled = false;
-            AutomationProperties.SetHelpText(apply, Localize.Get("DeviceSetting.Pending"));
-        };
+            QueueControl(id, LiveDeviceChoices.NoiseCycle(mask));
+        }
         _updates.Add(s =>
         {
-            bool enabled = DeviceSettingStatus.CanChoose(s, id);
-            var value = DeviceSettingStatus.DisplayValue(s, id);
+            bool enabled = CanEditControl(s, id);
+            var value = DisplayControl(id);
             title.Text = Localize.Get(DeviceModels.Headphone(s) ? "DeviceControls.ButtonNoiseCycle" : "DeviceControls.NoiseCycle");
             hint.Text = Localize.Get(DeviceModels.AllowOffOption(s) ? "DeviceControls.CycleHint" : "DeviceControls.LegacyCycleHint");
             bool offEnabled = DeviceSettingStatus.AllowOffEnabled(s);
-            if (_deviceChanged || !enabled || offEnabled != allowOff || dirty && baseline != value)
-            {
-                dirty = false;
-                owner = null;
-                baseline = null;
-            }
+            if (allowOff.HasValue && offEnabled != allowOff) ControlEdit(id).Cancel();
             allowOff = offEnabled;
-            options[0].Visibility = allowOff ? Visibility.Visible : Visibility.Collapsed;
+            options[0].Visibility = offEnabled ? Visibility.Visible : Visibility.Collapsed;
             options[3].Visibility = DeviceModels.Adaptive(s) ? Visibility.Visible : Visibility.Collapsed;
             for (int i = 0; i < options.Length; i++)
             {
                 options[i].IsEnabled = enabled;
-                SetStatus(options[i], panel, s, id, dirty);
-                if (!dirty) options[i].IsChecked = value.HasValue ? (value & (1u << i)) != 0 : null;
+                SetStatus(options[i], panel, s, id, ControlEdit(id).Desired is not null);
+                if (ControlEdit(id).Desired is null && !_incompleteControls.Contains(id))
+                    options[i].IsChecked = value.HasValue ? (value & (1u << i)) != 0 : null;
             }
-            apply.IsEnabled = enabled && dirty && SelectedCount() >= 2;
-            SetStatus(apply, panel, s, id, dirty);
         });
     }
 
     private void AddVolume(byte id, string label, uint prefix)
     {
-        var slider = new Slider { Minimum = 0, Maximum = 100, StepFrequency = 1 };
+        var slider = new Slider { Minimum = 0, Maximum = 100, StepFrequency = 1,
+            Style = (Style)Application.Current.Resources["AppleSlider"] };
         Bind(slider, AutomationProperties.NameProperty, label);
         var valueText = Status();
-        var apply = new Button();
-        Bind(apply, ContentControl.ContentProperty, "Apply");
-        Bind(apply, AutomationProperties.NameProperty, $"Apply{label}");
-        var row = new StackPanel { Spacing = 8, Children = { Label(label), slider, valueText, apply } };
+        var row = new StackPanel { Spacing = 8, Children = { Label(label), slider, valueText } };
         AddRow(ComfortPanel, row, id);
-        bool dirty = false;
-        string? owner = null;
-        uint? baseline = null;
         slider.ValueChanged += (_, _) =>
         {
             valueText.Text = $"{slider.Value:0} / 100";
-            if (_applying || !DeviceSettingStatus.CanChoose(_snapshot, id)) return;
-            if (!dirty)
-            {
-                owner = _snapshot.DeviceId;
-                baseline = DeviceSettingStatus.DisplayValue(_snapshot, id);
-            }
-            dirty = true;
-            apply.IsEnabled = true;
-            SetStatus(slider, row, _snapshot, id, dirty);
-        };
-        apply.Click += (_, _) =>
-        {
-            bool initialChoice = id == 0x40 && !DeviceSettingStatus.DisplayValue(_snapshot, id).HasValue;
-            if (Client is null || !DeviceSettingStatus.CanChoose(_snapshot, id) ||
-                !(dirty && owner == _snapshot.DeviceId || initialChoice && !dirty)) return;
-            if (!Send(new SetDeviceControlCmd { Id = id, Value = prefix | (uint)slider.Value, DeviceId = _snapshot.DeviceId })) return;
-            dirty = false;
-            owner = null;
-            baseline = null;
-            apply.IsEnabled = false;
-            AutomationProperties.SetHelpText(apply, Localize.Get("DeviceSetting.Pending"));
+            if (!_applying && CanEditControl(_snapshot, id)) QueueControl(id, prefix | (uint)slider.Value);
         };
         _updates.Add(s =>
         {
-            var value = DeviceSettingStatus.DisplayValue(s, id);
-            if (_deviceChanged || !DeviceSettingStatus.CanChoose(s, id) || dirty && baseline != value)
-            {
-                dirty = false;
-                owner = null;
-                baseline = null;
-            }
-            slider.IsEnabled = DeviceSettingStatus.CanChoose(s, id);
-            if (!dirty && value is uint current) slider.Value = current & 0xFF;
-            else if (_deviceChanged && !value.HasValue) slider.Value = 0;
-            valueText.Text = dirty || value.HasValue ? $"{slider.Value:0} / 100" : "—";
-            bool initialChoice = id == 0x40 && !value.HasValue;
-            apply.IsEnabled = slider.IsEnabled && (dirty || initialChoice);
-            SetStatus(slider, row, s, id, dirty);
-            SetStatus(apply, row, s, id, dirty);
-            if (initialChoice && !dirty && apply.IsEnabled)
-                AutomationProperties.SetHelpText(apply, Localize.Get("DeviceControls.ChooseVolume", slider.Value));
+            var value = DisplayControl(id);
+            slider.IsEnabled = CanEditControl(s, id);
+            if (value is uint current) slider.Value = current & 0xFF;
+            else if (_deviceChanged) slider.Value = 0;
+            valueText.Text = value.HasValue ? $"{slider.Value:0} / 100" : "—";
+            SetStatus(slider, row, s, id, ControlEdit(id).Desired is not null);
         });
     }
 
     public void Update(Snapshot s)
     {
-        _deviceChanged = s.DeviceId != _snapshotDeviceId;
+        string owner = LiveSettingScope.For(s, Client?.SessionEpoch ?? 0);
+        _deviceChanged = s.DeviceId != _snapshotDeviceId || owner != _liveOwner;
         _snapshotDeviceId = s.DeviceId;
-        if (_deviceChanged || Client?.IsReady != true || !(s.PlaybackNativeDriver || DonglePlayback(s)) || !s.PlaybackAvailable ||
+        _liveOwner = owner;
+        if (_deviceChanged || !s.Connected || s.LinkStale) _incompleteControls.Clear();
+        foreach (var (id, edit) in _liveControls)
+        {
+            uint? reportedValue = s.DeviceControls.TryGetValue(id, out uint actual) ? DeviceSettingStatus.CurrentValue(id, actual) :
+                s.DeviceControlsRequested.TryGetValue(id, out uint sent) ? sent : null;
+            edit.Update(owner, CanEditControl(s, id), reportedValue is uint value ? new(value) : null,
+                s.DeviceControlsPending.TryGetValue(id, out uint pending) ? new(pending) : null, s.DeviceSettingsError);
+        }
+        if (_liveControls.Values.All(edit => edit.Requested is null)) _controlTimeout.Stop();
+        if (_deviceChanged || !s.Connected || s.LinkStale || Client?.IsReady != true || !(s.PlaybackNativeDriver || DonglePlayback(s)) || !s.PlaybackAvailable ||
             PlaybackPending && s.PlaybackError != _playbackErrorAtRequest && !string.IsNullOrEmpty(s.PlaybackError))
         {
             _playbackMode.Cancel();
@@ -480,6 +421,15 @@ public sealed partial class DeviceSettingsCard : UserControl
             _linkDirty = false;
         }
         _playbackMode.Update(s);
+        string mode = _playbackMode.BitrateMode(s);
+        bool playbackAvailable = s.Connected && !s.LinkStale && Client?.IsReady == true &&
+            (s.PlaybackNativeDriver || DonglePlayback(s)) && s.PlaybackAvailable && !MicrophoneBusy(s);
+        var bitrate = PlaybackModeRequest.BitrateFor(s, mode);
+        _bitrateEdit.Update(owner + "/" + mode, playbackAvailable && (!DonglePlayback(s) || DongleHealthPresentation.ProfileIdle(s.Dongle)),
+            new(mode, DonglePlayback(s) ? bitrate.Variable : bitrate.BestEffort, bitrate.Kbps, bitrate.Variable), null, s.PlaybackError);
+        _linkEdit.Update(owner + "/" + mode, playbackAvailable && mode == "aac_eld", s.PlaybackLink, null, s.PlaybackError);
+        if (_bitrateEdit.Requested is null) _bitrateRequested = null;
+        if (_linkEdit.Requested is null) _linkRequested = null;
         if (_linkRequested == s.PlaybackLink) _linkRequested = null;
         if (_gameModeRequested == s.PlaybackGameMode) _gameModeRequested = null;
         if (_bitrateRequested is { } requested && PlaybackModeRequest.BitrateFor(s, requested.Mode) is { } reported &&
@@ -500,8 +450,6 @@ public sealed partial class DeviceSettingsCard : UserControl
             ToolTipService.SetToolTip(AutoPauseRow, pauseHelp);
             AutomationProperties.SetHelpText(AutoPauseSwitch, pauseHelp);
             AutomationProperties.SetName(AutoPauseSwitch, AutoPauseLabel.Text);
-            RefreshButton.IsEnabled = !_refreshCoolingDown && s.Connected &&
-                s.MicState == "idle" && !s.MicCaptureActive && !s.MicUplinkActive;
             ErrorBar.IsOpen = !string.IsNullOrWhiteSpace(s.DeviceSettingsError);
             ErrorBar.Message = s.DeviceSettingsError ?? "";
             UpdatePlayback(s);
@@ -520,7 +468,7 @@ public sealed partial class DeviceSettingsCard : UserControl
             LoudSoundReductionError.Visibility = reduction && !string.IsNullOrWhiteSpace(s.LoudSoundReductionError)
                 ? Visibility.Visible : Visibility.Collapsed;
             foreach (var update in _updates) update(s);
-            foreach (var panel in new[] { PlaybackPanel, StemPanel, ComfortPanel })
+            foreach (var panel in _rows.Select(row => row.Panel).Concat(new[] { PlaybackPanel, StemPanel, ComfortPanel }).Distinct())
             {
                 bool any = panel == PlaybackPanel && PlaybackRouteRow.Visibility == Visibility.Visible;
                 foreach (var row in _rows.Where(row => row.Panel == panel))
@@ -530,14 +478,15 @@ public sealed partial class DeviceSettingsCard : UserControl
                     if (row.Divider is not null) row.Divider.Visibility = visible && any ? Visibility.Visible : Visibility.Collapsed;
                     any |= visible;
                 }
-                var expander = panel == PlaybackPanel ? PlaybackExpander : panel == StemPanel ? StemExpander : ComfortExpander;
+                var expander = panel == PlaybackPanel ? PlaybackExpander : panel == StemPanel ? StemExpander : panel == ComfortPanel ? ComfortExpander : null;
                 if (panel == ComfortPanel)
-                    LoudSoundReductionDivider.Visibility = any && reduction ? Visibility.Visible : Visibility.Collapsed;
-                expander.Visibility = any || panel == ComfortPanel && reduction ? Visibility.Visible : Visibility.Collapsed;
+                    LoudSoundReductionDivider.Visibility = any && reduction && !_protectionDetached ? Visibility.Visible : Visibility.Collapsed;
+                if (expander is not null) expander.Visibility = any || panel == ComfortPanel && reduction && !_protectionDetached ? Visibility.Visible : Visibility.Collapsed;
             }
         }
         finally { _applying = false; }
         if (ComfortExpander.IsExpanded) ReadLoudSoundReduction();
+        if (_liveReady) FlushLive();
     }
 
     private static bool DonglePlayback(Snapshot s) => s.DeviceId.StartsWith("dongle:", StringComparison.Ordinal) && s.PlaybackAvailable && s.Dongle.Health.Audio is not null;
@@ -556,7 +505,8 @@ public sealed partial class DeviceSettingsCard : UserControl
         PlaybackRouteRow.Visibility = native || s.PlaybackState == "unavailable" ? Visibility.Visible : Visibility.Collapsed;
         PlaybackPicker.SelectedIndex = dongle ? (_dongleProfileRequested ?? s.Dongle.Health.Audio!.RequestedCodec) switch { 0 => 2, 1 => 3, 2 => 0, 3 => 1, _ => -1 } : native ? preferred switch { "aac" => 0, "aac_eld" => 1, _ => -1 } : -1;
         bool enabled = native && Client?.IsReady == true && !MicrophoneBusy(s) && !PlaybackPending && s.Dongle.Health.Audio?.Pending != true;
-        PlaybackPicker.IsEnabled = enabled;
+        bool profileIdle = !dongle || DongleHealthPresentation.ProfileIdle(s.Dongle);
+        PlaybackPicker.IsEnabled = enabled && profileIdle;
         string help = Localize.Get(!native ? "Playback.DriverUnavailable" : MicrophoneBusy(s) ? "Playback.StopRecording" : PlaybackPending ? "Playback.Starting" : s.PlaybackState switch
         {
             "starting" => "Playback.Starting",
@@ -568,19 +518,22 @@ public sealed partial class DeviceSettingsCard : UserControl
             help += " " + Localize.Get("Playback.CurrentCodec", dongle ? s.Dongle.Health.Audio!.Codec switch { 1 => "SBC", 2 => "AAC", 3 => "AAC-ELD", _ => "—" } : s.PlaybackMode == "aac_eld" ? "AAC-ELD" : "AAC");
         if (s.PlaybackBitrateKbps is uint actual) help += " " + Localize.Get(
             PlaybackModeRequest.BitrateFor(s, s.PlaybackMode).Variable ? "Playback.PeakBitrate" : "Playback.CurrentBitrate", actual);
+        if (!profileIdle) help += " " + Localize.Get("Dongle_Busy");
         AutomationProperties.SetHelpText(PlaybackPicker, help);
         ToolTipService.SetToolTip(PlaybackRouteRow, help);
-        var bitrate = _bitrateRequested is { } pending && pending.Mode == mode
+        var bitrate = _bitrateEdit.Displayed is { } pending && pending.Mode == mode
             ? new PlaybackBitrate { BestEffort = pending.BestEffort, Kbps = pending.Kbps, Variable = pending.Variable } : PlaybackModeRequest.BitrateFor(s, mode);
-        if (_bitrateShownMode != mode) _bitrateDirty = false;
+        bool editEnabled = native && s.Connected && !s.LinkStale && Client?.IsReady == true && !MicrophoneBusy(s) && profileIdle &&
+            _playbackMode.Requested is null && _dongleProfileRequested is null && _gameModeRequested is null;
+        if (_bitrateShownMode != mode) { _bitrateDirty = false; _linkDirty = false; }
         _bitrateShownMode = mode;
         PlaybackQualityRow.Visibility = native && (!dongle || s.Dongle.Health.Audio?.Codec is 2 or 3) ? Visibility.Visible : Visibility.Collapsed;
         VariableBitrateItem.Visibility = mode == "aac_eld" ? Visibility.Visible : Visibility.Collapsed;
         PlaybackQualityPicker.SelectedIndex = bitrate.Variable ? 2 : bitrate.BestEffort ? 0 : 1;
-        PlaybackQualityPicker.IsEnabled = enabled;
+        PlaybackQualityPicker.IsEnabled = editEnabled;
         PlaybackBitrateRow.Visibility = bitrate.BestEffort ? Visibility.Collapsed : Visibility.Visible;
         DongleBitratePicker.Visibility = dongle ? Visibility.Visible : Visibility.Collapsed;
-        PlaybackKbps.Visibility = PlaybackBitrateApply.Visibility = dongle ? Visibility.Collapsed : Visibility.Visible;
+        PlaybackKbps.Visibility = dongle ? Visibility.Collapsed : Visibility.Visible;
         if (dongle)
         {
             if (_dongleBitrateMode != mode)
@@ -589,12 +542,12 @@ public sealed partial class DeviceSettingsCard : UserControl
                 DongleBitratePicker.ItemsSource = mode == "aac_eld" ? new uint[] { 128, 174, 192, 220, 256 } : new uint[] { 96, 128, 174, 192, 220 };
             }
             DongleBitratePicker.SelectedItem = bitrate.Kbps == 0 ? (mode == "aac_eld" ? 256u : 220u) : bitrate.Kbps;
-            DongleBitratePicker.IsEnabled = enabled;
+            DongleBitratePicker.IsEnabled = editEnabled;
         }
         PlaybackKbps.Minimum = mode == "aac_eld" ? 128 : 96;
         PlaybackKbps.Maximum = mode == "aac_eld" ? 256 : dongle ? 220 : 512;
         if (!_bitrateDirty) PlaybackKbps.Value = bitrate.Kbps;
-        PlaybackKbps.IsEnabled = enabled;
+        PlaybackKbps.IsEnabled = editEnabled;
         string codecHelp = Localize.Get("Playback.BitrateCodec", mode == "aac_eld" ? "AAC-ELD" : "AAC");
         if (bitrate.Variable) codecHelp += " " + Localize.Get("Playback.VariableHelp");
         AutomationProperties.SetHelpText(PlaybackQualityPicker, codecHelp);
@@ -602,16 +555,13 @@ public sealed partial class DeviceSettingsCard : UserControl
         string bitrateHelp = codecHelp + " " + Localize.Get("Playback.BitrateRange", PlaybackKbps.Minimum, PlaybackKbps.Maximum);
         AutomationProperties.SetHelpText(PlaybackKbps, bitrateHelp);
         ToolTipService.SetToolTip(PlaybackKbps, bitrateHelp);
-        PlaybackBitrateApply.IsEnabled = enabled && _bitrateDirty && ValidBitrate();
-        var link = _linkRequested ?? s.PlaybackLink;
+        var link = _linkEdit.Displayed ?? s.PlaybackLink;
         PlaybackLinkRow.Visibility = native && mode == "aac_eld" && link is not null ? Visibility.Visible : Visibility.Collapsed;
         PlaybackLinkPicker.SelectedIndex = link?.Mode switch { "automatic" => 1, "manual" => 2, _ => 0 };
-        PlaybackLinkPicker.IsEnabled = enabled && link is not null;
+        PlaybackLinkPicker.IsEnabled = editEnabled && link is not null;
         PlaybackLinkCustomRow.Visibility = link?.Mode == "manual" ? Visibility.Visible : Visibility.Collapsed;
         if (!_linkDirty) PlaybackLinkKbps.Value = link?.Kbps ?? 174;
         PlaybackLinkKbps.IsEnabled = PlaybackLinkPicker.IsEnabled;
-        PlaybackLinkApply.IsEnabled = PlaybackLinkPicker.IsEnabled && _linkDirty &&
-            PlaybackLinkSettings.FromInput("manual", PlaybackLinkKbps.Value) is not null;
         PlaybackLinkHelp.Text = Localize.Get(!bitrate.Variable ? "Playback_LinkRequiresVariable" :
             link?.Mode == "automatic" ? "Playback_LinkAutomaticHelp" :
             link?.Mode == "manual" ? "Playback_LinkCustomHelp" : "Playback_LinkHelp");
@@ -685,22 +635,17 @@ public sealed partial class DeviceSettingsCard : UserControl
     private void PlaybackKbps_Changed(NumberBox sender, NumberBoxValueChangedEventArgs args)
     {
         if (_applying || !PlaybackKbps.IsEnabled) return;
-        _bitrateDirty = args.NewValue != PlaybackModeRequest.BitrateFor(_snapshot, _playbackMode.BitrateMode(_snapshot)).Kbps;
-        PlaybackBitrateApply.IsEnabled = _bitrateDirty && ValidBitrate();
-    }
-
-    private void PlaybackBitrateApply_Click(object sender, RoutedEventArgs e)
-    {
-        if (PlaybackBitrateApply.IsEnabled && ValidBitrate()) SendBitrate(false, (uint)PlaybackKbps.Value, PlaybackQualityPicker.SelectedIndex == 2);
+        _bitrateDirty = true;
+        if (ValidBitrate()) SendBitrate(false, (uint)PlaybackKbps.Value, PlaybackQualityPicker.SelectedIndex == 2);
+        else { _bitrateEdit.Edit(null); QueueLive(); }
     }
 
     private void SendBitrate(bool bestEffort, uint kbps, bool variable = false)
     {
-        _bitrateRequested = new SetPlaybackBitrateCmd { Mode = _playbackMode.BitrateMode(_snapshot), BestEffort = bestEffort, Kbps = kbps, Variable = variable };
-        _playbackErrorAtRequest = _snapshot.PlaybackError;
-        _bitrateDirty = false;
-        if (Send(_bitrateRequested) == true) StartPlaybackTimeout();
-        else _bitrateRequested = null;
+        string mode = _playbackMode.BitrateMode(_snapshot);
+        var value = new PlaybackBitrate { BestEffort = bestEffort, Kbps = kbps, Variable = variable };
+        _bitrateEdit.Edit(value.IsValidFor(mode) ? new(mode, DonglePlayback(_snapshot) ? variable : bestEffort, kbps, variable) : null);
+        QueueLive();
         _applying = true;
         UpdatePlayback(_snapshot);
         _applying = false;
@@ -723,26 +668,39 @@ public sealed partial class DeviceSettingsCard : UserControl
     private void PlaybackLinkKbps_Changed(NumberBox sender, NumberBoxValueChangedEventArgs args)
     {
         if (_applying || !PlaybackLinkKbps.IsEnabled) return;
-        _linkDirty = args.NewValue != _snapshot.PlaybackLink?.Kbps;
-        PlaybackLinkApply.IsEnabled = _linkDirty && PlaybackLinkSettings.FromInput("manual", args.NewValue) is not null;
-    }
-
-    private void PlaybackLinkApply_Click(object sender, RoutedEventArgs e)
-    {
-        if (PlaybackLinkApply.IsEnabled) SendLink("manual", PlaybackLinkKbps.Value);
+        _linkDirty = true;
+        SendLink("manual", args.NewValue);
     }
 
     private void SendLink(string mode, double kbps)
     {
-        if (PlaybackLinkSettings.FromInput(mode, kbps) is not { } settings || settings == _snapshot.PlaybackLink) return;
-        _linkRequested = settings;
-        _linkDirty = false;
-        _playbackErrorAtRequest = _snapshot.PlaybackError;
-        if (Send(new SetPlaybackLinkCmd { Settings = settings }) == true) StartPlaybackTimeout();
-        else _linkRequested = null;
+        _linkEdit.Edit(PlaybackLinkSettings.FromInput(mode, kbps));
+        QueueLive();
         _applying = true;
         UpdatePlayback(_snapshot);
         _applying = false;
+    }
+
+    private void FlushPlaybackEdits()
+    {
+        if (!_snapshot.Connected || _snapshot.LinkStale || Client?.IsReady != true || MicrophoneBusy(_snapshot) ||
+            !_snapshot.PlaybackAvailable || PlaybackPending || _snapshot.Dongle.Health.Audio?.Pending == true) return;
+        if (_bitrateEdit.Take() is { } bitrate)
+        {
+            _bitrateRequested = new() { Mode = bitrate.Mode, BestEffort = bitrate.BestEffort, Kbps = bitrate.Kbps, Variable = bitrate.Variable };
+            _playbackErrorAtRequest = _snapshot.PlaybackError;
+            _bitrateDirty = false;
+            if (Send(_bitrateRequested)) StartPlaybackTimeout();
+            else { _bitrateRequested = null; _bitrateEdit.Cancel(); }
+        }
+        if (!PlaybackPending && _linkEdit.Take() is { } link)
+        {
+            _linkRequested = link;
+            _playbackErrorAtRequest = _snapshot.PlaybackError;
+            _linkDirty = false;
+            if (Send(new SetPlaybackLinkCmd { Settings = link })) StartPlaybackTimeout();
+            else { _linkRequested = null; _linkEdit.Cancel(); }
+        }
     }
 
     private void PlaybackGameMode_Toggled(object sender, RoutedEventArgs e)
@@ -784,13 +742,40 @@ public sealed partial class DeviceSettingsCard : UserControl
 
     private bool Send(object command) => SendCommand?.Invoke(command) ?? Client?.Send(command) == true;
 
-    private void Refresh_Click(object sender, RoutedEventArgs e)
+    private LiveSettingEdit<LiveControlValue> ControlEdit(byte id)
     {
-        if (!RefreshButton.IsEnabled || Client is null) return;
-        _refreshCoolingDown = true;
-        RefreshButton.IsEnabled = false;
-        _refreshCooldown.Start();
-        Send(new RefreshDeviceSettingsCmd());
-        ReadLoudSoundReduction(force: true);
+        if (!_liveControls.TryGetValue(id, out var edit)) _liveControls[id] = edit = new();
+        return edit;
+    }
+
+    private static bool CanEditControl(Snapshot s, byte id) => DeviceSettingStatus.CanEdit(s, id);
+
+    private uint? DisplayControl(byte id) => ControlEdit(id).Displayed?.Value;
+
+    private void QueueControl(byte id, uint? value)
+    {
+        ControlEdit(id).Edit(value is uint valid ? new(valid) : null);
+        if (value.HasValue) _incompleteControls.Remove(id); else _incompleteControls.Add(id);
+        QueueLive();
+    }
+
+    private void QueueLive()
+    {
+        _liveReady = false;
+        if (!_liveDebounce.IsEnabled) _liveDebounce.Start();
+    }
+
+    private void FlushLive()
+    {
+        if (Client?.IsReady != true && SendCommand is null) return;
+        if (_liveOwner != LiveSettingScope.For(_snapshot, Client?.SessionEpoch ?? 0)) return;
+        foreach (var (id, edit) in _liveControls)
+        {
+            if (!CanEditControl(_snapshot, id) || edit.Take() is not { } value) continue;
+            if (Send(new SetDeviceControlCmd { Id = id, Value = value.Value, DeviceId = _snapshot.DeviceId }))
+            { if (!_controlTimeout.IsEnabled) _controlTimeout.Start(); }
+            else edit.Cancel();
+        }
+        FlushPlaybackEdits();
     }
 }

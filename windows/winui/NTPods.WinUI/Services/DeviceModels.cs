@@ -85,7 +85,8 @@ internal static class DeviceModels
 
     public static bool HighQualityMic(Snapshot s) => Find(s.Model).HighQualityMic && FirmwareMajor(s.Firmware) >= 8;
     public static bool CustomEq(Snapshot s) => Find(s.Model).CustomEq && FirmwareMajor(s.Firmware) >= 9;
-    public static bool HeadTracking(Snapshot s) => Find(s.Model).HeadTracking && FirmwareMajor(s.Firmware) > 0;
+    public static bool HeadTracking(Snapshot s) => Find(s.Model).HeadTracking &&
+        (s.Model.Trim().ToUpperInvariant() is "A2564" or "A2565" || FirmwareMajor(s.Firmware) > 0);
     public static bool CanChangeLoudSoundReduction(Snapshot s) => Find(s.Model).LoudSoundReduction &&
         s.Connected && !s.LinkStale && s.LoudSoundReduction.HasValue && !s.LoudSoundReductionPending;
     public static bool ShouldReadLoudSoundReduction(Snapshot s, bool alreadyRequested, bool force) =>

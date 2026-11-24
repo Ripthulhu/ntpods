@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 
 /// Separate event and command pipes avoid synchronous-handle serialization:
 /// a blocking ReadFile would otherwise stall WriteFile on the same handle.
-pub const PIPE_EVENTS: &str = r"\\.\pipe\NTPods-events";
-pub const PIPE_CMDS: &str = r"\\.\pipe\NTPods-cmds";
+pub const PIPE_EVENTS: &str = r"\\.\pipe\NTPodsDongle-events";
+pub const PIPE_CMDS: &str = r"\\.\pipe\NTPodsDongle-cmds";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -66,13 +66,20 @@ impl ConversationPolicy {
     }
 
     pub fn is_valid(&self) -> bool {
-        percent_units(&self.first).zip(percent_units(&self.second))
+        percent_units(&self.first)
+            .zip(percent_units(&self.second))
             .is_some_and(|(first, second)| second <= first)
     }
 
     pub fn target(&self, original: f32, status: u8) -> Option<f32> {
-        if !self.is_valid() || !original.is_finite() || !(0.0..=1.0).contains(&original) { return None; }
-        let value = if status == 2 { &self.second } else { &self.first };
+        if !self.is_valid() || !original.is_finite() || !(0.0..=1.0).contains(&original) {
+            return None;
+        }
+        let value = if status == 2 {
+            &self.second
+        } else {
+            &self.first
+        };
         let fraction = value.parse::<f32>().ok()? / 100.0;
         Some(match self.mode {
             ConversationVolumeMode::AbsCap => original.min(fraction),
@@ -86,13 +93,28 @@ pub fn canonical_percent(value: &str) -> bool {
 }
 
 fn percent_units(value: &str) -> Option<u64> {
-    if value.is_empty() || value.len() > 13 { return None; }
-    let (whole, fraction) = value.split_once('.').map_or((value, None), |(whole, fraction)| (whole, Some(fraction)));
-    if whole.is_empty() || !whole.bytes().all(|b| b.is_ascii_digit()) ||
-        whole.len() > 3 || whole.len() > 1 && whole.starts_with('0') { return None; }
+    if value.is_empty() || value.len() > 13 {
+        return None;
+    }
+    let (whole, fraction) = value
+        .split_once('.')
+        .map_or((value, None), |(whole, fraction)| (whole, Some(fraction)));
+    if whole.is_empty()
+        || !whole.bytes().all(|b| b.is_ascii_digit())
+        || whole.len() > 3
+        || whole.len() > 1 && whole.starts_with('0')
+    {
+        return None;
+    }
     let mut units = whole.parse::<u64>().ok()? * 1_000_000_000;
     if let Some(fraction) = fraction {
-        if fraction.is_empty() || fraction.len() > 9 || !fraction.bytes().all(|b| b.is_ascii_digit()) || fraction.ends_with('0') { return None; }
+        if fraction.is_empty()
+            || fraction.len() > 9
+            || !fraction.bytes().all(|b| b.is_ascii_digit())
+            || fraction.ends_with('0')
+        {
+            return None;
+        }
         units += fraction.parse::<u64>().ok()? * 10_u64.pow(9 - fraction.len() as u32);
     }
     (units <= 100_000_000_000).then_some(units)
@@ -190,6 +212,8 @@ impl HardwareCheckState {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct TransparencySettings {
     pub enabled: bool,
+    pub left_eq: [f32; 8],
+    pub right_eq: [f32; 8],
     pub left_amplification: f32,
     pub right_amplification: f32,
     pub left_tone: f32,
@@ -198,25 +222,92 @@ pub struct TransparencySettings {
     pub right_conversation_boost: bool,
     pub left_ambient_noise_reduction: f32,
     pub right_ambient_noise_reduction: f32,
+    pub own_voice: f32,
 }
 
 impl TransparencySettings {
     pub fn is_valid(&self) -> bool {
-        [
-            self.left_amplification,
-            self.right_amplification,
-            self.left_tone,
-            self.right_tone,
-        ]
-        .iter()
-        .all(|v| v.is_finite() && (-1.0..=1.0).contains(v))
+        [self.left_amplification, self.right_amplification]
+            .iter()
+            .all(|v| v.is_finite() && (-1.0..=2.0).contains(v))
+            && [self.left_tone, self.right_tone]
+                .iter()
+                .all(|v| v.is_finite() && (-1.0..=1.0).contains(v))
             && [
                 self.left_ambient_noise_reduction,
                 self.right_ambient_noise_reduction,
+                self.own_voice,
             ]
             .iter()
             .all(|v| v.is_finite() && (0.0..=1.0).contains(v))
+            && self
+                .left_eq
+                .iter()
+                .chain(&self.right_eq)
+                .all(|v| v.is_finite() && (0.0..=100.0).contains(v))
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccommodationsTuning {
+    BalancedTone,
+    VocalRange,
+    Brightness,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccommodationsOptimization {
+    Slight,
+    Moderate,
+    Strong,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AccommodationsPreset {
+    pub tuning: AccommodationsTuning,
+    pub optimization: AccommodationsOptimization,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccommodationsResult {
+    Reported,
+    NoChange,
+    NotSent,
+    Sent,
+    Unconfirmed,
+    Confirmed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccommodationsSelection {
+    pub phone: bool,
+    pub media: bool,
+    pub preset: Option<AccommodationsPreset>,
+    #[serde(default)]
+    pub audiogram: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HeadphoneAccommodationsState {
+    pub session: u64,
+    pub revision: u64,
+    pub edit_version: u64,
+    /// An ordered local send, separate from the last device report below.
+    pub requested: Option<AccommodationsSelection>,
+    pub audiogram: bool,
+    pub audiogram_available: bool,
+    pub phone: Option<bool>,
+    pub media: Option<bool>,
+    pub preset: Option<AccommodationsPreset>,
+    pub editable: bool,
+    pub pending: bool,
+    pub result: Option<AccommodationsResult>,
+    pub error: Option<String>,
 }
 
 /// Complete confirmed hearing settings; absent data must never become a zero audiogram.
@@ -377,6 +468,9 @@ pub struct DonglePerformanceState {
 #[serde(default)]
 pub struct DongleHealthState {
     pub available: bool,
+    pub transparency: Option<TransparencySettings>,
+    pub transparency_pending: bool,
+    pub transparency_error: Option<String>,
     pub model: String,
     pub firmware: String,
     pub earbuds_in_case: Option<bool>,
@@ -391,6 +485,8 @@ pub struct DongleHealthState {
     pub allow_off_requested: Option<bool>,
     pub adaptive_strength_requested: Option<u32>,
     pub anc_unconfirmed: bool,
+    pub reconnect_automatically: Option<bool>,
+    pub reconnect_policy_error: bool,
     pub audio: Option<DongleAudioState>,
     pub performance: Option<DonglePerformanceState>,
     pub nearby_finder: NearbyFinderState,
@@ -400,6 +496,7 @@ pub struct DongleHealthState {
     pub media_assist_enabled: Option<bool>,
     pub media_assist_revision: u64,
     pub media_assist_available: bool,
+    pub headphone_accommodations: Option<HeadphoneAccommodationsState>,
     pub hearing_aid_settings: Option<HearingAidSettings>,
     pub hearing_aid_editable: bool,
     pub hearing_aid_pending: bool,
@@ -416,13 +513,25 @@ pub struct DongleHealthState {
 /// The daemon's authoritative state, pushed to clients on connect and on change.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+pub struct DongleDevice {
+    #[serde(deserialize_with = "deserialize_dongle_serial")]
+    pub serial: String,
+    pub usb_audio_available: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct DongleState {
     pub present: bool,
     pub ambiguous: bool,
+    pub serial: Option<String>,
+    pub available_devices: Vec<DongleDevice>,
+    pub usb_audio_available: bool,
     pub session: u64,
     pub generation: u32,
     /// Opaque selected-pair identity; AACP-only reconnects do not change it.
     pub pair_token: u64,
+    pub paired_device_id: Option<String>,
     pub selected: bool,
     pub connected: bool,
     pub controls_ready: bool,
@@ -453,6 +562,18 @@ fn deserialize_battery_mask<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u8
         ));
     }
     Ok(mask)
+}
+
+fn deserialize_dongle_serial<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let serial = String::deserialize(d)?;
+    if !valid_dongle_serial(&serial) {
+        return Err(serde::de::Error::custom("invalid dongle serial"));
+    }
+    Ok(serial)
+}
+
+pub fn valid_dongle_serial(serial: &str) -> bool {
+    !serial.is_empty() && serial.len() <= 64 && serial.bytes().all(|b| b.is_ascii_graphic())
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -565,6 +686,8 @@ pub struct Snapshot {
     pub media_assist_revision: u64,
     #[serde(default)]
     pub media_assist_available: bool,
+    #[serde(default)]
+    pub headphone_accommodations: Option<HeadphoneAccommodationsState>,
     #[serde(default)]
     pub hearing_aid_settings: Option<HearingAidSettings>,
     #[serde(default)]
@@ -799,6 +922,7 @@ impl Default for Snapshot {
             media_assist_enabled: None,
             media_assist_revision: 0,
             media_assist_available: false,
+            headphone_accommodations: None,
             hearing_aid_settings: None,
             hearing_aid_editable: false,
             hearing_aid_pending: false,
@@ -886,6 +1010,10 @@ pub mod feature {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Command {
+    SelectDongle {
+        #[serde(deserialize_with = "deserialize_dongle_serial")]
+        serial: String,
+    },
     /// Only the allowlisted dongle command subset may cross this target-pinned envelope.
     DongleHealth {
         session: u64,
@@ -906,20 +1034,33 @@ pub enum Command {
         bitrate: u32,
     },
     GetDonglePerformance,
+    SetDongleReconnectPolicy { automatic: bool },
     /// Approve one already-bonded companion app. The secret is never published in events.
     CompanionLink {
         peer_address: String,
         secret_hex: String,
         device_id: String,
+        #[serde(default)]
+        request_id: u64,
     },
     CompanionStatus,
+    CompanionBeginPairing {
+        peer_address: String,
+        device_id: String,
+        code: String,
+        request_id: u64,
+    },
+    CompanionCancelPairing { request_id: u64 },
     CompanionSwitch {
         target: CompanionTarget,
         device_id: String,
         #[serde(default)]
         request_id: u64,
     },
-    CompanionForget,
+    CompanionForget {
+        #[serde(default)]
+        request_id: u64,
+    },
     CompanionSetPreference {
         key: String,
         value: serde_json::Value,
@@ -1063,6 +1204,22 @@ pub enum Command {
     },
     /// Read both existing audiograms and per-ear controls without enabling or writing.
     GetHearingAid,
+    GetHeadphoneAccommodations {
+        device_id: String,
+    },
+    SetHeadphoneAccommodations {
+        request_id: u64,
+        device_id: String,
+        session: u64,
+        revision: u64,
+        #[serde(default)]
+        edit_version: u64,
+        #[serde(default)]
+        audiogram: bool,
+        phone: Option<bool>,
+        media: Option<bool>,
+        preset: Option<AccommodationsPreset>,
+    },
     /// Read the last saved hardware checks; never starts a self-test.
     GetHardwareDiagnostics,
     GetHearingMetadata {
@@ -1150,6 +1307,18 @@ pub struct CompanionStatus {
     pub held_away: bool,
     pub phase: String,
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pairing: Option<CompanionPairingStatus>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompanionPairingStatus {
+    pub request_id: u64,
+    pub device_id: String,
+    pub peer_address: String,
+    pub phase: String,
+    pub remaining_ms: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1183,26 +1352,61 @@ pub struct HearingTestModeProbeResult {
     pub error: Option<String>,
 }
 
+/// Uncalibrated, model-independent motion report shared by both sensor transports.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MotionReport {
+    #[serde(default, deserialize_with = "motion_timestamp")]
+    pub timestamp_ns: Option<u64>,
+    pub attitude_q15: [i16; 3],
+    pub gyro_raw: [i16; 3],
+    pub user_acceleration_raw: [i16; 3],
+    pub gravity_raw: [i16; 3],
+    pub counter: Option<u32>,
+}
+
+fn motion_timestamp<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    let value = Option::<u64>::deserialize(d)?;
+    if value.is_some_and(|v| v > i64::MAX as u64) {
+        return Err(serde::de::Error::custom("sensor timestamp exceeds signed 64-bit range"));
+    }
+    Ok(value)
+}
+
 /// Daemon → client.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Event {
-    CompanionStatus { status: CompanionStatus },
-    CompanionPreferences { preferences: CompanionPreferences },
+    CompanionStatus {
+        status: CompanionStatus,
+    },
+    CompanionPreferences {
+        preferences: CompanionPreferences,
+    },
     /// Full state, pushed on connect and whenever it changes.
     State(Snapshot),
-    /// At most 25 Hz; signed sensor values, not degrees or calibrated acceleration.
+    /// At most 50 Hz; signed raw units, with optional full motion fields.
     HeadTracking {
         timestamp_ms: u64,
         horizontal: i16,
         vertical: i16,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        motion: Option<MotionReport>,
     },
     /// A notification for the client to render with its overlay UI.
-    Overlay { title: String, body: String },
+    Overlay {
+        title: String,
+        body: String,
+    },
     /// Report a nearby device that the client may offer to connect.
-    ConnectPrompt { name: String },
+    ConnectPrompt {
+        name: String,
+    },
     /// Public lid report; the model is an invitation hint, not a paired identity.
-    PairingNearby { model: u16, lid_open: bool },
+    PairingNearby {
+        model: u16,
+        lid_open: bool,
+    },
     /// Authenticated selected-pair lid edge, ordered within this daemon session.
     PairedLid {
         device_id: String,
@@ -1249,6 +1453,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn dongle_selection_requires_a_bounded_printable_serial() {
+        assert!(
+            matches!(from_line::<Command>(r#"{"cmd":"select_dongle","serial":"BOARD-A"}"#),
+            Some(Command::SelectDongle { serial }) if serial == "BOARD-A")
+        );
+        for invalid in ["", "has space", "\n", "é", &"x".repeat(65)] {
+            let bytes = serde_json::json!({"cmd": "select_dongle", "serial": invalid});
+            assert!(serde_json::from_value::<Command>(bytes).is_err());
+        }
+        let legacy: DongleState = serde_json::from_str("{}").unwrap();
+        assert!(
+            legacy.serial.is_none()
+                && legacy.available_devices.is_empty()
+                && !legacy.usb_audio_available
+        );
+    }
+
+    #[test]
     fn dongle_battery_masks_are_bounded_and_legacy_snapshots_default_safely() {
         let state = DongleState::default();
         let mut value = serde_json::to_value(&state).unwrap();
@@ -1266,7 +1488,6 @@ mod tests {
         let legacy: DongleState = serde_json::from_value(value).unwrap();
         assert_eq!((legacy.battery_present, legacy.battery_case_source), (0, 0));
     }
-
 
     #[test]
     fn game_mode_requires_an_explicit_boolean() {
@@ -1786,13 +2007,15 @@ mod tests {
             timestamp_ms: 42,
             horizontal: -32768,
             vertical: 32767,
+            motion: None,
         };
         assert!(matches!(
             from_line::<Event>(&to_line(&event)),
             Some(Event::HeadTracking {
                 timestamp_ms: 42,
                 horizontal: -32768,
-                vertical: 32767
+                vertical: 32767,
+                motion: None,
             })
         ));
         for axis in ["-32769", "32768", "null", "1.5", "\"12\""] {
@@ -1817,6 +2040,20 @@ mod tests {
         assert!(!old.head_tracking_enabled);
         assert_eq!(old.head_tracking_state, "idle");
         assert!(old.head_tracking_error.is_none());
+    }
+
+    #[test]
+    fn full_motion_fields_are_optional_bounded_and_transport_independent() {
+        let motion = r#"{"timestamp_ns":1234567890,"attitude_q15":[0,0,0],"gyro_raw":[-10,20,-30],"user_acceleration_raw":[100,-200,300],"gravity_raw":[0,0,1000],"counter":77}"#;
+        let report: MotionReport = serde_json::from_str(motion).unwrap();
+        assert_eq!(report.gyro_raw,[-10,20,-30]);
+        for invalid in [motion.replace("[0,0,0]","[0,0]"),
+            motion.replace("[-10,20,-30]","[-32769,20,-30]"),
+            motion.replace("1234567890","9223372036854775808"),
+            motion.replace("\"counter\":77", "\"counter\":77,\"counter\":1"),
+            motion.replace("\"counter\":77", "\"counter\":77,\"unexpected\":1")] {
+            assert!(serde_json::from_str::<MotionReport>(&invalid).is_err());
+        }
     }
 
     #[test]
@@ -2042,6 +2279,34 @@ mod tests {
             let mut state = serde_json::to_value(Event::State(Snapshot::default())).unwrap();
             state["adaptive_strength_requested"] = serde_json::from_str(value).unwrap();
             assert!(from_line::<Event>(&to_line(&state)).is_none(), "{value}");
+        }
+    }
+
+    #[test]
+    fn companion_setup_request_ids_accept_legacy_and_preserve_u64() {
+        for kind in ["companion_link", "companion_forget"] {
+            let mut command = serde_json::json!({ "cmd": kind });
+            if kind == "companion_link" {
+                command["peer_address"] = "AA:BB:CC:DD:EE:FF".into();
+                command["secret_hex"] = "ab".repeat(32).into();
+                command["device_id"] = "001122334455".into();
+            }
+            for request in [None, Some(0), Some(u64::MAX)] {
+                if let Some(request) = request {
+                    command["request_id"] = request.into();
+                }
+                let parsed = from_line::<Command>(&command.to_string()).unwrap();
+                let actual = match parsed {
+                    Command::CompanionLink { request_id, .. }
+                    | Command::CompanionForget { request_id } => request_id,
+                    _ => panic!("wrong setup command"),
+                };
+                assert_eq!(actual, request.unwrap_or(0));
+            }
+            for invalid in ["-1", "18446744073709551616", "1.5", "true", "null", "\"1\""] {
+                command["request_id"] = serde_json::from_str(invalid).unwrap();
+                assert!(from_line::<Command>(&command.to_string()).is_none());
+            }
         }
     }
 

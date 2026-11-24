@@ -1,23 +1,31 @@
 //! Bounded HID transactions. Only the hearing coordinator can submit these packets.
+use crate::dongle_protocol::spec::{
+    self,
+    control::capability,
+    feature,
+    rpc::{self, error, field as rf, operation as op, phase},
+    settings_lease_action as lease,
+};
 use crate::{dongle_hid as hid, Ctx};
 use std::{
     thread,
     time::{Duration, Instant},
 };
 
-const HEADER: [u8; 7] = [3, b'A', b'P', b'D', b'G', 1, 64];
-const LIMIT: usize = 512;
-const CHUNK: usize = 42;
-const LEASE_CAPABILITY: u16 = 0x20;
+const HEADER: [u8; spec::frame::HEADER_SIZE] = rpc::HEADER;
+const LIMIT: usize = rpc::MAXIMUM_PAYLOAD_LENGTH;
+const CHUNK: usize = rpc::MAXIMUM_FRAGMENT_LENGTH;
+const LEASE_CAPABILITY: u16 = capability::SETTINGS_WORKFLOW_LEASE;
+pub const UNSUPPORTED_FEATURE: &str = "The dongle does not support this feature.";
 
 fn lease_request(action: u8, token: u32) -> [u8; 6] {
-    let mut request = [10, action, 0, 0, 0, 0];
+    let mut request = [feature::SETTINGS_WORKFLOW_LEASE, action, 0, 0, 0, 0];
     request[2..].copy_from_slice(&token.to_le_bytes());
     request
 }
 
 fn lease_token(reply: &[u8]) -> Result<u32, String> {
-    if reply.len() != 5 || reply[0] != 1 {
+    if reply.len() != 5 || reply[0] != spec::SETTINGS_LEASE_RESPONSE_VERSION {
         return Err("Unsupported dongle settings lease.".into());
     }
     let token = u32::from_le_bytes(reply[1..].try_into().unwrap());
@@ -57,17 +65,28 @@ fn cached_report(result: &[u8]) -> Result<Option<Cached>, String> {
     if result.is_empty() {
         return Ok(None);
     }
-    if !(9..=LIMIT).contains(&result.len()) {
+    if !(spec::cached_report::ENVELOPE_SIZE + 1..=LIMIT).contains(&result.len()) {
         return Err("Incomplete dongle report.".into());
     }
-    let revision = u32::from_le_bytes(result[4..8].try_into().unwrap());
+    let revision = u32::from_le_bytes(
+        result[spec::cached_report::REVISION_OFFSET
+            ..spec::cached_report::REVISION_OFFSET + spec::cached_report::REVISION_SIZE]
+            .try_into()
+            .unwrap(),
+    );
     if revision == 0 {
         return Err("Dongle report has no reception revision.".into());
     }
     Ok(Some(Cached {
-        age_ms: u32::from_le_bytes(result[..4].try_into().unwrap()),
+        age_ms: u32::from_le_bytes(
+            result[spec::cached_report::AGE_MILLISECONDS_OFFSET
+                ..spec::cached_report::AGE_MILLISECONDS_OFFSET
+                    + spec::cached_report::AGE_MILLISECONDS_SIZE]
+                .try_into()
+                .unwrap(),
+        ),
         revision,
-        packet: result[8..].to_vec(),
+        packet: result[spec::cached_report::ENVELOPE_SIZE..].to_vec(),
     }))
 }
 struct Reply {
@@ -79,40 +98,48 @@ struct Reply {
     phase: u8,
     data: Vec<u8>,
 }
-fn parse(bytes: &[u8; 64]) -> Result<Reply, String> {
-    let total = u16::from_le_bytes([bytes[16], bytes[17]]) as usize;
-    let offset = u16::from_le_bytes([bytes[18], bytes[19]]) as usize;
-    let size = bytes[20] as usize;
-    if bytes[..7] != HEADER
-        || !matches!(bytes[7], 0..=3 | 7)
-        || bytes[21] > 4
+fn parse(bytes: &[u8; spec::frame::SIZE]) -> Result<Reply, String> {
+    let u16_at = |at| u16::from_le_bytes(bytes[at..at + 2].try_into().unwrap()) as usize;
+    let u32_at = |at| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+    let total = u16_at(rf::TOTAL_LENGTH_OFFSET);
+    let offset = u16_at(rf::FRAGMENT_OFFSET_OFFSET);
+    let size = bytes[rf::FRAGMENT_LENGTH_OFFSET] as usize;
+    if bytes[..HEADER.len()] != HEADER
+        || !matches!(
+            bytes[rf::OPERATION_OFFSET],
+            0 | op::SEND_ATT_REQUEST
+                | op::SEND_AACP_PACKET
+                | op::READ_CACHED_REPORT
+                | op::TYPED_FEATURE_REQUEST
+        )
+        || bytes[rf::RESPONSE_PHASE_OFFSET] > phase::FAILED
         || total > LIMIT
         || offset > total
         || size > CHUNK
         || size > total - offset
-        || bytes[22 + size..].iter().any(|b| *b != 0)
+        || bytes[rf::PAYLOAD_OFFSET + size..].iter().any(|b| *b != 0)
     {
         return Err("Unsupported dongle settings response.".into());
     }
     Ok(Reply {
-        op: bytes[7],
-        generation: u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
-        sequence: u32::from_le_bytes(bytes[12..16].try_into().unwrap()),
+        op: bytes[rf::OPERATION_OFFSET],
+        generation: u32_at(rf::CONNECTION_GENERATION_OFFSET),
+        sequence: u32_at(rf::TRANSACTION_SEQUENCE_OFFSET),
         total,
         offset,
-        phase: bytes[21],
-        data: bytes[22..22 + size].to_vec(),
+        phase: bytes[rf::RESPONSE_PHASE_OFFSET],
+        data: bytes[rf::PAYLOAD_OFFSET..rf::PAYLOAD_OFFSET + size].to_vec(),
     })
 }
 fn packet(
-    op: u8,
+    opcode: u8,
     generation: u32,
     sequence: u32,
     total: usize,
     offset: usize,
     data: &[u8],
-) -> Result<[u8; 64], String> {
-    if !(1..=7).contains(&op)
+) -> Result<[u8; spec::frame::SIZE], String> {
+    if !(op::SEND_ATT_REQUEST..=op::TYPED_FEATURE_REQUEST).contains(&opcode)
         || sequence == 0
         || total > LIMIT
         || data.len() > CHUNK
@@ -120,15 +147,21 @@ fn packet(
     {
         return Err("Invalid dongle settings request.".into());
     }
-    let mut b = [0; 64];
-    b[..7].copy_from_slice(&HEADER);
-    b[7] = op;
-    b[8..12].copy_from_slice(&generation.to_le_bytes());
-    b[12..16].copy_from_slice(&sequence.to_le_bytes());
-    b[16..18].copy_from_slice(&(total as u16).to_le_bytes());
-    b[18..20].copy_from_slice(&(offset as u16).to_le_bytes());
-    b[20] = data.len() as u8;
-    b[22..22 + data.len()].copy_from_slice(data);
+    let mut b = [0; spec::frame::SIZE];
+    b[..HEADER.len()].copy_from_slice(&HEADER);
+    b[rf::OPERATION_OFFSET] = opcode;
+    b[rf::CONNECTION_GENERATION_OFFSET
+        ..rf::CONNECTION_GENERATION_OFFSET + rf::CONNECTION_GENERATION_SIZE]
+        .copy_from_slice(&generation.to_le_bytes());
+    b[rf::TRANSACTION_SEQUENCE_OFFSET
+        ..rf::TRANSACTION_SEQUENCE_OFFSET + rf::TRANSACTION_SEQUENCE_SIZE]
+        .copy_from_slice(&sequence.to_le_bytes());
+    b[rf::TOTAL_LENGTH_OFFSET..rf::TOTAL_LENGTH_OFFSET + rf::TOTAL_LENGTH_SIZE]
+        .copy_from_slice(&(total as u16).to_le_bytes());
+    b[rf::FRAGMENT_OFFSET_OFFSET..rf::FRAGMENT_OFFSET_OFFSET + rf::FRAGMENT_OFFSET_SIZE]
+        .copy_from_slice(&(offset as u16).to_le_bytes());
+    b[rf::FRAGMENT_LENGTH_OFFSET] = data.len() as u8;
+    b[rf::PAYLOAD_OFFSET..rf::PAYLOAD_OFFSET + data.len()].copy_from_slice(data);
     Ok(b)
 }
 pub struct Session {
@@ -144,6 +177,7 @@ pub struct Session {
     lease_supported: bool,
     lease_token: Option<u32>,
     lease_failed: bool,
+    permission: Option<std::sync::Arc<dyn Fn() -> bool + Send + Sync>>,
 }
 impl Session {
     pub fn open(ctx: Ctx, session: u64, generation: u32) -> Result<Self, String> {
@@ -161,7 +195,13 @@ impl Session {
                 || d.session != session
                 || d.generation != generation
                 || (!local && !d.controls_ready)
-                || d.capabilities & if local { 16 } else { 8 } == 0
+                || d.capabilities
+                    & if local {
+                        capability::TYPED_FEATURES
+                    } else {
+                        capability::SETTINGS_TRANSPORT
+                    }
+                    == 0
             {
                 return Err("Reconnect the dongle's AirPods, then try again.".into());
             }
@@ -180,16 +220,24 @@ impl Session {
     ) -> Result<Self, String> {
         let report = usb.read().map_err(|_| "Could not read dongle identity.")?;
         if report.state.generation != generation
-            || report.state.capabilities & if local { 16 } else { 8 } == 0
+            || report.state.capabilities
+                & if local {
+                    capability::TYPED_FEATURES
+                } else {
+                    capability::SETTINGS_TRANSPORT
+                }
+                == 0
             || (!local && !report.state.controls_ready)
         {
             return Err("Dongle connection changed. Read the settings again.".into());
         }
         let initial = parse(
-            &usb.read_feature(3)
+            &usb.read_feature(rpc::REPORT_ID)
                 .map_err(|_| "Dongle settings firmware is unavailable.")?,
         )?;
-        if initial.generation != generation || matches!(initial.phase, 1 | 2) {
+        if initial.generation != generation
+            || matches!(initial.phase, phase::ASSEMBLING | phase::RUNNING)
+        {
             return Err("Dongle settings are busy or the connection changed.".into());
         }
         let result = Self {
@@ -205,6 +253,7 @@ impl Session {
             lease_supported: report.state.capabilities & LEASE_CAPABILITY != 0,
             lease_token: None,
             lease_failed: false,
+            permission: None,
         };
         if !result.current() {
             return Err("Dongle connection changed.".into());
@@ -229,7 +278,7 @@ impl Session {
             true,
             Some(Instant::now() + Duration::from_secs(1)),
         )?;
-        if !rpc.feature(&[8])?.is_empty() {
+        if !rpc.feature(&[feature::STOP_NEARBY_FINDER])?.is_empty() {
             return Err("Unsupported finder response.".into());
         }
         Ok(())
@@ -238,9 +287,12 @@ impl Session {
         self.peer
     }
     pub fn extended(&self) -> bool {
-        self.ctx.state.lock().unwrap().dongle.capabilities & 16 != 0
+        self.ctx.state.lock().unwrap().dongle.capabilities & capability::TYPED_FEATURES != 0
     }
     pub fn current(&self) -> bool {
+        if self.permission.as_ref().is_some_and(|allowed| !allowed()) {
+            return false;
+        }
         if self.cleanup_deadline.map_or_else(
             || {
                 self.ctx
@@ -294,20 +346,21 @@ impl Session {
             let reply = parse(
                 &self
                     .usb
-                    .read_feature(3)
+                    .read_feature(rpc::REPORT_ID)
                     .map_err(|_| "Could not read dongle settings response.")?,
             )?;
             if reply.generation != self.generation {
                 return Err("Dongle connection changed.".into());
             }
             if reply.sequence == self.sequence && reply.op == op {
-                if reply.phase == 4 {
-                    return Err(match reply.data.first() {
-                        Some(3) => "Dongle connection changed.",
-                        Some(5) => {
+                if reply.phase == phase::FAILED {
+                    return Err(match reply.data.first().copied() {
+                        Some(error::UNSUPPORTED) if op == rpc::operation::TYPED_FEATURE_REQUEST => UNSUPPORTED_FEATURE,
+                        Some(error::STALE) => "Dongle connection changed.",
+                        Some(error::TIMEOUT) => {
                             "AirPods settings timed out. Reconnect, then read settings again."
                         }
-                        Some(8) => "Dongle settings request was cancelled.",
+                        Some(error::CANCELLED) => "Dongle settings request was cancelled.",
                         _ => "AirPods did not complete the settings request. Read settings again.",
                     }
                     .into());
@@ -325,7 +378,7 @@ impl Session {
         }
         let ctx = self.ctx.clone();
         let _transaction = lock_transaction(&ctx, self.cleanup_deadline)?;
-        self.ensure_lease(matches!(op, 1 | 2))?;
+        self.ensure_lease(matches!(op, op::SEND_ATT_REQUEST | op::SEND_AACP_PACKET))?;
         self.transact_locked(op, payload)
     }
     fn ensure_lease(&mut self, raw: bool) -> Result<(), String> {
@@ -337,7 +390,10 @@ impl Session {
             // A rejected renewal must never acquire a replacement halfway through an edit.
             self.lease_failed = true;
             if !self
-                .transact_locked(7, &lease_request(1, token))?
+                .transact_locked(
+                    op::TYPED_FEATURE_REQUEST,
+                    &lease_request(lease::RENEW, token),
+                )?
                 .is_empty()
             {
                 return Err("Unsupported dongle settings lease renewal.".into());
@@ -350,7 +406,8 @@ impl Session {
                 );
             }
             self.lease_failed = true;
-            let reply = self.transact_locked(7, &lease_request(0, 0))?;
+            let reply =
+                self.transact_locked(op::TYPED_FEATURE_REQUEST, &lease_request(lease::ACQUIRE, 0))?;
             self.lease_token = Some(lease_token(&reply)?);
             self.lease_failed = false;
         }
@@ -372,10 +429,12 @@ impl Session {
         let initial = parse(
             &self
                 .usb
-                .read_feature(3)
+                .read_feature(rpc::REPORT_ID)
                 .map_err(|_| "Could not read dongle settings response.")?,
         )?;
-        if initial.generation != self.generation || matches!(initial.phase, 1 | 2) {
+        if initial.generation != self.generation
+            || matches!(initial.phase, phase::ASSEMBLING | phase::RUNNING)
+        {
             return Err("Dongle settings are busy or the connection changed.".into());
         }
         self.sequence = initial.sequence.wrapping_add(1).max(1);
@@ -386,12 +445,14 @@ impl Session {
                 let offset = index * CHUNK;
                 self.send(op, payload.len(), offset, data)?;
                 self.wait(op, deadline, |r| {
-                    r.phase == 1 && r.total == payload.len() && r.offset == offset + data.len()
+                    r.phase == phase::ASSEMBLING
+                        && r.total == payload.len()
+                        && r.offset == offset + data.len()
                 })?;
             }
-            self.send(6, 0, 0, &[])?;
+            self.send(op::COMMIT_TRANSACTION, 0, 0, &[])?;
             let mut reply = self.wait(op, Instant::now() + Duration::from_secs(4), |r| {
-                r.phase == 3 && r.offset == 0
+                r.phase == phase::COMPLETE && r.offset == 0
             })?;
             let total = reply.total;
             let mut output = Vec::with_capacity(total);
@@ -406,9 +467,9 @@ impl Session {
                 if output.len() == total {
                     return Ok(output);
                 }
-                self.send(4, 0, output.len(), &[])?;
+                self.send(op::SELECT_RESPONSE_PAGE, 0, output.len(), &[])?;
                 reply = self.wait(op, Instant::now() + Duration::from_secs(1), |r| {
-                    r.phase == 3 && r.offset == output.len()
+                    r.phase == phase::COMPLETE && r.offset == output.len()
                 })?;
             }
         })();
@@ -437,14 +498,17 @@ impl Session {
                 let reply = parse(
                     &self
                         .usb
-                        .read_feature(3)
+                        .read_feature(rpc::REPORT_ID)
                         .map_err(|_| "Could not release dongle settings lease.")?,
                 )?;
                 if reply.generation != self.generation {
                     break;
                 }
-                if !matches!(reply.phase, 1 | 2) {
-                    self.transact_locked(7, &lease_request(2, token))?;
+                if !matches!(reply.phase, phase::ASSEMBLING | phase::RUNNING) {
+                    self.transact_locked(
+                        op::TYPED_FEATURE_REQUEST,
+                        &lease_request(lease::RELEASE, token),
+                    )?;
                     break;
                 }
                 thread::sleep(Duration::from_millis(5));
@@ -454,33 +518,49 @@ impl Session {
         self.cleanup_deadline = previous;
     }
     pub fn exchange(&mut self, pdu: &[u8]) -> Result<Vec<u8>, String> {
-        self.transact(1, pdu)
+        self.transact(op::SEND_ATT_REQUEST, pdu)
     }
     pub fn send_aacp(&mut self, pdu: &[u8]) -> Result<(), String> {
-        self.transact(2, pdu).map(|_| ())
+        self.transact(op::SEND_AACP_PACKET, pdu).map(|_| ())
+    }
+    pub fn firmware_version(&mut self) -> Result<crate::dongle_features::FirmwareVersion, String> {
+        crate::dongle_features::firmware_version(&self.feature(&[feature::READ_FIRMWARE_VERSION])?)
     }
     pub fn feature(&mut self, payload: &[u8]) -> Result<Vec<u8>, String> {
-        self.transact(7, payload)
+        self.transact(op::TYPED_FEATURE_REQUEST, payload)
+    }
+    pub fn feature_until(&mut self, payload: &[u8], deadline: Instant) -> Result<Vec<u8>, String> {
+        let previous = self.cleanup_deadline;
+        self.cleanup_deadline = Some(previous.map_or(deadline, |old| old.min(deadline)));
+        let result = self.transact(op::TYPED_FEATURE_REQUEST, payload);
+        self.cleanup_deadline = previous;
+        result
+    }
+    pub fn restrict(&mut self, allowed: std::sync::Arc<dyn Fn() -> bool + Send + Sync>) {
+        self.permission = Some(allowed);
     }
     pub fn cached(&mut self, slot: u8) -> Result<Option<Cached>, String> {
         if !(1..=5).contains(&slot) {
             return Err("Unknown dongle report.".into());
         }
-        cached_report(&self.transact(3, &[slot])?)
+        cached_report(&self.transact(op::READ_CACHED_REPORT, &[slot])?)
     }
     pub fn cancel(&mut self) {
-        if self.active && self.current() && self.send(5, 0, 0, &[]).is_ok() {
+        if self.active && self.current() && self.send(op::CANCEL_TRANSACTION, 0, 0, &[]).is_ok() {
             // SetFeature only queues Cancel. Its receipt must precede cleanup traffic.
             let deadline = Instant::now() + Duration::from_secs(1);
             while self.current() && Instant::now() < deadline {
-                let Ok(bytes) = self.usb.read_feature(3) else {
+                let Ok(bytes) = self.usb.read_feature(rpc::REPORT_ID) else {
                     break;
                 };
                 let Ok(reply) = parse(&bytes) else { break };
                 if reply.generation != self.generation {
                     break;
                 }
-                if reply.sequence == self.sequence && reply.phase == 4 && reply.data == [8] {
+                if reply.sequence == self.sequence
+                    && reply.phase == phase::FAILED
+                    && reply.data == [error::CANCELLED]
+                {
                     self.active = false;
                     break;
                 }
@@ -498,6 +578,65 @@ impl Drop for Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn canonical_rpc_vectors_use_the_production_response_parser_and_request_encoder() {
+        use crate::dongle_protocol::golden;
+        let fixtures = golden::fixtures();
+        for vector in fixtures["rpc_frames"].as_array().unwrap() {
+            let name = vector["name"].as_str().unwrap();
+            let bytes: [u8; spec::frame::SIZE] = golden::bytes(&vector["hex"]).try_into().unwrap();
+            let fields = &vector["fields"];
+            if name.starts_with("response:") {
+                let reply = parse(&bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
+                assert_eq!(reply.op, op::TYPED_FEATURE_REQUEST);
+                assert_eq!(
+                    ["idle", "assembling", "running", "complete", "failed"]
+                        [usize::from(reply.phase)],
+                    fields["response_phase"].as_str().unwrap()
+                );
+                assert_eq!(
+                    reply.generation,
+                    fields["connection_generation"].as_u64().unwrap() as u32
+                );
+                assert_eq!(
+                    reply.sequence,
+                    fields["transaction_sequence"].as_u64().unwrap() as u32
+                );
+                assert_eq!(
+                    reply.total,
+                    fields["total_length"].as_u64().unwrap() as usize
+                );
+                assert_eq!(
+                    reply.offset,
+                    fields["fragment_offset"].as_u64().unwrap() as usize
+                );
+                assert_eq!(reply.data, golden::bytes(&fields["payload"]));
+            } else if name.starts_with("rejected:") {
+                assert!(parse(&bytes).is_err(), "{name}");
+            } else if name.starts_with("request:") {
+                let operation = match fields["operation"].as_str().unwrap() {
+                    "send_att_request" => op::SEND_ATT_REQUEST,
+                    "send_aacp_packet" => op::SEND_AACP_PACKET,
+                    "read_cached_report" => op::READ_CACHED_REPORT,
+                    "select_response_page" => op::SELECT_RESPONSE_PAGE,
+                    "cancel_transaction" => op::CANCEL_TRANSACTION,
+                    "commit_transaction" => op::COMMIT_TRANSACTION,
+                    "typed_feature_request" => op::TYPED_FEATURE_REQUEST,
+                    other => panic!("unknown operation {other}"),
+                };
+                let encoded = packet(
+                    operation,
+                    fields["connection_generation"].as_u64().unwrap() as u32,
+                    fields["transaction_sequence"].as_u64().unwrap() as u32,
+                    fields["total_length"].as_u64().unwrap() as usize,
+                    fields["fragment_offset"].as_u64().unwrap() as usize,
+                    &golden::bytes(&fields["payload"]),
+                )
+                .unwrap();
+                assert_eq!(encoded, bytes, "{name}");
+            }
+        }
+    }
     #[test]
     fn settings_lease_wire_requires_exact_version_and_a_nonzero_token() {
         assert_eq!(lease_request(0, 0), [10, 0, 0, 0, 0, 0]);
@@ -518,6 +657,14 @@ mod tests {
         ] {
             assert!(lease_token(&reply).is_err());
         }
+    }
+    #[test]
+    fn a_bounded_local_request_never_waits_forever_for_another_settings_owner() {
+        let ctx = Ctx::for_test();
+        let _busy = ctx.dongle.rpc.lock().unwrap();
+        let start = Instant::now();
+        assert!(lock_transaction(&ctx, Some(start + Duration::from_millis(20))).is_err());
+        assert!(start.elapsed() < Duration::from_secs(1));
     }
     #[test]
     fn cache_envelope_keeps_report_age_and_revision_separate() {

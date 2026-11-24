@@ -29,17 +29,17 @@
                     <ToggleButton x:Name="AncOffBtn" Grid.Column="0" Tag="1"
                                   Style="{StaticResource ListeningModeButton}" Click="Anc_Click"
                                   AutomationProperties.Name="{Binding [Anc_Off], Source={StaticResource Loc}}">
-                        <controls:ListeningModeIcon x:Name="OffIcon" UriSource="ms-appx:///Assets/ic_noise_cancellation.png" Width="28" Height="28" />
+                        <controls:ListeningModeIcon x:Name="OffIcon" UriSource="ms-appx:///Assets/ic_noise_cancellation.png" Width="28" Height="28" Foreground="{ThemeResource AppleSecondaryBrush}" />
                     </ToggleButton>
                     <ToggleButton x:Name="AncTransBtn" Grid.Column="1" Tag="3"
                                   Style="{StaticResource ListeningModeButton}" Click="Anc_Click"
                                   AutomationProperties.Name="{Binding [Anc_Transparency], Source={StaticResource Loc}}">
-                        <controls:ListeningModeIcon x:Name="TransparencyIcon" UriSource="ms-appx:///Assets/ic_transparency.png" Width="28" Height="28" />
+                        <controls:ListeningModeIcon x:Name="TransparencyIcon" UriSource="ms-appx:///Assets/ic_transparency.png" Width="28" Height="28" Foreground="{ThemeResource AppleSecondaryBrush}" />
                     </ToggleButton>
                     <ToggleButton x:Name="AncAdaptiveBtn" Grid.Column="2" Tag="4"
                                   Style="{StaticResource ListeningModeButton}" Click="Anc_Click"
                                   AutomationProperties.Name="{Binding [Anc_Adaptive], Source={StaticResource Loc}}">
-                        <controls:ListeningModeIcon x:Name="AdaptiveIcon" UriSource="ms-appx:///Assets/ic_adaptive.png" Width="28" Height="28" />
+                        <controls:ListeningModeIcon x:Name="AdaptiveIcon" UriSource="ms-appx:///Assets/ic_adaptive.png" Width="28" Height="28" Foreground="{ThemeResource AppleSecondaryBrush}" />
                     </ToggleButton>
                     <Grid x:Name="AdaptiveRail" Grid.Column="2" Visibility="Collapsed">
                         <Border x:Name="AdaptiveSurface" CornerRadius="27" Tapped="AdaptiveRail_Tapped" />
@@ -58,7 +58,7 @@
                     <ToggleButton x:Name="AncNcBtn" Grid.Column="3" Tag="2"
                                   Style="{StaticResource ListeningModeButton}" Click="Anc_Click"
                                   AutomationProperties.Name="{Binding [Anc_NoiseCancellation], Source={StaticResource Loc}}">
-                        <controls:ListeningModeIcon x:Name="AncIcon" UriSource="ms-appx:///Assets/ic_noise_cancellation.png" Width="28" Height="28" />
+                        <controls:ListeningModeIcon x:Name="AncIcon" UriSource="ms-appx:///Assets/ic_noise_cancellation.png" Width="28" Height="28" Foreground="{ThemeResource AppleSecondaryBrush}" />
                     </ToggleButton>
                 </Grid>
                 <Grid x:Name="GlassHost" IsHitTestVisible="False" />

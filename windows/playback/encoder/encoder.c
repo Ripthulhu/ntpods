@@ -123,7 +123,9 @@ int main(int argc, char **argv) {
     // FDK rounds its frame ceiling up; pass a byte-aligned rate to preserve the budget.
     const unsigned peak_bitrate = link_budget ? (link_budget * 10 / 8) * 800 :
         variable ? 256000 : bitrate;
-    const unsigned bandwidth = !link_budget ? 0 : link_budget <= 128 ? 15500 :
+    // FDK's automatic low-delay table stops at 16 kHz even at fixed 256 kbps.
+    const unsigned bandwidth = !link_budget ? (!variable && bitrate == 256000 ? 20000 : 0) :
+        link_budget <= 128 ? 15500 :
         link_budget <= 160 ? 17500 : 20000;
     const unsigned variable_mode = link_budget && peak_bitrate < 192000 ? 4 : 5;
     if (sizeof(INT_PCM) != 4 || ntpods_fdk_pcm_bits() != 32 || _setmode(_fileno(stdin), _O_BINARY) == -1 ||
@@ -146,7 +148,7 @@ int main(int argc, char **argv) {
         {AACENC_CHANNELMODE, MODE_2}, {AACENC_GRANULE_LENGTH, FRAME_SAMPLES},
         {AACENC_SBR_MODE, 0},
         {AACENC_BITRATE, bitrate}, {AACENC_BITRATEMODE, variable ? 5 : 0},
-        {AACENC_PEAK_BITRATE, peak_bitrate}, {AACENC_AFTERBURNER, 0},
+        {AACENC_PEAK_BITRATE, peak_bitrate}, {AACENC_AFTERBURNER, 1},
         {AACENC_TRANSMUX, TT_MP4_RAW}
     };
     for (size_t i = 0; i < sizeof(parameters) / sizeof(parameters[0]); ++i) {
@@ -155,7 +157,7 @@ int main(int argc, char **argv) {
             goto cleanup;
         }
     }
-    if (link_budget && aacEncoder_SetParam(encoder, AACENC_BANDWIDTH, bandwidth) != AACENC_OK) {
+    if (bandwidth && aacEncoder_SetParam(encoder, AACENC_BANDWIDTH, bandwidth) != AACENC_OK) {
         fprintf(stderr, "Unsupported AAC-ELD bandwidth limit.\n");
         goto cleanup;
     }
@@ -163,7 +165,8 @@ int main(int argc, char **argv) {
         aacEncInfo(encoder, &info) != AACENC_OK || !valid_configuration(&info) ||
         aacEncoder_GetParam(encoder, AACENC_BITRATEMODE) != (variable ? variable_mode : 0u) ||
         aacEncoder_GetParam(encoder, AACENC_PEAK_BITRATE) != peak_bitrate ||
-        (link_budget && aacEncoder_GetParam(encoder, AACENC_BANDWIDTH) != bandwidth) ||
+        aacEncoder_GetParam(encoder, AACENC_AFTERBURNER) != 1 ||
+        (bandwidth && aacEncoder_GetParam(encoder, AACENC_BANDWIDTH) != bandwidth) ||
         (!variable && aacEncoder_GetParam(encoder, AACENC_BITRATE) != bitrate)) {
         fprintf(stderr, "Cannot initialize the 480-sample AAC-ELD configuration.\n");
         goto cleanup;

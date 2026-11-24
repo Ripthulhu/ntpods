@@ -75,6 +75,10 @@ internal static class UiInteractionChecks
             "An explicit unknown model retains its identity while using the shared in-ear artwork fallback.");
         check(DeviceArt.CaseImage(DeviceArt.ResolveModel("", "", "")) == DeviceArt.CaseImage("A2698"),
             "A first-time unknown device uses the same bundled artwork fallback.");
+        check(DeviceArt.SettingsLeftImage(nearby) == DeviceArt.SettingsLeftImage(model) &&
+            DeviceArt.SettingsRightImage(unknown) == DeviceArt.SettingsRightImage("A2698") &&
+            DeviceArt.SettingsCaseImage(unknown) == DeviceArt.SettingsCaseImage("A2698"),
+            "Apple settings artwork must retain the same cached-model and unknown-model fallback rules.");
 
         var volume = new VolumeEditState();
         volume.Update(20, true);

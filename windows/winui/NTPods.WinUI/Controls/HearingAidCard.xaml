@@ -10,27 +10,19 @@
     <Expander x:Name="HearingExpander" Style="{StaticResource GroupExpander}" IsExpanded="False">
         <Expander.Header>
             <TextBlock Text="{Binding [HearingAidTitle_Text], Source={StaticResource Loc}}"
-                       FontSize="16" />
+                       FontSize="14" />
         </Expander.Header>
         <StackPanel Spacing="16">
             <TextBlock Text="{Binding [HearingAidSubtitle_Text], Source={StaticResource Loc}}"
                        Foreground="{ThemeResource AppleSecondaryBrush}" FontSize="13"
                        TextWrapping="Wrap" />
-            <InfoBar Title="{Binding [HearingAidWarning_Title], Source={StaticResource Loc}}"
-                     Message="{Binding [HearingAidWarning_Message], Source={StaticResource Loc}}"
-                     Severity="Warning" IsOpen="True" IsClosable="False" />
-
-            <Button x:Name="ReadButton" HorizontalAlignment="Stretch" Click="Read_Click">
-                <TextBlock Text="{Binding [Transparency_Read], Source={StaticResource Loc}}" TextWrapping="Wrap" />
-            </Button>
-
             <Grid ColumnSpacing="24">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <TextBlock Text="{Binding [HearingAidSwitch_Header], Source={StaticResource Loc}}"
-                           FontSize="16" TextWrapping="Wrap" VerticalAlignment="Center" />
+                           FontSize="14" TextWrapping="Wrap" VerticalAlignment="Center" />
                 <ToggleSwitch x:Name="EnableSwitch" Grid.Column="1" Style="{StaticResource SettingToggle}"
                               AutomationProperties.Name="{Binding [HearingAidSwitch_Header], Source={StaticResource Loc}}"
                               Toggled="Enable_Toggled" />
@@ -42,7 +34,7 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <TextBlock Text="{Binding [MediaAssistSwitch_Header], Source={StaticResource Loc}}"
-                           FontSize="16" TextWrapping="Wrap" VerticalAlignment="Center" />
+                           FontSize="14" TextWrapping="Wrap" VerticalAlignment="Center" />
                 <ToggleSwitch x:Name="MediaSwitch" Grid.Column="1" Style="{StaticResource SettingToggle}"
                               AutomationProperties.Name="{Binding [MediaAssistSwitch_Header], Source={StaticResource Loc}}"
                               Toggled="Media_Toggled" />
@@ -63,8 +55,6 @@
                        Foreground="{ThemeResource AppleSecondaryBrush}"
                        Margin="0,4,0,0" />
             <Grid x:Name="AudiogramGrid" ColumnSpacing="10" RowSpacing="4" />
-            <Button x:Name="ApplyAudiogramButton" IsEnabled="False" Click="ApplyAudiogram_Click"
-                    Content="{Binding [DeviceControls_Apply], Source={StaticResource Loc}}" />
 
             <Slider x:Name="AmpSlider" Minimum="0" Maximum="100" Value="50"
                     Header="{Binding [HearingAidAmp_Header], Source={StaticResource Loc}}"
@@ -87,7 +77,7 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <TextBlock Text="{Binding [HearingAidConvBoost_Header], Source={StaticResource Loc}}"
-                           FontSize="16" TextWrapping="Wrap" VerticalAlignment="Center" />
+                           FontSize="14" TextWrapping="Wrap" VerticalAlignment="Center" />
                 <ToggleSwitch x:Name="ConvBoostSwitch" Grid.Column="1" Style="{StaticResource SettingToggle}"
                               AutomationProperties.Name="{Binding [HearingAidConvBoost_Header], Source={StaticResource Loc}}"
                               IsEnabled="False" Toggled="ConvBoost_Toggled" />

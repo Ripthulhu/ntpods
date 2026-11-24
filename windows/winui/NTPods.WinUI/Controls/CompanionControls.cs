@@ -42,16 +42,26 @@ internal sealed class CompanionControls
 
     public void Update(Snapshot snapshot, bool localBusy = false)
     {
-        if (!string.Equals(_device, snapshot.DeviceId, StringComparison.OrdinalIgnoreCase))
+        string device = SelectedDeviceId(snapshot);
+        if (!string.Equals(_device, device, StringComparison.OrdinalIgnoreCase))
         {
             Pending = null;
             AwaitingStatus = false;
             _failed = false;
         }
-        _device = snapshot.DeviceId ?? "";
+        _device = device;
         _busy = localBusy || snapshot.MicCaptureActive || snapshot.MicUplinkActive ||
             snapshot.MicState is "starting" or "capturing" or "stopping" or "recovering" ||
-            snapshot.PlaybackBufferTargetMs.HasValue;
+            snapshot.PlaybackBufferTargetMs.HasValue ||
+            snapshot.Dongle.Pending || snapshot.Dongle.MicrophoneActive;
+    }
+
+    public static string SelectedDeviceId(Snapshot snapshot)
+    {
+        var dongle = snapshot.Dongle;
+        if (!dongle.Present && !dongle.Ambiguous && dongle.AvailableDevices.Length == 0) return snapshot.DeviceId ?? "";
+        return dongle.Present && !dongle.Ambiguous && dongle.Session != 0 && dongle.Selected &&
+            ValidDevice(dongle.PairedDeviceId ?? "") ? dongle.PairedDeviceId! : "";
     }
 
     public void Apply(CompanionStatus status, long receivedAtMs = long.MaxValue)

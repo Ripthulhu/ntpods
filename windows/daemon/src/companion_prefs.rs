@@ -31,6 +31,8 @@ struct Saved {
     local_call_consent: bool,
     #[serde(default)]
     observed: BTreeMap<String, CompanionPreference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    selected_dongle: Option<String>,
 }
 
 pub struct Store {
@@ -493,6 +495,20 @@ impl Store {
     pub fn consent(&self) -> bool {
         self.saved.local_call_consent
     }
+    pub fn selected_dongle(&self) -> Option<&str> {
+        self.saved.selected_dongle.as_deref()
+    }
+    pub fn set_selected_dongle(&mut self, serial: &str) -> io::Result<()> {
+        if self.error.is_some() || !ntpods_ipc::valid_dongle_serial(serial) {
+            return Err(invalid());
+        }
+        let old = self.saved.selected_dongle.replace(serial.into());
+        if let Err(error) = self.persist() {
+            self.saved.selected_dongle = old;
+            return Err(error);
+        }
+        Ok(())
+    }
     pub fn set_consent(&mut self, enabled: bool) -> io::Result<()> {
         if self.error.is_some() {
             return Err(invalid());
@@ -530,7 +546,7 @@ pub fn from_control(id: u8, value: u32) -> Option<(&'static str, Value)> {
         ),
         0x16 => (
             "desired_hold_actions",
-            json!({"left":match value&255 {1=>"listening",5=>"assistant",_=>return None},"right":match value>>8 {1=>"listening",5=>"assistant",_=>return None}}),
+            json!({"left":match value>>8 {5=>"listening",1=>"assistant",_=>return None},"right":match value&255 {5=>"listening",1=>"assistant",_=>return None}}),
         ),
         0x1a => ("desired_noise_modes_cycle", json!(format!("{value:02x}"))),
         0x23 => ("desired_swipe_duration", json!(value.to_string())),
@@ -592,8 +608,8 @@ pub fn to_control(key: &str, value: &Value) -> Option<(u8, Option<u32>)> {
             if left == "unset" {
                 return Some((id, None));
             }
-            (if left == "listening" { 1 } else { 5 })
-                | ((if right == "listening" { 1 } else { 5 }) << 8)
+            ((if left == "listening" { 5 } else { 1 }) << 8)
+                | (if right == "listening" { 5 } else { 1 })
         }
         _ => text.parse().ok()?,
     };
@@ -622,8 +638,15 @@ pub fn supported(ctx: &Ctx, key: &str, value: &Value) -> bool {
     crate::device_models::explicit_choice(&state, id, probe)
         && crate::device_models::control(&state, id, probe)
 }
+fn selected_address(ctx: &Ctx) -> Option<u64> {
+    let d = ctx.state.lock().unwrap().dongle.clone();
+    if !d.present && !d.ambiguous && d.available_devices.is_empty() { return Some(ctx.mac()); }
+    if !d.present || d.ambiguous || d.session == 0 || !d.selected || d.capabilities & 512 == 0 { return None; }
+    d.paired_device_id.as_ref().filter(|id| id.len() == 12)
+        .and_then(|id| u64::from_str_radix(id,16).ok()).filter(|address| *address != 0 && *address < 0xffff_ffff_ffff)
+}
 pub fn publish(ctx: &Ctx) {
-    let mac = ctx.mac();
+    let mac = selected_address(ctx).unwrap_or(0);
     let mut store = ctx.companion_preferences.lock().unwrap();
     let _ = store.ensure_device(mac);
     let preferences = store.status(mac);
@@ -631,10 +654,11 @@ pub fn publish(ctx: &Ctx) {
     ctx.send_event(&Event::CompanionPreferences { preferences });
 }
 pub fn value(ctx: &Ctx, key: &str) -> Option<Value> {
+    let address = if global(key) { 0 } else if desired(key) { ctx.mac() } else { selected_address(ctx)? };
     ctx.companion_preferences
         .lock()
         .unwrap()
-        .get(ctx.mac(), key)
+        .get(address, key)
         .map(|r| r.value.clone())
 }
 pub fn enabled(ctx: &Ctx, key: &str) -> bool {
@@ -791,8 +815,8 @@ pub fn apply_local(ctx: &Ctx, cmd: &Command) -> bool {
             request_id,
         } => {
             let _actions = ctx.companion_actions.lock().unwrap();
-            let ok = u64::from_str_radix(device_id, 16).ok() == Some(ctx.mac())
-                && ctx.mac() != 0
+            let address = selected_address(ctx).filter(|address| *address != 0);
+            let ok = address.is_some() && u64::from_str_radix(device_id, 16).ok() == address
                 && ctx
                     .companion_preferences
                     .lock()
@@ -819,14 +843,16 @@ pub fn apply_local(ctx: &Ctx, cmd: &Command) -> bool {
         _ => return false,
     };
     let _actions = ctx.companion_actions.lock().unwrap();
-    let current = device_id.is_none_or(|id| u64::from_str_radix(id, 16).ok() == Some(ctx.mac()));
+    let address = if desired(key) { Some(ctx.mac()) } else { selected_address(ctx) };
+    let current = (global(key) || address.is_some_and(|address| address != 0)) &&
+        device_id.is_none_or(|id| u64::from_str_radix(id, 16).ok() == address);
     let outcome = if !current || !supported(ctx, key, &value) {
         Err(invalid())
     } else {
         ctx.companion_preferences
             .lock()
             .unwrap()
-            .local(ctx.mac(), key, value.clone())
+            .local(address.unwrap_or(0), key, value.clone())
             .map(|_| ())
     };
     if outcome.is_ok() {
@@ -857,7 +883,11 @@ fn legacy(enabled: bool, name: &str) -> Option<String> {
         .and_then(|p| std::fs::read_to_string(PathBuf::from(p).join("NTPods").join(name)).ok())
 }
 fn valid_saved(saved: &Saved) -> bool {
-    saved.observed.len() <= 241
+    saved
+        .selected_dongle
+        .as_deref()
+        .is_none_or(ntpods_ipc::valid_dongle_serial)
+        && saved.observed.len() <= 241
         && saved.observed.iter().all(|(key, record)| {
             rank(record).is_some()
                 && valid(&record.key, &record.value)

@@ -106,8 +106,10 @@ internal static class PairingChecks
         CheckAutomaticSelection(check);
         CheckCandidateChanges(check);
         CheckPairedBattery(check);
+        CheckRetainedCase(check);
         CheckAttemptBattery(check);
         check(!PairingBatteryLayout.Split(0, 0, false, false) &&
+              PairingBatteryLayout.Split(93, 92, true, true) &&
               PairingBatteryLayout.Split(0, 0, true, false) &&
               PairingBatteryLayout.Split(null, 92, false, false) &&
               !PairingBatteryLayout.Split(null, null, false, false),
@@ -345,8 +347,14 @@ internal static class PairingChecks
         snapshot.BatteryFreshness.Left.TimestampMs = 1000;
         snapshot.BatteryFreshness.Case.Live = false;
         levels = PairingBatteryState.Read(snapshot, "0123456789ab", 2000, 5000);
-        check(levels is { Left: null, Right: null, Case: null, NextExpiryMs: null },
-            "Cached and unavailable readings must not appear in the completed card.");
+        check(levels is { Left: null, Right: null, Case: null, CaseLive: false, CaseCharging: false, NextExpiryMs: null },
+            "Unavailable readings cannot supply a new completed-card observation.");
+        snapshot.BatteryFreshness.Case.Present = false;
+        levels = PairingBatteryState.Read(snapshot, "0123456789ab", 2000, 92300);
+        check(levels is { Case: null, CaseLive: false, CaseCharging: false, NextExpiryMs: null } &&
+            snapshot.BatteryFreshness.Case.TimestampMs == 2200,
+            "Removing the buds and expiry cannot renew the case observation.");
+        snapshot.BatteryFreshness.Case.Present = true;
         snapshot.BatteryFreshness.Left.TimestampMs = 2100;
         snapshot.BatteryFreshness.Case.Live = true;
         levels = PairingBatteryState.Read(snapshot, "0123456789ab", 2000, 92100);
@@ -370,6 +378,46 @@ internal static class PairingChecks
         levels = PairingBatteryState.Read(snapshot, "0123456789ab", 2000, 92300);
         check(levels is { Headphone: null, HeadphoneCharging: false },
             "An AirPods Max reading must expire after 90 seconds without hiding the card.");
+    }
+
+    private static void CheckRetainedCase(Action<bool, string> check)
+    {
+        var retained = new PairingBatteryState();
+        var snapshot = new Snapshot
+        {
+            DeviceId = "0123456789ab", Connected = true, BatterySource = "aap", BatteryLive = true,
+            Battery = new Battery { Case = 77, CaseCharging = true },
+            BatteryFreshness = new BatteryFreshness
+            {
+                Case = new BatteryObservation { TimestampMs = 2000, Live = true, Present = true },
+            },
+        };
+        var levels = PairingBatteryState.Read(snapshot, "0123456789ab", 1000, 5000);
+        check(levels is { Case: 77, CaseLive: true, CaseCharging: true } && retained.RetainCase(levels?.Case) == 77,
+            "The completed card may retain a verified fresh case accepted during this attempt.");
+        snapshot.Battery.Case = 88;
+        snapshot.BatteryFreshness.Case.TimestampMs = 3000;
+        snapshot.BatteryFreshness.Case.Live = false;
+        snapshot.BatteryFreshness.Case.Present = false;
+        levels = PairingBatteryState.Read(snapshot, "0123456789ab", 1000, 5000);
+        check(levels is { Case: null, CaseLive: false, CaseCharging: false } && retained.RetainCase(levels?.Case) == 77,
+            "A newly merged stale case cannot replace this attempt's accepted case or charging state.");
+        retained.Clear();
+        check(retained.RetainCase(levels?.Case) is null,
+            "A new pairing presentation cannot inherit the previous attempt's retained case.");
+        snapshot.BatteryFreshness.Case.Live = true;
+        snapshot.BatteryFreshness.Case.Present = true;
+        snapshot.BatterySource = "ble_case";
+        levels = PairingBatteryState.Read(snapshot, "0123456789ab", 1000, 5000);
+        check(levels is null && retained.RetainCase(levels?.Case) is null,
+            "A case-layout observation cannot seed the completed-card case cache.");
+        snapshot.BatterySource = "ble";
+        levels = PairingBatteryState.Read(snapshot, "0123456789ab", 1000, 5000);
+        check(retained.RetainCase(levels?.Case) == 88,
+            "A fresh verified proximity reading may seed the current attempt's case cache.");
+        levels = PairingBatteryState.Read(snapshot, "0123456789ab", 1000, 93000);
+        check(levels is { Case: null, CaseLive: false, CaseCharging: false } && retained.RetainCase(levels?.Case) == 88,
+            "Expiry preserves only the previously accepted percentage without renewing its timestamp or charging.");
     }
 
     private static void CheckAttemptBattery(Action<bool, string> check)
@@ -410,7 +458,7 @@ internal static class PairingChecks
             "An explicitly absent component does not gain pairing-card freshness from the earlier attempt floor.");
         snapshot.BatteryFreshness.Left.Present = true;
         snapshot.BatterySource = "unknown";
-        check(PairingBatteryState.Read(snapshot, "0123456789ab", attemptStartedAtMs, bondCompletedAtMs) is { Left: null, LeftCharging: false },
+        check(PairingBatteryState.Read(snapshot, "0123456789ab", attemptStartedAtMs, bondCompletedAtMs) is null,
             "Public or unrecognized battery sources cannot supply completed-card readings.");
     }
 }

@@ -28,6 +28,14 @@
       "sid": "7b1549898fb01009e8a4274c4a0599e4052f74f5ea5cd3020b938908cb27fea4",
       "server_proof": "ad06e8762119f88a74bcac954934b00c3672c6f0069ced2673d84b4f48ecaf81",
       "client_proof": "ddbe311caee5bc39a871241e366c91f37c2e11c5effc5e19a1d8e3f308ded9b1"
+    },
+    {
+      "client_caps": "07",
+      "server_caps": "07",
+      "transcript": "NTPODS-COMPANION/2\nservice=bbc1e9f2-6f73-4c61-ae15-6e74706f6473\nclient=android\nserver=pc\ndevice=AA:BB:CC:DD:EE:FF\nclient_nonce=202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f\nserver_nonce=404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f\nclient_caps=07\nserver_caps=07\n",
+      "sid": "3d4960e4e714876edcd0f4005b3e29b6d05595b6e7287e2bcbbb259b0dc8b749",
+      "server_proof": "4cdb41397172d5c63c8027da3912be99236bd025a7ccace9c358f900375beef4",
+      "client_proof": "68f25aade4639218bc9d7e535065c8a8f216b593cbec2eb016707ada7f19ef13"
     }
   ],
   "cases": [
@@ -49,7 +57,7 @@
     {
       "name": "unknown_capability",
       "accepted": false,
-      "frame": "{\"v\":2,\"type\":\"hello\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"nonce\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"caps\":\"04\"}"
+      "frame": "{\"v\":2,\"type\":\"hello\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"nonce\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"caps\":\"08\"}"
     },
     {
       "name": "host_auto_pause",
@@ -385,6 +393,56 @@
       "name": "duplicate_version",
       "accepted": false,
       "frame": "{\"v\":2,\"v\":2,\"type\":\"ping\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\"}"
+    },
+    {
+      "name": "media_query",
+      "frame": "{\"v\":2,\"type\":\"media_query\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"probe\":\"0000000000000001\"}",
+      "accepted": true
+    },
+    {
+      "name": "media_state",
+      "frame": "{\"v\":2,\"type\":\"media_state\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"probe\":\"0000000000000001\",\"generation\":\"0000000000000001\",\"event\":\"0000000000000000\",\"playing\":false,\"known\":true,\"connected\":true,\"available\":true}",
+      "accepted": true
+    },
+    {
+      "name": "media_zero_probe",
+      "frame": "{\"v\":2,\"type\":\"media_query\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"probe\":\"0000000000000000\"}",
+      "accepted": false
+    },
+    {
+      "name": "media_unknown_field",
+      "frame": "{\"v\":2,\"type\":\"media_query\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"probe\":\"0000000000000001\",\"other\":true}",
+      "accepted": false
+    },
+    {
+      "name": "media_invalid_generation",
+      "frame": "{\"v\":2,\"type\":\"media_state\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"probe\":\"0000000000000001\",\"generation\":\"0000000000000000\",\"event\":\"0000000000000000\",\"playing\":false,\"known\":true,\"connected\":true,\"available\":true}",
+      "accepted": false
+    },
+    {
+      "name": "media_numeric_generation",
+      "frame": "{\"v\":2,\"type\":\"media_state\",\"tx\":\"0000000000000000\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"probe\":\"0000000000000001\",\"generation\":1,\"event\":\"0000000000000000\",\"playing\":false,\"known\":true,\"connected\":true,\"available\":true}",
+      "accepted": false
+    },
+    {
+      "name": "prepare_media",
+      "frame": "{\"v\":2,\"type\":\"prepare\",\"tx\":\"0000000000000001\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"target\":\"android\",\"purpose\":\"media\",\"episode\":\"00000000000000000000000000000000\",\"call_gen\":\"0000000000000000\",\"origin_token\":\"00000000000000000000000000000000\",\"media_gen\":\"0000000000000001\"}",
+      "accepted": true
+    },
+    {
+      "name": "prepare_media_without_generation",
+      "frame": "{\"v\":2,\"type\":\"prepare\",\"tx\":\"0000000000000001\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"target\":\"android\",\"purpose\":\"media\",\"episode\":\"00000000000000000000000000000000\",\"call_gen\":\"0000000000000000\",\"origin_token\":\"00000000000000000000000000000000\"}",
+      "accepted": false
+    },
+    {
+      "name": "prepare_media_with_call_token",
+      "frame": "{\"v\":2,\"type\":\"prepare\",\"tx\":\"0000000000000001\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"target\":\"android\",\"purpose\":\"media\",\"episode\":\"00000000000000000000000000000000\",\"call_gen\":\"0000000000000000\",\"origin_token\":\"11111111111111111111111111111111\",\"media_gen\":\"0000000000000001\"}",
+      "accepted": false
+    },
+    {
+      "name": "prepare_media_zero_generation",
+      "frame": "{\"v\":2,\"type\":\"prepare\",\"tx\":\"0000000000000001\",\"device\":\"AA:BB:CC:DD:EE:FF\",\"sid\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"target\":\"android\",\"purpose\":\"media\",\"episode\":\"00000000000000000000000000000000\",\"call_gen\":\"0000000000000000\",\"origin_token\":\"00000000000000000000000000000000\",\"media_gen\":\"0000000000000000\"}",
+      "accepted": false
     }
   ]
 }

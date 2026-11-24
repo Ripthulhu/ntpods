@@ -200,7 +200,7 @@ every model supports every ID.
 | `0x01` | Microphone side | `0` Automatic, `1` Right, `2` Left |
 | `0x0A` | Ear detection | `2` enabled, `1` disabled; opposite to the other boolean controls |
 | `0x0D` | Listening mode | `1` Off, `2` ANC, `3` Transparency, `4` Adaptive |
-| `0x16` | Press-and-hold action | `v0` right, `v1` left; each `1` noise control or `5` assistant; `v2=v3=0` |
+| `0x16` | Press-and-hold action | `v0` right, `v1` left; each `1` assistant or `5` noise control; `v2=v3=0` |
 | `0x17` | Press speed | `0` Default, `1` Slower, `2` Slowest |
 | `0x18` | Hold duration | `0` Default, `1` Slower, `2` Slowest (current UI labels) |
 | `0x1A` | Stem listening-mode cycle | Mask: Off `1`, ANC `2`, Transparency `4`, Adaptive `8`; at least two bits set |
@@ -228,12 +228,31 @@ change. Windows ear-detection behavior still needs a controlled hardware check.
 Wear reports (`0x06`) and NTPods' automatic-pause
 preference are separate from that configuration value.
 
+### Hold-action evidence
+
+The cached macOS Tahoe `25G241` sender establishes `1 = Siri/Assistant` and
+`5 = NoiseManagement`. Its enum table at `0x100AA90F0` maps those indices to
+CFStrings `0x100AD5EE8` and `0x100AD5F68`. The hold sender packs `left << 8 | right`
+and passes that value unchanged to the generic control `0x16` setter at
+`0x10008EE7C`; there is no action-value remapping. For example, left Noise
+Control/right Assistant sends `01 05 00 00`, while the reverse sends
+`05 01 00 00`. This corrects the previous reversed action labels; the wire byte
+order is unchanged. Models without listening modes accept Assistant `1`, not
+Noise Control `5`.
+
+This is static primary-binary evidence, not a hardware listening check. The
+receipt is `outputs/pico-app-integration-20261029/hold-action-primary-static-evidence.json`;
+the inspected binary SHA-256 is
+`93f3afbf2bb7d84855ae1f2b24c9a222250f33c2808a7b80094bae15c0f62f65`.
+
 Outgoing hold-action commands (`0x16`) carry current right/left actions in the
 low two bytes and zeroes in the high two. Apple's
 [receive path](https://github.com/EthanArbuckle/iPhone18-3_26.1_23B85_Restore/blob/90aa0cfe59d9682b4265e1354c8b19ec3c7823ab/usr/sbin/bluetoothd/bluetoothd_50.mm#L7076-L7104)
-also reports the previous right/left actions in the high bytes. NTPods validates
-and retains only the current low pair; previous-action bytes never enter a new
-command. This incoming form has not been captured on Windows.
+also reports the previous right/left actions in the high bytes. NTPods retains
+the full raw report, interprets the current low pair for the editor and
+confirmation, and excludes previous-action bytes from new commands. An unknown
+current action remains read-only. This incoming form has not been captured on
+Windows.
 
 The `0x1A` mask is shared by both stems assigned to noise control. For example,
 `0x0B` selects Off, ANC and Adaptive, excluding Transparency. It selects mode
@@ -626,8 +645,20 @@ sound and initialization boundaries.
 
 ## Sensors
 
-RTBuddy packets begin `04 00 04 00 17 00 00 00 10 00`, then a little-endian
-16-bit payload length and protobuf-like fields. Both decoders reassemble split
+The shared [sensor contract v1](SENSOR-PROTOCOL.md) defines the Windows/Android
+motion model, lifecycle and bounded wire fixtures. Ordinary AirPods 3 uses the
+model-gated RemoteHID client `0x00000800`, not SensorDataWX; its exact XML motion
+declaration selects the connection-local ID. Both transports expose full raw
+motion fields alongside the existing two-channel events. The native WX path
+below retains its captured rates and framing.
+
+The supported RTBuddy SensorDataWX client (`0x00100000`) uses prefix
+`04 00 04 00 17 00 00 00 10 00`, then a little-endian 16-bit payload length
+and protobuf-like fields. This is not a universal `0x17` prefix: tyalie's
+historical [log fixture](https://github.com/tyalie/AAP-Protocol-Defintion/blob/d8d016d8d8f07ea11a36f64b4e8b35424f884400/examples/custom-message/log-r-00.data)
+uses client `0x00000400`, and its [sensor fixture](https://github.com/tyalie/AAP-Protocol-Defintion/blob/d8d016d8d8f07ea11a36f64b4e8b35424f884400/examples/custom-message/sensor-r-00.data)
+uses `0x00000800`. MousePods' later AP3 captures establish that RemoteHID layout
+for A2564/A2565; they do not establish it on Pro 3. Both SensorDataWX decoders reassemble split
 frames and bound payloads to 16 KiB. [rtbuddy.rs](../windows/daemon/src/rtbuddy.rs)
 parses descriptor announcements with bounded field counts and dictionary lengths.
 Parse nested fields; sequence varints and wrappers change packet offsets.
@@ -731,7 +762,11 @@ values cannot establish acceptable ambient noise.
 [transparency.rs](../windows/daemon/src/transparency.rs) share
 [UUID discovery](../windows/daemon/src/att_settings.rs) for hearing settings and
 Custom Transparency. Loud Sound Reduction still uses its fixed upstream handle;
-that assumption needs comparison on each model/firmware.
+that assumption needs comparison on each model/firmware. The Pro 3 / 9A348
+declaration in `20261024T150956Z-00aee364`, frame 1424, identifies UUID
+`A48FEC08-3921-43DB-82AA-AFBCE8EBB4FB` with properties `0x06` (Read and Write
+Without Response). This does not establish the existing Write Request/ACK
+contract below; that write remains unverified.
 
 | Handle | Operation | Current format |
 | --- | --- | --- |
@@ -747,11 +782,23 @@ discovers service `7798082B-B7B7-45A6-9933-563492EFE04E` and this characteristic
 UUID. Its experimental editor accepts exactly 104 bytes. A write includes the
 confirmed settings from before the edit as `expected`; these must match both the
 daemon's current settings and a fresh ATT read. Missing or changed settings
-require another read before editing. The UI preserves this baseline while an
-edit is unsent, even if another client changes the device.
+require another read before editing. Identical reports preserve an unsent UI
+draft. A changed report replaces the draft with the received settings; a missing
+report or unavailable connection clears it and disables editing until a fresh
+read succeeds. A cached master-On draft is not evidence that CT is enabled.
 
-Edits preserve both eight-band curves, own-voice bytes and every untouched
-control. Readback must match all 104 written bytes. If it still returns the exact
+The native Windows driver opens authenticated, encrypted BR/EDR PSM `0x001F`.
+This is separate from AACP and from LE's fixed ATT channel. Transactions retain
+the selected accessory and connection generation; timed-out replies invalidate
+the ATT session. The current path expects a complete 104-byte value and does
+not assemble long reads. Native Windows CT commands are wired; standalone CT
+commands through the Windows USB worker remain unavailable, although its
+Accommodations coordinator can use ATT for stock curve updates.
+
+The typed record includes both eight-band curves and Own Voice Amplification
+(offset 100, 0–1). The editor exposes Own Voice alongside the existing per-ear
+controls. Edits preserve every untouched field, including signed zero. Readback
+must match all 104 written bytes. If it still returns the exact
 original record, NTPods retries the read up to four times at 75 ms intervals.
 Other mismatches or errors fail immediately; the write is never repeated.
 
@@ -759,11 +806,30 @@ The captured characteristic advertises Read, Write Without Response and Notify
 (`0x16`), so NTPods sends a Write Command (`0x52`) without
 waiting for an ACK. Characteristics advertising Write use a Write Request (`0x12`)
 and its ACK instead. It exposes the float32 enable flag at offset 0 and
-per-ear amplification/tone (−1–1), Conversation Boost (0/1), and ambient-noise
+per-ear amplification (−1–2), tone (−1–1), Conversation Boost (0/1), and ambient-noise
 reduction (0–1) at the offsets below. It sends no settings when opened or at startup.
 The Pro family may attempt discovery; older 100-byte layouts remain unsupported.
 Persistence across reconnects remains unverified; see
 [hardware coverage](WINDOWS-VALIDATION.md#controls-batteries-and-sensors).
+
+The native five-slider editor combines the two amplification values differently
+from a constant-average pan. In iOS 27.0.1 PersonalAudio, UUID
+`FC2D1EB8-2D5F-3C86-AC56-E49F730A76DD`,
+`transparencySettingsv4ForAddress:` (`0x2949106D8`) converts normalized host
+preferences to amplification `a` and balance `b`, each in `[-1, 1]`:
+
+```text
+left  = clamp(a - min(b, 0), -1, 2)
+right = clamp(a + max(b, 0), -1, 2)
+```
+
+The calculation is at `0x294910858–0x29491086C`; the clamps and float32 stores
+at offsets 36/84 are at `0x29491093C–0x294910958`. Captured native positive
+Balance movement changed only the right gain; Amplification changed both by
+the same amount. For records representable by these controls,
+`a = min(left, right)` and `b = right - left`. Preserve other valid per-ear
+records without silently forcing them into the combined sliders' range.
+These are normalized configuration values, not a calibration in decibels.
 
 Two [public listening-mode captures](https://github.com/BorgoGustavo/airpods-ctl/tree/b42f4e8a944d39fdd9fa25533ae262bf647ddb3b/docs/captures)
 (`control-center-mode-changes.pklg` and `mode-transitions-2026-05-28.pklg`,
@@ -774,7 +840,8 @@ establish the characteristic identity or a fitted hearing profile by themselves.
 The request/response traffic is not motion telemetry and gives no evidence
 that mode changes alter these settings. The preservation regression uses
 distinct synthetic left/right curves, including signed zero, to check that
-editing exposed controls leaves all curve and own-voice bytes unchanged.
+editing another control leaves all curve and own-voice bytes unchanged. A
+separate regression restores a changed full record to its exact original bytes.
 
 Pro 3 / 9A348 captures from Tahoe 26.7.1 (25G241) on AX200 contain successful
 104-byte reads of Custom Transparency and hearing settings. The four unenrolled
@@ -872,7 +939,16 @@ second is enabled (`1`/`2`). Mode changes preserve enrollment. Control `0x33`
 is the shared gate: on while Hearing Aid or Media Assist is on. Disabling one
 must preserve the other. Hearing Aid enable selects Transparency; Media Assist
 keeps the current listening mode. These controls remain outside the generic
-setting allowlist. Settings offsets relative to the characteristic value are:
+setting allowlist.
+
+For swipe-to-adjust amplification, rithvikvibhu's September 2025
+[packet examples](https://gist.github.com/rithvikvibhu/45e24bbe5ade30125f152383daf07016/2bbf210b36c8266d7e52972729f8674ea5ac0f40#swipe-to-control-amplification)
+report control `0x2F` with a one-byte value: `1` on, `2` off. The gist does not
+identify the tested model or firmware. This is historical third-party evidence,
+not Pro 3 / 9A348 wire verification; it does not relax the current command
+allowlist or hearing-setting guards.
+
+Settings offsets relative to the characteristic value are:
 
 | Offset | Field |
 | --- | --- |
@@ -915,8 +991,13 @@ after successful sends do not establish device confirmation. An explicit Off
 retry retains its last confirmed raw template within the same connection;
 reconnects discard that template.
 
-Hearing assistance has an explicit read operation that sends no enable command
-or notification subscription. Fitting edits require that successful read
+Hearing assistance has a read operation that sends no enable command
+or notification subscription. NTPods now schedules that read automatically once
+per connection, before Custom Transparency, loud-sound reduction, saved checks
+and hearing metadata. The same validated AHPS result populates hearing controls
+and the legacy Audiogram source; the former source-only startup probe could
+leave the hearing editor unloaded. Early AHPS arrival does not substitute for
+the independent clinical mode reports. Fitting edits require that successful read
 in the current connection, complete eight-band curves for both ears and a known
 AAP enabled state. Before a fitting edit's enable command or settings write,
 the backend compares the caller's original baseline with the latest confirmed state, reads
@@ -928,8 +1009,12 @@ the write handle and method.
 
 The editor starts from those confirmed per-ear values. Scalar edits retain both
 audiograms and untouched per-ear controls, including noise reduction and own
-voice. Audiogram edits require an explicit Apply; tuning changes are coalesced
-for 1.5 seconds. Empty or incomplete curves are rejected. Amplification accepts
+voice. Valid edits now send automatically, with a 150 ms UI coalescing interval
+and one transaction in flight. A newer gesture replaces the queued successor;
+an exact acknowledgement rebases it on the newly received full profile. A
+failure, conflicting report or connection-owner change discards that successor.
+This interval is application pacing, not a measured firmware limit. Empty or
+incomplete curves are rejected. Amplification accepts
 −1.5–1.5, tone −1–1, thresholds 0–90 dB HL, and noise reduction and own voice 0–1.
 The amplification slider uses `A = 2a - 1` for normalized position `a`; signed
 balance `B` produces left gain `A - B/2` and right gain `A + B/2`. This matches
@@ -1164,9 +1249,9 @@ builds a 132-byte body after `04 00 04 00 53 00 84 00`:
 | Body offset | Full packet offset | Field |
 | --- | --- | --- |
 | 0 | 8 | Version `2` |
-| 1 | 9 | Enroll PME Voice |
-| 2 | 10 | Enable PME Voice |
-| 3 | 11 | Enable PME Media |
+| 1 | 9 | Enroll PME Voice in host commands; received `00` remains unresolved |
+| 2 | 10 | Enable PME Voice; Headphone Accommodations **Phone** switch |
+| 3 | 11 | Enable PME Media; Headphone Accommodations **Media** switch |
 | 4 | 12 | Voice left: eight float32 LE values |
 | 36 | 44 | Media left: eight float32 LE values |
 | 68 | 76 | Voice right: eight float32 LE values |
@@ -1180,6 +1265,127 @@ disabled. Enrollment and all curve bytes are preserved; missing profiles are
 never synthesized. The aggregate state requires `0x33` on and either enable
 flag on. Apple's [configuration policy](https://github.com/EthanArbuckle/iPhone18-3_26.1_23B85_Restore/blob/90aa0cfe59d9682b4265e1354c8b19ec3c7823ab/System/Library/PrivateFrameworks/HearingModeService.framework/HearingModeService/HMDeviceConfigurations.mm#L1354-L1425)
 keeps that shared gate on while either hearing mode needs it.
+
+Headphone Accommodations is a separate use of this record. On Pro 3 / 9A348,
+macOS 26.7.1 (25G241) sent enrollment byte `02` with Phone/Media enable bytes
+`01`, without enabling clinical gate `09/33`. Four isolated native actions
+(Phone off, Media off, Phone on, Media on) changed body bytes 2/3 independently;
+the 128 curve bytes stayed identical. The main switch off set both enable bytes
+to `02`, while the Mac retained its checked Phone/Media preferences locally.
+These observations do not authorize changing enrollment or interpreting legacy
+accommodations as clinical Media Assist.
+
+The full incoming records retain enrollment byte `00`, while legacy host
+commands use `02`. Later same-peer reconnect evidence establishes this
+direction-specific difference: `060195f7` host frame 5157 → received 7780 and
+`816495a0` host 3397 → received 6256 match in every other byte of the full
+140-byte record, with no intervening full host PME write. Fresh `2C`/`33`
+reports at 7726/7738 in `060195f7` establish clinical hearing paths off; the
+second capture independently binds both channels to the same peer but lacks
+those guards. The first capture's pre-write connection began before recording.
+
+Keep received enrollment zero opaque. A legacy plan requires complete current
+`2C`/`33` Off reports and a received enrollment of `00` or `02`, constructs a
+separate command with byte 9 set to `02`, and expects the original received
+byte exactly after the edit. Every other header, destination and curve byte
+must match the intended complete report. Do not ignore enrollment, convert the
+saved received snapshot, accept clinical enrollment `01` as legacy, or infer
+clinical Off from missing reports. No-change and restoration use reported
+settings rather than the command-only header difference.
+
+The earlier native Windows preview queued a settings refresh when PME did not
+echo. Its disconnect IOCTL also closed ATT and AVDTP playback despite retaining
+the driver handle. That caused an application-level interruption, not a proven
+PME requirement. The revised native Windows and Android paths do not reconnect
+automatically after an edit. They retain received PME independently from ordered
+requested settings and a local edit version. A silent complete PME send remains
+Sent; it cannot advance the device reception revision or become confirmation.
+Only a fresh exact device report confirms the PME target. Follow-up local edits
+compose against the pending requested target without overwriting reported data;
+owner changes or conflicting reports retire that requested state. Explicit
+settings refresh remains a separate diagnostic operation and can interrupt
+playback; normal settings screens no longer expose it as a Read button.
+
+The native Mac sequence provides a counterexample to a required restart:
+`00aee364` Start 4800 / acceptance 4809 is followed by PME frames 4859, 6059,
+6651, 7283, 8244 and 8605 on unchanged ACL `0100` / AACP CID `0509`, with no
+intervening Suspend or channel reopen. Frames 6059–8605 change only the
+destination flags, preserving all curve bytes. The next Suspend is 29230;
+disconnect 8293 belongs to unrelated handle `0E01`. This native sequence proves
+transport continuity only and does not locate music DSP. The wizard's actual
+codec is unverified because its capture starts after configuration. See the
+[native capture limits](MACOS-ACCOMMODATIONS-CAPTURE-2026-10-24.md#pme-changes-on-an-established-audio-transport).
+
+The Headphone Accommodations editor retains the newest live edit through
+identical polls. Its own completed transaction rebases any queued successor;
+a conflicting received revision or failed transaction replaces the draft,
+including when changed custom curves still project to an unnamed preset.
+Read-only controls display received flags and tuning directly. Remembered
+Phone/Media choices apply only to writable editing with the master Off; they
+do not replace actual read-only flags. Backend session/revision checks still
+reject stale writes independently of this display behavior.
+
+The same capture session verified all three discrete Optimization levels
+(Slight, Moderate, Strong) for Balanced Tone, Vocal Range and Brightness.
+Each preset produces separate speech/media arrays for both ears. All nine
+captured 128-byte blocks match the corresponding private PersonalAudio preset
+resources from iOS 27.0.1 (24A446); shape IDs are 1, 2 and 3 respectively.
+The resource band keys are 250, 500, 1000, 2000, 3000, 4000, 6000 and 10000 Hz.
+They are tuning inputs, not a newly measured audiogram. Keep these blocks
+separate from the clinical AHPS thresholds, whose last slot is 8000 Hz.
+For every stock preset, native Custom Transparency write targets also contain
+the PME voice-left bytes at ATT offsets 4–35 and voice-right bytes at 52–83.
+Only five presets have matching native ATT reads. All four PME arrays within
+each stock preset are identical; this does not establish that mapping for
+personal curves. A named-preset implementation must coordinate both records,
+preserve all other Transparency bytes and verify a full ATT readback. An AACP
+send alone neither completes the preset nor confirms its PME record.
+See [the native capture findings](MACOS-ACCOMMODATIONS-CAPTURE-2026-10-24.md)
+for packet references, the listening setup and remaining implementation checks.
+
+Legacy Audiogram uses an explicitly selected, complete enrolled stored-AHPS
+profile as its source, without changing that clinical record. Apply the native
+legacy normalizer rather than the clinical per-ear bridge: compare double PTAs
+at 500/1000/2000/4000 Hz, average ears below a difference of 15, otherwise choose
+the lower-PTA ear. Target 10000 Hz uses the 8000 Hz upper endpoint. The native
+zero-sentinel pass replaces exact-zero interior targets with that endpoint;
+250 Hz zero remains zero. The final float32 common curve repeats in all four
+PME slots; both CT arrays use the same curve clamped to `[0,80]`, preserving
+every other CT byte. See the [normalizer and source limits](MACOS-ACCOMMODATIONS-CAPTURE-2026-10-24.md#audiogram-from-an-explicitly-selected-stored-profile).
+
+Both native apps require an actual current-session enrolled-profile read for
+Audiogram availability, the full strict AHPS validation, independent clinical
+Off reports and session ownership. An absent availability field from an older
+backend or a missing source keeps the choice disabled. All 104 source bytes
+must match before and after the transaction. Exact CT readback preserves all 40
+unrelated bytes and verifies the ATT update; if PME is silent, the overall edit
+remains Sent rather than Confirmed. This choice neither writes AHPS nor imports
+HealthKit data. It has no fourth stock tuning ID or Optimization level. Unknown
+curves remain unnamed; only a validated source and its derived target identify
+Audiogram. Missing profiles must not become zero curves.
+
+The mapper, source guards and transaction paths have been source-reviewed; the
+pure mapping matches the shared synthetic fixtures. On 2026-10-25, Windows
+listener acceptance on A3064 / 9A348 with AAC-ELD at 256 kbps confirmed continuous
+music during Phone/Media changes and manual Audiogram selection, and a clear
+perceived difference between Audiogram and Brightness / Strong. The flag calls
+completed in 327/340 ms without a sampled readiness drop, retaining session 3
+and device revision 9 while local edits advanced through 1/2. Those are call
+completion timings and listener reports, not acoustic latency or calibrated
+measurements. Stored hearing settings and clinical Off states matched before
+and after the manual test.
+
+The final saved edit 5 remained Sent, requesting Audiogram and destinations Off;
+the independent received PME still showed Brightness / Strong at revision 9.
+No new capture or fresh PME readback was claimed. Startup needed one manual
+Connect, so automatic connection recovery was not accepted by this test.
+Android's later Note8 test confirmed full preset writes, exact CT readback and
+fresh PME storage, but the listener heard no difference. Its separate short
+route-gate probe also had no audible effect; this is not Android acceptance.
+See the [Note8 comparison](MACOS-ACCOMMODATIONS-CAPTURE-2026-10-24.md#note8-storage-succeeds-audible-processing-unresolved-2026-10-25)
+for transport differences, packet references and pending probe cleanup. See the
+[Windows acceptance evidence](MACOS-ACCOMMODATIONS-CAPTURE-2026-10-24.md#windows-acceptance-2026-10-25)
+for receipt references and the distinction between requested and reported state.
 
 A separate `0x53` subtype-1 body `01 01`/`01 02` controls Apple's `PME On Buds`
 audio-route property. NTPods does not write that gate; its activation policy

@@ -1,0 +1,12 @@
+[package]
+name = "ntpods-spatial"
+version = "0.1.0"
+edition = "2024"
+default-run = "windows-surround"
+
+[dependencies]
+audionimbus = { version = "=0.18.0", default-features = false, features = ["linking-dynamic", "auto-install"] }
+wasapi = "=0.27.0"
+hidapi = "=2.6.7"
+windows-sys = { version = "=0.61.2", features = ["Win32_Devices_DeviceAndDriverInstallation", "Win32_System_Console", "Win32_System_Threading", "Win32_Storage_Packaging_Appx"] }
+windows = { version = "=0.62.2", features = ["Media_Control", "Foundation"] }

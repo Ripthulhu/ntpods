@@ -14,21 +14,27 @@ public sealed partial class EqualizerCard : UserControl
     private Snapshot _snapshot = new();
     private bool _applying = true;
     private readonly EqualizerEditState _edit = new();
+    private readonly DispatcherTimer _debounce = new() { Interval = TimeSpan.FromMilliseconds(150) };
+    private bool _ready;
+    private string _owner = "";
     private readonly DispatcherTimer _requestTimeout = new() { Interval = TimeSpan.FromSeconds(10) };
 
     public EqualizerCard()
     {
         InitializeComponent();
+        _debounce.Tick += (_, _) => { _debounce.Stop(); _ready = true; Flush(); };
         _requestTimeout.Tick += (_, _) =>
         {
             _requestTimeout.Stop();
-            _edit.EndRequest();
+            _edit.Cancel();
             Render();
         };
         Unloaded += (_, _) =>
         {
             _requestTimeout.Stop();
-            _edit.EndRequest();
+            _debounce.Stop();
+            _ready = false;
+            _edit.Cancel();
         };
         Loaded += (_, _) => Render();
         _applying = false;
@@ -38,9 +44,11 @@ public sealed partial class EqualizerCard : UserControl
     public void Update(Snapshot s)
     {
         _snapshot = s;
-        _edit.Update(s, Available(s));
+        _owner = LiveSettingScope.For(s, Client?.SessionEpoch ?? 0);
+        _edit.Update(s, Available(s) && Client?.IsReady == true, Client?.SessionEpoch ?? 0);
         if (_edit.Requested is null) _requestTimeout.Stop();
         Render();
+        if (_ready) Flush();
     }
 
     private static bool Supported(Snapshot s) => DeviceModels.CustomEq(s);
@@ -56,17 +64,15 @@ public sealed partial class EqualizerCard : UserControl
         MidSlider.IsEnabled = available;
         HighSlider.IsEnabled = available;
         // An unsubmitted slider edit belongs to the user, even as battery updates arrive.
-        if (!_edit.Dirty)
+        if (_edit.Displayed is { } eq)
         {
-            var eq = s.EqPending ?? _edit.Requested ?? s.Eq ?? new Equalizer { Mode = 1, Low = 50, Mid = 50, High = 50 };
             _applying = true;
             LowSlider.Value = eq.Low;
             MidSlider.Value = eq.Mid;
             HighSlider.Value = eq.High;
             _applying = false;
         }
-        ApplyButton.IsEnabled = available && (_edit.Dirty || s.Eq?.Mode != 2) && s.EqPending is null && _edit.Requested is null;
-        RecommendedButton.IsEnabled = available && s.EqPending is null && _edit.Requested is null;
+        RecommendedButton.IsEnabled = available;
         string status = Localize.Get(!s.Connected ? "DeviceSetting.Disconnected" :
             s.LinkStale ? "DeviceSetting.Stale" :
             !supported ? "Equalizer.Unsupported" :
@@ -74,9 +80,10 @@ public sealed partial class EqualizerCard : UserControl
             s.EqPending is not null || _edit.Requested is not null ? "DeviceSetting.Pending" :
             s.Eq is null ? "Equalizer.Unknown" :
             s.Eq.Mode == 1 ? "Equalizer.RecommendedActive" : "Equalizer.CustomActive");
-        bool showPreset = s.Eq is not null;
+        var displayed = _edit.Displayed;
+        bool showPreset = displayed is not null;
         StatusText.Text = showPreset
-            ? Localize.Get(s.Eq!.Mode == 1 ? "Equalizer.RecommendedActive" : "Equalizer.CustomActive") : "";
+            ? Localize.Get(displayed!.Mode == 1 ? "Equalizer.RecommendedActive" : "Equalizer.CustomActive") : "";
         StatusText.Visibility = showPreset ? Visibility.Visible : Visibility.Collapsed;
         AutomationProperties.SetHelpText(EqualizerExpander, status);
         AutomationProperties.SetHelpText(LowSlider, status);
@@ -89,30 +96,31 @@ public sealed partial class EqualizerCard : UserControl
     private void Band_Changed(object sender, RangeBaseValueChangedEventArgs e)
     {
         if (_applying || !Available(_snapshot)) return;
-        _edit.Edit();
+        _edit.Edit(new Equalizer { Mode = 2, Low = (byte)LowSlider.Value, Mid = (byte)MidSlider.Value, High = (byte)HighSlider.Value });
+        _ready = false;
+        if (!_debounce.IsEnabled) _debounce.Start();
         Render();
-    }
-
-    private void Apply_Click(object sender, RoutedEventArgs e)
-    {
-        if (!ApplyButton.IsEnabled || Client is null) return;
-        var requested = new Equalizer { Mode = 2, Low = (byte)LowSlider.Value, Mid = (byte)MidSlider.Value, High = (byte)HighSlider.Value };
-        Send(requested);
     }
 
     private void Recommended_Click(object sender, RoutedEventArgs e)
     {
         if (!RecommendedButton.IsEnabled || Client is null) return;
         var requested = new Equalizer { Mode = 1, Low = 50, Mid = 50, High = 50 };
-        Send(requested);
+        _edit.Edit(requested);
+        _debounce.Stop();
+        _ready = true;
+        Flush();
+        Render();
     }
 
-    private void Send(Equalizer requested)
+    private void Flush()
     {
-        _edit.Begin(requested);
+        if (!Available(_snapshot) || Client?.IsReady != true ||
+            _owner != LiveSettingScope.For(_snapshot, Client.SessionEpoch) || _edit.Take() is not { } requested) return;
         _requestTimeout.Stop();
         _requestTimeout.Start();
-        Client!.SetEq(requested);
+        if (!Client.Send(new SetEqCmd { Mode = requested.Mode, Low = requested.Low, Mid = requested.Mid, High = requested.High }))
+            _edit.Cancel();
         Render();
     }
 }

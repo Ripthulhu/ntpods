@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; base-uri 'none'; object-src 'none'">
+  <link rel="stylesheet" href="room.css">
+  <script src="geometry.js" defer></script>
+  <script src="studio.js" defer></script>
+  <script src="room.js" defer></script>
+  <title>Spatial room</title>
+</head>
+<body>
+  <main id="viewport">
+    <canvas id="stage" tabindex="0" aria-label="Spatial room" aria-describedby="hint"></canvas>
+    <div id="labels" aria-hidden="true"></div>
+    <span id="screen" aria-hidden="true"></span>
+    <p id="hint" hidden></p>
+  </main>
+</body>
+</html>

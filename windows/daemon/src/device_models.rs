@@ -80,7 +80,15 @@ pub fn heart_rate(s: &Snapshot) -> bool {
 }
 
 pub fn head_tracking(s: &Snapshot) -> bool {
-    find(&s.model).is_some_and(|p| p.head_tracking) && firmware_major(&s.firmware) > 0
+    find(&s.model).is_some_and(|p| p.head_tracking)
+        && (remote_motion(&s.model) || firmware_major(&s.firmware) > 0)
+}
+
+pub fn remote_motion(model: &str) -> bool {
+    matches!(
+        model.trim().to_ascii_uppercase().as_str(),
+        "A2564" | "A2565"
+    )
 }
 
 pub fn hearing_aid(s: &Snapshot) -> bool {
@@ -141,7 +149,7 @@ pub fn control(s: &Snapshot, id: u8, value: u32) -> bool {
     }
     if id == 0x16
         && profile.is_some_and(|p| !p.listening)
-        && (value & 0xFF == 1 || (value >> 8) & 0xFF == 1)
+        && (value & 0xFF == 5 || (value >> 8) & 0xFF == 5)
     {
         return false;
     }
@@ -162,9 +170,13 @@ pub fn control(s: &Snapshot, id: u8, value: u32) -> bool {
     if id == 0x35 && firmware_major(&s.firmware) < 8 {
         return false;
     }
-    s.device_controls.contains_key(&id)
-        || explicit_choice(s, id, value)
-        || (id == 0x34 && crate::device_settings::supports_silent_allow_off(&s.model))
+    match s.device_controls.get(&id) {
+        Some(raw) => crate::device_settings::current_control_value(id, *raw).is_some(),
+        None => {
+            explicit_choice(s, id, value)
+                || (id == 0x34 && crate::device_settings::supports_silent_allow_off(&s.model))
+        }
+    }
 }
 
 pub fn explicit_choice(s: &Snapshot, id: u8, value: u32) -> bool {
@@ -180,6 +192,23 @@ pub fn unreported_choice(s: &Snapshot, id: u8, value: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn opaque_reports_block_legacy_writes_even_for_explicit_unreported_choices() {
+        let mut s = device("A3063", "9A348");
+        s.device_controls.insert(0x24, 0x00022301);
+        assert!(!control(&s, 0x24, 0x0200));
+        assert!(!control(&s, 0x24, 0x0300));
+        s.device_controls.insert(0x23, 3);
+        assert!(!control(&s, 0x23, 1));
+        assert!(!unreported_choice(&s, 0x23, 1));
+        s.device_controls.insert(0x16, 0x01050501);
+        assert!(control(&s, 0x16, 0x0105));
+        s.device_controls.insert(0x16, 0x01050500);
+        assert!(!control(&s, 0x16, 0x0105));
+        s.device_controls.remove(&0x23);
+        assert!(unreported_choice(&s, 0x23, 1));
+    }
+
     #[test]
     fn firmware_gates_reject_internal_and_unrecognized_versions() {
         for (value, major) in [
@@ -384,8 +413,9 @@ mod tests {
         assert!(!control(&device("A2698", "7B19"), 0x0D, 1));
         assert!(!control(&device("A2698", ""), 0x0D, 1));
         let mut s = device("A3053", "9A348");
-        s.device_controls.insert(0x16, 0x0505);
-        assert!(control(&s, 0x16, 0x0505));
+        s.device_controls.insert(0x16, 0x0101);
+        assert!(control(&s, 0x16, 0x0101));
+        assert!(!control(&s, 0x16, 0x0505));
         assert!(!control(&s, 0x16, 0x0105));
         assert!(!control(&s, 0x16, 0x0501));
     }
@@ -406,5 +436,16 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn remote_hid_airpods3_requires_model_identity_but_not_a_public_firmware_name() {
+        for model in ["A2564", "A2565", " a2564 "] {
+            assert!(remote_motion(model));
+            assert!(head_tracking(&device(model, "Internal")));
+        }
+        assert!(!remote_motion("A3063"));
+        assert!(!head_tracking(&device("A3063", "Internal")));
+        assert!(!head_tracking(&device("unknown", "9A348")));
     }
 }

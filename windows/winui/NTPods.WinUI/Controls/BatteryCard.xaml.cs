@@ -14,6 +14,8 @@ public sealed partial class BatteryCard : UserControl
     private string? _artFamily;
     private string _model = "";
     private readonly DeviceArtworkState _artwork = new();
+    private Snapshot? _snapshot;
+    private ulong _snapshotTime;
 
     public BatteryCard()
     {
@@ -24,19 +26,27 @@ public sealed partial class BatteryCard : UserControl
     /// Render the model's battery gauges and artwork from a daemon snapshot.
     public void Update(Snapshot s)
     {
+        if (!ReferenceEquals(_snapshot, s))
+        {
+            _snapshot = s;
+            _snapshotTime = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        }
+        s = SelectedDevicePresentation.Project(s, _snapshotTime);
         _model = _artwork.Update(s, AppSettings.LastModel, AppSettings.LastDeviceId);
         bool headphone = DeviceModels.Find(_model).Headphone || DeviceModels.Headphone(s);
         var family = DeviceArt.Family(_model, headphone);
         if (family != _artFamily)
         {
             _artFamily = family;
-            ArtworkTransitions.SetSource(LeftImg, headphone ? DeviceArt.MainImage(_model, true) : DeviceArt.LeftImage(_model));
-            ArtworkTransitions.SetSource(RightImg, headphone ? null : DeviceArt.RightImage(_model));
-            ArtworkTransitions.SetSource(CaseImg, headphone ? null : DeviceArt.CaseImage(_model));
+            ArtworkTransitions.SetSource(LeftImg, headphone ? DeviceArt.MainImage(_model, true) : DeviceArt.SettingsLeftImage(_model));
+            ArtworkTransitions.SetSource(RightImg, headphone ? null : DeviceArt.SettingsRightImage(_model));
+            ArtworkTransitions.SetSource(CaseImg, headphone ? null : DeviceArt.SettingsCaseImage(_model));
         }
 
-        RightCell.Visibility = CaseCell.Visibility = headphone ? Visibility.Collapsed : Visibility.Visible;
-        Grid.SetColumnSpan(LeftCell, headphone ? 3 : 1);
+        RightCell.Visibility = RightArtwork.Visibility = CaseGroup.Visibility = headphone ? Visibility.Collapsed : Visibility.Visible;
+        Grid.SetColumnSpan(BudsGroup, headphone ? 2 : 1);
+        Grid.SetColumnSpan(LeftArtwork, headphone ? 2 : 1);
+        Grid.SetColumnSpan(LeftCell, headphone ? 2 : 1);
         LeftLabel.Text = headphone ? DeviceModels.DisplayName(s, Localize.Get("Device_DefaultName")) : Localize.Get("BatteryLeftLabel_Text");
         AutomationProperties.SetName(LeftBar, LeftLabel.Text);
         SetBattery(s, headphone ? BatteryPart.Headphone : BatteryPart.Left, LeftCell, LeftArtwork, LeftBar, LeftText, LeftCharging);

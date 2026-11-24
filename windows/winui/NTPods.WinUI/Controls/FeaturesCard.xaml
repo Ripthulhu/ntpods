@@ -7,23 +7,23 @@
         <TextBlock Text="{Binding [FeaturesTitle_Text], Source={StaticResource Loc}}" Style="{StaticResource SectionTitle}" />
         <Border Style="{StaticResource Card}" Padding="0">
             <StackPanel x:Name="FeatureRows">
-                <Grid x:Name="ConvAwarenessRow" Padding="20,16" ColumnSpacing="16" MinHeight="64">
+                <Grid x:Name="AdaptiveVolumeRow" Padding="16,15" ColumnSpacing="16" MinHeight="64">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                    <TextBlock Text="{Binding [FeatureCaSwitch_Header], Source={StaticResource Loc}}" TextWrapping="Wrap" FontSize="16" VerticalAlignment="Center" />
-                    <ToggleSwitch x:Name="ConvAwarenessSwitch" Grid.Column="1" Style="{StaticResource SettingToggle}" VerticalAlignment="Center"
-                                  AutomationProperties.Name="{Binding [FeatureCaSwitch_Header], Source={StaticResource Loc}}" Toggled="ConvAwareness_Toggled" />
-                </Grid>
-                <Border x:Name="AdaptiveVolumeDivider" Style="{StaticResource InsetDivider}" />
-                <Grid x:Name="AdaptiveVolumeRow" Padding="20,16" ColumnSpacing="16" MinHeight="64">
-                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                    <TextBlock Text="{Binding [FeatureAvSwitch_Header], Source={StaticResource Loc}}" TextWrapping="Wrap" FontSize="16" VerticalAlignment="Center" />
+                    <TextBlock Text="{Binding [FeatureAvSwitch_Header], Source={StaticResource Loc}}" TextWrapping="Wrap" FontSize="14" VerticalAlignment="Center" />
                     <ToggleSwitch x:Name="AdaptiveVolumeSwitch" Grid.Column="1" Style="{StaticResource SettingToggle}" VerticalAlignment="Center"
                                   AutomationProperties.Name="{Binding [FeatureAvSwitch_Header], Source={StaticResource Loc}}" Toggled="AdaptiveVolume_Toggled" />
                 </Grid>
-                <Border x:Name="AllowOffDivider" Style="{StaticResource InsetDivider}" />
-                <Grid x:Name="AllowOffRow" Padding="20,16" ColumnSpacing="16" MinHeight="64">
+                <Border x:Name="AdaptiveVolumeDivider" Style="{StaticResource InsetDivider}" />
+                <Grid x:Name="ConvAwarenessRow" Padding="16,15" ColumnSpacing="16" MinHeight="64">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                    <TextBlock Text="{Binding [FeatureAllowOffSwitch_Header], Source={StaticResource Loc}}" TextWrapping="Wrap" FontSize="16" VerticalAlignment="Center" />
+                    <TextBlock Text="{Binding [FeatureCaSwitch_Header], Source={StaticResource Loc}}" TextWrapping="Wrap" FontSize="14" VerticalAlignment="Center" />
+                    <ToggleSwitch x:Name="ConvAwarenessSwitch" Grid.Column="1" Style="{StaticResource SettingToggle}" VerticalAlignment="Center"
+                                  AutomationProperties.Name="{Binding [FeatureCaSwitch_Header], Source={StaticResource Loc}}" Toggled="ConvAwareness_Toggled" />
+                </Grid>
+                <Border x:Name="AllowOffDivider" Style="{StaticResource InsetDivider}" />
+                <Grid x:Name="AllowOffRow" Padding="16,15" ColumnSpacing="16" MinHeight="64">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <TextBlock Text="{Binding [FeatureAllowOffSwitch_Header], Source={StaticResource Loc}}" TextWrapping="Wrap" FontSize="14" VerticalAlignment="Center" />
                     <ToggleSwitch x:Name="AllowOffSwitch" Grid.Column="1" Style="{StaticResource SettingToggle}" VerticalAlignment="Center"
                                   AutomationProperties.Name="{Binding [FeatureAllowOffSwitch_Header], Source={StaticResource Loc}}" Toggled="AllowOff_Toggled" />
                 </Grid>
@@ -61,7 +61,7 @@
                     </Grid>
                     <Grid ColumnSpacing="16" MinHeight="48">
                         <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                        <TextBlock Text="{Binding [ConversationPolicy_Pause], Source={StaticResource Loc}}" FontSize="16" TextWrapping="Wrap" VerticalAlignment="Center" />
+                        <TextBlock Text="{Binding [ConversationPolicy_Pause], Source={StaticResource Loc}}" FontSize="14" TextWrapping="Wrap" VerticalAlignment="Center" />
                         <ToggleSwitch x:Name="ConversationPause" Grid.Column="1" Style="{StaticResource SettingToggle}" VerticalAlignment="Center"
                                       AutomationProperties.Name="{Binding [ConversationPolicy_Pause], Source={StaticResource Loc}}" Toggled="ConversationPause_Toggled" />
                     </Grid>

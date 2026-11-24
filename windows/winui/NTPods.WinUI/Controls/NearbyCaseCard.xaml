@@ -14,19 +14,19 @@
                 <StackPanel Spacing="4">
                     <TextBlock Text="{Binding [NearbyCase_Protocol], Source={StaticResource Loc}}"
                                FontSize="13" TextWrapping="Wrap" Foreground="{ThemeResource AppleSecondaryBrush}" />
-                    <TextBlock x:Name="ProtocolValue" FontSize="16" TextWrapping="Wrap" />
+                    <TextBlock x:Name="ProtocolValue" FontSize="14" TextWrapping="Wrap" />
                 </StackPanel>
                 <Border Style="{StaticResource InsetDivider}" Margin="0" />
                 <StackPanel Spacing="4">
                     <TextBlock Text="{Binding [NearbyCase_Firmware], Source={StaticResource Loc}}"
                                FontSize="13" TextWrapping="Wrap" Foreground="{ThemeResource AppleSecondaryBrush}" />
-                    <TextBlock x:Name="FirmwareValue" FontSize="16" TextWrapping="Wrap" />
+                    <TextBlock x:Name="FirmwareValue" FontSize="14" TextWrapping="Wrap" />
                 </StackPanel>
                 <Border Style="{StaticResource InsetDivider}" Margin="0" />
                 <StackPanel Spacing="4">
                     <TextBlock Text="{Binding [NearbyCase_Capabilities], Source={StaticResource Loc}}"
                                FontSize="13" TextWrapping="Wrap" Foreground="{ThemeResource AppleSecondaryBrush}" />
-                    <TextBlock x:Name="CapabilitiesValue" FontSize="16" TextWrapping="Wrap" />
+                    <TextBlock x:Name="CapabilitiesValue" FontSize="14" TextWrapping="Wrap" />
                 </StackPanel>
                 <TextBlock Text="{Binding [NearbyCase_NearbyOnly], Source={StaticResource Loc}}"
                            FontSize="13" TextWrapping="Wrap" Foreground="{ThemeResource AppleSecondaryBrush}" />

@@ -1,59 +1,64 @@
-<?xml version="1.0" encoding="utf-8"?>
-<UserControl x:Class="NTPods.WinUI.Controls.BatteryCard"
-    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-    <Grid ColumnSpacing="16" Margin="12,12,12,0">
-        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
-        <StackPanel x:Name="LeftCell" Grid.Column="0" Spacing="8">
-            <Grid x:Name="LeftArtwork" Height="140">
-                <Image x:Name="LeftImg" Height="126" Stretch="Uniform" Visibility="Collapsed" Margin="0,0,0,14" />
+<?xml version='1.0' encoding='utf-8'?>
+<UserControl xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Class="NTPods.WinUI.Controls.BatteryCard">
+    <Grid x:Name="BatteryLayout" MaxWidth="350" HorizontalAlignment="Stretch" ColumnSpacing="16">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+        <StackPanel x:Name="BudsGroup" Spacing="12">
+            <Grid Height="140">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Grid x:Name="LeftArtwork" Height="140">
+                    <Image x:Name="LeftImg" MaxHeight="120" Stretch="Uniform" Visibility="Collapsed" />
+                </Grid>
+                <Grid x:Name="RightArtwork" Grid.Column="1" Height="140">
+                    <Image x:Name="RightImg" MaxHeight="120" Stretch="Uniform" Visibility="Collapsed" />
+                </Grid>
             </Grid>
-            <Grid Width="34" Height="34" HorizontalAlignment="Center">
-                <ProgressRing x:Name="LeftBar" IsIndeterminate="False" IsActive="True" Minimum="0" Maximum="100" Value="0"
-                              Width="34" Height="34" Foreground="{ThemeResource AppleGreenBrush}"
-                              Background="{ThemeResource AppleDividerBrush}"
-                              AutomationProperties.Name="{Binding [BatteryLeftLabel_Text], Source={StaticResource Loc}}" />
-                <Path x:Name="LeftCharging" Width="10" Height="16" Visibility="Collapsed"
-                          Fill="{ThemeResource AppleGreenBrush}"
-                          HorizontalAlignment="Center" VerticalAlignment="Center" Stretch="Uniform" Data="M 8,0 L 0,9 L 4,9 L 2,16 L 10,7 L 6,7 Z" />
+            <Grid ColumnSpacing="16">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <StackPanel x:Name="LeftCell" Spacing="4" Grid.Column="0" HorizontalAlignment="Center">
+                    <Grid Width="34" Height="34">
+                        <ProgressRing x:Name="LeftBar" IsIndeterminate="False" IsActive="True" Minimum="0" Maximum="100" Value="0" Width="34" Height="34" Foreground="{ThemeResource AppleGreenBrush}" Background="{ThemeResource AppleDividerBrush}" AutomationProperties.Name="{Binding [BatteryLeftLabel_Text], Source={StaticResource Loc}}" />
+                        <Path x:Name="LeftCharging" Width="10" Height="16" Visibility="Collapsed" Fill="{ThemeResource AppleGreenBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" Stretch="Uniform" Data="M 8,0 L 0,9 L 4,9 L 2,16 L 10,7 L 6,7 Z" />
+                    </Grid>
+                    <StackPanel Orientation="Horizontal" Spacing="4" HorizontalAlignment="Center">
+                        <TextBlock x:Name="LeftLabel" Text="{Binding [BatteryLeftLabel_Text], Source={StaticResource Loc}}" FontSize="12" Foreground="{ThemeResource AppleSecondaryBrush}" TextWrapping="Wrap" />
+                        <TextBlock x:Name="LeftText" Text="—" FontSize="12" TextAlignment="Center" />
+                    </StackPanel>
+                </StackPanel>
+                <StackPanel x:Name="RightCell" Spacing="4" Grid.Column="1" HorizontalAlignment="Center">
+                    <Grid Width="34" Height="34">
+                        <ProgressRing x:Name="RightBar" IsIndeterminate="False" IsActive="True" Minimum="0" Maximum="100" Value="0" Width="34" Height="34" Foreground="{ThemeResource AppleGreenBrush}" Background="{ThemeResource AppleDividerBrush}" AutomationProperties.Name="{Binding [BatteryRightLabel_Text], Source={StaticResource Loc}}" />
+                        <Path x:Name="RightCharging" Width="10" Height="16" Visibility="Collapsed" Fill="{ThemeResource AppleGreenBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" Stretch="Uniform" Data="M 8,0 L 0,9 L 4,9 L 2,16 L 10,7 L 6,7 Z" />
+                    </Grid>
+                    <StackPanel Orientation="Horizontal" Spacing="4" HorizontalAlignment="Center">
+                        <TextBlock Text="{Binding [BatteryRightLabel_Text], Source={StaticResource Loc}}" FontSize="12" Foreground="{ThemeResource AppleSecondaryBrush}" TextWrapping="Wrap" />
+                        <TextBlock x:Name="RightText" Text="—" FontSize="12" TextAlignment="Center" />
+                    </StackPanel>
+                </StackPanel>
             </Grid>
-            <TextBlock x:Name="LeftText" Text="—" FontSize="17" TextAlignment="Center" />
-            <TextBlock x:Name="LeftLabel" Text="{Binding [BatteryLeftLabel_Text], Source={StaticResource Loc}}" FontSize="12"
-                       Foreground="{ThemeResource AppleSecondaryBrush}" TextAlignment="Center" TextWrapping="Wrap" />
         </StackPanel>
-        <StackPanel x:Name="RightCell" Grid.Column="1" Spacing="8">
-            <Grid x:Name="RightArtwork" Height="140">
-                <Image x:Name="RightImg" Height="126" Stretch="Uniform" Visibility="Collapsed" Margin="0,0,0,14" />
-            </Grid>
-            <Grid Width="34" Height="34" HorizontalAlignment="Center">
-                <ProgressRing x:Name="RightBar" IsIndeterminate="False" IsActive="True" Minimum="0" Maximum="100" Value="0"
-                              Width="34" Height="34" Foreground="{ThemeResource AppleGreenBrush}"
-                              Background="{ThemeResource AppleDividerBrush}"
-                              AutomationProperties.Name="{Binding [BatteryRightLabel_Text], Source={StaticResource Loc}}" />
-                <Path x:Name="RightCharging" Width="10" Height="16" Visibility="Collapsed"
-                          Fill="{ThemeResource AppleGreenBrush}"
-                          HorizontalAlignment="Center" VerticalAlignment="Center" Stretch="Uniform" Data="M 8,0 L 0,9 L 4,9 L 2,16 L 10,7 L 6,7 Z" />
-            </Grid>
-            <TextBlock x:Name="RightText" Text="—" FontSize="17" TextAlignment="Center" />
-            <TextBlock Text="{Binding [BatteryRightLabel_Text], Source={StaticResource Loc}}" FontSize="12"
-                       Foreground="{ThemeResource AppleSecondaryBrush}" TextAlignment="Center" />
-        </StackPanel>
-        <StackPanel x:Name="CaseCell" Grid.Column="2" Spacing="8">
+        <StackPanel x:Name="CaseGroup" Grid.Column="1" Spacing="12">
             <Grid x:Name="CaseArtwork" Height="140">
-                <Image x:Name="CaseImg" Height="126" Stretch="Uniform" Visibility="Collapsed" Margin="0,0,0,14" />
+                <Image x:Name="CaseImg" MaxHeight="140" Stretch="Uniform" Visibility="Collapsed" />
             </Grid>
-            <Grid Width="34" Height="34" HorizontalAlignment="Center">
-                <ProgressRing x:Name="CaseBar" IsIndeterminate="False" IsActive="True" Minimum="0" Maximum="100" Value="0"
-                              Width="34" Height="34" Foreground="{ThemeResource AppleGreenBrush}"
-                              Background="{ThemeResource AppleDividerBrush}"
-                              AutomationProperties.Name="{Binding [BatteryCaseLabel_Text], Source={StaticResource Loc}}" />
-                <Path x:Name="CaseCharging" Width="10" Height="16" Visibility="Collapsed"
-                          Fill="{ThemeResource AppleGreenBrush}"
-                          HorizontalAlignment="Center" VerticalAlignment="Center" Stretch="Uniform" Data="M 8,0 L 0,9 L 4,9 L 2,16 L 10,7 L 6,7 Z" />
-            </Grid>
-            <TextBlock x:Name="CaseText" Text="—" FontSize="17" TextAlignment="Center" />
-            <TextBlock Text="{Binding [BatteryCaseLabel_Text], Source={StaticResource Loc}}" FontSize="12"
-                       Foreground="{ThemeResource AppleSecondaryBrush}" TextAlignment="Center" />
+            <StackPanel x:Name="CaseCell" Spacing="4" Grid.Column="0" HorizontalAlignment="Center">
+                <Grid Width="34" Height="34">
+                    <ProgressRing x:Name="CaseBar" IsIndeterminate="False" IsActive="True" Minimum="0" Maximum="100" Value="0" Width="34" Height="34" Foreground="{ThemeResource AppleGreenBrush}" Background="{ThemeResource AppleDividerBrush}" AutomationProperties.Name="{Binding [BatteryCaseLabel_Text], Source={StaticResource Loc}}" />
+                    <Path x:Name="CaseCharging" Width="10" Height="16" Visibility="Collapsed" Fill="{ThemeResource AppleGreenBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" Stretch="Uniform" Data="M 8,0 L 0,9 L 4,9 L 2,16 L 10,7 L 6,7 Z" />
+                </Grid>
+                <StackPanel Orientation="Horizontal" Spacing="4" HorizontalAlignment="Center">
+                    <TextBlock Text="{Binding [BatteryCaseLabel_Text], Source={StaticResource Loc}}" FontSize="12" Foreground="{ThemeResource AppleSecondaryBrush}" TextWrapping="Wrap" />
+                    <TextBlock x:Name="CaseText" Text="—" FontSize="12" TextAlignment="Center" />
+                </StackPanel>
+            </StackPanel>
         </StackPanel>
     </Grid>
 </UserControl>

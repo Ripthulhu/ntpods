@@ -184,6 +184,10 @@ Amplification/tone ranges of 0–2 and a requirement to follow every write with
 
 ## Starting and stopping sensor streams
 
+For the shared Windows/Android motion model and AP3 RemoteHID client, use
+[sensor contract v1](SENSOR-PROTOCOL.md). The protobuf description below applies
+to SensorDataWX, not every RTBuddy client.
+
 RTBuddy uses opcode `0x17`, a length-delimited protobuf payload and nested
 service settings. The iOS / 8B41 observations include two forms:
 

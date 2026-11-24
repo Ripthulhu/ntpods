@@ -1,6 +1,7 @@
 //! Hearing profiles and saved diagnostics over USB, isolated from the native session.
+use crate::dongle_protocol::spec::{control::capability, feature};
 use crate::{
-    aap, device_models,
+    aap, accommodations_control, device_models,
     dongle_rpc::{Cached, Session},
     hardware_check, hardware_diagnostics, hearing, hearing_metadata, Ctx,
 };
@@ -74,7 +75,7 @@ pub struct Controller {
     finder_next: AtomicU64,
     finder_target: Mutex<Option<FinderTarget>>,
     finder_stop: AtomicBool,
-    notices: Mutex<[Option<Notice>; 4]>,
+    notices: Mutex<[Option<Notice>; 6]>,
 }
 
 pub fn busy(ctx: &Ctx) -> bool {
@@ -86,7 +87,11 @@ pub fn start_finder(ctx: &Ctx, device_id: &str) -> Option<u64> {
     let d = ctx.state.lock().unwrap().dongle.clone();
     let target = Target::of(&d);
     let finder = FinderTarget::of(&d);
-    if !finder.matches(&d) || finder.id() != device_id || !d.selected || d.capabilities & 16 == 0 {
+    if !finder.matches(&d)
+        || finder.id() != device_id
+        || !d.selected
+        || d.capabilities & capability::TYPED_FEATURES == 0
+    {
         return None;
     }
     let mut selected = ctx.dongle_health.finder_target.lock().unwrap();
@@ -139,6 +144,9 @@ fn result(ctx: &Ctx, command: &Command, error: Option<String>) {
         Command::SetHearingAidMode { request_id, .. } => ("set_hearing_aid_mode", *request_id),
         Command::SetMediaAssist { request_id, .. } => ("set_media_assist", *request_id),
         Command::SetHearingAid { request_id, .. } => ("set_hearing_aid", *request_id),
+        Command::SetHeadphoneAccommodations { request_id, .. } => {
+            ("set_headphone_accommodations", *request_id)
+        }
         Command::StartHardwareCheck { request_id, .. } => ("start_hardware_check", *request_id),
         Command::CancelHardwareCheck { request_id, .. } => ("cancel_hardware_check", *request_id),
         _ => return,
@@ -156,6 +164,10 @@ fn supported(command: &Command) -> bool {
         || matches!(
             command,
             Command::GetHearingAid
+                | Command::GetTransparency
+                | Command::SetTransparency { .. }
+                | Command::GetHeadphoneAccommodations { .. }
+                | Command::SetHeadphoneAccommodations { .. }
                 | Command::SetHearingAid { .. }
                 | Command::SetHearingAidMode { .. }
                 | Command::SetMediaAssist { .. }
@@ -183,6 +195,7 @@ fn is_settings(command: &Command) -> bool {
             command,
             Command::RefreshDeviceSettings
                 | Command::SetDongleAudioProfile { .. }
+                | Command::SetDongleReconnectPolicy { .. }
                 | Command::SetPlaybackMode { .. }
                 | Command::SetPlaybackBitrate { .. }
                 | Command::SetPlaybackGameMode { .. }
@@ -195,6 +208,7 @@ fn local_request(command: &Command) -> bool {
     matches!(
         command,
         Command::GetDonglePerformance
+            | Command::SetDongleReconnectPolicy { .. }
             | Command::StartNearbyFinder { .. }
             | Command::StopNearbyFinder { .. }
     )
@@ -202,12 +216,33 @@ fn local_request(command: &Command) -> bool {
 fn pending(state: &mut DongleHealthState, command: &Command, on: bool, error: Option<String>) {
     if is_settings(command) {
         state.device_settings_pending = on;
+        if matches!(command, Command::SetDongleReconnectPolicy { .. }) {
+            state.reconnect_policy_error = error.is_some();
+            return;
+        }
         if error.is_some() {
             state.device_settings_error = error;
         }
         return;
     }
     match command {
+        Command::GetTransparency | Command::SetTransparency { .. } => {
+            state.transparency_pending = on;
+            state.transparency_error = error;
+        }
+        Command::GetHeadphoneAccommodations { .. } | Command::SetHeadphoneAccommodations { .. } => {
+            let view = state
+                .headphone_accommodations
+                .get_or_insert_with(Default::default);
+            view.pending = on;
+            if error.is_some()
+                && matches!(command, Command::SetHeadphoneAccommodations { .. })
+                && view.result != Some(ntpods_ipc::AccommodationsResult::Unconfirmed)
+            {
+                view.result = Some(ntpods_ipc::AccommodationsResult::NotSent);
+            }
+            view.error = error;
+        }
         Command::GetHearingMetadata { .. } => {
             state.hearing_metadata_pending = on;
             state.hearing_metadata_error = error;
@@ -233,6 +268,8 @@ fn explicit_target(command: &Command) -> Option<&str> {
             ..
         }
         | Command::GetHearingMetadata { device_id }
+        | Command::GetHeadphoneAccommodations { device_id }
+        | Command::SetHeadphoneAccommodations { device_id, .. }
         | Command::StartHardwareCheck { device_id, .. }
         | Command::CancelHardwareCheck { device_id, .. } => Some(device_id),
         _ => None,
@@ -244,6 +281,10 @@ fn feature(command: &Command) -> usize {
         return 3;
     }
     match command {
+        Command::GetTransparency | Command::SetTransparency { .. } => 5,
+        Command::GetHeadphoneAccommodations { .. } | Command::SetHeadphoneAccommodations { .. } => {
+            4
+        }
         Command::GetHardwareDiagnostics | Command::StartHardwareCheck { .. } => 1,
         Command::GetHearingMetadata { .. } => 2,
         _ => 0,
@@ -254,6 +295,11 @@ fn is_pending(state: &DongleHealthState, command: &Command) -> bool {
         1 => state.hardware_diagnostics_pending,
         2 => state.hearing_metadata_pending,
         3 => state.device_settings_pending,
+        4 => state
+            .headphone_accommodations
+            .as_ref()
+            .is_some_and(|view| view.pending),
+        5 => state.transparency_pending,
         _ => state.hearing_aid_pending,
     }
 }
@@ -290,7 +336,7 @@ fn enqueue(ctx: &Ctx, command: &Command) -> bool {
     let error = if !supported(command) {
         Some("This command is not available through the dongle.")
     } else if !target.matches(&d) || explicit_target(command).is_some_and(|id| id != target.id()) {
-        Some("Dongle connection changed. Read the settings again.")
+        Some("Dongle connection changed. Try your change again.")
     } else {
         None
     };
@@ -433,7 +479,7 @@ fn request_gate(
     } else if timed_out {
         Err("The dongle settings request timed out; it was not retried.".into())
     } else if !target.matches(d) || !d.connected || !d.controls_ready {
-        Err("Dongle connection changed. Read the settings again.".into())
+        Err("Dongle connection changed. Try your change again.".into())
     } else if d.microphone_active {
         Err("Stop recording and wait for microphone recovery before changing device data.".into())
     } else if d.pending {
@@ -456,9 +502,11 @@ struct Check {
 #[derive(Default)]
 struct Worker {
     target: Target,
+    reconnect_policy_unsupported: bool,
     pair_token: u64,
     health: DongleHealthState,
     modes: hearing::ModeCache,
+    accommodations_edits: accommodations_control::Edits,
     mode_revisions: [Option<u32>; 3],
     mode_fences: [Option<u32>; 3],
     ears: Option<(Instant, u32)>,
@@ -468,7 +516,10 @@ struct Worker {
     setting_reports: BTreeMap<u8, u32>,
     setting_writes: crate::device_settings::PendingSettings,
     check: Option<Check>,
-    finished: [Option<Instant>; 4],
+    finished: [Option<Instant>; 6],
+    initial_reads: u8,
+    initial_attempts: [u8; 6],
+    initial_retry_at: [Option<Instant>; 6],
 }
 impl Worker {
     fn reject(&mut self, notice: Notice) {
@@ -529,6 +580,14 @@ impl Worker {
         let mode = self.modes.state();
         if self.health.hearing_aid_enabled != mode.hearing_enabled
             || self.health.hearing_aid_enrolled != mode.hearing_enrolled
+            || self.health.media_assist_enabled != mode.media_enabled
+        {
+            self.initial_reads &= !1;
+            self.initial_attempts[0] = 0;
+            self.initial_retry_at[0] = None;
+        }
+        if self.health.hearing_aid_enabled != mode.hearing_enabled
+            || self.health.hearing_aid_enrolled != mode.hearing_enrolled
         {
             self.health.hearing_aid_revision = self.health.hearing_aid_revision.wrapping_add(1);
         }
@@ -540,6 +599,41 @@ impl Worker {
         self.health.media_assist_enabled = mode.media_enabled;
         self.health.media_assist_available =
             mode.pme_voice_enabled.is_some() && mode.pme_media_enabled.is_some();
+        let report = self
+            .modes
+            .accommodations_report(
+                self.pair_token,
+                u64::from(self.mode_revisions[2].unwrap_or(0)),
+            )
+            .ok();
+        let received = self
+            .modes
+            .accommodations_received(
+                self.pair_token,
+                u64::from(self.mode_revisions[2].unwrap_or(0)),
+            )
+            .ok();
+        self.health.headphone_accommodations = Some(accommodations_control::project(
+            self.health.headphone_accommodations.take(),
+            self.pair_token,
+            received.as_ref(),
+            report.as_ref(),
+        ));
+        if mode.hearing_enabled == Some(true) || mode.assist_enabled == Some(true) {
+            self.accommodations_edits.forget_source();
+        }
+        let owner = self.accommodations_owner();
+        if let Some(view) = self.health.headphone_accommodations.as_mut() {
+            self.accommodations_edits
+                .project(Some(owner), report.as_ref(), view);
+        }
+    }
+    fn accommodations_owner(&self) -> accommodations_control::Owner {
+        accommodations_control::Owner {
+            address: self.pair_token,
+            connection: u64::from(self.target.generation),
+            pme_reception: u64::from(self.mode_revisions[2].unwrap_or(0)),
+        }
     }
     fn refresh_modes(&mut self, rpc: &mut Session) -> Result<(), String> {
         for slot in 2..=4 {
@@ -602,6 +696,11 @@ impl Worker {
     fn observe_metadata(&mut self, metadata: Option<(String, String, String)>) {
         let (model, firmware, _) = metadata.unwrap_or_default();
         if self.health.model != model || self.health.firmware != firmware {
+            self.accommodations_edits.clear();
+            self.health.transparency = None;
+            self.initial_reads = 0;
+            self.initial_attempts = [0; 6];
+            self.initial_retry_at = [None; 6];
             self.health.hearing_aid_settings = None;
             self.health.hearing_aid_editable = false;
             self.health.hearing_metadata = None;
@@ -647,18 +746,38 @@ impl Worker {
         self.sync_settings();
     }
     fn refresh_settings(&mut self, rpc: &mut Session) -> Result<(), String> {
-        let bytes = rpc.feature(&[2])?;
+        let bytes = rpc.feature(&[feature::READ_SETTINGS_SNAPSHOT])?;
         let records = crate::dongle_features::settings(&bytes)?;
         self.observe_settings(records);
         Ok(())
     }
     fn refresh_audio(&mut self, rpc: &mut Session) -> Result<(), String> {
-        self.health.audio = Some(crate::dongle_features::audio(&rpc.feature(&[9])?)?);
+        self.health.audio = Some(crate::dongle_features::audio(
+            &rpc.feature(&[feature::READ_AUDIO_PROFILE])?,
+        )?);
         Ok(())
+    }
+    fn probe_reconnect_policy(&mut self, rpc: &mut Session) {
+        if self.health.reconnect_automatically.is_some() || self.reconnect_policy_unsupported {
+            return;
+        }
+        match rpc.feature(&[feature::RECONNECT_POLICY]) {
+            Ok(bytes) => {
+                self.health.reconnect_automatically =
+                    crate::dongle_features::reconnect_policy(&bytes).ok();
+                self.reconnect_policy_unsupported = self.health.reconnect_automatically.is_none();
+            }
+            Err(error) => {
+                self.reconnect_policy_unsupported = error == crate::dongle_rpc::UNSUPPORTED_FEATURE;
+            }
+        }
     }
     fn refresh_nearby(&mut self, rpc: &mut Session) -> Result<(), String> {
         let revision = self.health.nearby_finder.revision.wrapping_add(1);
-        self.health.nearby_finder = crate::dongle_features::nearby(&rpc.feature(&[7])?, revision)?;
+        self.health.nearby_finder = crate::dongle_features::nearby(
+            &rpc.feature(&[feature::READ_NEARBY_FINDER])?,
+            revision,
+        )?;
         Ok(())
     }
     fn poll_nearby(&mut self, ctx: &Ctx, rpc: &mut Session) {
@@ -708,7 +827,7 @@ impl Worker {
                         Session::open_local(ctx.clone(), d.session, d.generation)
                     {
                         if let Ok(state) = current
-                            .feature(&[9])
+                            .feature(&[feature::READ_AUDIO_PROFILE])
                             .and_then(|bytes| crate::dongle_features::audio(&bytes))
                         {
                             if profile_matches(request, &state) {
@@ -766,7 +885,7 @@ impl Worker {
                     .as_ref()
                     .is_none_or(|audio| audio.codec != codec)
                 {
-                    return Err("The active codec changed. Read the audio settings again.".into());
+                    return Err("The active codec changed. Try your change again.".into());
                 }
                 let bitrate = if *best_effort {
                     if codec == 2 {
@@ -782,17 +901,36 @@ impl Worker {
             _ => None,
         };
         if let Some(request) = request {
+            let d = guard.ctx.state.lock().unwrap().dongle.clone();
+            if d.usb_playback || d.streaming || d.microphone_active || d.phone_connected {
+                return Err("Pause playback and stop recording or calls before changing the output profile.".into());
+            }
             return self.audio_profile(rpc, guard.ctx, &request);
         }
         match command {
+            Command::SetDongleReconnectPolicy { automatic } => {
+                let d = guard.ctx.state.lock().unwrap().dongle.clone();
+                if d.usb_playback || d.streaming || d.microphone_active || d.phone_connected {
+                    return Err("Stop playback, recording and phone audio before changing automatic connection.".into());
+                }
+                crate::dongle_features::set_reconnect_policy(
+                    &mut self.health.reconnect_automatically,
+                    *automatic,
+                    |payload| {
+                        guard.check()?;
+                        rpc.feature(payload)
+                    },
+                )?;
+            }
             Command::SetPlaybackGameMode { enabled } => {
                 self.health.audio = Some(crate::dongle_features::audio(
-                    &rpc.feature(&[4, u8::from(*enabled)])?,
+                    &rpc.feature(&[feature::SET_GAME_MODE, u8::from(*enabled)])?,
                 )?);
             }
             Command::GetDonglePerformance => {
-                self.health.performance =
-                    Some(crate::dongle_features::performance(&rpc.feature(&[5])?)?);
+                self.health.performance = Some(crate::dongle_features::performance(
+                    &rpc.feature(&[feature::READ_PERFORMANCE])?,
+                )?);
             }
             Command::StartNearbyFinder { .. } => {
                 if !guard
@@ -808,11 +946,13 @@ impl Worker {
                     return Err("The nearby-finder view has closed.".into());
                 }
                 let revision = self.health.nearby_finder.revision.wrapping_add(1);
-                self.health.nearby_finder =
-                    crate::dongle_features::nearby(&rpc.feature(&[6])?, revision)?;
+                self.health.nearby_finder = crate::dongle_features::nearby(
+                    &rpc.feature(&[feature::START_NEARBY_FINDER])?,
+                    revision,
+                )?;
             }
             Command::StopNearbyFinder { .. } => {
-                if !rpc.feature(&[8])?.is_empty() {
+                if !rpc.feature(&[feature::STOP_NEARBY_FINDER])?.is_empty() {
                     return Err("Unsupported finder response.".into());
                 }
                 self.refresh_nearby(rpc)?;
@@ -905,8 +1045,9 @@ impl Worker {
                                                 "Dongle audio ownership is unavailable.".into()
                                             );
                                         }
-                                        let audio =
-                                            crate::dongle_features::audio(&rpc.feature(&[9])?)?;
+                                        let audio = crate::dongle_features::audio(
+                                            &rpc.feature(&[feature::READ_AUDIO_PROFILE])?,
+                                        )?;
                                         Ok(rpc.current() && audio.input != 2)
                                     })
                                     .unwrap_or(false);
@@ -951,6 +1092,203 @@ impl Worker {
     fn hearing_supported(&self) -> bool {
         device_models::find(&self.health.model).is_some_and(|profile| profile.hearing_aid)
     }
+
+    fn transparency_supported(&self) -> bool {
+        device_models::find(&self.health.model).is_some_and(|profile| profile.custom_transparency)
+    }
+
+    fn next_initial_read(&self, d: &DongleState) -> Option<Command> {
+        if !self.target.matches(d)
+            || self.pair_token != d.pair_token
+            || !d.selected
+            || !d.connected
+            || !d.controls_ready
+            || d.pending
+            || d.microphone_active
+            || d.capabilities & 8 == 0
+            || self.check_active()
+            || !self.health.available
+        {
+            return None;
+        }
+        [
+            Command::GetHearingAid,
+            Command::GetHardwareDiagnostics,
+            Command::GetHearingMetadata {
+                device_id: self.target.id(),
+            },
+            Command::GetTransparency,
+        ]
+        .into_iter()
+        .find(|command| {
+            let index = feature(command);
+            (if index == 5 {
+                self.transparency_supported()
+            } else {
+                self.hearing_supported()
+            }) && self.initial_reads & (1 << index) == 0
+                && self.initial_attempts[index] < 3
+                && self.initial_retry_at[index].is_none_or(|at| Instant::now() >= at)
+        })
+    }
+
+    fn initial_read_finished(&mut self, command: &Command, succeeded: bool, now: Instant) {
+        let index = feature(command);
+        if succeeded {
+            self.initial_reads |= 1 << index;
+        } else {
+            self.initial_attempts[index] = self.initial_attempts[index].saturating_add(1);
+            self.initial_retry_at[index] =
+                Some(now + Duration::from_secs(1 << self.initial_attempts[index].min(3)));
+        }
+    }
+
+    fn initialize_read(&mut self, ctx: &Ctx, d: &DongleState) {
+        let Some(command) = self.next_initial_read(d) else {
+            return;
+        };
+        if ctx
+            .dongle_health
+            .busy
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        let guard = Guard {
+            ctx,
+            target: self.target,
+            epoch: ctx.dongle_health.epoch.load(Ordering::Acquire),
+            deadline: Instant::now() + Duration::from_secs(8),
+            local: false,
+        };
+        let result = guard
+            .check()
+            .and_then(|_| Session::open(ctx.clone(), self.target.session, self.target.generation))
+            .and_then(|mut rpc| {
+                guard.check()?;
+                // Automatic initialization only reads existing device data.
+                pending(&mut self.health, &command, true, None);
+                self.run(&mut rpc, &guard, &command)
+            });
+        self.initial_read_finished(&command, result.is_ok(), Instant::now());
+        pending(&mut self.health, &command, false, result.err());
+        ctx.dongle_health.busy.store(false, Ordering::Release);
+    }
+
+    fn accommodations(
+        &mut self,
+        rpc: &mut Session,
+        guard: &Guard<'_>,
+        command: &Command,
+    ) -> Result<(), String> {
+        guard.check()?;
+        let Command::SetHeadphoneAccommodations {
+            session,
+            revision,
+            edit_version,
+            phone,
+            media,
+            preset,
+            audiogram,
+            ..
+        } = command
+        else {
+            self.modes.accommodations_received(
+                self.pair_token,
+                u64::from(self.mode_revisions[2].unwrap_or(0)),
+            )?;
+            return Ok(());
+        };
+        if *audiogram && self.modes.state().hearing_enrolled != Some(true) {
+            return Err("A saved, enrolled hearing profile is required for Audiogram.".into());
+        }
+        let original = self.modes.accommodations_report(
+            self.pair_token,
+            u64::from(self.mode_revisions[2].unwrap_or(0)),
+        )?;
+        if *session != original.session() || *revision != original.revision() {
+            return Err("Headphone Accommodations changed. Try your change again.".into());
+        }
+        let owner = self.accommodations_owner();
+        let edit = self.accommodations_edits.prepare(
+            owner,
+            &original,
+            *edit_version,
+            *phone,
+            *media,
+            preset.map(accommodations_control::preset),
+        )?;
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let pair_token = self.pair_token;
+        let current = || {
+            Instant::now() < deadline
+                && guard.check().is_ok()
+                && pair_token != 0
+                && guard.ctx.state.lock().unwrap().dongle.pair_token == pair_token
+        };
+        let rpc = std::cell::RefCell::new(rpc);
+        let io_started = std::cell::Cell::new(false);
+        let change = accommodations_control::execute_edit(
+            &edit,
+            preset.map(accommodations_control::preset),
+            *audiogram,
+            &current,
+            |_| {
+                self.refresh_modes(&mut rpc.borrow_mut())?;
+                let report = self.modes.accommodations_report(
+                    self.pair_token,
+                    u64::from(self.mode_revisions[2].unwrap_or(0)),
+                )?;
+                if !self.accommodations_edits.current(
+                    &edit,
+                    self.accommodations_owner(),
+                    Some(&report),
+                ) {
+                    return Err("Headphone Accommodations changed before sending.".into());
+                }
+                Ok(())
+            },
+            |packet| {
+                if !current() {
+                    return Err("The dongle's paired AirPods changed before sending.".into());
+                }
+                io_started.set(true);
+                guard.send(&mut rpc.borrow_mut(), packet)
+            },
+            &mut |request| {
+                if !current() {
+                    return Err("The dongle's paired AirPods changed.".into());
+                }
+                io_started.set(true);
+                let response = guard.exchange(&mut rpc.borrow_mut(), request)?;
+                if !current() {
+                    return Err("The dongle's paired AirPods changed.".into());
+                }
+                Ok(response)
+            },
+        );
+        let rpc = rpc.into_inner();
+        let outcome = change.and_then(|change| {
+            let transparency =
+                change.verify_sent(&current, &mut |request| guard.exchange(rpc, request))?;
+            guard.check()?;
+            let result = self.accommodations_edits.complete(&edit, &change)?;
+            if let Some(transparency) = transparency {
+                self.health.transparency = Some(transparency);
+            }
+            self.health
+                .headphone_accommodations
+                .get_or_insert_with(Default::default)
+                .result = Some(result);
+            Ok(())
+        });
+        if outcome.is_err() && io_started.get() {
+            self.accommodations_edits.fail(&edit);
+        }
+        self.sync_modes();
+        outcome
+    }
     fn mode(
         &mut self,
         rpc: &mut Session,
@@ -981,7 +1319,7 @@ impl Worker {
         self.refresh_modes(rpc)?;
         if self.modes.state() != initial {
             return Err(
-                "Hearing modes changed before the request started. Read them again.".into(),
+                "Hearing modes changed before the request started. Try your change again.".into(),
             );
         }
         for packet in &plan.packets {
@@ -995,7 +1333,7 @@ impl Worker {
                 let index = usize::from(slot - 2);
                 self.mode_fences[index] = Some(
                     self.mode_revisions[index]
-                        .ok_or("Read the current hearing modes before changing them.")?,
+                        .ok_or("The current hearing modes have not loaded yet.")?,
                 );
                 self.modes.invalidate_report(slot);
                 self.sync_modes();
@@ -1014,7 +1352,7 @@ impl Worker {
                 break;
             }
             if Instant::now() >= deadline {
-                return Err("The mode request was sent, but the AirPods did not confirm it. Reconnect the dongle's AirPods and read settings again.".into());
+                return Err("The mode request was sent, but the AirPods did not confirm it. Reconnect them before trying again.".into());
             }
             thread::sleep(Duration::from_millis(100));
         }
@@ -1024,7 +1362,8 @@ impl Worker {
             self.refresh_modes(rpc)?;
             if !hearing::mode_confirmed(&plan, &self.modes) {
                 return Err(
-                    "Hearing modes changed before the request finished. Read them again.".into(),
+                    "Hearing modes changed before the request finished. Try your change again."
+                        .into(),
                 );
             }
             self.health.hearing_aid_settings = Some(settings);
@@ -1040,7 +1379,7 @@ impl Worker {
         requested: Option<ntpods_ipc::HearingAidSettings>,
     ) -> Result<(), String> {
         let (Some(expected), Some(requested)) = (expected, requested) else {
-            return Err("Read the complete hearing profile before editing it.".into());
+            return Err("The complete hearing profile has not loaded yet.".into());
         };
         if !expected.is_valid()
             || !requested.is_valid()
@@ -1048,8 +1387,7 @@ impl Worker {
             || self.health.hearing_aid_settings != Some(expected)
         {
             return Err(
-                "Hearing settings changed or are not editable. Read them again before editing."
-                    .into(),
+                "Hearing settings changed or are not editable. Try your change again.".into(),
             );
         }
         // Read before enabling: changing modes must not replace or rewrite the fitting.
@@ -1071,7 +1409,7 @@ impl Worker {
                 || self.modes.state().hearing_enabled != Some(true)
             {
                 return Err(
-                    "Hearing modes changed before the profile write. Read settings again.".into(),
+                    "Hearing modes changed before the profile write. Try your change again.".into(),
                 );
             }
             self.health.hearing_aid_editable = false;
@@ -1084,7 +1422,7 @@ impl Worker {
             self.refresh_modes(rpc)?;
             if self.modes.state() != expected_modes {
                 return Err(
-                    "The profile was written, but hearing modes changed. Read settings again."
+                    "The profile was written, but hearing modes changed. Reconnect before trying again."
                         .into(),
                 );
             }
@@ -1130,6 +1468,43 @@ impl Worker {
         if is_settings(command) {
             return self.run_feature(rpc, guard, command);
         }
+        if matches!(
+            command,
+            Command::GetHeadphoneAccommodations { .. } | Command::SetHeadphoneAccommodations { .. }
+        ) {
+            return self.accommodations(rpc, guard, command);
+        }
+        if matches!(
+            command,
+            Command::GetTransparency | Command::SetTransparency { .. }
+        ) {
+            if !self.transparency_supported() {
+                return Err("Custom Transparency is not supported by this reported model.".into());
+            }
+            let (requested, expected) = match command {
+                Command::SetTransparency { settings, expected } => {
+                    (Some(settings), expected.as_ref())
+                }
+                _ => (None, None),
+            };
+            let modes = self.modes.state();
+            if requested.is_some_and(|settings| settings.enabled)
+                && self.hearing_supported()
+                && (modes.hearing_enabled != Some(false) || modes.media_enabled != Some(false))
+            {
+                return Err("Turn off hearing assistance before enabling Custom Transparency. Reconnect if it is already off.".into());
+            }
+            self.health.transparency =
+                crate::transparency::transaction(requested, expected, |request| {
+                    guard.exchange(rpc, request)
+                })?;
+            return self
+                .health
+                .transparency
+                .as_ref()
+                .map(|_| ())
+                .ok_or("Custom Transparency is not available on these AirPods.".into());
+        }
         if !self.hearing_supported() {
             return Err(
                 "Hearing assistance and hardware checks are not supported by this reported model."
@@ -1143,6 +1518,14 @@ impl Worker {
                     hearing::read_settings(&mut |request| guard.exchange(rpc, request))?;
                 self.health.hearing_aid_settings = Some(settings);
                 self.health.hearing_aid_editable = hearing::editable_value(&value, characteristic);
+                if self.modes.state().hearing_enrolled == Some(true) {
+                    let _ = self.accommodations_edits.record_source(
+                        self.accommodations_owner(),
+                        self.pair_token,
+                        value,
+                    );
+                    self.sync_modes();
+                }
                 Ok(())
             }
             Command::SetHearingAidMode { on, .. } => {
@@ -1204,7 +1587,7 @@ impl Worker {
         let baseline = hardware_diagnostics::transaction(&self.health.model, |request| {
             guard.exchange(rpc, request)
         })?
-        .ok_or("Read the saved hardware results before starting a check.")?;
+        .ok_or("Saved hardware results have not loaded yet.")?;
         self.refresh(guard.ctx, rpc)?;
         self.safe_check(guard, confirmed)?;
         let target = guard.target.id();
@@ -1344,11 +1727,11 @@ pub fn start(ctx: Ctx) {
             if ctx.dongle_health.finder_stop.swap(false, Ordering::AcqRel)
                 && d.present
                 && !d.ambiguous
-                && d.capabilities & 16 != 0
+                && d.capabilities & capability::TYPED_FEATURES != 0
             {
                 match Session::open_local(ctx.clone(), d.session, d.generation).and_then(
                     |mut rpc| {
-                        rpc.feature(&[8])?;
+                        rpc.feature(&[feature::STOP_NEARBY_FINDER])?;
                         worker.refresh_nearby(&mut rpc)
                     },
                 ) {
@@ -1422,7 +1805,7 @@ pub fn start(ctx: Ctx) {
                     result(
                         &ctx,
                         &job.command,
-                        Some("Dongle connection changed. Read the settings again.".into()),
+                        Some("Dongle connection changed. Try your change again.".into()),
                     );
                 }
                 ctx.dongle_health.busy.store(false, Ordering::Release);
@@ -1439,6 +1822,9 @@ pub fn start(ctx: Ctx) {
                 last_local = Instant::now();
                 match Session::open(ctx.clone(), d.session, d.generation) {
                     Ok(mut rpc) => {
+                        if rpc.extended() {
+                            worker.probe_reconnect_policy(&mut rpc);
+                        }
                         if worker.refresh(&ctx, &mut rpc).is_err() {
                             worker.health.available = false;
                         }
@@ -1447,15 +1833,19 @@ pub fn start(ctx: Ctx) {
                     Err(_) => worker.health.available = false,
                 }
             }
+            if !ctx.dongle_health.busy.load(Ordering::Acquire) {
+                worker.initialize_read(&ctx, &d);
+            }
             if last_local.elapsed() >= Duration::from_secs(2)
                 && d.present
                 && !d.ambiguous
-                && d.capabilities & 16 != 0
+                && d.capabilities & capability::TYPED_FEATURES != 0
                 && !d.pending
                 && !ctx.dongle_health.busy.load(Ordering::Acquire)
             {
                 last_local = Instant::now();
                 if let Ok(mut rpc) = Session::open_local(ctx.clone(), d.session, d.generation) {
+                    worker.probe_reconnect_policy(&mut rpc);
                     let _ = worker.refresh_audio(&mut rpc);
                     worker.poll_nearby(&ctx, &mut rpc);
                 }
@@ -1495,6 +1885,327 @@ pub fn start(ctx: Ctx) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clinical_mode_changes_reload_the_saved_audiogram_after_it_was_invalidated() {
+        let mut worker = Worker::default();
+        let d = DongleState {
+            present: true,
+            selected: true,
+            connected: true,
+            controls_ready: true,
+            capabilities: 8,
+            session: 7,
+            generation: 3,
+            pair_token: 11,
+            ..Default::default()
+        };
+        worker.select(&d);
+        worker.health.available = true;
+        worker.health.model = "A3063".into();
+        let packet = |packet: Vec<u8>, revision| {
+            Some(Cached {
+                packet,
+                revision,
+                age_ms: 0,
+            })
+        };
+        worker.observe_mode(2, packet(vec![4, 0, 4, 0, 9, 0, 0x2c, 1, 2, 0, 0], 1));
+        worker.observe_mode(3, packet(vec![4, 0, 4, 0, 9, 0, 0x33, 2, 0, 0, 0], 1));
+        let mut pme = vec![0; 140];
+        pme[..12].copy_from_slice(&[4, 0, 4, 0, 0x53, 0, 0x84, 0, 2, 2, 2, 2]);
+        pme[12..].copy_from_slice(crate::accommodations::Preset::ALL[0].curves());
+        worker.observe_mode(4, packet(pme, 1));
+        worker.sync_modes();
+        let mut source = vec![0; 104];
+        source[..4].copy_from_slice(&[2, 2, 0x60, 0]);
+        source[100..104].copy_from_slice(&0.5f32.to_le_bytes());
+        worker
+            .accommodations_edits
+            .record_source(worker.accommodations_owner(), 11, source)
+            .unwrap();
+        worker.sync_modes();
+        assert!(
+            worker
+                .health
+                .headphone_accommodations
+                .as_ref()
+                .unwrap()
+                .audiogram_available
+        );
+        worker.observe_mode(2, packet(vec![4, 0, 4, 0, 9, 0, 0x2c, 1, 1, 0, 0], 2));
+        worker.sync_modes();
+        assert!(
+            !worker
+                .health
+                .headphone_accommodations
+                .as_ref()
+                .unwrap()
+                .audiogram_available
+        );
+        worker.initial_reads = u8::MAX;
+        worker.initial_attempts[0] = 3;
+        worker.initial_retry_at[0] = Some(Instant::now() + Duration::from_secs(60));
+        worker.observe_mode(2, packet(vec![4, 0, 4, 0, 9, 0, 0x2c, 1, 2, 0, 0], 3));
+        worker.sync_modes();
+        assert!(matches!(
+            worker.next_initial_read(&d),
+            Some(Command::GetHearingAid)
+        ));
+        assert_eq!(worker.initial_reads & !1, u8::MAX & !1);
+    }
+
+    #[test]
+    fn automatic_reads_retry_transient_failures_with_a_bound_and_reset_for_a_new_target() {
+        let mut worker = Worker::default();
+        let mut d = DongleState {
+            present: true,
+            selected: true,
+            connected: true,
+            controls_ready: true,
+            capabilities: 8,
+            session: 7,
+            generation: 3,
+            pair_token: 11,
+            ..Default::default()
+        };
+        worker.select(&d);
+        worker.health.available = true;
+        worker.health.model = "A3063".into();
+        let command = Command::GetHearingAid;
+        worker.initial_read_finished(&command, false, Instant::now());
+        assert!(matches!(
+            worker.next_initial_read(&d),
+            Some(Command::GetHardwareDiagnostics)
+        ));
+        assert_eq!(worker.initial_reads & 1, 0);
+        worker.initial_retry_at[0] = None;
+        assert!(matches!(
+            worker.next_initial_read(&d),
+            Some(Command::GetHearingAid)
+        ));
+        worker.initial_read_finished(&command, true, Instant::now());
+        assert_eq!(worker.initial_reads & 1, 1);
+        d.generation += 1;
+        worker.select(&d);
+        worker.health.available = true;
+        worker.health.model = "A3063".into();
+        for _ in 0..3 {
+            worker.initial_read_finished(&command, false, Instant::now());
+        }
+        worker.initial_retry_at[0] = None;
+        assert!(matches!(
+            worker.next_initial_read(&d),
+            Some(Command::GetHardwareDiagnostics)
+        ));
+        d.generation += 1;
+        worker.select(&d);
+        assert_eq!(worker.initial_attempts, [0; 6]);
+    }
+
+    #[test]
+    fn initial_reads_are_read_only_once_per_pair_and_wait_for_supported_idle_target() {
+        let mut worker = Worker::default();
+        let mut d = DongleState {
+            present: true,
+            selected: true,
+            connected: true,
+            controls_ready: true,
+            capabilities: 8,
+            session: 7,
+            generation: 3,
+            pair_token: 11,
+            ..Default::default()
+        };
+        worker.select(&d);
+        worker.health.available = true;
+        worker.health.model = "A3063".into();
+        assert!(matches!(
+            worker.next_initial_read(&d),
+            Some(Command::GetHearingAid)
+        ));
+        d.microphone_active = true;
+        assert!(worker.next_initial_read(&d).is_none());
+        d.microphone_active = false;
+        for expected in [0, 1, 2, 5] {
+            let command = worker.next_initial_read(&d).unwrap();
+            assert_eq!(feature(&command), expected);
+            assert!(matches!(
+                command,
+                Command::GetHearingAid
+                    | Command::GetHardwareDiagnostics
+                    | Command::GetHearingMetadata { .. }
+                    | Command::GetTransparency
+            ));
+            worker.initial_reads |= 1 << feature(&command);
+        }
+        assert!(worker.next_initial_read(&d).is_none());
+        d.generation += 1;
+        worker.select(&d);
+        worker.health.available = true;
+        worker.health.model = "A2084".into();
+        assert!(matches!(
+            worker.next_initial_read(&d),
+            Some(Command::GetTransparency)
+        ));
+        worker.health.model = "A3063".into();
+        assert!(matches!(
+            worker.next_initial_read(&d),
+            Some(Command::GetHearingAid)
+        ));
+        d.selected = false;
+        assert!(worker.next_initial_read(&d).is_none());
+    }
+
+    #[test]
+    fn accommodations_dongle_zero_requires_clinical_off_and_rejects_stale_slots() {
+        let mut worker = Worker {
+            target: Target {
+                session: 17,
+                generation: 3,
+            },
+            pair_token: 29,
+            ..Default::default()
+        };
+        let mut pme = vec![0; 140];
+        pme[..12].copy_from_slice(&[4, 0, 4, 0, 0x53, 0, 0x84, 0, 2, 0, 2, 1]);
+        pme[12..].copy_from_slice(crate::accommodations::Preset::ALL[8].curves());
+        let packet = |packet: Vec<u8>, revision| {
+            Some(Cached {
+                packet,
+                revision,
+                age_ms: 0,
+            })
+        };
+        worker.observe_mode(4, packet(pme.clone(), 5));
+        worker.sync_modes();
+        let view = worker.health.headphone_accommodations.as_ref().unwrap();
+        assert_eq!(
+            (view.session, view.revision, view.phone, view.media),
+            (29, 5, Some(false), Some(true))
+        );
+        assert!(view.preset.is_some());
+        assert_eq!(
+            view.result,
+            Some(ntpods_ipc::AccommodationsResult::Reported)
+        );
+        assert!(!view.editable && !view.pending && view.error.is_none());
+        assert!(worker.modes.accommodations_report(29, 5).is_err());
+        worker.observe_mode(2, packet(vec![4, 0, 4, 0, 9, 0, 0x2c, 1, 2, 0, 0], 1));
+        worker.observe_mode(3, packet(vec![4, 0, 4, 0, 9, 0, 0x33, 2, 0, 0, 0], 1));
+        worker.sync_modes();
+        assert!(
+            worker
+                .health
+                .headphone_accommodations
+                .as_ref()
+                .unwrap()
+                .editable
+        );
+        assert_eq!(
+            worker.modes.accommodations_report(29, 5).unwrap().packet()[9],
+            0
+        );
+        worker.mode_fences[2] = Some(5);
+        worker.modes.invalidate_report(4);
+        worker.observe_mode(4, packet(pme.clone(), 5));
+        worker.sync_modes();
+        assert!(worker
+            .health
+            .headphone_accommodations
+            .as_ref()
+            .unwrap()
+            .phone
+            .is_none());
+        worker.observe_mode(4, packet(pme.clone(), 6));
+        worker.sync_modes();
+        assert_eq!(
+            worker
+                .health
+                .headphone_accommodations
+                .as_ref()
+                .unwrap()
+                .revision,
+            6
+        );
+        worker.observe_mode(4, packet(pme, 0));
+        worker.sync_modes();
+        assert!(worker
+            .health
+            .headphone_accommodations
+            .as_ref()
+            .unwrap()
+            .phone
+            .is_none());
+        worker.select(&DongleState {
+            present: true,
+            session: 18,
+            generation: 3,
+            ..Default::default()
+        });
+        assert!(worker.health.headphone_accommodations.is_none());
+    }
+
+    #[test]
+    fn accommodations_cache_requires_fresh_slot_revision_and_resets_with_usb_target() {
+        let mut worker = Worker {
+            target: Target {
+                session: 17,
+                generation: 3,
+            },
+            pair_token: 29,
+            ..Default::default()
+        };
+        let mut pme = vec![0; 140];
+        pme[..12].copy_from_slice(&[4, 0, 4, 0, 0x53, 0, 0x84, 0, 2, 2, 1, 2]);
+        pme[12..].copy_from_slice(crate::accommodations::Preset::ALL[0].curves());
+        let packet = |packet: Vec<u8>, revision| {
+            Some(Cached {
+                packet,
+                revision,
+                age_ms: 0,
+            })
+        };
+        worker.observe_mode(2, packet(vec![4, 0, 4, 0, 9, 0, 0x2c, 2, 0, 0, 0], 1));
+        worker.observe_mode(3, packet(vec![4, 0, 4, 0, 9, 0, 0x33, 2, 0, 0, 0], 1));
+        worker.observe_mode(4, packet(pme.clone(), 5));
+        worker.sync_modes();
+        let view = worker.health.headphone_accommodations.as_ref().unwrap();
+        assert_eq!(
+            (view.session, view.revision, view.phone, view.media),
+            (29, 5, Some(true), Some(false))
+        );
+        assert!(view.editable);
+        worker.mode_fences[2] = Some(5);
+        worker.modes.invalidate_report(4);
+        worker.observe_mode(4, packet(pme.clone(), 5));
+        worker.sync_modes();
+        assert!(worker
+            .health
+            .headphone_accommodations
+            .as_ref()
+            .unwrap()
+            .phone
+            .is_none());
+        worker.observe_mode(4, packet(pme, 6));
+        worker.sync_modes();
+        assert_eq!(
+            worker
+                .health
+                .headphone_accommodations
+                .as_ref()
+                .unwrap()
+                .revision,
+            6
+        );
+        worker.select(&DongleState {
+            present: true,
+            session: 17,
+            generation: 4,
+            ..Default::default()
+        });
+        assert!(worker.health.headphone_accommodations.is_none());
+    }
     #[test]
     fn terminal_hardware_checks_do_not_block_ear_polling_or_lose_their_status() {
         let ear = ntpods_ipc::HardwareDiagnosticEar {
@@ -1603,6 +2314,27 @@ mod tests {
         assert!(!worker.health.device_controls_pending.contains_key(&0x23));
         worker.observe_settings(BTreeMap::new());
         assert!(worker.health.device_controls.is_empty());
+    }
+    #[test]
+    fn mixed_raw_settings_reach_health_without_enabling_unsupported_legacy_writes() {
+        let mut worker = Worker::default();
+        worker.observe_metadata(Some(("A3063".into(), "9A348".into(), "serial".into())));
+        let mut snapshot = vec![1, 3];
+        for (id, value) in [(0x24, 0x00022301u32), (0x16, 0x01050501), (0x28, 1)] {
+            snapshot.push(id);
+            snapshot.extend(0u32.to_le_bytes());
+            snapshot.extend(1u32.to_le_bytes());
+            snapshot.extend(value.to_le_bytes());
+        }
+        worker.observe_settings(crate::dongle_features::settings(&snapshot).unwrap());
+        assert_eq!(worker.health.device_controls.len(), 3);
+        assert_eq!(worker.health.device_controls[&0x24], 0x00022301);
+        assert_eq!(worker.health.device_controls[&0x16], 0x01050501);
+        assert_eq!(worker.health.device_controls[&0x28], 1);
+        assert!(!device_models::control(&worker.settings, 0x24, 0x0200));
+        assert!(!device_models::control(&worker.settings, 0x24, 0x0300));
+        assert!(device_models::control(&worker.settings, 0x16, 0x0105));
+        assert!(device_models::control(&worker.settings, 0x28, 2));
     }
     #[test]
     fn finder_survives_aacp_reconnect_but_never_pair_or_usb_replacement() {

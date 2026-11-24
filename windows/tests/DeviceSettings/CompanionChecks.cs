@@ -19,6 +19,23 @@ internal static class CompanionChecks
         check(controls.Visible && controls.CanSwitch && !controls.IsSwitching,
             "A linked current phone can return audio even while PC audio is disconnected and held away.");
 
+        var dongle = new Snapshot { DeviceId = Second, Dongle = new DongleState {
+            Present = true, Selected = true, Session = 1, PairedDeviceId = First } };
+        controls.Update(dongle);
+        check(controls.CanSwitch && controls.Begin("android", 90)?.DeviceId == First,
+            "A companion transfer targets the selected dongle pair without a native PC bond.");
+        controls.SendFailed();
+        dongle.Dongle.Ambiguous = true;
+        controls.Update(dongle);
+        check(!controls.Visible && controls.Begin("pc", 91) is null,
+            "Ambiguous USB selection cannot fall back to another native pair.");
+        dongle.Dongle.Ambiguous = false;
+        dongle.Dongle.PairedDeviceId = Second;
+        controls.Update(dongle);
+        check(!controls.Visible, "Replacing the dongle pair cannot reuse the older companion status.");
+        controls.Update(snapshot);
+        controls.Apply(Status());
+
         foreach (string invalid in new[] { "", "000000000000", "00:11:22:33:44:55", "00112233445g" })
         {
             controls.Update(new Snapshot { DeviceId = invalid });

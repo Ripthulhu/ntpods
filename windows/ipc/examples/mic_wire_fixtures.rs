@@ -18,6 +18,7 @@ fn companion_statuses() -> [CompanionStatus; 2] {
             held_away: true,
             phase: "released".into(),
             error: Some("Transfer \"stopped\".\nTry again.".into()),
+            pairing: None,
         },
         CompanionStatus {
             phase: "idle".into(),
@@ -29,8 +30,8 @@ fn companion_statuses() -> [CompanionStatus; 2] {
 fn check_companion_fixtures(lines: &[&str]) {
     assert_eq!(
         lines.len(),
-        7,
-        "two companion events and five commands expected"
+        9,
+        "two companion events and seven commands expected"
     );
     for (line, expected) in lines[..2].iter().zip(companion_statuses()) {
         let Some(Event::CompanionStatus { status }) = from_line::<Event>(line) else {
@@ -63,7 +64,7 @@ fn check_companion_fixtures(lines: &[&str]) {
         );
     }
     assert!(matches!(from_line::<Command>(lines[2]),
-        Some(Command::CompanionLink { peer_address, secret_hex, device_id })
+        Some(Command::CompanionLink { peer_address, secret_hex, device_id, request_id: 0 })
         if peer_address == "AA:BB:CC:DD:EE:FF" && secret_hex == COMPANION_SECRET && device_id == "001122334455"));
     assert!(matches!(
         from_line::<Command>(lines[3]),
@@ -79,7 +80,20 @@ fn check_companion_fixtures(lines: &[&str]) {
     }
     assert!(matches!(
         from_line::<Command>(lines[6]),
-        Some(Command::CompanionForget)
+        Some(Command::CompanionForget { request_id: 0 })
+    ));
+    assert!(matches!(from_line::<Command>(lines[7]),
+        Some(Command::CompanionLink { peer_address, secret_hex, device_id, request_id: u64::MAX })
+        if peer_address == "AA:BB:CC:DD:EE:FF" && secret_hex == COMPANION_SECRET && device_id == "001122334455"));
+    assert!(matches!(
+        from_line::<Command>(lines[8]),
+        Some(Command::CompanionForget {
+            request_id: u64::MAX
+        })
+    ));
+    assert!(matches!(
+        from_line::<Command>(r#"{"cmd":"companion_forget"}"#),
+        Some(Command::CompanionForget { request_id: 0 })
     ));
     for malformed in [
         r#"{"cmd":"companion_link","peer_address":"AA:BB:CC:DD:EE:FF","device_id":"001122334455"}"#,
@@ -87,6 +101,8 @@ fn check_companion_fixtures(lines: &[&str]) {
         r#"{"cmd":"companion_switch","target":"windows","device_id":"001122334455","request_id":1}"#,
         r#"{"cmd":"companion_switch","target":"pc","device_id":"001122334455","request_id":-1}"#,
         r#"{"cmd":"companion_switch","target":"pc","device_id":"001122334455","request_id":"18446744073709551615"}"#,
+        r#"{"cmd":"companion_forget","request_id":-1}"#,
+        r#"{"cmd":"companion_forget","request_id":"1"}"#,
     ] {
         assert!(from_line::<Command>(malformed).is_none(), "{malformed}");
     }
@@ -95,8 +111,11 @@ fn check_companion_fixtures(lines: &[&str]) {
 fn transparency(enabled: bool) -> TransparencySettings {
     TransparencySettings {
         enabled,
+        left_eq: [0., 1., 2., 3., 4., 5., 6., 7.],
+        right_eq: [7., 6., 5., 4., 3., 2., 1., 0.],
+        own_voice: 0.5,
         left_amplification: -1.0,
-        right_amplification: 1.0,
+        right_amplification: 2.0,
         left_tone: -0.25,
         right_tone: 0.5,
         left_conversation_boost: true,
@@ -433,7 +452,7 @@ fn main() {
     }
     for (key, bad) in [
         ("left_amplification", -1.01),
-        ("right_amplification", 1.01),
+        ("right_amplification", 2.01),
         ("left_tone", -1.01),
         ("right_tone", 1.01),
         ("left_ambient_noise_reduction", -0.01),
@@ -625,7 +644,7 @@ fn main() {
             let text = std::fs::read_to_string(&args[2]).unwrap();
             let all_lines: Vec<_> = text.lines().collect();
             assert!(all_lines.len() >= 7);
-            let (lines, companion) = all_lines.split_at(all_lines.len() - 7);
+            let (lines, companion) = all_lines.split_at(all_lines.len() - 9);
             check_companion_fixtures(companion);
             assert_eq!(
                 lines.len(),

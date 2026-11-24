@@ -10,7 +10,7 @@ use crate::{
 };
 use ntpods_ipc::HearingAidSettings;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard, TryLockError};
 use std::{
     thread,
     time::{Duration, Instant},
@@ -20,6 +20,7 @@ use windows::Win32::Foundation::ERROR_DEVICE_NOT_CONNECTED;
 // One ATT transaction at a time. The saved value identifies the enabled session.
 pub(super) static HEARING_STATE: Mutex<Option<(u64, u64)>> = Mutex::new(None);
 static HEARING_SESSION: AtomicU64 = AtomicU64::new(0);
+static PME_RECEPTION: AtomicU64 = AtomicU64::new(0);
 // Coalesce rapid settings edits before they reach the shared ATT channel.
 static HEARING_GEN: AtomicU64 = AtomicU64::new(0);
 static LOUD_SOUND_GEN: AtomicU64 = AtomicU64::new(0);
@@ -78,6 +79,20 @@ fn flag(value: u8) -> Option<bool> {
 }
 
 impl ModeCache {
+    pub(super) fn accommodations_received(&self, session: u64, revision: u64) -> Result<crate::accommodations::ReceivedRecord, String> {
+        let packet = self.pme.as_ref().ok_or("Headphone Accommodations has not loaded yet.")?;
+        crate::accommodations::ReceivedRecord::parse(packet, session, revision)
+            .map_err(|_| "A complete current Headphone Accommodations report is not available.".into())
+    }
+
+    pub(super) fn accommodations_report(&self, session: u64, revision: u64) -> Result<crate::accommodations::Report, String> {
+        let packet = self.pme.as_ref().ok_or("Headphone Accommodations has not loaded yet.")?;
+        let state = self.state();
+        crate::accommodations::Report::parse(packet, session, revision,
+            state.hearing_enabled, state.assist_enabled)
+            .map_err(|_| "Headphone Accommodations needs a complete legacy configuration and confirmed Hearing Aid and Media Assist off.".into())
+    }
+
     /// Preserve validated templates for an Off recovery, but require a new report.
     pub(super) fn invalidate_report(&mut self, slot: u8) {
         let changed = match slot {
@@ -172,6 +187,30 @@ pub fn cached_pme_packet() -> Option<Vec<u8>> {
         .map(|packet| packet.to_vec())
 }
 
+pub(super) fn accommodations_report() -> Result<crate::accommodations::Report, String> {
+    let modes = MODES.lock().unwrap_or_else(|error| error.into_inner());
+    if modes.session != session() { return Err("AirPods connection changed.".into()); }
+    modes.accommodations_report(modes.session, modes.revision)
+}
+
+pub(super) fn accommodations_received() -> Result<crate::accommodations::ReceivedRecord, String> {
+    let modes = MODES.lock().unwrap_or_else(|error| error.into_inner());
+    if modes.session != session() { return Err("AirPods connection changed.".into()); }
+    modes.accommodations_received(modes.session, modes.revision)
+}
+
+pub(super) fn pme_reception() -> u64 { PME_RECEPTION.load(Ordering::SeqCst) }
+
+pub(super) fn reserve_accommodations(expected: &crate::accommodations::Report, invalidate: bool) -> Result<(), String> {
+    let mut modes = MODES.lock().unwrap_or_else(|error| error.into_inner());
+    if modes.session != session() || modes.accommodations_report(modes.session, modes.revision)? != *expected {
+        return Err("Headphone Accommodations changed. Try your change again.".into());
+    }
+    // A sent packet is not device readback; keep the recovery template separate.
+    if invalidate { modes.invalidate_report(4); }
+    Ok(())
+}
+
 pub fn has_stored_profile() -> bool {
     has_current_read() && mode_state().hearing_enrolled == Some(true)
 }
@@ -220,6 +259,7 @@ pub fn next_gen() -> u64 {
 
 /// Session teardown cannot wait for an ATT worker to release its transaction lock.
 pub fn invalidate_session() {
+    PME_RECEPTION.fetch_add(1, Ordering::SeqCst);
     publish_report(0);
     let session = HEARING_SESSION
         .fetch_add(1, Ordering::SeqCst)
@@ -330,6 +370,7 @@ pub fn observe_packet(packet: &[u8]) -> bool {
         if matches!(packet, [4, 0, 4, 0, 0x53, 0, 2, 0, 1, 1 | 2]) {
             return false;
         }
+        PME_RECEPTION.fetch_add(1, Ordering::SeqCst);
         let mut modes = MODES.lock().unwrap_or_else(|error| error.into_inner());
         modes.session = session();
         modes.pme = pme_report(packet);
@@ -441,6 +482,10 @@ fn loud_sound_transaction(
     loud_sound_value(&exchange(&read)?)
 }
 
+pub(super) fn read_loud_sound(exchange: &mut dyn FnMut(&[u8]) -> Result<Vec<u8>, String>) -> Result<bool, String> {
+    loud_sound_transaction(None, exchange)
+}
+
 fn att_queue_drained(received: std::io::Result<usize>) -> Result<bool, String> {
     match received {
         Ok(length) => Ok(length == 0),
@@ -521,7 +566,35 @@ pub(super) fn att_transaction<T>(
     current: impl Fn() -> bool,
     operation: impl FnOnce(&mut dyn FnMut(&[u8]) -> Result<Vec<u8>, String>) -> Result<T, String>,
 ) -> Result<Option<T>, String> {
-    let mut transaction = HEARING_STATE.lock().unwrap_or_else(|p| p.into_inner());
+    let transaction = HEARING_STATE.lock().unwrap_or_else(|p| p.into_inner());
+    att_transaction_locked(drv, current, operation, transaction)
+}
+
+fn with_idle_att<T>(run: impl FnOnce(MutexGuard<'_, Option<(u64, u64)>>) -> T) -> Option<T> {
+    let transaction = match HEARING_STATE.try_lock() {
+        Ok(transaction) => transaction,
+        Err(TryLockError::Poisoned(error)) => error.into_inner(),
+        Err(TryLockError::WouldBlock) => return None,
+    };
+    Some(run(transaction))
+}
+
+/// Background reads must not queue while holding foreground settings and mic locks.
+pub(super) fn try_att_transaction<T>(
+    drv: &Driver,
+    current: impl Fn() -> bool,
+    operation: impl FnOnce(&mut dyn FnMut(&[u8]) -> Result<Vec<u8>, String>) -> Result<T, String>,
+) -> Result<Option<T>, String> {
+    with_idle_att(|transaction| att_transaction_locked(drv, current, operation, transaction))
+        .unwrap_or(Ok(None))
+}
+
+fn att_transaction_locked<T>(
+    drv: &Driver,
+    current: impl Fn() -> bool,
+    operation: impl FnOnce(&mut dyn FnMut(&[u8]) -> Result<Vec<u8>, String>) -> Result<T, String>,
+    mut transaction: MutexGuard<'_, Option<(u64, u64)>>,
+) -> Result<Option<T>, String> {
     if !current() {
         return Ok(None);
     }
@@ -733,6 +806,15 @@ pub(super) fn read_settings(
     Ok((characteristic, value, settings))
 }
 
+pub(super) fn legacy_audiogram_curves(value: &[u8]) -> Result<[u8; 128], String> {
+    if value.len() != 104 || !matches!(value[..4], [2, 2, 0x60 | 0x64, 0]) {
+        return Err("A saved, enrolled hearing profile is required for Audiogram.".into());
+    }
+    let settings = parse_settings(value)?;
+    crate::accommodations::audiogram_curves(&settings.left_eq, &settings.right_eq)
+        .map_err(|_| "The saved audiogram contains unsupported values.".into())
+}
+
 pub(super) fn editable_value(value: &[u8], characteristic: Characteristic) -> bool {
     characteristic.write_opcode.is_some()
         && value.len() == 104
@@ -775,34 +857,52 @@ pub fn can_edit_current_read() -> bool {
     has_current_read() && HEARING_EDIT_SESSION.load(Ordering::SeqCst) == self::session()
 }
 
-/// A read must not enable hearing assistance or write its notification subscriptions.
-pub fn read(drv: &Driver, gen: u64) -> Result<Option<HearingAidSettings>, String> {
+pub(super) fn att_available() -> bool {
+    require_clean_att_session(session()).is_ok()
+}
+
+pub(super) struct ProfileRead {
+    pub value: Vec<u8>,
+    pub settings: HearingAidSettings,
+}
+
+pub(super) fn read_profile_value(
+    current: impl Fn() -> bool,
+    exchange: &mut impl FnMut(&[u8]) -> Result<Vec<u8>, String>,
+) -> Result<ProfileRead, String> {
     let session = self::session();
-    let current = || is_current(gen) && self::session() == session;
-    if current() {
-        HEARING_READ_SESSION.store(u64::MAX, Ordering::SeqCst);
-        HEARING_EDIT_SESSION.store(u64::MAX, Ordering::SeqCst);
+    if !current() {
+        return Err("AirPods connection changed.".into());
     }
+    // Invalidate only after acquiring the ATT transaction. A queued or cancelled
+    // reader must not erase an earlier complete profile while waiting for its turn.
+    HEARING_READ_SESSION.store(u64::MAX, Ordering::SeqCst);
+    HEARING_EDIT_SESSION.store(u64::MAX, Ordering::SeqCst);
+    let result = read_settings(exchange);
+    if current() && self::session() == session {
+        HEARING_EDIT_SESSION.store(
+            match &result {
+                Ok((characteristic, value, _)) if editable_value(value, *characteristic) => session,
+                _ => u64::MAX,
+            },
+            Ordering::SeqCst,
+        );
+        HEARING_READ_SESSION.store(if result.is_ok() { session } else { u64::MAX }, Ordering::SeqCst);
+    }
+    result.map(|(_, value, settings)| ProfileRead { value, settings })
+}
+
+/// Read the profile and its authorization together, without enabling assistance.
+pub(super) fn read_profile(drv: &Driver, current: impl Fn() -> bool) -> Result<Option<ProfileRead>, String> {
+    let session = self::session();
+    let current = || current() && self::session() == session;
     att_transaction(drv, &current, |exchange| {
-        let result = read_settings(&mut |request| exchange(request));
-        // Publish while holding the ATT lock so an older read cannot overwrite a newer one.
-        if current() {
-            HEARING_EDIT_SESSION.store(
-                match &result {
-                    Ok((characteristic, value, _)) if editable_value(value, *characteristic) => {
-                        session
-                    }
-                    _ => u64::MAX,
-                },
-                Ordering::SeqCst,
-            );
-            HEARING_READ_SESSION.store(
-                if result.is_ok() { session } else { u64::MAX },
-                Ordering::SeqCst,
-            );
-        }
-        result.map(|(_, _, settings)| settings)
+        read_profile_value(&current, &mut |request| exchange(request))
     })
+}
+
+pub fn read(drv: &Driver, gen: u64) -> Result<Option<HearingAidSettings>, String> {
+    read_profile(drv, || is_current(gen)).map(|value| value.map(|value| value.settings))
 }
 
 pub(super) fn prepare_settings(
@@ -815,7 +915,7 @@ pub(super) fn prepare_settings(
     }
     if actual != *expected {
         return Err(
-            "Hearing settings changed on the AirPods. Read them again before editing.".into(),
+            "Hearing settings changed on the AirPods. Try your change again.".into(),
         );
     }
     Ok((characteristic, value))
@@ -896,7 +996,7 @@ fn confirm_settings(
         }
         wait(Duration::from_millis(75));
     }
-    Err("AirPods did not apply the hearing settings. Read them again before editing.".into())
+    Err("AirPods did not apply the hearing settings. Reconnect before trying again.".into())
 }
 
 fn update_settings(
@@ -918,7 +1018,7 @@ fn update_settings(
         let (enabled_value, _) = read_value(&mut exchange, characteristic.handle)?;
         if enabled_value != preserved {
             return Err(
-                "AirPods changed the hearing settings while enabling assistance. Read them again before editing.".into(),
+                "AirPods changed the hearing settings while enabling assistance. Reconnect before trying again.".into(),
             );
         }
     }
@@ -1019,7 +1119,7 @@ pub(super) fn mode_plan(cache: &ModeCache, mode: Mode, on: bool) -> Result<ModeP
             let mut packet = cache
                 .hearing
                 .or(cache.hearing_template)
-                .ok_or("Read the current Hearing Aid state first.")?;
+                .ok_or("The current Hearing Aid state has not loaded yet.")?;
             packet[8] = if on { 1 } else { 2 };
             packets.push(packet.to_vec());
             if on {
@@ -1093,7 +1193,7 @@ fn reserve_mode_change(
 ) -> Result<bool, String> {
     if current.session != original.session || current.revision != original.revision {
         return Err(
-            "Hearing modes changed before the request started. Read their state again.".into(),
+            "Hearing modes changed before the request started. Try your change again.".into(),
         );
     }
     let mut hearing_changed = false;
@@ -1138,7 +1238,7 @@ pub(super) fn verify_profile(
 ) -> Result<(HearingAidSettings, bool), String> {
     let (characteristic, confirmed, settings) = stored_profile_read(|request| exchange(request))?;
     if confirmed != original {
-        return Err("The stored hearing profile changed. Read it again before continuing.".into());
+        return Err("The stored hearing profile changed. Reconnect before trying again.".into());
     }
     Ok((settings, editable_value(&confirmed, characteristic)))
 }
@@ -1157,7 +1257,7 @@ pub fn verify_mode(
             return Err(format!("The mode change was incomplete ({error}). The AirPods state was refreshed; check the switches before trying again."));
         }
         if modes.session != session || !mode_confirmed(&verification.plan, &modes) {
-            return Err("The AirPods reported different hearing modes. Read their state again.".into());
+            return Err("The AirPods reported different hearing modes. Try your change again.".into());
         }
         Ok(())
     };
@@ -1196,7 +1296,7 @@ pub fn set_mode(
         return Ok(None);
     }
     if !authorized.is_current() {
-        return Err("Hearing modes changed. Read their current state and try again.".into());
+        return Err("Hearing modes changed. Try your change again.".into());
     }
     let cache = MODES
         .lock()
@@ -1252,13 +1352,13 @@ pub fn set_mode(
             })?;
             if confirmed != original {
                 return Err(
-                    "The stored hearing profile changed. Read it again before continuing.".into(),
+                    "The stored hearing profile changed. Reconnect before trying again.".into(),
                 );
             }
             let modes = MODES.lock().unwrap_or_else(|error| error.into_inner());
             if modes.session != session || !mode_confirmed(&plan, &modes) {
                 return Err(
-                    "Hearing modes changed before the request finished. Read their state again."
+                    "Hearing modes changed before the request finished. Try your change again."
                         .into(),
                 );
             }
@@ -1314,17 +1414,17 @@ pub fn apply(
 
     if !authorized.is_current() || authorized.report & 3 == 0 {
         return Err(
-            "Hearing assistance changed before the request started. Read the settings again."
+            "Hearing assistance changed before the request started. Try your change again."
                 .into(),
         );
     }
     let (Some(expected), Some(requested)) = (expected, requested) else {
         return Err(
-            "Read the existing audiograms before enabling or editing hearing assistance.".into(),
+            "The hearing profile has not loaded yet.".into(),
         );
     };
     if HEARING_READ_SESSION.load(Ordering::SeqCst) != session {
-        return Err("Read the existing audiograms again after reconnecting.".into());
+        return Err("The hearing profile has not loaded on this connection yet.".into());
     }
     if !can_edit_current_read() {
         return Err("These hearing settings can be read but not edited yet.".into());
@@ -1438,6 +1538,16 @@ pub fn apply(
 mod tests {
     use super::*;
 
+    #[test]
+    fn background_att_read_does_not_queue_behind_an_active_transaction() {
+        let mut transaction = HEARING_STATE.lock().unwrap();
+        let saved = *transaction;
+        *transaction = Some((7, 9));
+        assert!(with_idle_att(|_| panic!("Busy ATT admitted a background read")).is_none());
+        assert_eq!(*transaction, Some((7, 9)));
+        *transaction = saved;
+    }
+
     fn mode_fixture(hearing: bool, voice: bool, media: bool) -> ModeCache {
         let mut pme = [0u8; 140];
         pme[..12].copy_from_slice(&[
@@ -1467,6 +1577,62 @@ mod tests {
             pme: Some(pme),
             pme_template: Some(pme),
         }
+    }
+
+    #[test]
+    fn accommodations_native_cache_projects_current_received_values_without_using_templates() {
+        let mut cache = mode_fixture(false, true, false);
+        cache.pme.as_mut().unwrap()[12..].copy_from_slice(crate::accommodations::Preset::ALL[0].curves());
+        cache.pme_template = cache.pme;
+        for enrollment in 0..=2 {
+            cache.pme.as_mut().unwrap()[9] = enrollment;
+            for hearing in [None, Some(HA_OFF_2C), Some(HA_ON_2C)] {
+                for assist in [None, Some(false), Some(true)] {
+                    cache.hearing = hearing;
+                    cache.assist = assist;
+                    let received = cache.accommodations_received(3, 7).unwrap();
+                    let writable = cache.accommodations_report(3, 7).ok();
+                    let view = crate::accommodations_control::project(None, 3, Some(&received), writable.as_ref());
+                    assert_eq!((view.revision, view.phone, view.media), (7, Some(true), Some(false)));
+                    assert!(view.preset.is_some());
+                    assert_eq!(view.result, Some(ntpods_ipc::AccommodationsResult::Reported));
+                    assert_eq!(view.editable, matches!(enrollment, 0 | 2) && hearing == Some(HA_OFF_2C) && assist == Some(false));
+                }
+            }
+        }
+        assert!(cache.accommodations_received(0, 7).is_err());
+        assert!(cache.accommodations_received(3, 0).is_err());
+        cache.invalidate_report(4);
+        assert!(cache.pme_template.is_some());
+        assert!(cache.accommodations_received(3, 8).is_err());
+        assert!(cache.accommodations_report(3, 8).is_err());
+    }
+
+    #[test]
+    fn legacy_accommodations_requires_current_pme_and_both_clinical_modes_known_off() {
+        let mut cache = mode_fixture(false, true, true);
+        cache.assist = Some(false);
+        cache.pme.as_mut().unwrap()[9] = 2;
+        cache.pme_template = cache.pme;
+        assert!(cache.accommodations_report(3, 7).is_ok());
+        cache.pme.as_mut().unwrap()[9] = 0;
+        assert_eq!(cache.accommodations_report(3, 7).unwrap().packet()[9], 0);
+        assert!(cache.accommodations_report(0, 7).is_err());
+        assert!(cache.accommodations_report(3, 0).is_err());
+        for slot in 0..5 {
+            let mut unavailable = cache.clone();
+            match slot {
+                0 => unavailable.hearing = None,
+                1 => unavailable.hearing = Some(HA_ON_2C),
+                2 => unavailable.assist = None,
+                3 => unavailable.assist = Some(true),
+                _ => unavailable.pme.as_mut().unwrap()[9] = 1,
+            }
+            assert!(unavailable.accommodations_report(3, 7).is_err());
+        }
+        cache.invalidate_report(4);
+        assert!(cache.pme_template.is_some());
+        assert!(cache.accommodations_report(3, 8).is_err());
     }
 
     #[test]
@@ -1996,6 +2162,51 @@ mod tests {
         .unwrap();
         assert_eq!(result, (value, settings));
         assert_eq!(requests, [vec![0x0a, 0x35, 0]]);
+    }
+
+    #[test]
+    fn first_profile_read_publishes_authorization_and_cancelled_queued_read_keeps_it() {
+        let _lock = HEARING_STATE.lock().unwrap();
+        let (value, settings) = fixture();
+        HEARING_READ_SESSION.store(u64::MAX, Ordering::SeqCst);
+        HEARING_EDIT_SESSION.store(u64::MAX, Ordering::SeqCst);
+        let mut script = discovery(0x16, 0x35);
+        script.push((vec![0x0a, 0x35, 0], [vec![0x0b], value.clone()].concat()));
+        let mut script = std::collections::VecDeque::from(script);
+        let profile = read_profile_value(|| true, &mut |request| {
+            assert!(matches!(request[0], 0x06 | 0x08 | 0x0a));
+            let (expected, response) = script.pop_front().unwrap();
+            assert_eq!(request, expected);
+            Ok(response)
+        }).unwrap();
+        assert!(script.is_empty());
+        assert_eq!(profile.value, value);
+        assert_eq!(profile.settings, settings);
+        assert!(has_current_read() && can_edit_current_read());
+        assert!(read_profile_value(|| false, &mut |_| panic!("cancelled reader sent ATT")).is_err());
+        assert!(has_current_read() && can_edit_current_read());
+        assert!(read_profile_value(|| true, &mut |_| Err("failed discovery".into())).is_err());
+        assert!(!has_current_read() && !can_edit_current_read());
+    }
+
+    #[test]
+    fn first_profile_read_cancelled_or_reconnected_after_reply_never_authorizes_a_stale_profile() {
+        let _lock = HEARING_STATE.lock().unwrap();
+        let (value, _) = fixture();
+        for reconnect in [false, true] {
+            let current = std::cell::Cell::new(true);
+            let mut script = std::collections::VecDeque::from(discovery(0x16, 0x35));
+            script.push_back((vec![0x0a, 0x35, 0], [vec![0x0b], value.clone()].concat()));
+            read_profile_value(|| current.get(), &mut |request| {
+                let (expected, response) = script.pop_front().unwrap();
+                assert_eq!(request, expected);
+                if script.is_empty() {
+                    if reconnect { invalidate_session(); } else { current.set(false); }
+                }
+                Ok(response)
+            }).unwrap();
+            assert!(!has_current_read() && !can_edit_current_read());
+        }
     }
 
     #[test]

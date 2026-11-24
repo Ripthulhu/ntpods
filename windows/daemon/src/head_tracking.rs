@@ -3,8 +3,10 @@
 //! Values are signed sensor units, not calibrated angles or spatial-audio poses.
 
 use crate::rtbuddy::{
-    fields, sensor_fields, unique, Frames, MotionService, PendingMotion, Value, PREFIX,
+    Frames, MotionService, PREFIX, PendingMotion, Value, fields, sensor_fields, unique,
 };
+#[path = "motion_report.rs"]
+pub mod motion_report;
 const PERIOD_MS: u64 = 40;
 const TIMEOUT_MS: u64 = 5_000;
 
@@ -44,15 +46,41 @@ fn feature_command(sequence: u16, service: u8, report: u8, value: u32) -> Vec<u8
 }
 
 pub fn control(
+    sequence: impl FnMut() -> u16,
+    service: u8,
+    on: bool,
+    native: bool,
+    refresh: &PendingMotion,
+    send: impl FnMut(&[u8]) -> bool,
+) -> bool {
+    control_transport(sequence, service, on, native, false, refresh, send)
+}
+
+pub fn control_transport(
     mut sequence: impl FnMut() -> u16,
     service: u8,
     on: bool,
     native: bool,
+    remote_hid: bool,
     refresh: &PendingMotion,
     mut send: impl FnMut(&[u8]) -> bool,
 ) -> bool {
     // A descriptor can change while the previous write is in flight.
     let mut send_current = |packet: &[u8]| !refresh.is_pending() && send(packet);
+    if remote_hid {
+        return if service == 0 && on {
+            send_current(&crate::rtbuddy::remote_hid::connect(sequence()))
+        } else if service != 0 && native {
+            send_current(&crate::rtbuddy::remote_hid::feature(
+                sequence(),
+                service,
+                1,
+                if on { 40_000 } else { 0 },
+            ))
+        } else {
+            false
+        };
+    }
     if !native {
         return send_current(&command(sequence(), service, on));
     }
@@ -72,7 +100,7 @@ pub fn control(
     fifo && interval
 }
 
-fn parse(payload: &[u8], expected_service: u8, native: bool) -> Option<Sample> {
+fn record(payload: &[u8], expected_service: u8, native: bool) -> Option<&[u8]> {
     let top = sensor_fields(payload)?;
     let log = match unique(&top, 2)? {
         Value::Number(log @ (1 | 3 | 5)) => log,
@@ -107,6 +135,11 @@ fn parse(payload: &[u8], expected_service: u8, native: bool) -> Option<Sample> {
     if !matches!(record.len(), 56 | 58) || (record.len() == 56 && (!native || record[0] != 1)) {
         return None;
     }
+    Some(record)
+}
+
+fn parse(payload: &[u8], expected_service: u8, native: bool) -> Option<Sample> {
+    let record = record(payload, expected_service, native)?;
     // LibrePods' raw channel offsets are relative to the report, never the service prefix.
     Some(Sample {
         horizontal: i16::from_le_bytes([record[28], record[29]]),
@@ -117,16 +150,59 @@ fn parse(payload: &[u8], expected_service: u8, native: bool) -> Option<Sample> {
 #[derive(Default)]
 struct Decoder {
     frames: Frames,
+    last_report: Option<motion_report::Report>,
 }
 
 impl Decoder {
-    fn feed(&mut self, chunk: &[u8], service: u8, native: bool) -> Option<Sample> {
+    fn feed(
+        &mut self,
+        chunk: &[u8],
+        service: u8,
+        native: bool,
+        remote_hid: bool,
+    ) -> Option<Sample> {
         let mut latest = None;
-        self.frames.feed(chunk, |payload| {
-            if let Some(sample) = parse(payload, service, native) {
-                latest = Some(sample);
-            }
-        });
+        let mut report = None;
+        if remote_hid {
+            self.frames
+                .feed_prefix(chunk, &crate::rtbuddy::remote_hid::PREFIX, |body| {
+                    let Some(packets) = crate::rtbuddy::remote_hid::packets(body) else {
+                        return;
+                    };
+                    for p in packets {
+                        if p.kind != 2
+                            || p.device != service
+                            || p.response
+                            || p.status
+                            || p.payload.len() != 58
+                        {
+                            continue;
+                        }
+                        if let Some(mut full) = motion_report::Report::parse(p.payload) {
+                            if full.timestamp_ns.is_none() {
+                                full.timestamp_ns =
+                                    p.timestamp.filter(|t| *t > 0 && *t <= i64::MAX as u64);
+                            }
+                            latest = Some(Sample {
+                                horizontal: full.gyro_raw[1],
+                                vertical: full.gyro_raw[2],
+                            });
+                            report = Some(full);
+                        }
+                    }
+                });
+        } else {
+            self.frames.feed(chunk, |payload| {
+                if let Some(sample) = parse(payload, service, native) {
+                    latest = Some(sample);
+                    report =
+                        record(payload, service, native).and_then(motion_report::Report::parse);
+                }
+            });
+        }
+        if latest.is_some() {
+            self.last_report = report;
+        }
         latest
     }
 }
@@ -140,6 +216,9 @@ pub struct Tracker {
     revision: u64,
     active_service: Option<u8>,
     active_native: bool,
+    active_remote: bool,
+    remote_model: bool,
+    remote_requested: bool,
     discovered: Option<MotionService>,
     awaiting_descriptor: bool,
     stop_pending: bool,
@@ -149,23 +228,34 @@ pub struct Tracker {
     last_sample: Option<u64>,
     last_published: Option<u64>,
     decoder: Decoder,
+    pub latest_report: Option<motion_report::Report>,
 }
 
 impl Tracker {
+    pub fn set_remote_model(&mut self, allowed: bool) {
+        self.remote_model = allowed;
+    }
     /// Keep the user's stream ownership across a sensor-service handoff.
     pub fn refresh_services(&mut self, motion: Option<MotionService>) {
         let had_mapping = self.discovered.is_some() || self.awaiting_descriptor;
         self.discovered = motion;
+        self.remote_requested = false;
+        self.latest_report = None;
         self.awaiting_descriptor = had_mapping && motion.is_none();
         self.decoder.frames.reset();
         self.last_sample = None;
         self.last_published = None;
         self.wait_started = None;
         self.stream_error = None;
-        if self.awaiting_descriptor || motion.is_some_and(|s| self.active_service != Some(s.id)) {
+        if self.awaiting_descriptor
+            || motion.is_some_and(|s| {
+                self.active_service != Some(s.id) || self.active_remote != s.remote_hid
+            })
+        {
             // The old address may now belong to another sensor.
             self.active_service = None;
             self.active_native = false;
+            self.active_remote = false;
             self.stop_pending = false;
             self.stop_attempts = 0;
             self.stop_retry_at = 0;
@@ -186,6 +276,8 @@ impl Tracker {
         self.revision = self.revision.wrapping_add(1);
         self.enabled = enabled;
         self.stream_error = None;
+        self.remote_requested = false;
+        self.latest_report = None;
         if !self.stop_pending {
             self.state = if enabled { "starting" } else { "idle" };
             self.error = None;
@@ -207,13 +299,13 @@ impl Tracker {
         true
     }
 
-    fn stop(&mut self, now: u64, send: &mut impl FnMut(u8, bool, bool) -> bool) -> bool {
+    fn stop(&mut self, now: u64, send: &mut impl FnMut(u8, bool, bool, bool) -> bool) -> bool {
         if let Some(service) = self.active_service {
             if self.stop_attempts >= 2 || now < self.stop_retry_at {
                 return false;
             }
             self.stop_attempts += 1;
-            if !send(service, false, self.active_native) {
+            if !send(service, false, self.active_native, self.active_remote) {
                 self.stop_pending = true;
                 self.stop_retry_at = now.saturating_add(500);
                 self.state = "error";
@@ -227,8 +319,10 @@ impl Tracker {
         }
         self.stop_pending = false;
         self.stop_attempts = 0;
+        self.remote_requested = false;
         self.decoder.frames.reset();
         self.last_sample = None;
+        self.latest_report = None;
         self.last_published = None;
         self.wait_started = None;
         true
@@ -240,6 +334,18 @@ impl Tracker {
         worn: bool,
         firmware: &str,
         mut send: impl FnMut(u8, bool, bool) -> bool,
+    ) {
+        self.update_with_transport(now, worn, firmware, |service, on, native, remote| {
+            !remote && send(service, on, native)
+        });
+    }
+
+    pub fn update_with_transport(
+        &mut self,
+        now: u64,
+        worn: bool,
+        firmware: &str,
+        mut send: impl FnMut(u8, bool, bool, bool) -> bool,
     ) {
         if self.stop_pending && !self.stop(now, &mut send) {
             return;
@@ -268,12 +374,28 @@ impl Tracker {
             }
             return;
         }
-        if self.active_service.is_none() && !self.awaiting_descriptor {
+        if self.active_service.is_none() && (!self.awaiting_descriptor || self.remote_model) {
             self.state = "starting";
+            if self.remote_model && self.discovered.is_none() {
+                if !self.remote_requested {
+                    self.remote_requested = true;
+                    if !send(0, true, false, true) {
+                        self.state = "error";
+                        self.error = Some("Could not discover head tracking sensors. Try again.");
+                    }
+                }
+                return;
+            }
             if let Some(service) = self.discovered.map(|s| s.id).or_else(|| service(firmware)) {
+                if self.discovered.is_some_and(|s| s.remote_hid) && !self.remote_model {
+                    self.state = "error";
+                    self.error = Some("RemoteHID requires a verified AirPods 3 model.");
+                    return;
+                }
                 self.active_service = Some(service);
                 self.active_native = self.discovered.is_some();
-                if !send(service, true, self.active_native) {
+                self.active_remote = self.discovered.is_some_and(|s| s.remote_hid);
+                if !send(service, true, self.active_native, self.active_remote) {
                     self.stream_error = Some("Could not start head tracking. Try again.");
                     self.stop(now, &mut send);
                     self.state = "error";
@@ -289,9 +411,13 @@ impl Tracker {
         if !self.enabled || self.error.is_some() || self.stop_pending {
             return None;
         }
-        let sample = self
-            .decoder
-            .feed(data, self.active_service?, self.active_native)?;
+        let sample = self.decoder.feed(
+            data,
+            self.active_service?,
+            self.active_native,
+            self.active_remote,
+        )?;
+        self.latest_report = self.decoder.last_report;
         self.last_sample = Some(now);
         self.state = "streaming";
         if self.last_published.is_some_and(|t| {
@@ -307,6 +433,9 @@ impl Tracker {
         self.request(false);
         self.active_service = None;
         self.active_native = false;
+        self.active_remote = false;
+        self.remote_model = false;
+        self.remote_requested = false;
         self.discovered = None;
         self.awaiting_descriptor = false;
         self.stop_pending = false;
@@ -318,6 +447,80 @@ impl Tracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_hid_model_gate_discovery_rearm_and_full_report() {
+        let f: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/sensor-wire-v1.json")).unwrap();
+        let hex = |s: &str| {
+            s.as_bytes()
+                .chunks_exact(2)
+                .map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(), 16).unwrap())
+                .collect::<Vec<_>>()
+        };
+        let input = hex(f["motion"]["input"].as_str().unwrap());
+        let mut tracker = Tracker::default();
+        tracker.set_remote_model(true);
+        tracker.request(true);
+        let mut calls = Vec::new();
+        tracker.update_with_transport(0, true, "6A321", |id, on, native, remote| {
+            calls.push((id, on, native, remote));
+            true
+        });
+        tracker.update_with_transport(100, true, "6A321", |_, _, _, _| {
+            panic!("discovery repeated")
+        });
+        assert_eq!(calls, [(0, true, false, true)]);
+        tracker.refresh_services(Some(MotionService {
+            id: 7,
+            remote_hid: true,
+        }));
+        tracker.update_with_transport(200, true, "6A321", |id, on, native, remote| {
+            calls.push((id, on, native, remote));
+            true
+        });
+        assert_eq!(calls.last(), Some(&(7, true, true, true)));
+        assert_eq!(
+            tracker.receive(&input, 250),
+            Some(Sample {
+                horizontal: 20,
+                vertical: -30
+            })
+        );
+        assert_eq!(tracker.latest_report.unwrap().gyro_raw, [-10, 20, -30]);
+        tracker.refresh_services(None);
+        assert!(tracker.receive(&input, 300).is_none());
+        tracker.update_with_transport(300, true, "6A321", |id, on, native, remote| {
+            calls.push((id, on, native, remote));
+            true
+        });
+        assert_eq!(calls.last(), Some(&(0, true, false, true)));
+        tracker.refresh_services(Some(MotionService {
+            id: 12,
+            remote_hid: true,
+        }));
+        tracker.update_with_transport(400, true, "6A321", |id, on, native, remote| {
+            calls.push((id, on, native, remote));
+            true
+        });
+        assert!(tracker.receive(&input, 450).is_none());
+        tracker.request(false);
+        tracker.update_with_transport(500, true, "6A321", |id, on, native, remote| {
+            calls.push((id, on, native, remote));
+            true
+        });
+        assert_eq!(calls.last(), Some(&(12, false, true, true)));
+        let mut other = Tracker::default();
+        other.request(true);
+        other.refresh_services(Some(MotionService {
+            id: 7,
+            remote_hid: true,
+        }));
+        other.update_with_transport(0, true, "9A348", |_, _, _, _| {
+            panic!("unvalidated model wrote RemoteHID")
+        });
+        assert_eq!(other.state, "error");
+    }
 
     fn frame(service: u8, horizontal: i16, vertical: i16) -> Vec<u8> {
         let mut record = [0; 58];
@@ -374,42 +577,48 @@ mod tests {
         ] {
             for split in 0..frame.len() {
                 let mut decoder = Decoder::default();
-                assert_eq!(decoder.feed(&frame[..split], 16, true), None);
-                assert_eq!(decoder.feed(&frame[split..], 16, true), expected);
+                assert_eq!(decoder.feed(&frame[..split], 16, true, false), None);
+                assert_eq!(decoder.feed(&frame[split..], 16, true, false), expected);
             }
-            assert_eq!(Decoder::default().feed(&frame, 14, true), None);
-            assert_eq!(Decoder::default().feed(&frame, 16, false), None);
+            assert_eq!(Decoder::default().feed(&frame, 14, true, false), None);
+            assert_eq!(Decoder::default().feed(&frame, 16, false, false), None);
         }
         let frame = native_frame(16, true, 5);
         let mut bad_trailer = frame.clone();
         *bad_trailer.last_mut().unwrap() = 0;
-        assert_eq!(Decoder::default().feed(&bad_trailer, 16, true), None);
+        assert_eq!(Decoder::default().feed(&bad_trailer, 16, true, false), None);
         let mut missing_trailer = frame[..frame.len() - 2].to_vec();
         missing_trailer[10] -= 2;
-        assert_eq!(Decoder::default().feed(&missing_trailer, 16, true), None);
+        assert_eq!(
+            Decoder::default().feed(&missing_trailer, 16, true, false),
+            None
+        );
         let mut wrong_report = native_frame(16, false, 1);
         wrong_report[22] = 2;
-        assert_eq!(Decoder::default().feed(&wrong_report, 16, true), None);
+        assert_eq!(
+            Decoder::default().feed(&wrong_report, 16, true, false),
+            None
+        );
     }
 
     #[test]
     fn windows_packed_motion_rejects_other_sizes_logs_and_service_prefixes() {
         for size in [55, 57, 59, 60] {
             let frame = native_frame_with_size(16, true, 1, size);
-            assert_eq!(Decoder::default().feed(&frame, 16, true), None);
+            assert_eq!(Decoder::default().feed(&frame, 16, true, false), None);
         }
         for log in [0, 2, 4, 5, 7] {
             let frame = native_frame_with_size(16, true, log, 58);
-            assert_eq!(Decoder::default().feed(&frame, 16, true), None);
+            assert_eq!(Decoder::default().feed(&frame, 16, true, false), None);
         }
         let mut frame = native_frame_with_size(16, true, 1, 58);
         frame[19] = 1; // High byte of the little-endian service ID.
-        assert_eq!(Decoder::default().feed(&frame, 16, true), None);
+        assert_eq!(Decoder::default().feed(&frame, 16, true, false), None);
         for log in [1, 3] {
             let mut frame = native_frame_with_size(16, true, log, 58);
             frame.extend_from_slice(&[0xff, 0xff]);
             frame[10] += 2;
-            assert_eq!(Decoder::default().feed(&frame, 16, true), None);
+            assert_eq!(Decoder::default().feed(&frame, 16, true, false), None);
         }
     }
 
@@ -464,7 +673,10 @@ mod tests {
         let mut tracker = Tracker::default();
         let owner = tracker.request(true);
         tracker.update(0, true, "9A348", |_, _, _| true);
-        tracker.refresh_services(Some(MotionService { id: 27 }));
+        tracker.refresh_services(Some(MotionService {
+            id: 27,
+            remote_hid: false,
+        }));
         let mut writes = Vec::new();
         tracker.update(1, true, "9A348", |s, on, native| {
             writes.push((s, on, native));
@@ -475,12 +687,18 @@ mod tests {
         assert!(tracker.receive(&native_frame(27, true, 5), 21).is_none());
         assert!(tracker.receive(&native_frame(27, true, 5), 22).is_some());
         assert!(tracker.release(owner));
-        tracker.refresh_services(Some(MotionService { id: 27 }));
+        tracker.refresh_services(Some(MotionService {
+            id: 27,
+            remote_hid: false,
+        }));
         tracker.update(23, true, "9A348", |s, on, native| {
             assert_eq!((s, on, native), (27, false, true));
             false
         });
-        tracker.refresh_services(Some(MotionService { id: 27 }));
+        tracker.refresh_services(Some(MotionService {
+            id: 27,
+            remote_hid: false,
+        }));
         tracker.update(24, true, "9A348", |_, _, _| {
             panic!("must keep bounded stop backoff")
         });
@@ -497,7 +715,10 @@ mod tests {
         for resume in [false, true] {
             let mut tracker = Tracker::default();
             let refresh = PendingMotion::default();
-            tracker.refresh_services(Some(MotionService { id: 16 }));
+            tracker.refresh_services(Some(MotionService {
+                id: 16,
+                remote_hid: false,
+            }));
             tracker.request(true);
             let mut writes = Vec::new();
             tracker.update(0, true, "9A348", |service, on, native| {
@@ -509,7 +730,10 @@ mod tests {
                     &refresh,
                     |packet| {
                         writes.push((service, on, packet.to_vec()));
-                        refresh.publish(Some(MotionService { id: 20 }));
+                        refresh.publish(Some(MotionService {
+                            id: 20,
+                            remote_hid: false,
+                        }));
                         true
                     },
                 )
@@ -544,12 +768,18 @@ mod tests {
     #[test]
     fn native_remap_retires_the_old_address_but_same_address_refresh_stops_it() {
         let mut tracker = Tracker::default();
-        tracker.refresh_services(Some(MotionService { id: 16 }));
+        tracker.refresh_services(Some(MotionService {
+            id: 16,
+            remote_hid: false,
+        }));
         tracker.request(true);
         tracker.update(0, true, "9A348", |_, _, _| true);
         assert!(tracker.receive(&native_frame(16, true, 5), 1).is_some());
 
-        tracker.refresh_services(Some(MotionService { id: 20 }));
+        tracker.refresh_services(Some(MotionService {
+            id: 20,
+            remote_hid: false,
+        }));
         let mut writes = Vec::new();
         tracker.update(2, true, "9A348", |s, on, native| {
             writes.push((s, on, native));
@@ -560,7 +790,10 @@ mod tests {
         assert!(tracker.receive(&native_frame(20, true, 5), 3).is_some());
 
         writes.clear();
-        tracker.refresh_services(Some(MotionService { id: 20 }));
+        tracker.refresh_services(Some(MotionService {
+            id: 20,
+            remote_hid: false,
+        }));
         tracker.update(4, true, "9A348", |s, on, native| {
             writes.push((s, on, native));
             true
@@ -571,7 +804,10 @@ mod tests {
     #[test]
     fn incomplete_discovery_cannot_stop_or_restart_a_stale_address() {
         let mut tracker = Tracker::default();
-        tracker.refresh_services(Some(MotionService { id: 16 }));
+        tracker.refresh_services(Some(MotionService {
+            id: 16,
+            remote_hid: false,
+        }));
         tracker.request(true);
         tracker.update(0, true, "9A348", |_, _, _| true);
         tracker.request(false);
@@ -585,7 +821,10 @@ mod tests {
         tracker.refresh_services(None);
         tracker.update(502, true, "9A348", |_, _, _| panic!("guessed start"));
         assert!(tracker.receive(&native_frame(16, true, 5), 503).is_none());
-        tracker.refresh_services(Some(MotionService { id: 27 }));
+        tracker.refresh_services(Some(MotionService {
+            id: 27,
+            remote_hid: false,
+        }));
         tracker.update(504, true, "9A348", |s, on, native| {
             assert_eq!((s, on, native), (27, true, true));
             true
@@ -634,11 +873,15 @@ mod tests {
         assert_eq!(service("6F21"), Some(14));
         assert_eq!(
             &command(1, 16, true)[10..],
-            &[15, 0, 8, 1, 0x42, 11, 8, 16, 0x10, 2, 0x1a, 5, 1, 0x40, 0x9c, 0, 0]
+            &[
+                15, 0, 8, 1, 0x42, 11, 8, 16, 0x10, 2, 0x1a, 5, 1, 0x40, 0x9c, 0, 0
+            ]
         );
         assert_eq!(
             &command(1, 14, false)[10..],
-            &[15, 0, 8, 1, 0x42, 11, 8, 14, 0x10, 2, 0x1a, 5, 1, 0, 0, 0, 0]
+            &[
+                15, 0, 8, 1, 0x42, 11, 8, 14, 0x10, 2, 0x1a, 5, 1, 0, 0, 0, 0
+            ]
         );
         assert_eq!(&command(128, 16, true)[10..15], &[16, 0, 8, 0x80, 1]);
     }
@@ -653,16 +896,16 @@ mod tests {
             };
             for split in 0..frame.len() {
                 let mut decoder = Decoder::default();
-                assert_eq!(decoder.feed(&frame[..split], service, false), None);
+                assert_eq!(decoder.feed(&frame[..split], service, false, false), None);
                 assert_eq!(
-                    decoder.feed(&frame[split..], service, false),
+                    decoder.feed(&frame[split..], service, false, false),
                     Some(expected)
                 );
             }
             let mut batch = frame;
             batch.extend_from_slice(&super::tests::frame(service, 123, -456));
             assert_eq!(
-                Decoder::default().feed(&batch, service, false),
+                Decoder::default().feed(&batch, service, false, false),
                 Some(Sample {
                     horizontal: 123,
                     vertical: -456
@@ -674,7 +917,7 @@ mod tests {
     #[test]
     fn only_live_exact_motion_records_are_accepted() {
         let good = frame(16, 123, -456);
-        assert_eq!(Decoder::default().feed(&good, 14, false), None);
+        assert_eq!(Decoder::default().feed(&good, 14, false, false), None);
         for (offset, byte) in [
             (0, 0),
             (4, 0x58),
@@ -687,7 +930,7 @@ mod tests {
             let mut bad = good.clone();
             bad[offset] = byte;
             assert_eq!(
-                Decoder::default().feed(&bad, 16, false),
+                Decoder::default().feed(&bad, 16, false, false),
                 None,
                 "offset {offset}"
             );
@@ -702,7 +945,11 @@ mod tests {
         let mut oversized = PREFIX.to_vec();
         oversized.extend_from_slice(&[0xff, 0xff]);
         oversized.extend_from_slice(&good);
-        assert!(Decoder::default().feed(&oversized, 16, false).is_some());
+        assert!(
+            Decoder::default()
+                .feed(&oversized, 16, false, false)
+                .is_some()
+        );
     }
 
     #[test]

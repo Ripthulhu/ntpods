@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "repository": "https://github.com/Ripthulhu/airpods-dongle",
+  "spec_sha256": "b2b830d8a7f9e12a5b51a16cf7a16284d249519981413d4cd95f12a564887d22",
+  "generator_sha256": "36830e87dd7995cf6b319105aa3dcaef296148eb4cf78a7a2d1d5dfeb5ebff8e",
+  "files": {
+    "windows/daemon/src/dongle_control_protocol.rs": "ca4de6c189951009b698dd4d906aca44f99d744fb5a15b938bf7020560f76aa7",
+    "windows/daemon/tests/fixtures/dongle-protocol-vectors.json": "602993d0fa87a91ea97e02f7827b009f84d2375b36c7070b072176e96088f24a",
+    "tools/check_dongle_protocol.py": "dd70e492bf2eb9530d7c932caf2a524899dc1127023698fb292710d1ce05b708"
+  }
+}

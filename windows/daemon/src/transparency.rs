@@ -48,6 +48,8 @@ fn parse(value: &[u8]) -> Result<TransparencySettings, String> {
     }
     let result = TransparencySettings {
         enabled: read_f32(value, 0) == 1.0,
+        left_eq: std::array::from_fn(|i| read_f32(value, 4 + 4 * i)),
+        right_eq: std::array::from_fn(|i| read_f32(value, 52 + 4 * i)),
         left_amplification: read_f32(value, 36),
         left_tone: read_f32(value, 40),
         left_conversation_boost: read_f32(value, 44) == 1.0,
@@ -56,6 +58,7 @@ fn parse(value: &[u8]) -> Result<TransparencySettings, String> {
         right_tone: read_f32(value, 88),
         right_conversation_boost: read_f32(value, 92) == 1.0,
         right_ambient_noise_reduction: read_f32(value, 96),
+        own_voice: read_f32(value, 100),
     };
     if result.is_valid() {
         Ok(result)
@@ -65,8 +68,8 @@ fn parse(value: &[u8]) -> Result<TransparencySettings, String> {
 }
 
 fn patch(value: &mut [u8], requested: &TransparencySettings) {
-    // Leave both eight-band EQ curves and own-voice settings byte-for-byte intact.
-    for (offset, v) in [
+    // Numeric equality preserves untouched signed-zero bytes in the fresh record.
+    let scalars = [
         (0, if requested.enabled { 1.0 } else { 0.0 }),
         (36, requested.left_amplification),
         (40, requested.left_tone),
@@ -90,7 +93,25 @@ fn patch(value: &mut [u8], requested: &TransparencySettings) {
             },
         ),
         (96, requested.right_ambient_noise_reduction),
-    ] {
+        (100, requested.own_voice),
+    ];
+    for (offset, v) in scalars
+        .into_iter()
+        .chain(
+            requested
+                .left_eq
+                .iter()
+                .enumerate()
+                .map(|(i, &v)| (4 + 4 * i, v)),
+        )
+        .chain(
+            requested
+                .right_eq
+                .iter()
+                .enumerate()
+                .map(|(i, &v)| (52 + 4 * i, v)),
+        )
+    {
         if read_f32(value, offset) != v {
             value[offset..offset + 4].copy_from_slice(&v.to_le_bytes());
         }
@@ -125,7 +146,7 @@ fn confirm(
         // A delayed write may still return the old record; never retry another change.
         if value != original || attempt == 4 {
             return Err(
-                "AirPods did not confirm Custom Transparency. Read the settings and try again."
+                "AirPods did not confirm Custom Transparency. Reconnect before trying again."
                     .into(),
             );
         }
@@ -134,7 +155,7 @@ fn confirm(
     unreachable!()
 }
 
-fn transaction(
+pub(super) fn transaction(
     requested: Option<&TransparencySettings>,
     expected: Option<&TransparencySettings>,
     mut exchange: impl FnMut(&[u8]) -> Result<Vec<u8>, String>,
@@ -143,7 +164,7 @@ fn transaction(
         return Err("Custom Transparency values are out of range.".into());
     }
     if requested.is_some() && !expected.is_some_and(TransparencySettings::is_valid) {
-        return Err("Read Custom Transparency before changing it.".into());
+        return Err("Custom Transparency has not loaded yet.".into());
     }
     let Some(Characteristic {
         handle,
@@ -163,7 +184,7 @@ fn transaction(
     let current = parse(value)?;
     if requested.is_some() && expected != Some(&current) {
         return Err(
-            "Custom Transparency changed on the AirPods. Read the settings and try again.".into(),
+            "Custom Transparency changed on the AirPods. Try your change again.".into(),
         );
     }
     let Some(requested) = requested.filter(|requested| **requested != current) else {
@@ -183,6 +204,119 @@ fn transaction(
         std::thread::sleep(std::time::Duration::from_millis(75));
     })
     .map(Some)
+}
+
+pub(super) struct StockCurvePlan {
+    original: Vec<u8>,
+    desired: Vec<u8>,
+    handle: u16,
+    write_opcode: Option<u8>,
+}
+
+impl StockCurvePlan {
+    pub(super) fn changes_required(&self) -> bool {
+        self.original != self.desired
+    }
+
+    pub(super) fn apply(
+        &self,
+        exchange: &mut dyn FnMut(&[u8]) -> Result<Vec<u8>, String>,
+    ) -> Result<(), String> {
+        let read = [0x0a, self.handle as u8, (self.handle >> 8) as u8];
+        let response = exchange(&read)?;
+        if response.strip_prefix(&[0x0b]) != Some(self.original.as_slice()) {
+            return Err(
+                "Custom Transparency changed before the preset started. Try your change again."
+                    .into(),
+            );
+        }
+        if !self.changes_required() {
+            return Ok(());
+        }
+        let opcode = self
+            .write_opcode
+            .ok_or("Custom Transparency is read-only on these AirPods.")?;
+        let mut write = vec![opcode, self.handle as u8, (self.handle >> 8) as u8];
+        write.extend_from_slice(&self.desired);
+        let response = exchange(&write)?;
+        if opcode == 0x12 && response != [0x13] {
+            return Err("AirPods did not acknowledge the Custom Transparency preset.".into());
+        }
+        confirm(
+            &mut |request| exchange(request),
+            &read,
+            &self.original,
+            &self.desired,
+            || std::thread::sleep(std::time::Duration::from_millis(75)),
+        )
+        .map(|_| ())
+    }
+
+    pub(super) fn verify(
+        &self,
+        exchange: &mut dyn FnMut(&[u8]) -> Result<Vec<u8>, String>,
+    ) -> Result<TransparencySettings, String> {
+        let (_, value, settings) = read_record(exchange)?;
+        if value != self.desired {
+            return Err("AirPods did not report the complete Custom Transparency preset. Reconnect before trying again.".into());
+        }
+        Ok(settings)
+    }
+}
+
+pub(super) fn read_record(
+    exchange: &mut dyn FnMut(&[u8]) -> Result<Vec<u8>, String>,
+) -> Result<(Characteristic, Vec<u8>, TransparencySettings), String> {
+    let characteristic = discover(&mut |request| exchange(request))?
+        .ok_or("Custom Transparency is not available on these AirPods.")?;
+    let read = [
+        0x0a,
+        characteristic.handle as u8,
+        (characteristic.handle >> 8) as u8,
+    ];
+    let response = exchange(&read)?;
+    let value = response
+        .strip_prefix(&[0x0b])
+        .ok_or("Could not read Custom Transparency.")?;
+    Ok((characteristic, value.to_vec(), parse(value)?))
+}
+
+pub(super) fn prepare_stock_curves(
+    exchange: &mut dyn FnMut(&[u8]) -> Result<Vec<u8>, String>,
+    preset: crate::accommodations::Preset,
+) -> Result<StockCurvePlan, String> {
+    prepare_curves(exchange, preset.curves(), false)
+}
+
+pub(super) fn prepare_audiogram_curves(
+    exchange: &mut dyn FnMut(&[u8]) -> Result<Vec<u8>, String>, curves: &[u8; 128],
+) -> Result<StockCurvePlan, String> {
+    prepare_curves(exchange, curves, true)
+}
+
+fn prepare_curves(exchange: &mut dyn FnMut(&[u8]) -> Result<Vec<u8>, String>, curves: &[u8; 128], clamp: bool)
+    -> Result<StockCurvePlan, String> {
+    let (characteristic, original, _) = read_record(exchange)?;
+    let mut desired = original.clone();
+    // All nine captured stock CT writes use these voice arrays; personal curves are not inferred.
+    for (target, source) in [(4, 0), (52, 64)] {
+        for index in 0..8 {
+            let value = &curves[source + index * 4..source + index * 4 + 4];
+            let value = if clamp {
+                let value = f32::from_le_bytes(value.try_into().unwrap()).clamp(0.0, 80.0);
+                (if value == 0.0 { 0.0f32 } else { value }).to_le_bytes()
+            }
+                else { value.try_into().unwrap() };
+            desired[target + index * 4..target + index * 4 + 4].copy_from_slice(&value);
+        }
+    }
+    parse(&desired)?;
+    Ok(StockCurvePlan {
+        original,
+        desired,
+        handle: characteristic.handle,
+        write_opcode: characteristic.write_opcode,
+    })
 }
 
 pub fn settings(
@@ -299,11 +433,32 @@ mod tests {
     }
 
     #[test]
+    fn complete_record_restoration_includes_curves_and_own_voice() {
+        let original = value();
+        let baseline = parse(&original).unwrap();
+        let mut changed = baseline;
+        changed.left_eq = [10.; 8];
+        changed.right_eq = [20.; 8];
+        changed.own_voice = 0.75;
+        changed.right_amplification = 0.1;
+        let mut bytes = original.clone();
+        patch(&mut bytes, &changed);
+        assert_eq!(parse(&bytes).unwrap(), changed);
+        patch(&mut bytes, &baseline);
+        assert_eq!(bytes, original);
+        for (offset, bad) in [(4, -0.1f32), (80, 100.1), (100, -0.1), (100, 1.01)] {
+            let mut bytes = original.clone();
+            bytes[offset..offset + 4].copy_from_slice(&bad.to_le_bytes());
+            assert!(parse(&bytes).is_err());
+        }
+    }
+
+    #[test]
     fn malformed_or_hearing_aid_layouts_are_not_written() {
         for size in [0, 4, 99, 100, 103, 105, 108] {
             assert!(parse(&vec![0; size]).is_err());
         }
-        for (offset, bad) in [(0, 0.5), (36, 1.01), (48, -0.1), (92, 2.0), (100, f32::NAN)] {
+        for (offset, bad) in [(0, 0.5), (36, 2.01), (48, -0.1), (92, 2.0), (100, f32::NAN)] {
             let mut bytes = value();
             bytes[offset..offset + 4].copy_from_slice(&bad.to_le_bytes());
             assert!(parse(&bytes).is_err());
@@ -319,6 +474,26 @@ mod tests {
             ))
             .is_err());
         }
+    }
+
+    #[test]
+    fn native_gain_extremes_accept_two_without_expanding_tone_or_clinical_limits() {
+        for (left, right) in [(-1.0f32, 2.0f32), (2.0, -1.0), (2.0, 2.0)] {
+            let mut bytes = value();
+            bytes[36..40].copy_from_slice(&left.to_le_bytes());
+            bytes[84..88].copy_from_slice(&right.to_le_bytes());
+            assert!(parse(&bytes).is_ok());
+        }
+        for offset in [36, 84] {
+            for bad in [-1.001f32, 2.001, f32::INFINITY, f32::NAN] {
+                let mut bytes = value();
+                bytes[offset..offset + 4].copy_from_slice(&bad.to_le_bytes());
+                assert!(parse(&bytes).is_err());
+            }
+        }
+        let mut settings = parse(&value()).unwrap();
+        settings.left_tone = 2.0;
+        assert!(!settings.is_valid());
     }
 
     #[test]

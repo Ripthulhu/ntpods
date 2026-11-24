@@ -112,13 +112,11 @@ public sealed partial class HardwareDiagnosticsCard : UserControl
         bool ready = Client?.IsReady == true;
         bool busy = _requesting.Length > 0 || _snapshot.HardwareDiagnosticsPending || _snapshot.HearingMetadataPending ||
             HardwareDiagnosticsPresentation.IsRunning(_snapshot.HardwareCheck);
-        ReadButton.IsEnabled = _requesting.Length == 0 && HardwareDiagnosticsPresentation.CanRead(_snapshot, ready);
-        MetadataReadButton.IsEnabled = ReadButton.IsEnabled;
+        bool canRead = _requesting.Length == 0 && HardwareDiagnosticsPresentation.CanRead(_snapshot, ready);
         string help = Localize.Get(busy || _snapshot.HearingAidPending || _snapshot.TransparencyPending || _snapshot.LoudSoundReductionPending ? "DeviceSetting.Pending" :
             Client?.IsReady != true || !_snapshot.Connected || _snapshot.LinkStale
-            ? "DeviceSetting.Disconnected" : !ReadButton.IsEnabled ? "HardwareChecks.PauseMic" : "HardwareChecks.Description");
-        Help(ReadButton, help);
-        Help(MetadataReadButton, ReadButton.IsEnabled ? Localize.Get("HardwareChecks.DeviceDataHelp") : help);
+            ? "DeviceSetting.Disconnected" : !canRead ? "HardwareChecks.PauseMic" : "HardwareChecks.Description");
+        Help(DiagnosticsExpander, help);
         var record = _snapshot.HardwareDiagnostics;
         Results.Visibility = record is null ? Visibility.Collapsed : Visibility.Visible;
         EmptyText.Visibility = record is null ? Visibility.Visible : Visibility.Collapsed;
@@ -180,17 +178,6 @@ public sealed partial class HardwareDiagnosticsCard : UserControl
         firstUse.Text = HardwareDiagnosticsPresentation.Date(ear.FirstUseUnixSeconds ?? 0) is { } first
             ? Localize.Get("HardwareChecks.FirstUse", first.ToLocalTime().ToString("g")) : "";
         firstUse.Visibility = firstUse.Text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
-    }
-
-    private void Read_Click(object sender, RoutedEventArgs e)
-    {
-        if (ReadButton.IsEnabled) BeginRequest("diagnostics", () => Send(new GetHardwareDiagnosticsCmd()));
-    }
-
-    private void ReadMetadata_Click(object sender, RoutedEventArgs e)
-    {
-        if (MetadataReadButton.IsEnabled) BeginRequest("metadata",
-            () => Send(new GetHearingMetadataCmd { DeviceId = _snapshot.DeviceId }));
     }
 
     private async void Run_Click(object sender, RoutedEventArgs e)

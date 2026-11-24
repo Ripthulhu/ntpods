@@ -9,7 +9,7 @@
 
     <Expander x:Name="Panel" Style="{StaticResource GroupExpander}" IsExpanded="False">
         <Expander.Header>
-            <TextBlock Text="{Binding [HeartRateTitle_Text], Source={StaticResource Loc}}" FontSize="16" />
+            <TextBlock Text="{Binding [HeartRateTitle_Text], Source={StaticResource Loc}}" FontSize="14" />
         </Expander.Header>
         <StackPanel Spacing="16">
             <Grid ColumnSpacing="24">
@@ -18,7 +18,7 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <TextBlock Text="{Binding [HeartRateSwitch_Header], Source={StaticResource Loc}}"
-                           FontSize="16" TextWrapping="Wrap" VerticalAlignment="Center" />
+                           FontSize="14" TextWrapping="Wrap" VerticalAlignment="Center" />
                 <ToggleSwitch x:Name="HeartRateSwitch" Grid.Column="1" Style="{StaticResource SettingToggle}"
                               AutomationProperties.Name="{Binding [HeartRateSwitch_Header], Source={StaticResource Loc}}"
                               Toggled="HeartRate_Toggled" />

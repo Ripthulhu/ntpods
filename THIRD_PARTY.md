@@ -21,7 +21,17 @@ is an unchanged copy of `res-apple/drawable/img_airpods_pro_2_buds_cropped.png`
 from that commit. Its layout follows `presentation/overlays/IslandContent.kt`.
 `airpods_max.png` is an unchanged copy of that revision's
 `res-apple/drawable/img_airpods_max.png`.
-Other AirPods product artwork remains from the original NTPods asset set.
+The settings hero's `settings_*` part images are unchanged copies of the matching
+`android/core/src/main/res-apple/drawable-nodpi/img_*` files in the LibrePods rewrite
+fork at `2272d3d94ee75daee38bd94ba8da569243298816`. Separate parts retain independent
+left/right availability dimming. Other AirPods artwork remains from the original
+NTPods asset set.
+
+The bundled `Assets/Fonts/RobotoFlex.ttf` is the unchanged font used by that
+rewrite, SHA-256 `2bd17942bba38048b2f86e00cdd6fb2242035c0b2c843d5979bb24f13d5512ef`.
+Copyright 2017 The RobotoFlex Project Authors (TypeNetwork/Roboto-Flex). It uses
+the SIL Open Font License 1.1; `Assets/Fonts/OFL.txt` carries that notice and the
+[upstream license](https://github.com/googlefonts/roboto-flex/blob/main/OFL.txt).
 
 The pairing card's `pairing_spin.mp4` and `pairing_spin_poster.png` are unchanged
 copies from the LibrePods rewrite fork at
@@ -38,7 +48,7 @@ the poster SHA-256 is
 Apple product artwork remains Apple's property; these files are not covered by
 a separate asset license in that source tree.
 
-The shared `GroupExpander` template adapts the WinUI `Expander` template in
+The shared `GroupExpander` and `SettingToggle` templates adapt the WinUI `Expander` template in
 `Microsoft.WinUI/Themes/generic.xaml` from the pinned
 [Microsoft.WindowsAppSDK 1.7.260224002 package](https://www.nuget.org/packages/Microsoft.WindowsAppSDK/1.7.260224002).
 Its native header and clipping behavior follow the WinUI 1.7
@@ -53,10 +63,15 @@ samples and directional rim follow AndroidLiquidGlass (Backdrop) 2.0.1,
 `ListeningModeLens.cs` adapts `backdrop/src/commonMain/kotlin/com/kyant/backdrop/internal/Shaders.kt`;
 `ListeningModeGlass.cs` implements the material with Win2D displacement maps.
 Copyright 2025 Kyant. The original code is licensed under Apache-2.0; its license
-is retained in `licenses/AndroidLiquidGlass-Apache-2.0.txt`. The port precomputes
+is retained in `licenses/AndroidLiquidGlass-Apache-2.0.txt`. The listening selector port precomputes
 the three resting widths and interpolates their fields during width transitions.
 It preserves the original negative 36-DIP refraction, 12-DIP edge depth and
-spectral weights. It does not ship the Android library.
+spectral weights.
+
+`TransparencySliderThumb.cs` reuses that lens field at 40 by 24 DIP, following the
+white resting surface and press-driven blur, lens and highlight in LibrePods
+`StyledSlider.kt`. Its backdrop is the local track and group fill. Native WinUI
+Slider retains input and automation. Neither implementation ships the Android library.
 
 Microsoft.Graphics.Win2D 1.3.2 supplies the GPU drawing layer and is pinned in
 the WinUI project and lock file. This version supports the existing Windows
@@ -136,6 +151,20 @@ The implementation uses that protocol description; it does not include
 Alternative A2DP code or binaries.
 
 ## Other dependencies and assets
+
+The dongle preview includes a separate Windows spatial renderer built with
+[AudioNimbus](https://github.com/MaxenceMaire/audionimbus) and
+[Valve Steam Audio](https://github.com/ValveSoftware/steam-audio). The build
+packages the Apache 2.0 license and the SDK's third-party notices with the
+runtime. The build verifies and includes the SADIE II ear profiles.
+[Profile credits](windows/spatial/HRTF-CREDITS.md)
+
+The sensor test fixture selects public announcement frames from
+[MousePods by Matteo Gaudioso (starman-tech)](https://github.com/starman-tech/mousepods/tree/79736c79ae5f86d62a137e5747b658431b8c3d9e).
+Its documentation/captures are [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+We selected eight frames and added marked synthetic vectors; no MousePods
+implementation code is included. Attribution and evidence limits are recorded
+in [the shared sensor contract](docs/SENSOR-PROTOCOL.md) and fixture metadata.
 
 Cargo.lock and the WinUI project pin application dependencies. Preserve their
 license notices when creating a public release. `devcon.exe` is a Microsoft tool;

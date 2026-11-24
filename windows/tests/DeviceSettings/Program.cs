@@ -10,17 +10,59 @@ static void Check(bool condition, string message)
 }
 
 UiInteractionChecks.Run(Check);
+AppleNavigationChecks.Run(Check);
 AppSettingsChecks.Run(Check);
 PairingChecks.Run(Check);
 PairingArtworkChecks.Run(Check);
 HeadTrackingChecks.Run(Check);
+SpeakerMapLabelChecks.Run(Check);
+var room = SpatialRoomLayout.Load(0x63f, "ROOM 150 0,-42,25,-4 3,0,0,-8");
+Check(room.Command() == "ROOM 150 0,-42,25,-4 3,0,0,-8" && room.Bearing(0) < -42 * Math.PI / 180,
+    "The diagram uses the saved width and the renderer's clockwise speaker angles.");
+foreach (int width in new[] { 50, 100, 150, 151, 200, 299, 300 })
+{
+    foreach (int mask in new[] { 0x3f, 0x60f, 0x63f })
+    {
+        string saved = $"ROOM {width} 0,-42,25,-4";
+        var layout = SpatialRoomLayout.Load(mask, saved);
+        Check(layout.Command() == saved, "Saved widths and speaker overrides round-trip in every channel layout.");
+        foreach (int angle in new[] { -179, -175, -90, -30, 0, 90, 150, 179 })
+        {
+            layout.Set(0, new(angle, 25, -4));
+            double bearing = layout.Bearing(0);
+            Check(layout.AzimuthAt(Math.Sin(bearing), Math.Cos(bearing)) == angle,
+                "Dragging a speaker to its displayed bearing preserves the configured angle at every width.");
+        }
+    }
+}
+var wide = SpatialRoomLayout.Load(0x63f, "ROOM 300");
+foreach (var (bit, degrees) in new[] { (0, -60), (1, 60), (2, 0), (9, -90), (10, 90), (4, -120), (5, 120) })
+    Check(Math.Abs(wide.Bearing(bit) * 180 / Math.PI - degrees) < 1e-9, "Maximum width gives every 7.1 speaker its own bearing.");
+Check(SpatialRoomLayout.Load(0x63f, "ROOM 301").Width == 100, "An out-of-range saved width falls back to the default.");
+Check(SpatialRoomLayout.Load(0x60f, "ROOM 100").Get(10).Azimuth == 110 && room.Get(10).Azimuth == 90,
+    "Side speakers retain the native 5.1 and 7.1 placements.");
+Check(SpatialRoomLayout.Load(0x63f, "ROOM 70 3,30,0,-8").Command() == "ROOM 100" &&
+    RoomFrame.Parse("ROOM_POSE none none none 1599 0") is { Yaw: null } &&
+    RoomFrame.Parse("ROOM_POSE 5 none none 1599 4") is { Yaw: 5, Active: 4 } &&
+    RoomFrame.Parse("ROOM_POSE 5 999 0 1599 4") is null,
+    "Invalid room settings and unavailable motion do not invent a speaker or head orientation.");
+Check(RoomFrame.Parse("ROOM_POSE none none none 1551 1024 -60,-60,-60,-60,-60,-9") is { } peaks &&
+    peaks.Level(10) == -9 && peaks.Level(9) == -60 &&
+    RoomFrame.Parse("ROOM_POSE 1 2 3 1599 1 0") is null &&
+    RoomFrame.Parse("ROOM_POSE 1 2 3 1599 1 0,0,0,0,0,0,0,1") is null,
+    "Speaker meters follow the input channel mask and reject partial or out-of-range reports.");
+SpatialPlaybackReturnChecks.Run(Check);
 ModelCompatibilityChecks.Run(Check);
 MicrophoneNotificationChecks.Run(Check);
 PlaybackModeChecks.Run(Check);
 CompanionChecks.Run(Check);
+CompanionSetupChecks.Run(Check);
+CompanionPairingChecks.Run(Check);
 TransparencyChecks.Run(Check);
+AccommodationsEditChecks.Run(Check);
 HearingAidChecks.Run(Check);
 DongleHealthChecks.Run(Check);
+SelectedDeviceChecks.Run(Check);
 HardwareDiagnosticsChecks.Run(Check);
 IslandTakeoverChecks.Run(Check);
 IslandBatteryChecks.Run(Check);
@@ -31,50 +73,7 @@ CaseInformationChecks.Run(Check);
 Check(AppVersion.Read(typeof(AppVersion).Assembly) == "v0.2.18",
     "About must display the release file version, not the fixed 0.2.0 assembly version.");
 
-var recommended = new Equalizer { Mode = 1, Low = 50, Mid = 50, High = 50 };
-var custom = new Equalizer { Mode = 2, Low = 20, Mid = 60, High = 100 };
-var snapshot = new Snapshot { Connected = true, Eq = recommended };
-var edit = new EqualizerEditState();
-
-edit.Edit();
-edit.Update(snapshot, available: true);
-Check(edit.Dirty, "Battery or other state updates must preserve an unsubmitted EQ edit.");
-edit.Update(new Snapshot(), available: false);
-Check(!edit.Dirty && edit.Requested is null, "Disconnect must discard a previous session's EQ draft.");
-edit.Update(snapshot, available: true);
-Check(!edit.Dirty, "Reconnect must begin with device state, not revive the discarded draft.");
-
-edit.Begin(custom);
-edit.Update(snapshot, available: true);
-Check(edit.Requested == custom && !edit.Dirty, "Old confirmed EQ must not acknowledge a different request.");
-edit.Update(new Snapshot { Connected = true, Eq = custom }, available: true);
-Check(edit.Requested is null, "A matching readback must complete a request even without a pending snapshot.");
-
-edit.Begin(custom);
-edit.Update(new Snapshot { Connected = true, Eq = recommended, EqPending = custom }, available: true);
-Check(edit.Requested is null, "Daemon pending state takes over from the local send latch.");
-
-edit.Begin(custom);
-edit.Update(new Snapshot { Connected = true, Eq = recommended, DeviceSettingsError = "Send failed." }, available: true);
-Check(edit.Requested is null, "An immediate send error must release the controls.");
-edit.Begin(custom);
-edit.Update(new Snapshot { Connected = true, Eq = recommended, DeviceSettingsError = "Send failed." }, available: true);
-Check(edit.Requested is null, "Repeating the same error must also release a retried request.");
-
-edit.Begin(custom);
-edit.Edit();
-edit.Update(new Snapshot { Connected = true, Eq = custom }, available: true);
-Check(edit.Dirty && edit.Requested is null, "An acknowledgement must preserve a newer unsent edit.");
-edit.Update(new Snapshot { Connected = true, LinkStale = true, Eq = custom }, available: false);
-Check(!edit.Dirty && edit.Requested is null, "A stale connection invalidates unsent edits as well as requests.");
-edit.Begin(custom);
-edit.Update(snapshot, available: false);
-Check(edit.Requested is null, "Losing availability while sending cancels the local request.");
-
-edit.Begin(custom);
-edit.EndRequest();
-Check(edit.Requested is null, "The UI timeout must release a request without requiring another snapshot.");
-Check(snapshot.Eq == recommended, "Ending a request must never replace confirmed device state.");
+LiveSettingsChecks.Run(Check);
 
 const byte toneVolume = 0x1F;
 var controls = new Snapshot { Connected = true, DeviceControls = new() { [toneVolume] = 0x5032 } };
@@ -92,6 +91,27 @@ Check(!DeviceSettingStatus.CanChange(controls, toneVolume), "A disconnected devi
 controls.Connected = true;
 controls.DeviceControls.Clear();
 Check(!DeviceSettingStatus.CanChange(controls, toneVolume), "An unreported setting stays disabled.");
+
+var rawControls = new Snapshot { Connected = true, Model = "A3063", Firmware = "9A348",
+    DeviceControls = new() { [0x24] = 0x00022301, [0x16] = 0x01050501, [0x23] = 3, [0x28] = 0x0101 } };
+foreach (byte id in new byte[] { 0x24, 0x23, 0x28 })
+    Check(!DeviceSettingStatus.Available(rawControls, id) && !DeviceSettingStatus.CanChange(rawControls, id) &&
+        !DeviceSettingStatus.CanChoose(rawControls, id) && !DeviceSettingStatus.CanEdit(rawControls, id) &&
+        DeviceSettingStatus.DisplayValue(rawControls, id) is null &&
+        DeviceSettingStatus.Text(rawControls, id) == Localize.Get("DeviceSetting.Unknown"),
+        $"Opaque {id:X2} reports stay read-only and cannot fall back to an unreported choice.");
+Check(rawControls.DeviceControls[0x24] == 0x00022301 && rawControls.DeviceControls[0x16] == 0x01050501,
+    "Interpreting reports must preserve every raw device value byte.");
+Check(DeviceSettingStatus.CanEdit(rawControls, 0x16) && DeviceSettingStatus.DisplayValue(rawControls, 0x16) == 0x0501,
+    "A hold report with previous actions exposes only its current actions to the editor.");
+var rawHoldEdit = new LiveSettingEdit<LiveControlValue>();
+rawHoldEdit.Update("board", true, new(0x0505), null, null);
+rawHoldEdit.Edit(new(0x0501));
+Check(rawHoldEdit.Take()?.Value == 0x0501, "Hold writes must omit previous-action bytes.");
+rawHoldEdit.Update("board", true, new(DeviceSettingStatus.CurrentValue(0x16, rawControls.DeviceControls[0x16])!.Value), null, null);
+Check(rawHoldEdit.Requested is null, "The current hold actions confirm a live edit despite previous-action bytes.");
+rawControls.DeviceControls[0x16] = 0x01050500;
+Check(!DeviceSettingStatus.CanEdit(rawControls, 0x16), "Unknown current hold actions must not enable a legacy write.");
 
 var defaultSwipe = new Snapshot { Connected = true, Model = "A3063", DeviceControls = new() { [0x23] = 0 } };
 Check(DeviceSettingStatus.Available(defaultSwipe, 0x23) && DeviceSettingStatus.CanChange(defaultSwipe, 0x23) &&
@@ -336,6 +356,43 @@ battery.Battery = new Battery();
 Check(!BatteryPresentation.HasData(battery) && BatteryPresentation.FreshnessText(battery) == "Tray_NoBatteryData",
     "Freshness metadata without a level must not manufacture a battery readout.");
 Console.WriteLine("Battery freshness and nearby presentation checks passed.");
+
+var audioConnection = new Snapshot
+{
+    Connected = true, PlaybackMode = "aac_eld", PlaybackState = "disconnected",
+    BatterySource = "aap", Battery = new Battery { Left = 97, Right = 96, Case = 61 }
+};
+Check(BatteryPresentation.StatusKey(audioConnection) == "Status_Disconnected" && audioConnection.Connected &&
+    BatteryPresentation.Reading(audioConnection, BatteryPart.Left, true) == 97 &&
+    BatteryPresentation.Reading(audioConnection, BatteryPart.Right, true) == 96 &&
+    BatteryPresentation.Reading(audioConnection, BatteryPart.Case, true) == 61,
+    "A control-only connection must retain batteries without claiming audio is connected.");
+audioConnection.BatteryLive = true;
+Check(BatteryPresentation.StatusKey(audioConnection) == "Battery.Nearby",
+    "Fresh batteries without audio must use the existing nearby status.");
+audioConnection.Battery.CaseCharging = true;
+Check(BatteryPresentation.StatusKey(audioConnection) == "Battery.NearbyCharging",
+    "Fresh charging batteries without audio must retain the nearby charging status.");
+foreach (string state in new[] { "starting", "stopping" })
+{
+    audioConnection.PlaybackState = state;
+    Check(BatteryPresentation.StatusKey(audioConnection) == "Status_Connecting",
+        "Playback transitions must show connecting instead of connected or nearby.");
+}
+audioConnection.LinkStale = true;
+Check(BatteryPresentation.StatusKey(audioConnection) == "Status_ControlUnavailable",
+    "Stale controls must retain the repair status during an audio transition.");
+audioConnection.LinkStale = false;
+audioConnection.PlaybackState = "ready";
+Check(BatteryPresentation.StatusKey(audioConnection) == "Battery.NearbyCharging",
+    "Playback state alone cannot claim that the selected audio output is ready.");
+audioConnection.AudioOutputReady = true;
+Check(BatteryPresentation.StatusKey(audioConnection) == "Status_Connected",
+    "Confirmed audio readiness must replace nearby or transitional status.");
+audioConnection.LinkStale = true;
+Check(BatteryPresentation.StatusKey(audioConnection) == "Status_ControlUnavailable",
+    "Audio readiness must not hide stale controls that need repair.");
+Console.WriteLine("Audio connection presentation checks passed.");
 
 var presence = new NTPods.WinUI.Popup.IslandPresence();
 var presenceState = new Snapshot { Connected = true, AudioOutputReady = true };

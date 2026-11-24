@@ -98,6 +98,27 @@ reset on return must also restore HFP. Manual Sound choices remain unchanged.
 This avoids the observed endpoint-unification wait without changing AVDTP
 timing or the Windows-wide timeout. See
 [startup and lifetime](WINDOWS-AVRCP-VOLUME.md#startup-and-lifetime).
+
+A generic Bluetooth reconnection claims the control session only. It must not
+acquire playback from a proximity advertisement. Automatic case return instead
+requires this PC's verified native playback followed by qualified case closure.
+Previously, restarting the daemon discarded that pending return: AACP could
+connect while the audio claim, signaling listener and HFP priming remained
+absent. An explicit Connect restored playback; repeated control connections
+alone did not.
+
+A pending case return can survive a daemon restart for at most five minutes
+in the same Windows boot. The saved intent is consumed on startup and must
+be qualified by fresh selected-pair case evidence before acquiring audio. Old
+connection generations are never restored. Device changes, explicit disconnect,
+ownership loss, expiry and reboot revoke it. Repeated restarts cannot extend
+the original deadline. Unobserved phone use while NTPods is stopped cannot yet
+be detected from that local intent; decoded ownership reports remain necessary.
+The Pro 3 / 9A348 preview passed one app restart with the case closed: the
+listener reported automatic, prompt, clean playback without pressing Connect.
+This was an app-only change with the existing drivers; it does not establish
+recovery across a Windows reboot or every ownership transition.
+
 AVDTP setup waits for a healthy AACP handshake. If the initial signaling channel
 is rejected with Windows error 71 after its bounded retries, NTPods permits one
 full control-session repair per explicit Connect intent. The receiver drains
@@ -212,6 +233,14 @@ it does not assign meanings to all their reserved bits.
 | RTP clock | 48 kHz sample counter; advances 480 per AU |
 | AU geometry | 480 samples = 10 ms; one AU per packet by default, two with the diagnostic override |
 | Bounds | One or two AUs; each nonempty and at most 321 bytes; complete packet must fit media MTU |
+
+The encoder enables FDK's afterburner quality refinement. Fixed 256 kbps uses
+an explicit 20 kHz bandwidth because FDK's automatic low-delay table selects
+16 kHz at that rate. Lower fixed-rate and VBR bandwidth policies are unchanged.
+These are local encoder settings: the ASC, negotiated bitrate, packet bounds
+and timing remain unchanged. The decoded spectral and level-step checks in the
+[encoder tests](../windows/playback/encoder/test.py) validate the software path;
+they do not measure AirPods acoustic output or establish macOS-equivalent fidelity.
 
 The optional variable profile uses FDK quality mode 5 with a 256 kbps peak limit.
 It retains the same ASC, packet framing and 321-byte AU limit. Mode 5 has a

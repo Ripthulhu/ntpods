@@ -113,6 +113,9 @@ internal static class ModelCompatibilityChecks
         check(DeviceModels.HeadTracking(new Snapshot { Model = "A2083", Firmware = "6F21" }) &&
             !DeviceModels.HeadTracking(new Snapshot { Model = "A3157", Firmware = "9A348" }),
             "Valid firmware enables only models with the supported head-tracking protocol.");
+        check(DeviceModels.HeadTracking(new Snapshot { Model = "A2564", Firmware = "6296592" }) &&
+            DeviceModels.HeadTracking(new Snapshot { Model = "A2565" }),
+            "AirPods 3 discover the exact RemoteHID layout without interpreting internal firmware as a public major.");
 
         var max2 = new Snapshot { Model = "A3454", Firmware = "9A348", Connected = true };
         check(!DeviceModels.CanChangeLoudSoundReduction(max2), "Loud Sound Reduction needs an actual readback before its first write.");
@@ -172,7 +175,7 @@ internal static class ModelCompatibilityChecks
 
         var eq = new EqualizerEditState();
         eq.Update(new Snapshot { DeviceId = "first" }, true);
-        eq.Edit();
+        eq.Edit(new Equalizer { Mode = 2, Low = 20, Mid = 50, High = 80 });
         eq.Update(new Snapshot { DeviceId = "second" }, true);
         check(!eq.Dirty && eq.Requested is null, "An EQ draft must not transfer to another AirPods pair.");
         var policy = new MicPolicyState();

@@ -17,6 +17,7 @@ public sealed partial class SettingsPage : UserControl
         {
             if (_client is not null) _client.ConnectionChanged -= OnBackendConnectionChanged;
             _client = value;
+            PhoneConnection.Client = value;
             if (_client is not null) _client.ConnectionChanged += OnBackendConnectionChanged;
             _nearbyHasSnapshot = false;
             ClearNearbyRequest();
@@ -29,6 +30,13 @@ public sealed partial class SettingsPage : UserControl
 
     /// Notifies the host to refresh the device page's experimental controls.
     public event Action? ExperimentalVisibilityChanged;
+
+    public Task ShowPhoneConnectionAsync() => PhoneConnection.ShowSetupAsync();
+    public Task RefreshPhoneConnectionAsync() => PhoneConnection.RefreshPhonesAsync();
+    public void DismissPhoneConnection() => PhoneConnection.Dismiss();
+    public void SetCompanionSession(ulong epoch, bool ready) => PhoneConnection.SetSession(epoch, ready);
+    public void UpdateCompanionStatus(CompanionStatus status) => PhoneConnection.Apply(status);
+    public void CompleteCompanion(DaemonEvent.CommandResult result, ulong epoch) => PhoneConnection.Complete(result, epoch);
 
     private bool _applyingLang;
     private bool _applyingPreferences = true;
@@ -256,6 +264,7 @@ public sealed partial class SettingsPage : UserControl
     /// Refresh nearby-battery preferences and the hidden device metadata.
     public void UpdateDeviceInfo(Snapshot s)
     {
+        PhoneConnection.Update(s);
         _nearbyReported = s.BleScanWhileConnected;
         _nearbyHasSnapshot = Client?.IsReady == true;
         if (!_nearbyHasSnapshot || _nearbyRequested == _nearbyReported) ClearNearbyRequest();

@@ -16,7 +16,6 @@ use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSessionPlaybackStatus as PlaybackStatus,
     MediaPropertiesChangedEventArgs, PlaybackInfoChangedEventArgs,
 };
-use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 
 pub struct AutoPausePolicy {
     enabled: bool,
@@ -47,9 +46,7 @@ impl AutoPausePolicy {
 /// Initialize COM (MTA) for the calling thread — required before any SMTC call.
 /// Call once, from the thread that will drive the media calls.
 pub fn init() {
-    unsafe {
-        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-    }
+    crate::volume::init();
 }
 
 fn current_session() -> windows::core::Result<Session> {
@@ -65,6 +62,115 @@ pub fn is_playing() -> bool {
         Ok(status == PlaybackStatus::Playing)
     })()
     .unwrap_or(false)
+}
+
+/// An active application sound is not itself permission to take another host's AirPods.
+pub(crate) fn companion_player(address: Option<u64>) -> Result<Option<String>, ()> {
+    let evidence = companion_evidence(address);
+    if evidence.qualified {
+        evidence.intent
+    } else {
+        Err(())
+    }
+}
+
+/// During an owned USB personality transition, recheck the already qualified player's Play state.
+pub(crate) fn companion_player_state() -> Result<Option<String>, ()> {
+    observed_companion_player(&companion_players()?, || {
+        crate::plexamp::companion_player(false)
+    })
+    .map(|player| player.map(|(intent, _)| intent))
+}
+
+pub(crate) struct CompanionEvidence {
+    pub intent: Result<Option<String>, ()>,
+    pub qualified: bool,
+}
+
+/// None targets the selected PC dongle; Some targets that exact native AirPods pair.
+pub(crate) fn companion_evidence(address: Option<u64>) -> CompanionEvidence {
+    let Ok(playing) = companion_players() else {
+        return CompanionEvidence {
+            intent: Err(()),
+            qualified: false,
+        };
+    };
+    qualify_companion_player(
+        &playing,
+        || {
+            address
+                .map_or_else(crate::volume::dongle_render_activity, |address| {
+                    crate::volume::render_activity(Some(address))
+                })
+                .map_err(|_| ())
+        },
+        |player| {
+            address.map_or_else(
+                || crate::volume::player_owns_dongle_output(player),
+                |address| crate::volume::player_owns_output(address, player),
+            )
+        },
+        || crate::plexamp::companion_player(false),
+    )
+}
+
+fn companion_players() -> Result<Vec<String>, ()> {
+    let inspect = || -> windows::core::Result<Vec<String>> {
+        let manager = bounded_result(SessionManager::RequestAsync()?)
+            .ok_or_else(|| windows::core::Error::from(windows::Win32::Foundation::E_FAIL))?;
+        let sessions = manager.GetSessions()?;
+        let mut playing = Vec::new();
+        for i in 0..sessions.Size()? {
+            let session = sessions.GetAt(i)?;
+            if companion_playing_status(session.GetPlaybackInfo()?.PlaybackStatus()?)
+                .map_err(|_| windows::core::Error::from(windows::Win32::Foundation::E_FAIL))?
+            {
+                playing.push(session.SourceAppUserModelId()?.to_string());
+            }
+        }
+        Ok(playing)
+    };
+    inspect().map_err(|_| ())
+}
+
+fn companion_playing_status(status: PlaybackStatus) -> Result<bool, ()> {
+    match status {
+        PlaybackStatus::Playing => Ok(true),
+        PlaybackStatus::Paused
+        | PlaybackStatus::Stopped
+        | PlaybackStatus::Closed
+        | PlaybackStatus::Opened => Ok(false),
+        _ => Err(()),
+    }
+}
+
+fn qualify_companion_player(
+    playing: &[String],
+    render_active: impl FnOnce() -> Result<bool, ()>,
+    owns_output: impl Fn(&str) -> bool,
+    plexamp: impl FnOnce() -> Result<Option<String>, ()>,
+) -> CompanionEvidence {
+    let observed = observed_companion_player(playing, plexamp);
+    let qualified = match &observed {
+        Ok(Some((_, player))) => owns_output(player),
+        Ok(None) => render_active() == Ok(false),
+        Err(()) => false,
+    };
+    CompanionEvidence {
+        intent: observed.map(|player| player.map(|(intent, _)| intent)),
+        qualified,
+    }
+}
+
+fn observed_companion_player(
+    playing: &[String],
+    plexamp: impl FnOnce() -> Result<Option<String>, ()>,
+) -> Result<Option<(String, String)>, ()> {
+    match playing {
+        [] => plexamp().map(|player| player.map(|intent| (intent, "Plexamp.exe".into()))),
+        [player] => Ok(Some((player.clone(), player.clone()))),
+        _ => Err(()),
+    }
 }
 
 /// The exact session whose pause request succeeded. Never resume a different
@@ -402,6 +508,93 @@ impl Drop for SelectedPause {
 #[cfg(test)]
 mod tests {
     use super::{AutoPausePolicy, PauseClaim};
+
+    #[test]
+    fn companion_uses_plexamp_timeline_when_the_only_smtc_session_is_paused() {
+        // Paused SMTC sessions are excluded before qualification, including a stale browser.
+        let player = "plexamp:local-player";
+        let found = super::qualify_companion_player(
+            &[],
+            || panic!("qualified Plexamp has its own playback authority"),
+            |name| name == "Plexamp.exe",
+            || Ok(Some(player.into())),
+        );
+        assert_eq!(found.intent, Ok(Some(player.into())));
+        assert!(found.qualified);
+        assert_eq!(
+            super::observed_companion_player(&[], || Ok(Some(player.into()))),
+            Ok(Some((player.into(), "Plexamp.exe".into())))
+        );
+    }
+
+    #[test]
+    fn companion_rejects_notifications_conflicting_players_and_failed_plexamp_reads() {
+        let notification =
+            super::qualify_companion_player(&[], || Ok(true), |_| false, || Ok(None));
+        assert_eq!(notification.intent, Ok(None));
+        assert!(
+            !notification.qualified,
+            "unclassified rendering cannot prove a quiet source"
+        );
+        let paused = super::qualify_companion_player(&[], || Ok(false), |_| true, || Ok(None));
+        assert_eq!(paused.intent, Ok(None));
+        assert!(paused.qualified);
+        let failed = super::qualify_companion_player(&[], || Ok(false), |_| true, || Err(()));
+        assert_eq!(failed.intent, Err(()));
+        assert!(!failed.qualified);
+        let ambiguous = super::qualify_companion_player(
+            &["Chrome".into(), "Other".into()],
+            || Ok(false),
+            |_| true,
+            || panic!("conflicting SMTC players"),
+        );
+        assert_eq!(ambiguous.intent, Err(()));
+        assert!(!ambiguous.qualified);
+    }
+
+    #[test]
+    fn companion_keeps_authoritative_intent_without_qualifying_speakers_or_an_unknown_route() {
+        let calls = std::cell::Cell::new(0);
+        for owned in [false, true] {
+            let evidence = super::qualify_companion_player(
+                &["Chrome".into()],
+                || panic!("Playing requires its exact output binding"),
+                |name| {
+                    calls.set(calls.get() + 1);
+                    assert_eq!(name, "Chrome");
+                    owned
+                },
+                || panic!("SMTC authority was already read"),
+            );
+            assert_eq!(evidence.intent, Ok(Some("Chrome".into())));
+            assert_eq!(evidence.qualified, owned);
+        }
+        assert_eq!(calls.get(), 2);
+        let missing = super::qualify_companion_player(&[], || Err(()), |_| false, || Ok(None));
+        assert_eq!(missing.intent, Ok(None));
+        assert!(
+            !missing.qualified,
+            "missing selected output is not quiet/default speakers"
+        );
+    }
+
+    #[test]
+    fn companion_changing_or_unknown_status_is_not_an_authoritative_pause() {
+        use super::PlaybackStatus;
+        assert_eq!(
+            super::companion_playing_status(PlaybackStatus::Paused),
+            Ok(false)
+        );
+        assert_eq!(
+            super::companion_playing_status(PlaybackStatus::Playing),
+            Ok(true)
+        );
+        assert_eq!(
+            super::companion_playing_status(PlaybackStatus::Changing),
+            Err(())
+        );
+        assert_eq!(super::companion_playing_status(PlaybackStatus(99)), Err(()));
+    }
     use crate::aap::EarStatus::{InCase, InEar, OutOfEar};
 
     #[test]
@@ -556,6 +749,31 @@ mod tests {
             assert!(paused.is_none());
             TEST_PAUSE_START.with(|factory| assert!(factory.borrow_mut().take().is_some()));
         }
+    }
+
+    #[test]
+    #[ignore = "Requires one local media player rendering the default PC dongle output; read-only"]
+    fn companion_player_read_only_smoke() {
+        super::init();
+        let session = super::bounded_result(super::SessionManager::RequestAsync().unwrap())
+            .and_then(|manager| manager.GetCurrentSession().ok());
+        let smtc_playing = session.as_ref().is_some_and(|session| {
+            session
+                .GetPlaybackInfo()
+                .and_then(|info| info.PlaybackStatus())
+                .is_ok_and(|state| state == super::PlaybackStatus::Playing)
+        });
+        let binding = session
+            .and_then(|session| session.SourceAppUserModelId().ok())
+            .is_some_and(|player| crate::volume::player_owns_dongle_output(&player.to_string()));
+        let render = crate::volume::dongle_render_activity();
+        let qualified = super::companion_player(None);
+        let state = super::companion_player_state();
+        println!("smtc_playing={smtc_playing} default_output_binding={binding} render_known_active={} qualify_known={} playing={} state_known={} state_playing={}",
+            render.is_ok_and(|active| active), qualified.is_ok(), qualified.as_ref().is_ok_and(|player| player.is_some()),
+            state.is_ok(), state.as_ref().is_ok_and(|player| player.is_some()));
+        assert!(qualified.is_ok_and(|player| player.is_some()));
+        assert!(state.is_ok_and(|player| player.is_some()));
     }
 
     #[test]

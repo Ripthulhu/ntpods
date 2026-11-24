@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "file": "accommodations-stock-v1.bin",
+  "sha256": "763e3244db48c1e24f36544118a0e73bdf12852574737da2670b38662ce43462",
+  "encoding": "float32 little-endian",
+  "bytes_per_preset": 128,
+  "order": "shape then level, both ascending",
+  "arrays": ["voice_left", "media_left", "voice_right", "media_right"],
+  "bands_hz": [250, 500, 1000, 2000, 3000, 4000, 6000, 10000],
+  "shapes": {"1": "Balanced Tone", "2": "Vocal Range", "3": "Brightness"},
+  "levels": {"1": "Slight", "2": "Moderate", "3": "Strong"},
+  "evidence": "docs/MACOS-ACCOMMODATIONS-CAPTURE-2026-10-24.md",
+  "contents": "Anonymous stock PME curves only; no packet headers, personal audiograms or native resource files."
+}

@@ -14,7 +14,6 @@ use windows::Devices::Bluetooth::Advertisement::{
 use windows::Devices::Bluetooth::BluetoothAddressType;
 use windows::Foundation::TypedEventHandler;
 use windows::Storage::Streams::DataReader;
-use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 
 const APPLE_COMPANY_ID: u16 = 0x004C;
 /// Watch for Apple advertisements, calling `on_nearby` on each — but
@@ -25,9 +24,7 @@ pub fn watch_nearby(
     should_scan: impl Fn() -> bool + Send + 'static,
     clock: Instant,
 ) {
-    unsafe {
-        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-    }
+    crate::volume::init();
     let watcher = match setup(on_nearby, clock) {
         Ok(w) => w,
         Err(_) => return,

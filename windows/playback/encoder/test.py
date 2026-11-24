@@ -122,6 +122,61 @@ def decode(data):
         return struct.unpack("<" + "f" * (decoded.stat().st_size // 4), decoded.read_bytes())
 
 
+def check_fixed_quality():
+    # Locate codec delay, then compare samples rather than only checking nonzero output.
+    samples = [0.25 * math.sin(math.tau * frequency * index / 48000)
+               for index in range(48000) for frequency in (997, 2111)]
+    values = decode(encode_float(samples))
+    delay = min(range(960), key=lambda lag: sum(
+        (samples[2 * frame + side] - values[2 * (frame + lag) + side]) ** 2
+        for frame in range(12000, 14000, 32) for side in (0, 1)))
+    snrs = []
+    for side in (0, 1):
+        reference = samples[2 * 12000 + side:2 * 36000 + side:2]
+        measured = values[2 * (12000 + delay) + side:2 * (36000 + delay) + side:2]
+        power = sum(value * value for value in reference)
+        error = sum((actual - expected) ** 2 for actual, expected in zip(measured, reference))
+        snr_db = 10 * math.log10(power / max(error, 1e-30))
+        assert snr_db > 48, (side, delay, snr_db)
+        snrs.append(snr_db)
+    gains = []
+    for frequency in (250, 1000, 4000, 8000, 12000, 15000, 17500):
+        amplitude = 0.2
+        samples = [amplitude * math.sin(math.tau * frequency * index / 48000 + side * 0.73)
+                   for index in range(48000) for side in (0, 1)]
+        encoded = encode_float(samples, "--bitrate", "256000")
+        assert max(parse_stream(encoded)[1]) <= 321
+        values = decode(encoded)
+        for side in (0, 1):
+            measured = spectral_amplitude(values[side::2][12000:36000], frequency)
+            gain_db = 20 * math.log10(max(measured, 1e-20) / amplitude)
+            assert abs(gain_db) < 1, (frequency, side, gain_db)
+            gains.append(gain_db)
+    # One continuous stream catches gain changes between quiet/loud plateaus.
+    levels = (-12, -24, -42, -60)
+    samples = [10 ** (level / 20) * math.sin(math.tau * frequency * index / 48000)
+               for level in levels for index in range(48000) for frequency in (1000, 2000)]
+    values = decode(encode_float(samples))
+    level_gains, crest_factors = [], []
+    for plateau, level in enumerate(levels):
+        amplitude = 10 ** (level / 20)
+        for side, frequency in ((0, 1000), (1, 2000)):
+            section = values[side::2][plateau * 48000 + 12000:plateau * 48000 + 36000]
+            measured = spectral_amplitude(section, frequency)
+            gain_db = 20 * math.log10(max(measured, 1e-20) / amplitude)
+            assert abs(gain_db) < 1, (level, side, gain_db)
+            level_gains.append(gain_db)
+            rms = math.sqrt(sum(value * value for value in section) / len(section))
+            crest_db = 20 * math.log10(max(abs(value) for value in section) / rms)
+            assert abs(crest_db - 10 * math.log10(2)) < 0.5, (level, side, crest_db)
+            crest_factors.append(crest_db)
+    assert max(level_gains) - min(level_gains) < 0.5, level_gains
+    print(f"PASS: fixed 256 kbps decoded gain 250-17500 Hz {min(gains):.3f}..{max(gains):.3f} dB; "
+          f"-60..-12 dBFS level gain {min(level_gains):.3f}..{max(level_gains):.3f} dB; "
+          f"sine crest {min(crest_factors):.3f}..{max(crest_factors):.3f} dB; "
+          f"tone SNR {min(snrs):.2f}..{max(snrs):.2f} dB, codec delay {delay} samples.")
+
+
 def check_link_budgets(pcm, stress_pcm):
     integers = struct.unpack("<" + "h" * (len(pcm) // 2), pcm)
     for budget in range(128, 257):
@@ -166,6 +221,7 @@ def run():
     process = subprocess.run([BUILD / "ntpods-eld-encoder.exe"], input=pcm,
                              capture_output=True, timeout=30, check=True)
     assert not process.stderr, process.stderr.decode(errors="replace")
+    check_fixed_quality()
     check_float_precision(pcm)
     asc, sizes = parse_stream(process.stdout)
     assert 300 <= len(sizes) <= 332

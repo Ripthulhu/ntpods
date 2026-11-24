@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
 fn main() {
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows")
+        || std::env::var_os("CARGO_FEATURE_EXPERIMENTAL_PLAYBACK").is_none()
+    {
         return;
     }
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());

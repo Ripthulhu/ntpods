@@ -14,7 +14,7 @@
         <Expander.Header>
             <Grid ColumnSpacing="12">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                <TextBlock Text="{Binding [MicTitle_Text], Source={StaticResource Loc}}" FontSize="16" VerticalAlignment="Center" />
+                <TextBlock Text="{Binding [MicTitle_Text], Source={StaticResource Loc}}" FontSize="14" VerticalAlignment="Center" />
                 <TextBlock x:Name="MicStatusText" Grid.Column="1" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" FontSize="13"
                            VerticalAlignment="Center" HorizontalAlignment="Right"
                            ToolTipService.ToolTip="{Binding Text, ElementName=MicStatusText}"
@@ -27,7 +27,7 @@
             <Grid ColumnSpacing="16" MinHeight="36">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <TextBlock Text="{Binding [Mic_Enable], Source={StaticResource Loc}}" TextWrapping="Wrap"
-                           FontSize="16" VerticalAlignment="Center" />
+                           FontSize="14" VerticalAlignment="Center" />
                 <ToggleSwitch x:Name="MicAutoSwitch" Grid.Column="1" Style="{StaticResource SettingToggle}" VerticalAlignment="Center"
                               AutomationProperties.Name="{Binding [Mic_Enable], Source={StaticResource Loc}}" Toggled="MicAuto_Toggled" />
             </Grid>
@@ -51,7 +51,7 @@
             <Button x:Name="ManualButton" Click="Manual_Click" HorizontalAlignment="Stretch" Visibility="Collapsed" />
             <Border Style="{StaticResource InsetDivider}" Margin="0" />
             <StackPanel Spacing="8">
-                <TextBlock Text="{Binding [Mic_Shortcut], Source={StaticResource Loc}}" TextWrapping="Wrap" FontSize="16" />
+                <TextBlock Text="{Binding [Mic_Shortcut], Source={StaticResource Loc}}" TextWrapping="Wrap" FontSize="14" />
                 <Grid ColumnSpacing="8">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                     <Button x:Name="ShortcutButton" Click="Shortcut_Click" HorizontalAlignment="Stretch"

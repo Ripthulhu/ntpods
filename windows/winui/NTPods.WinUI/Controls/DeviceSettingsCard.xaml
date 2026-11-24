@@ -5,11 +5,11 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <UserControl.Resources>
         <Style x:Key="DeviceLabel" TargetType="TextBlock">
-            <Setter Property="FontSize" Value="16" />
+            <Setter Property="FontSize" Value="14" />
             <Setter Property="TextWrapping" Value="Wrap" />
         </Style>
         <Style x:Key="DeviceStatus" TargetType="TextBlock">
-            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FontSize" Value="12" />
             <Setter Property="TextWrapping" Value="Wrap" />
             <Setter Property="Foreground" Value="{ThemeResource AppleSecondaryBrush}" />
         </Style>
@@ -22,7 +22,7 @@
                 <Grid ColumnSpacing="16" MinHeight="36">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                     <TextBlock x:Name="AutoPauseLabel" Text="{Binding [DeviceControls_AutoPause], Source={StaticResource Loc}}"
-                               TextWrapping="Wrap" FontSize="16" VerticalAlignment="Center" />
+                               TextWrapping="Wrap" FontSize="14" VerticalAlignment="Center" />
                     <ToggleSwitch x:Name="AutoPauseSwitch" Grid.Column="1" Style="{StaticResource SettingToggle}" VerticalAlignment="Center"
                                   AutomationProperties.Name="{Binding [DeviceControls_AutoPause], Source={StaticResource Loc}}" Toggled="AutoPause_Toggled" />
                 </Grid>
@@ -55,8 +55,6 @@
                                            AutomationProperties.Name="{Binding [Playback_Bitrate], Source={StaticResource Loc}}"
                                            Minimum="96" Maximum="512" SmallChange="8" LargeChange="32"
                                            SpinButtonPlacementMode="Compact" ValueChanged="PlaybackKbps_Changed" />
-                                <Button x:Name="PlaybackBitrateApply" Content="{Binding [DeviceControls_Apply], Source={StaticResource Loc}}"
-                                        AutomationProperties.Name="{Binding [Playback_ApplyBitrate], Source={StaticResource Loc}}" Click="PlaybackBitrateApply_Click" />
                             </StackPanel>
                             <StackPanel x:Name="PlaybackLinkRow" Spacing="8" Margin="0,12,0,0" Visibility="Collapsed">
                                 <TextBlock Text="{Binding [Playback_LinkLimit], Source={StaticResource Loc}}" Style="{StaticResource DeviceLabel}" />
@@ -74,8 +72,6 @@
                                                AutomationProperties.Name="{Binding [Playback_LinkKbps], Source={StaticResource Loc}}"
                                                AutomationProperties.HelpText="{Binding [Playback_LinkCustomHelp], Source={StaticResource Loc}}"
                                                ToolTipService.ToolTip="{Binding [Playback_LinkCustomHelp], Source={StaticResource Loc}}" />
-                                    <Button x:Name="PlaybackLinkApply" Content="{Binding [DeviceControls_Apply], Source={StaticResource Loc}}"
-                                            AutomationProperties.Name="{Binding [Playback_LinkApply], Source={StaticResource Loc}}" Click="PlaybackLinkApply_Click" />
                                 </StackPanel>
                             </StackPanel>
                         </StackPanel>
@@ -100,7 +96,7 @@
                 <StackPanel x:Name="StemPanel" />
             </Expander>
             <Expander x:Name="ComfortExpander" Style="{StaticResource GroupExpander}" Header="{Binding [DeviceControls_Comfort], Source={StaticResource Loc}}">
-                <StackPanel>
+                <StackPanel x:Name="LoudSoundReductionPanel">
                     <StackPanel x:Name="ComfortPanel" />
                     <Border x:Name="LoudSoundReductionDivider" Style="{StaticResource InsetDivider}" Margin="0" Visibility="Collapsed" />
                     <Grid x:Name="LoudSoundReductionRow" Margin="0,14" ColumnSpacing="16" MinHeight="36" Visibility="Collapsed">
@@ -114,11 +110,6 @@
                     </Grid>
                 </StackPanel>
             </Expander>
-            <StackPanel Spacing="8" Margin="16,0">
-                <Button x:Name="RefreshButton" Style="{StaticResource QuietButton}" Content="{Binding [DeviceControls_Refresh], Source={StaticResource Loc}}"
-                        ToolTipService.ToolTip="{Binding [DeviceControls_RefreshHint], Source={StaticResource Loc}}"
-                        AutomationProperties.HelpText="{Binding [DeviceControls_RefreshHint], Source={StaticResource Loc}}" Click="Refresh_Click" />
-            </StackPanel>
         </StackPanel>
     </StackPanel>
 </UserControl>

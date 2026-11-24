@@ -13,7 +13,9 @@ python windows/playback/encoder/test.py
 ```
 
 The test checks stereo tones, quiet Float32 signals, S16 compatibility, bitrate
-limits and malformed input through FDK's decoder. It does not play audio or
+limits and malformed input through FDK's decoder. At fixed 256 kbps it also
+checks gain through 17.5 kHz, level steps from -12 to -60 dBFS, and peak-to-RMS
+ratios to catch cutoff, level changes and clipping. It does not play audio or
 open Bluetooth. This round trip uses the encoder library's own decoder.
 
 Build output and downloaded source stay in ignored `build` and `vendor` folders.
@@ -48,7 +50,13 @@ access unit. Lengths are 1–321 bytes. EOF ends the stream; there is no zero-le
 record. Errors go to stderr and return a nonzero exit code. The caller must check
 the exit code before treating EOF as a normal stop.
 
-The encoder uses AOT 39 and 480-sample frames, with SBR disabled.
+The encoder uses AOT 39 and 480-sample frames, with SBR disabled and FDK's
+afterburner quality refinement enabled. Fixed 256 kbps uses an explicit 20 kHz
+bandwidth; leaving this automatic selects FDK's 16 kHz low-delay cutoff.
+Lower fixed rates retain FDK's automatic bandwidth pending separate quality
+validation. The worker reads back the quality and explicit bandwidth settings
+before producing audio. These settings do not change the wire format, input
+precision, startup priming or packet-size limits.
 `--bitrate <bits-per-second>` accepts 128000–256000 in 1000-bit steps; omitted, it
 uses 256000. FDK's CBR frames can vary by one byte. Each access unit is limited to
 `ceil(bitrate / 800) + 1` bytes, at most 321 bytes at 256 kbps.

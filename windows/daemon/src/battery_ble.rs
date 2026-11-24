@@ -113,6 +113,34 @@ impl Cache {
         let Some((at, battery, observations)) = self.0 else {
             return false;
         };
+        // A control connection can report only the buds. Retain the case sample
+        // from this pair's cache without carrying nearby presence or charging forward.
+        let mut retained_case = false;
+        if let (Some(level), Some(stamp)) = (battery.case, observations.case.timestamp_ms) {
+            let age = &mut state
+                .battery_freshness
+                .get_or_insert_with(Default::default)
+                .case;
+            let live_aap_case = state.connected
+                && !state.link_stale
+                && state.battery_source == "aap"
+                && state.battery.case.is_some()
+                && age.live
+                && age.present != Some(false)
+                && age
+                    .timestamp_ms
+                    .is_some_and(|old| old <= now_ms && now_ms - old < FRESH_MS);
+            if !live_aap_case
+                && stamp <= now_ms
+                && (state.battery.case.is_none() || age.timestamp_ms.is_none_or(|old| stamp > old))
+            {
+                state.battery.case = Some(level);
+                state.battery.case_charging = false;
+                age.timestamp_ms = Some(stamp);
+                age.live = false;
+                retained_case = true;
+            }
+        }
         let invalidated = state.battery_freshness.is_some_and(|freshness| {
             [
                 freshness.left,
@@ -133,7 +161,7 @@ impl Cache {
                             || (source == "ble_case" && state.battery_source != source)))
             })
         {
-            return false;
+            return retained_case;
         }
         merge_report(
             &mut state.battery,
@@ -986,7 +1014,9 @@ mod tests {
             battery_timestamp_ms: Some(1000),
             ..Default::default()
         };
-        assert!(!cache.restore(mac, &mut state, 3000));
+        assert!(cache.restore(mac, &mut state, 3000));
+        assert_eq!(state.battery_source, "aap");
+        assert_eq!(state.battery_timestamp_ms, Some(1000));
         state.link_stale = true;
         state.battery_timestamp_ms = Some(3000);
         assert!(!cache.restore(mac, &mut state, 3000));
@@ -1010,6 +1040,82 @@ mod tests {
             ],
             encryption: [0x18; 16],
         }
+    }
+
+    #[test]
+    fn connected_live_control_case_wins_over_a_newer_cached_case_until_it_expires() {
+        let mac = keys().mac;
+        let mut cache = CaseCache::default();
+        cache.observe(mac, case_report(CASE_PLAIN), 2000);
+        let mut state = Snapshot {
+            model: "A3063".into(),
+            connected: true,
+            battery_source: "aap".into(),
+            battery_timestamp_ms: Some(1000),
+            battery: Battery {
+                case: Some(81),
+                case_charging: true,
+                ..Default::default()
+            },
+            battery_freshness: Some(BatteryFreshness {
+                case: BatteryObservation {
+                    timestamp_ms: Some(1000),
+                    live: true,
+                    present: Some(true),
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(!cache.restore(mac, &mut state, 3000));
+        assert_eq!(state.battery.case, Some(81));
+        assert!(state.battery.case_charging);
+        assert!(state.battery_freshness.unwrap().case.live);
+        assert_eq!(state.battery_freshness.unwrap().case.timestamp_ms, Some(1000));
+
+        assert!(cache.restore(mac, &mut state, 1000 + FRESH_MS));
+        assert_eq!(state.battery.case, case_report(CASE_PLAIN).battery.case);
+        assert_eq!(state.battery_freshness.unwrap().case.timestamp_ms, Some(2000));
+        assert!(!state.battery_freshness.unwrap().case.live);
+        assert!(!state.battery.case_charging);
+        assert_eq!(state.battery_source, "aap");
+        assert_eq!(state.battery_timestamp_ms, Some(1000));
+    }
+
+    #[test]
+    fn connected_buds_keep_the_selected_pairs_cached_case_with_its_original_age() {
+        let mac = 0x112233445566;
+        let mut cache = CaseCache::default();
+        cache.observe(mac, case_report(CASE_PLAIN), 2000);
+        let mut state = Snapshot {
+            model: "A3063".into(),
+            connected: true,
+            battery_source: "aap".into(),
+            battery_timestamp_ms: Some(3000),
+            ..Default::default()
+        };
+        let late = 3000 + FRESH_MS;
+        assert!(!cache.restore(mac + 1, &mut state, late));
+        assert!(state.battery.case.is_none());
+        assert!(cache.restore(mac, &mut state, late));
+        assert_eq!(state.battery.case, case_report(CASE_PLAIN).battery.case);
+        assert_eq!(
+            state.battery_freshness.unwrap().case.timestamp_ms,
+            Some(2000)
+        );
+        assert!(!state.battery_freshness.unwrap().case.live);
+        assert!(!state.battery.case_charging);
+        assert_eq!(state.battery_timestamp_ms, Some(3000));
+        assert_eq!(state.battery_source, "aap");
+        assert!(!cache.restore(mac, &mut state, late + 1));
+        state.battery.case = Some(81);
+        let age = &mut state.battery_freshness.as_mut().unwrap().case;
+        age.timestamp_ms = Some(late);
+        age.live = true;
+        state.battery.case_charging = true;
+        assert!(!cache.restore(mac, &mut state, late + 2));
+        assert_eq!(state.battery.case, Some(81));
+        assert!(state.battery.case_charging);
     }
 
     #[test]

@@ -1,205 +1,80 @@
-# Build only: this never installs drivers, trusts certificates, or changes boot options.
+# Build the portable NTPods USB dongle preview.
 [CmdletBinding()]
-param(
-    [string]$Out = (Join-Path $PSScriptRoot 'build-output'),
-    [ValidateScript({
-        if ($_ -notmatch '\A[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,5}\z') {
-            throw 'Version must contain three numeric parts: major.minor.build.'
-        }
-        $value = [version]$_
-        if ($value.Major -gt 255 -or $value.Minor -gt 255 -or $value.Build -gt 65535) {
-            throw 'Version exceeds the Windows Installer limits: 255.255.65535.'
-        }
-        $true
-    })]
-    [string]$Version
-)
+param([string]$Out = (Join-Path $PSScriptRoot 'build-output'))
+
 $ErrorActionPreference = 'Stop'
-function Get-BuildSourceIdentity([string]$Repository) {
-    $commit = & git -C $Repository rev-parse HEAD
-    if ($LASTEXITCODE) { throw 'Cannot identify the source commit.' }
-    $status = @(& git -C $Repository status --porcelain --untracked-files=all)
-    if ($LASTEXITCODE) { throw 'Cannot identify source changes.' }
-    $paths = @(& git -C $Repository -c core.quotePath=false ls-files --cached --others --exclude-standard)
-    if ($LASTEXITCODE) { throw 'Cannot enumerate source files.' }
-    $sources = @(foreach ($path in $paths | Sort-Object -CaseSensitive -Unique) {
-        $file = Join-Path $Repository $path
-        if (Test-Path -LiteralPath $file -PathType Leaf) {
-            [pscustomobject][ordered]@{ path = $path; sha256 = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash }
-        }
-    })
-    [pscustomobject][ordered]@{ commit = $commit; dirty = [bool]$status.Count; status = $status; sources = $sources }
-}
-
-function Assert-BuildSourceUnchanged([string]$Repository, $Identity) {
-    $current = Get-BuildSourceIdentity $Repository
-    if (($Identity | ConvertTo-Json -Depth 4 -Compress) -cne ($current | ConvertTo-Json -Depth 4 -Compress)) {
-        throw 'Source changed during the build. Rebuild before packaging.'
-    }
-}
-
-$repo = Split-Path -Parent $PSScriptRoot
-$sourceIdentity = Get-BuildSourceIdentity $repo
-& python.exe (Join-Path $PSScriptRoot 'tests/test-localization.py')
-if ($LASTEXITCODE) { throw 'Localization checks failed.' }
-& python.exe (Join-Path $PSScriptRoot 'tests/test-aap-extract.py')
-if ($LASTEXITCODE) { throw 'AAP extraction checks failed.' }
-& python.exe (Join-Path $PSScriptRoot 'tests/test-pfc-decode.py')
-if ($LASTEXITCODE) { throw 'PFC decoding checks failed.' }
-& (Join-Path $PSScriptRoot 'tests\test-build-version.ps1')
-& (Join-Path $PSScriptRoot 'tests\test-build-source.ps1')
-& (Join-Path $PSScriptRoot 'playback\test-buffer.ps1') -SelfTest
-& (Join-Path $PSScriptRoot 'tests\test-bluetooth-host-identity.ps1')
-$Out = [IO.Path]::GetFullPath($Out)
-$uiVersionArguments = @()
-$msiVersionArguments = @{}
-if ($Version) {
-    # AssemblyVersion reserves 65535; keep the full MSI build number in FileVersion.
-    $assemblyVersion = ([version]$Version).ToString(2) + '.0.0'
-    $uiVersionArguments = @("-p:Version=$Version", "-p:FileVersion=$Version.0", "-p:AssemblyVersion=$assemblyVersion")
-    $msiVersionArguments.Version = $Version
-}
-function Run([string]$tool, [string[]]$arguments) {
-    & $tool @arguments
-    if ($LASTEXITCODE) { throw "$tool failed ($LASTEXITCODE)." }
-}
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-$driverBuild = & $vswhere -latest -products '*' -version '[17.0,18.0)' -requires Microsoft.Component.MSBuild -find 'MSBuild\Current\Bin\amd64\MSBuild.exe' | Select-Object -First 1
-$uiBuild = & $vswhere -latest -products '*' -version '[18.0,19.0)' -requires Microsoft.Component.MSBuild -find 'MSBuild\Current\Bin\MSBuild.exe' | Select-Object -First 1
-if (-not $driverBuild -or -not $uiBuild) { throw 'Install VS2022 C++/WDK Build Tools and VS2026 WinUI Build Tools; see docs/BUILD-WINDOWS.md.' }
+$msbuild = & $vswhere -latest -products '*' -version '[18.0,19.0)' -requires Microsoft.Component.MSBuild -find 'MSBuild\Current\Bin\MSBuild.exe' | Select-Object -First 1
+if (-not $msbuild) { throw 'Install Visual Studio 2026 Build Tools with the WinUI build workload.' }
+$vc = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1
+if (-not $vc) { throw 'Install the Visual C++ x64 build tools and Windows SDK.' }
+Import-Module (Join-Path $vc 'Common7/Tools/Microsoft.VisualStudio.DevShell.dll')
+Enter-VsDevShell -VsInstallPath $vc -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64' | Out-Null
 $cargo = Join-Path $env:USERPROFILE '.cargo\bin\cargo.exe'
-$bash = Join-Path $env:ProgramFiles 'Git\bin\bash.exe'
-$inf2cat = "${env:ProgramFiles(x86)}\Windows Kits\10\bin\10.0.26100.0\x86\Inf2Cat.exe"
-foreach ($tool in $cargo, $bash, $inf2cat) { if (-not (Test-Path -LiteralPath $tool)) { throw "Missing build tool: $tool" } }
-New-Item -ItemType Directory -Path $Out -Force | Out-Null
-$oldPath = $env:PATH
-Push-Location $repo
+$Out = [IO.Path]::GetFullPath($Out)
+$package = Join-Path $Out "NTPods-Dongle-$([guid]::NewGuid().ToString('N').Substring(0,8))"
+New-Item -ItemType Directory -Path $package | Out-Null
+
+Push-Location (Split-Path -Parent $PSScriptRoot)
 try {
-    $driverVs = & $vswhere -latest -products '*' -version '[17.0,18.0)' -property installationPath
-    Import-Module (Join-Path $driverVs 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll')
-    Enter-VsDevShell -VsInstallPath $driverVs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
-    $tests = Join-Path $Out 'tests'
-    New-Item -ItemType Directory -Path $tests -Force | Out-Null
-    Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', '/MT', "/Fe:$tests\audio-binding.exe", "/Fo:$tests\audio-binding.obj", 'windows/installer/audio-binding.cpp', '/link', 'setupapi.lib', 'newdev.lib')
-    Run (Join-Path $tests 'audio-binding.exe') @('--self-test')
-    Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', '/MT', "/Fe:$tests\audio-periods.exe", "/Fo:$tests\audio-periods.obj", 'windows/playback/audio-periods.cpp', '/link', 'ole32.lib', 'uuid.lib', 'cfgmgr32.lib')
-    Run (Join-Path $tests 'audio-periods.exe') @('--self-test')
-    Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', "/Fe:$tests\audio-inf-target.exe", "/Fo:$tests\audio-inf-target.obj", 'windows/drivers/audio/tests/inf_target_test.cpp', '/link', 'setupapi.lib')
-    Run (Join-Path $tests 'audio-inf-target.exe') @('windows/drivers/audio/NTPodsAudio.inf')
-    Run 'cl.exe' @('/nologo', '/W4', '/WX', '/TC', "/Fe:$tests\aap-policy.exe", "/Fo:$tests\aap-policy.obj", 'windows/drivers/aap/tests/policy_test.c')
-    Run (Join-Path $tests 'aap-policy.exe') @()
-    Run 'cl.exe' @('/nologo', '/W4', '/WX', '/TC', "/Fe:$tests\aap-brb-completion.exe", "/Fo:$tests\aap-brb-completion.obj", 'windows/drivers/aap/tests/brb_completion_test.c')
-    Run (Join-Path $tests 'aap-brb-completion.exe') @()
-    Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', "/Fe:$tests\aap-concurrency.exe", "/Fo:$tests\aap-concurrency.obj", 'windows/drivers/aap/tests/receive_concurrency_test.cpp')
-    Run (Join-Path $tests 'aap-concurrency.exe') @()
-    Run 'cl.exe' @('/nologo', '/W4', '/WX', '/TC', "/Fe:$tests\aap-inf-target.exe", "/Fo:$tests\aap-inf-target.obj", 'windows/drivers/aap/tests/inf_target_test.c', '/link', 'setupapi.lib')
-    Run (Join-Path $tests 'aap-inf-target.exe') @('windows/drivers/aap/NTPodsAAP.inf')
-    Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', "/Fe:$tests\mic-bridge.exe", "/Fo:$tests\mic-bridge.obj", 'windows/drivers/mic/tests/mic_bridge_test.cpp')
-    Run (Join-Path $tests 'mic-bridge.exe') @()
-    Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', "/Fe:$tests\render-bridge.exe", "/Fo:$tests\render-bridge.obj", 'windows/drivers/mic/tests/render_bridge_test.cpp')
-    Run (Join-Path $tests 'render-bridge.exe') @()
-    Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', "/Fe:$tests\render-changes.exe", "/Fo:$tests\render-changes.obj", 'windows/drivers/mic/tests/render_changes_test.cpp')
-    Run (Join-Path $tests 'render-changes.exe') @()
-    Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', "/Fe:$tests\render-volume.exe", "/Fo:$tests\render-volume.obj", 'windows/drivers/mic/tests/render_volume_test.cpp')
-    Run (Join-Path $tests 'render-volume.exe') @()
-    Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', "/Fe:$tests\render-diagnostics.exe", "/Fo:$tests\render-diagnostics.obj", 'windows/drivers/mic/tests/render_diagnostics_test.cpp')
-    Run (Join-Path $tests 'render-diagnostics.exe') @()
-    Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', "/Fe:$tests\packet-constraints.exe", "/Fo:$tests\packet-constraints.obj", 'windows/drivers/mic/tests/packet_constraints_test.cpp', '/link', 'setupapi.lib')
-    Run (Join-Path $tests 'packet-constraints.exe') @('windows/drivers/audio/NTPodsAudio.inf', 'windows/drivers/mic/AudioCodec/Driver/AudioCodec.inf')
-    Run 'cl.exe' @('/nologo', '/W4', '/WX', '/EHsc', '/std:c++17', "/Fe:$tests\aap-playback.exe", "/Fo:$tests\aap-playback.obj", 'windows/drivers/aap/tests/playback_transport_test.cpp')
-    Run (Join-Path $tests 'aap-playback.exe') @()
-    Run $bash @('windows/daemon/fetch-ffmpeg.sh')
-    $env:PATH = "$(Join-Path $repo 'windows\daemon\vendor\ffmpeg\bin');$env:PATH"
-    Run 'cl.exe' @('/nologo', '/W4', '/WX', '/TC', '/external:Iwindows/daemon/vendor/ffmpeg/include', '/external:W0', "/Fe:$tests\eld-shim.exe", "/Fo:$tests\eld-shim.obj", 'windows/daemon/tests/eld_shim_test.c', '/link', '/LIBPATH:windows/daemon/vendor/ffmpeg/lib', 'avcodec.lib', 'avutil.lib', 'swresample.lib')
-    Run (Join-Path $tests 'eld-shim.exe') @()
-    Run 'cl.exe' @('/nologo', '/W4', '/WX', '/std:c11', '/MD', '/O2', '/external:W0', '/external:Iwindows/daemon/vendor/ffmpeg/include', "/Fe:$tests\aac-shim.exe", "/Fo:$tests\aac-shim.obj", 'windows/daemon/tests/aac_shim_test.c', '/link', '/LIBPATH:windows/daemon/vendor/ffmpeg/lib', 'avcodec.lib', 'avutil.lib', 'Avrt.lib')
-    Run (Join-Path $tests 'aac-shim.exe') @()
-    $aacWorkerDir = Join-Path $repo 'windows\daemon\target\release'
-    New-Item -ItemType Directory -Path $aacWorkerDir -Force | Out-Null
-    Run 'cl.exe' @('/nologo', '/W4', '/WX', '/std:c11', '/MT', '/O2', '/external:W0', '/external:Iwindows/daemon/vendor/ffmpeg/include', "/Fe:$aacWorkerDir\ntpods-aac-encoder.exe", "/Fo:$tests\aac-worker.obj", 'windows/daemon/src/playback/aac_worker.c', '/link', '/LIBPATH:windows/daemon/vendor/ffmpeg/lib', 'avcodec.lib', 'avutil.lib', 'Avrt.lib')
-    & windows/playback/encoder/build.ps1
-    Run 'python.exe' @('windows/playback/encoder/test.py')
-    Run $cargo @('test', '--locked', '--manifest-path', 'windows/ipc/Cargo.toml')
-    & windows/tests/test-ipc.ps1
-    Run 'dotnet' @('run', '--project', 'windows/tests/Startup/Startup.csproj', '--configuration', 'Release')
-    Run 'dotnet' @('run', '--project', 'windows/tests/ListeningMode/ListeningMode.csproj', '--configuration', 'Release')
-    Run 'dotnet' @('run', '--project', 'windows/tests/DeviceSettings/DeviceSettings.csproj', '--configuration', 'Release')
-    Run 'dotnet' @('run', '--project', 'windows/tests/SensorUi/SensorUi.csproj', '--configuration', 'Release')
-    Run 'dotnet' @('run', '--project', 'windows/tests/ClientSession/ClientSession.csproj', '--configuration', 'Release')
-    Run 'dotnet' @('run', '--project', 'windows/tests/IslandMotion/IslandMotion.csproj', '--configuration', 'Release')
-    Run 'dotnet' @('run', '--project', 'windows/tests/Hotkey/Hotkey.csproj', '--configuration', 'Release')
-    Run $cargo @('test', '--locked', '--manifest-path', 'windows/daemon/Cargo.toml', '--features', 'experimental-playback')
-    $oldEncoderTestPath = $env:NTPODS_ELD_ENCODER_TEST_PATH
-    $oldAacEncoderTestPath = $env:NTPODS_AAC_ENCODER_TEST_PATH
+    & python.exe tools/check_dongle_protocol.py
+    if ($LASTEXITCODE) { throw 'Dongle protocol check failed.' }
+    & python.exe windows/tests/test-localization.py
+    if ($LASTEXITCODE) { throw 'Localization check failed.' }
+    & $cargo test --locked --manifest-path windows/daemon/Cargo.toml
+    if ($LASTEXITCODE) { throw 'Daemon tests failed.' }
+    & pwsh -NoProfile -File windows/tests/test-ipc.ps1
+    if ($LASTEXITCODE) { throw 'IPC checks failed.' }
+    & dotnet run --project windows/tests/DeviceSettings --configuration Release
+    if ($LASTEXITCODE) { throw 'Device controls checks failed.' }
+    & $cargo build --locked --release --manifest-path windows/daemon/Cargo.toml
+    if ($LASTEXITCODE) { throw 'Daemon build failed.' }
+    & $msbuild windows/winui/NTPods.WinUI/NTPods.WinUI.csproj -restore -t:Build -p:Configuration=Release -p:Platform=x64 -p:VisualStudioVersion=18.0 -p:RestorePackagesWithLockFile=true -p:RestoreLockedMode=true -nr:false -v:minimal "-p:OutDir=$package/"
+    if ($LASTEXITCODE) { throw 'WinUI build failed.' }
+    Copy-Item -LiteralPath windows/daemon/target/release/ntpodsd.exe -Destination (Join-Path $package 'ntpodsd-dongle.exe')
+    Copy-Item -LiteralPath LICENSE, THIRD_PARTY.md -Destination $package
+    if (-not (Test-Path -LiteralPath (Join-Path $package 'ntpods-winui.exe'))) { throw 'Missing WinUI executable.' }
+    foreach ($sceneFile in 'index.html', 'room.css', 'geometry.js', 'studio.js', 'room.js') {
+        if (-not (Test-Path -LiteralPath (Join-Path $package "Assets/SpatialRoom/$sceneFile"))) {
+            throw "Missing listening room asset: $sceneFile"
+        }
+    }
+    $spatial = Join-Path $PSScriptRoot 'spatial'
+    $manifest = Join-Path $spatial 'Cargo.toml'
+    $target = Join-Path $spatial 'target'
+    $cargoArgs = @('--locked', '--release', '--manifest-path', $manifest, '--target-dir', $target)
+    $messages = & $cargo build @cargoArgs --message-format=json-render-diagnostics
+    if ($LASTEXITCODE) { throw 'Spatial renderer build failed.' }
+    $sdk = $messages | ConvertFrom-Json | Where-Object {
+        $_.reason -eq 'build-script-executed' -and $_.package_id -match '(?:#|/)audionimbus-sys@'
+    }
+    if (@($sdk).Count -ne 1) { throw 'Cargo did not identify a unique Steam Audio runtime.' }
+    $runtime = Join-Path $sdk.out_dir 'lib'
+    $destination = New-Item -ItemType Directory -Path (Join-Path $package 'spatial')
+    foreach ($file in 'front-voice.wav', 'HRTF-CREDITS.md', 'LICENSE-Apache-2.0.txt') {
+        Copy-Item -LiteralPath (Join-Path $spatial $file) -Destination $destination.FullName
+    }
+    $profiles = Join-Path $target 'ear-profiles'
+    & python.exe (Join-Path $spatial 'prepare-hrtf-profiles.py') --output $profiles
+    if ($LASTEXITCODE) { throw 'Ear-profile verification failed.' }
+    Copy-Item -LiteralPath (Join-Path $profiles 'H3.sofa'), (Join-Path $profiles 'H20.sofa') -Destination $destination.FullName
+    Copy-Item -LiteralPath (Join-Path $runtime 'phonon.dll') -Destination $destination.FullName
+    Copy-Item -LiteralPath (Join-Path $sdk.out_dir 'steam_audio_cache/steamaudio_core/steamaudio/THIRDPARTY.md') -Destination (Join-Path $destination 'STEAM-AUDIO-NOTICES.md')
+    Copy-Item -LiteralPath (Join-Path $target 'release/windows-surround.exe') -Destination $destination.FullName
+    $oldPath = $env:PATH
     try {
-        $env:NTPODS_ELD_ENCODER_TEST_PATH = Join-Path $repo 'windows/playback/encoder/build/Release/ntpods-eld-encoder.exe'
-        $env:NTPODS_AAC_ENCODER_TEST_PATH = Join-Path $aacWorkerDir 'ntpods-aac-encoder.exe'
-        Run $cargo @('test', '--locked', '--manifest-path', 'windows/daemon/Cargo.toml', '--features', 'experimental-playback', 'playback::encoder::tests::streams_real_worker_and_drops_it', '--', '--ignored', '--exact')
+        $env:PATH = "$runtime;$oldPath"
+        & $cargo test @cargoArgs
+        if ($LASTEXITCODE) { throw 'Spatial renderer tests failed.' }
+        & $cargo test @cargoArgs streaming_7_1_across_independent_clocks -- --ignored
+        if ($LASTEXITCODE) { throw 'Spatial surround stability test failed.' }
     } finally {
-        $env:NTPODS_ELD_ENCODER_TEST_PATH = $oldEncoderTestPath
-        $env:NTPODS_AAC_ENCODER_TEST_PATH = $oldAacEncoderTestPath
+        $env:PATH = $oldPath
     }
-    $oldRustFlags = $env:RUSTFLAGS
-    try {
-        $env:RUSTFLAGS = '-C target-feature=+crt-static'
-        Run $cargo @('build', '--release', '--locked', '--manifest-path', 'windows/daemon/Cargo.toml', '--features', 'experimental-playback')
-    } finally { $env:RUSTFLAGS = $oldRustFlags }
-    foreach ($project in 'windows/drivers/aap/NTPodsAAP.vcxproj', 'windows/drivers/mic/AudioCodec/Driver/AudioCodec.sln', 'windows/drivers/audio/NTPodsAudio.vcxproj') {
-        Run $driverBuild @($project, '/p:Configuration=Release', '/p:Platform=x64', '/p:WindowsTargetPlatformVersion=10.0.26100.0', '/p:NTPodsExperimentalPlayback=true', '/p:EnableInf2cat=false', '/p:SignMode=Off', '/m', '/nr:false', '/v:minimal')
-    }
-    $packages = Join-Path $Out 'driver-packages'
-    New-Item -ItemType Directory -Path (Join-Path $packages 'tools') -Force | Out-Null
-    Copy-Item -LiteralPath (Join-Path $tests 'audio-binding.exe') -Destination (Join-Path $packages 'tools\audio-binding.exe') -Force
-    foreach ($driver in @(
-        @{ Directory = 'driver'; Root = 'windows/drivers/aap'; Name = 'NTPodsAAP' },
-        @{ Directory = 'driver-mic-acx'; Root = 'windows/drivers/mic/AudioCodec/Driver'; Name = 'AudioCodec' },
-        @{ Directory = 'driver-audio'; Root = 'windows/drivers/audio'; Name = 'NTPodsAudio' }
-    )) {
-        $sys = Get-ChildItem -LiteralPath $driver.Root -Recurse -Filter "$($driver.Name).sys" | Where-Object { $_.FullName -match '\\x64\\Release\\' -and $_.FullName -notmatch '\\prebuilt\\' } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-        if (-not $sys) { throw "Missing freshly built $($driver.Name).sys" }
-        $inf = Join-Path $sys.Directory.FullName "$($driver.Name).inf"
-        if (-not (Test-Path -LiteralPath $inf)) { $inf = Join-Path $driver.Root "$($driver.Name).inf" }
-        $package = Join-Path $packages $driver.Directory
-        New-Item -ItemType Directory -Path $package -Force | Out-Null
-        Copy-Item -LiteralPath $sys.FullName, $inf -Destination $package -Force
-        # StampInf uses local dates; matching its clock avoids false postdating near midnight.
-        Run $inf2cat @("/driver:$package", '/os:10_X64', '/uselocaltime')
-        if ($driver.Name -eq 'NTPodsAAP') {
-            Run (Join-Path $tests 'aap-inf-target.exe') @((Join-Path $package 'NTPodsAAP.inf'))
-        }
-        if ($driver.Name -eq 'NTPodsAudio') {
-            Run (Join-Path $tests 'audio-inf-target.exe') @((Join-Path $package 'NTPodsAudio.inf'))
-        }
-    }
-    Run $uiBuild (@('windows/winui/NTPods.WinUI/NTPods.WinUI.csproj', '-restore', '-t:Build', '-p:Configuration=Release', '-p:Platform=x64', '-p:VisualStudioVersion=18.0', '-p:RestorePackagesWithLockFile=true', '-p:RestoreLockedMode=true', '-nr:false', '-v:minimal') + $uiVersionArguments)
-    $ui = Get-ChildItem 'windows/winui/NTPods.WinUI/bin/x64/Release' -Recurse -Filter ntpods-winui.exe | Where-Object { $_.FullName -notmatch '\\publish\\' } | Select-Object -First 1
-    if (-not $ui) { throw 'Missing built WinUI executable.' }
-    & windows/installer/test-setup.ps1
-    Run "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'windows/installer/test-setup.ps1')
-    & windows/installer/test-app-transaction.ps1
-    Run "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'windows/installer/test-app-transaction.ps1')
-    & windows/installer/test-driver-rollback.ps1
-    Run "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'windows/installer/test-driver-rollback.ps1')
-    & windows/installer/test-audio-driver.ps1
-    Run "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'windows/installer/test-audio-driver.ps1')
-    & windows/installer/test-fix-driver.ps1
-    Run "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'windows/installer/test-fix-driver.ps1')
-    & windows/installer/make-dist.ps1 -Out (Join-Path $Out 'dist') -DaemonExe windows/daemon/target/release/ntpodsd.exe -WinUIDir $ui.Directory.FullName -DriverPackages $packages
-    $env:PATH = "$env:USERPROFILE\.dotnet\tools;$env:PATH"
-    & windows/installer/msi/build-msi.ps1 -Dist (Join-Path $Out 'dist') -Out (Join-Path $Out 'NTPods-experimental.msi') @msiVersionArguments
-    & windows/installer/msi/test-startup.ps1 -Msi (Join-Path $Out 'NTPods-experimental.msi')
-    $manifest = [ordered]@{
-        baseline = '188e45df20259b616ce155be812086259d1a2488'
-        commit = $sourceIdentity.commit
-        dirty = $sourceIdentity.dirty
-        rust = (& $cargo --version)
-        dotnet = (& dotnet --version)
-        sdkWdk = '10.0.26100.0'
-        signing = 'unsigned-development-package'
-        msi = @{ path = 'NTPods-experimental.msi'; sha256 = (Get-FileHash -LiteralPath (Join-Path $Out 'NTPods-experimental.msi') -Algorithm SHA256).Hash }
-        sources = $sourceIdentity.sources
-        files = @(Get-ChildItem (Join-Path $Out 'dist') -Recurse -File | ForEach-Object { @{ path = $_.FullName.Substring($Out.Length + 1); sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash } })
-    }
-    Assert-BuildSourceUnchanged $repo $sourceIdentity
-    $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $Out 'build-manifest.json') -Encoding UTF8
-} finally { $env:PATH = $oldPath; Pop-Location }
+    & (Join-Path $destination 'windows-surround.exe') self-test
+    if ($LASTEXITCODE) { throw 'Packaged spatial renderer failed its self-test.' }
+    Compress-Archive -Path (Join-Path $package '*') -DestinationPath "$package.zip"
+    Write-Host "Portable preview: $package.zip"
+} finally {
+    Pop-Location
+}

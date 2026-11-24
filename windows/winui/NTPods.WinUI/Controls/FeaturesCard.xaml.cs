@@ -11,6 +11,14 @@ namespace NTPods.WinUI.Controls;
 /// Device toggles and the saved Windows volume limit during conversations.
 public sealed partial class FeaturesCard : UserControl
 {
+    private bool _offDetached;
+    public FrameworkElement TakeOffListeningMode()
+    {
+        FeatureRows.Children.Remove(AllowOffRow);
+        FeatureRows.Children.Remove(AllowOffDivider);
+        _offDetached = true;
+        return AllowOffRow;
+    }
     public DaemonClient? Client { get; set; }
     public Func<object, bool>? SendCommand { get; set; }
 
@@ -89,7 +97,7 @@ public sealed partial class FeaturesCard : UserControl
             AllowOffDivider.Visibility = AllowOffRow.Visibility == Visibility.Visible &&
                 (ConvAwarenessRow.Visibility == Visibility.Visible || AdaptiveVolumeRow.Visibility == Visibility.Visible)
                 ? Visibility.Visible : Visibility.Collapsed;
-            Visibility = new[] { ConvAwarenessRow, AdaptiveVolumeRow, AllowOffRow }.Any(row => row.Visibility == Visibility.Visible)
+            Visibility = (_offDetached ? new[] { ConvAwarenessRow, AdaptiveVolumeRow } : new[] { ConvAwarenessRow, AdaptiveVolumeRow, AllowOffRow }).Any(row => row.Visibility == Visibility.Visible)
                 ? Visibility.Visible : Visibility.Collapsed;
             ConversationVolumeExpander.Visibility = SendCommand is null && ConvAwarenessRow.Visibility == Visibility.Visible && ConvAwarenessSwitch.IsOn ? Visibility.Visible : Visibility.Collapsed;
             _reportedVolume = s.ConversationVolume;

@@ -31,8 +31,12 @@ public sealed partial class DeviceHeader : UserControl
 
     // Avoid decoding the same artwork on every snapshot.
     private string? _artFamily;
+    private readonly DeviceArtworkState _artwork = new();
     private string _deviceId = "";
     private bool _linkStale;
+    private Snapshot _source = new();
+    private ulong _snapshotTime;
+    private bool _daemonReady;
 
     public DeviceHeader()
     {
@@ -47,22 +51,27 @@ public sealed partial class DeviceHeader : UserControl
     /// Render the header from a daemon Snapshot (name + connection state).
     public void Update(Snapshot s)
     {
+        if (!ReferenceEquals(_source, s)) _snapshotTime = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        _source = s;
+        bool dongle = DongleHealthPresentation.UsesDongle(s);
+        s = SelectedDevicePresentation.Project(s, _snapshotTime);
         if (_deviceId != s.DeviceId)
         {
             _deviceId = s.DeviceId;
             CancelRename();
             ExitEdit();
         }
+        string model = _artwork.Update(s, AppSettings.LastModel, AppSettings.LastDeviceId);
         // Don't clobber the name while the user is editing it.
         if (NameEdit.Visibility != Visibility.Visible)
-            DeviceName.Text = string.IsNullOrWhiteSpace(s.DevName) ? "NTPods" : s.DevName;
+            DeviceName.Text = DeviceModels.DisplayName(s, DeviceModels.Find(model) is { Name.Length: > 0 } profile ? profile.Name : "NTPods");
 
         // Keep the normally hidden header image consistent with the battery artwork.
-        var family = DeviceArt.Family(s.Model, DeviceModels.Headphone(s));
+        var family = DeviceArt.Family(model, DeviceModels.Headphone(s));
         if (family != _artFamily)
         {
             _artFamily = family;
-            DeviceImage.Source = new BitmapImage(new Uri(DeviceArt.MainImage(s.Model, DeviceModels.Headphone(s))));
+            DeviceImage.Source = new BitmapImage(new Uri(DeviceArt.MainImage(model, DeviceModels.Headphone(s))));
         }
 
         StatusText.Text = Localize.Get(BatteryPresentation.StatusKey(s));
@@ -71,18 +80,21 @@ public sealed partial class DeviceHeader : UserControl
         ToolTipService.SetToolTip(StatusText, string.IsNullOrEmpty(freshness) ? null : freshness);
         AutomationProperties.SetHelpText(StatusText, freshness);
         _linkStale = s.Connected && s.LinkStale;
-        StatusDot.Visibility = !s.Connected ? Visibility.Visible : Visibility.Collapsed;
-        ConnectedDot.Visibility = s.Connected && !s.LinkStale ? Visibility.Visible : Visibility.Collapsed;
+        StatusDot.Visibility = !s.AudioOutputReady && !_linkStale ? Visibility.Visible : Visibility.Collapsed;
+        ConnectedDot.Visibility = s.AudioOutputReady && !_linkStale ? Visibility.Visible : Visibility.Collapsed;
         StaleDot.Visibility = _linkStale ? Visibility.Visible : Visibility.Collapsed;
         ConnectButton.Content = Localize.Get(_linkStale ? "Action_Repair" : "HeaderConnectBtn.Content");
-        ConnectButton.Visibility = !s.Connected || _linkStale || !s.AudioOutputReady ? Visibility.Visible : Visibility.Collapsed;
+        ConnectButton.Visibility = dongle && s.Dongle.Selected && (!s.Connected || _linkStale || !s.AudioOutputReady) ? Visibility.Visible : Visibility.Collapsed;
+        ConnectButton.IsEnabled = _daemonReady && (!dongle || SelectedDevicePresentation.ConnectCommand(_source) is not null);
         // Repair must remain available when Windows is connected but the AAP link is stale.
-        RenameBtn.Visibility = s.Connected ? Visibility.Visible : Visibility.Collapsed;
-        DisconnectButton.Visibility = s.Connected ? Visibility.Visible : Visibility.Collapsed;
-        RepairButton.Visibility = (!s.Connected || s.LinkStale) ? Visibility.Visible : Visibility.Collapsed;
+        RenameBtn.Visibility = !dongle && s.Connected ? Visibility.Visible : Visibility.Collapsed;
+        DisconnectButton.Visibility = !dongle && s.Connected ? Visibility.Visible : Visibility.Collapsed;
+        RepairButton.Visibility = Visibility.Collapsed;
         // Playback can fail while the control session remains connected.
-        RebuildAudioButton.Visibility = s.Connected ? Visibility.Visible : Visibility.Collapsed;
+        RebuildAudioButton.Visibility = Visibility.Collapsed;
+        NativePairButton.Visibility = Visibility.Collapsed;
         DeviceActionsSeparator.Visibility = Visibility.Visible;
+        UpdateHeaderActions();
         if (!s.Connected) { CancelRename(); ExitEdit(); }
     }
 
@@ -96,18 +108,35 @@ public sealed partial class DeviceHeader : UserControl
 
     public void SetDaemonReady(bool ready)
     {
+        _daemonReady = ready;
         ConnectButton.IsEnabled = RenameBtn.IsEnabled = RepairButton.IsEnabled =
             RebuildAudioButton.IsEnabled = DisconnectButton.IsEnabled = ready;
+        ConnectButton.IsEnabled = ready && (!DongleHealthPresentation.UsesDongle(_source) || SelectedDevicePresentation.ConnectCommand(_source) is not null);
+        UpdateHeaderActions();
         if (!ready) { CancelRename(); ExitEdit(); }
     }
 
-    public void FocusActions() => MoreButton.Focus(FocusState.Programmatic);
+    private void UpdateHeaderActions()
+    {
+        bool hasDeviceActions = _daemonReady && !DongleHealthPresentation.UsesDongle(_source) && _source.Connected;
+        MoreButton.Visibility = hasDeviceActions ? Visibility.Visible : Visibility.Collapsed;
+        SettingsButton.Visibility = hasDeviceActions ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    public void FocusActions() =>
+        (MoreButton.Visibility == Visibility.Visible ? MoreButton : SettingsButton).Focus(FocusState.Programmatic);
+    public void BeginRename() => Rename_Click(this, new RoutedEventArgs());
 
     private void Settings_Click(object sender, RoutedEventArgs e) => SettingsRequested?.Invoke();
     private void Pair_Click(object sender, RoutedEventArgs e) => PairingRequested?.Invoke();
 
     private void Connect_Click(object sender, RoutedEventArgs e)
     {
+        if (DongleHealthPresentation.UsesDongle(_source))
+        {
+            if (SelectedDevicePresentation.ConnectCommand(_source) is { } command) Client?.Send(command);
+            return;
+        }
         if (_linkStale) Client?.RepairConnection();
         else Client?.Connect(_deviceId);
     }
@@ -120,6 +149,7 @@ public sealed partial class DeviceHeader : UserControl
 
     private void Rename_Click(object sender, RoutedEventArgs e)
     {
+        if (DongleHealthPresentation.UsesDongle(_source)) return;
         NameBox.Text = DeviceName.Text;
         NameView.Visibility = Visibility.Collapsed;
         NameEdit.Visibility = Visibility.Visible;

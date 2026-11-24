@@ -1,5 +1,5 @@
 use ntpods_ipc::{
-    from_line, to_line, Battery, Command, DongleAudioState, DongleHealthState,
+    from_line, to_line, Battery, Command, DongleAudioState, DongleDevice, DongleHealthState,
     DonglePerformanceState, DongleState, Event, HardwareCheckState, HardwareDiagnosticEar,
     HardwareDiagnostics, HearingAidSettings, HearingMetadata, NearbyFinderState, Snapshot,
 };
@@ -7,9 +7,14 @@ use ntpods_ipc::{
 fn state() -> DongleState {
     DongleState {
         present: true,
+        serial: Some("BOARD-A".into()),
+        available_devices: vec![DongleDevice { serial: "BOARD-A".into(), usb_audio_available: true },
+            DongleDevice { serial: "BOARD-B".into(), usb_audio_available: false }],
+        usb_audio_available: true,
         session: u64::MAX,
         generation: u32::MAX,
         pair_token: u64::MAX - 2,
+        paired_device_id: Some("001122334455".into()),
         selected: true,
         connected: true,
         controls_ready: true,
@@ -101,6 +106,8 @@ fn state() -> DongleState {
             device_controls_pending: [(0x0d, 3)].into(),
             device_settings_pending: true,
             device_settings_error: Some("setting".into()),
+            reconnect_automatically: Some(true),
+            reconnect_policy_error: false,
             allow_off_requested: Some(true),
             adaptive_strength_requested: Some(51),
             anc_unconfirmed: true,
@@ -173,7 +180,7 @@ fn main() {
         "check" => {
             let text = std::fs::read_to_string(&args[2]).unwrap();
             let lines: Vec<_> = text.lines().collect();
-            assert_eq!(lines.len(), 8);
+            assert_eq!(lines.len(), 10);
             for (line, expected) in lines[..2].iter().zip([state(), DongleState::default()]) {
                 let Some(Event::State(snapshot)) = from_line::<Event>(line) else {
                     panic!("wrong event")
@@ -190,7 +197,7 @@ fn main() {
                 })
             ));
             let target = format!("dongle:{}:{}", u64::MAX, u32::MAX);
-            for (line, kind) in lines[3..].iter().zip([0, 1, 2, 3, 4]) {
+            for (line, kind) in lines[3..9].iter().zip(0..6) {
                 let Some(Command::DongleHealth {
                     session: u64::MAX,
                     generation: u32::MAX,
@@ -225,9 +232,12 @@ fn main() {
                         },
                     ) => {}
                     (4, Command::GetDonglePerformance) => {}
+                    (5, Command::SetDongleReconnectPolicy { automatic: false }) => {}
                     _ => panic!("health command changed"),
                 }
             }
+            assert!(matches!(from_line::<Command>(lines[9]),
+                Some(Command::SelectDongle { serial }) if serial == "BOARD-B"));
             println!(
                 "Rust/C#: USB dongle state and commands roundtrip without narrowing identifiers"
             );

@@ -1,5 +1,8 @@
 //! Bounded RTBuddy framing and device-supplied sensor descriptions.
 
+#[path = "remote_hid.rs"]
+pub mod remote_hid;
+
 pub const PREFIX: [u8; 10] = [4, 0, 4, 0, 0x17, 0, 0, 0, 0x10, 0];
 const MAX_PAYLOAD: usize = 16 * 1024;
 
@@ -90,14 +93,18 @@ impl Frames {
     }
 
     pub fn feed(&mut self, chunk: &[u8], mut visit: impl FnMut(&[u8])) {
+        self.feed_prefix(chunk, &PREFIX, &mut visit);
+    }
+
+    pub fn feed_prefix(&mut self, chunk: &[u8], prefix: &[u8; 10], mut visit: impl FnMut(&[u8])) {
         if chunk.len() > MAX_PAYLOAD || self.carry.len() + chunk.len() > 2 * MAX_PAYLOAD {
             self.reset();
             return;
         }
         self.carry.extend_from_slice(chunk);
         let mut consumed = 0;
-        while self.carry.len() - consumed >= PREFIX.len() {
-            if !self.carry[consumed..].starts_with(&PREFIX) {
+        while self.carry.len() - consumed >= prefix.len() {
+            if !self.carry[consumed..].starts_with(&prefix[..6]) {
                 consumed += 1;
                 continue;
             }
@@ -108,15 +115,23 @@ impl Frames {
                 self.carry[consumed + 10],
                 self.carry[consumed + 11],
             ]));
-            if size > MAX_PAYLOAD {
-                consumed += PREFIX.len();
+            if size
+                > if self.carry[consumed + 6..consumed + 10] == remote_hid::PREFIX[6..] {
+                    4096
+                } else {
+                    MAX_PAYLOAD
+                }
+            {
+                consumed += 6;
                 continue;
             }
             let end = consumed + 12 + size;
             if end > self.carry.len() {
                 break;
             }
-            visit(&self.carry[consumed + 12..end]);
+            if self.carry[consumed..].starts_with(prefix) {
+                visit(&self.carry[consumed + 12..end]);
+            }
             consumed = end;
         }
         self.carry.drain(..consumed);
@@ -126,15 +141,18 @@ impl Frames {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MotionService {
     pub id: u8,
+    pub remote_hid: bool,
 }
 
 #[derive(Default)]
-pub struct PendingMotion(std::sync::atomic::AtomicU8);
+pub struct PendingMotion(std::sync::atomic::AtomicU16);
 
 impl PendingMotion {
     pub fn publish(&self, motion: Option<MotionService>) {
         self.0.store(
-            motion.map_or(128, |s| s.id),
+            motion.map_or(128, |s| {
+                u16::from(s.id) | if s.remote_hid { 256 } else { 0 }
+            }),
             std::sync::atomic::Ordering::Release,
         );
     }
@@ -143,7 +161,10 @@ impl PendingMotion {
         match self.0.swap(0, std::sync::atomic::Ordering::AcqRel) {
             0 => None,
             128 => Some(None),
-            id => Some(Some(MotionService { id })),
+            id => Some(Some(MotionService {
+                id: (id & 127) as u8,
+                remote_hid: id & 256 != 0,
+            })),
         }
     }
 
@@ -261,6 +282,8 @@ pub struct Discovery {
     pub sound_level: Option<u8>,
     pub generation: u64,
     frames: Frames,
+    remote_frames: Frames,
+    pub remote_enabled: bool,
     last_sequence: Option<u64>,
 }
 
@@ -268,6 +291,43 @@ impl Discovery {
     /// Returns true when a known mapping changes or announcements restart after a handoff.
     pub fn feed(&mut self, chunk: &[u8]) -> bool {
         let mut changed = false;
+        if self.remote_enabled {
+            self.remote_frames
+                .feed_prefix(chunk, &remote_hid::PREFIX, |body| {
+                    let Some(packets) = remote_hid::packets(body) else {
+                        return;
+                    };
+                    for p in packets {
+                        if p.device == 0 || p.response || p.status {
+                            continue;
+                        }
+                        if p.kind == 0 {
+                            let valid = remote_hid::motion_descriptor(p.payload);
+                            if valid
+                                || self
+                                    .motion
+                                    .is_some_and(|m| m.remote_hid && m.id == p.device)
+                            {
+                                self.motion = valid.then_some(MotionService {
+                                    id: p.device,
+                                    remote_hid: true,
+                                });
+                                self.generation = self.generation.wrapping_add(1);
+                                changed = true;
+                            }
+                        } else if p.kind == 1
+                            && self
+                                .motion
+                                .is_some_and(|m| m.remote_hid && m.id == p.device)
+                        {
+                            self.motion = None;
+                            self.generation = self.generation.wrapping_add(1);
+                            changed = true;
+                        }
+                    }
+                });
+            return changed;
+        }
         self.frames.feed(chunk, |payload| {
             let Some(top) = fields(payload) else {
                 return;
@@ -322,7 +382,10 @@ impl Discovery {
                         if heart_rate == Some(service) || sound_level == Some(service) {
                             return;
                         }
-                        motion = Some(MotionService { id: service });
+                        motion = Some(MotionService {
+                            id: service,
+                            remote_hid: false,
+                        });
                     }
                     Sensor::HeartRate => {
                         if motion.is_some_and(|s| s.id == service) || sound_level == Some(service) {
@@ -357,6 +420,38 @@ impl Discovery {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_announcements_require_explicit_model_gate_and_rearm_same_service() {
+        let f: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/sensor-wire-v1.json")).unwrap();
+        let text = f["announcements"][1]["frame"].as_str().unwrap();
+        let frame: Vec<_> = text
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(), 16).unwrap())
+            .collect();
+        let mut discovery = Discovery::default();
+        assert!(!discovery.feed(&frame));
+        assert!(discovery.motion.is_none());
+        discovery.remote_enabled = true;
+        for part in frame.chunks(7) {
+            discovery.feed(part);
+        }
+        assert_eq!(
+            discovery.motion,
+            Some(MotionService {
+                id: 7,
+                remote_hid: true
+            })
+        );
+        let generation = discovery.generation;
+        assert!(discovery.feed(&frame));
+        assert_eq!(discovery.generation, generation + 1);
+        let pending = PendingMotion::default();
+        pending.publish(discovery.motion);
+        assert_eq!(pending.take(), Some(discovery.motion));
+    }
 
     fn item(out: &mut Vec<u8>, kind: u32, count: usize, data: &[u8]) {
         out.extend_from_slice(&((kind << 24) | count as u32).to_le_bytes());
@@ -416,7 +511,13 @@ mod tests {
             let mut discovery = Discovery::default();
             assert!(!discovery.feed(&frame[..split]));
             assert!(discovery.feed(&frame[split..]));
-            assert_eq!(discovery.motion, Some(MotionService { id: 27 }));
+            assert_eq!(
+                discovery.motion,
+                Some(MotionService {
+                    id: 27,
+                    remote_hid: false
+                })
+            );
         }
     }
 
@@ -473,7 +574,13 @@ mod tests {
         for end in 0..dictionary.len() {
             assert!(description(&dictionary[..end]).is_none());
             assert!(!discovery.feed(&announcement(1, 27, &dictionary[..end])));
-            assert_eq!(discovery.motion, Some(MotionService { id: 16 }));
+            assert_eq!(
+                discovery.motion,
+                Some(MotionService {
+                    id: 16,
+                    remote_hid: false
+                })
+            );
         }
         let mut oversized = dictionary.clone();
         oversized[4..8].copy_from_slice(&0x81000061u32.to_le_bytes());
@@ -500,12 +607,24 @@ mod tests {
         let mut discovery = Discovery::default();
         assert!(discovery.feed(&announcement(1, 16, &motion)));
         assert!(!discovery.feed(&announcement(3, 16, &hr)));
-        assert_eq!(discovery.motion, Some(MotionService { id: 16 }));
+        assert_eq!(
+            discovery.motion,
+            Some(MotionService {
+                id: 16,
+                remote_hid: false
+            })
+        );
         assert_eq!(discovery.heart_rate, None);
         assert!(discovery.feed(&announcement(3, 20, &hr)));
         assert!(!discovery.feed(&announcement(4, 20, &motion)));
         assert!(discovery.feed(&announcement(1, 20, &motion)));
-        assert_eq!(discovery.motion, Some(MotionService { id: 20 }));
+        assert_eq!(
+            discovery.motion,
+            Some(MotionService {
+                id: 20,
+                remote_hid: false
+            })
+        );
         assert_eq!(discovery.heart_rate, None);
         assert!(discovery.feed(&announcement(3, 16, &hr)));
         assert_eq!(discovery.heart_rate, Some(16));
@@ -520,13 +639,25 @@ mod tests {
         assert!(discovery.feed(&announcement(3, 16, &motion)));
         assert!(discovery.feed(&announcement(4, 20, &hr)));
         assert!(!discovery.feed(&announcement(5, 18, &unknown)));
-        assert_eq!(discovery.motion, Some(MotionService { id: 16 }));
+        assert_eq!(
+            discovery.motion,
+            Some(MotionService {
+                id: 16,
+                remote_hid: false
+            })
+        );
         assert_eq!(discovery.heart_rate, Some(20));
         assert!(!discovery.feed(&announcement(1, 0, &unknown)));
         let mut not_a_descriptor = announcement(1, 18, &unknown);
         not_a_descriptor[16] = 0x32;
         assert!(!discovery.feed(&not_a_descriptor));
-        assert_eq!(discovery.motion, Some(MotionService { id: 16 }));
+        assert_eq!(
+            discovery.motion,
+            Some(MotionService {
+                id: 16,
+                remote_hid: false
+            })
+        );
         assert_eq!(discovery.heart_rate, Some(20));
 
         let restart = announcement(1, 18, &unknown);
@@ -538,7 +669,13 @@ mod tests {
         assert_eq!(discovery.generation, 1);
 
         assert!(discovery.feed(&announcement(2, 27, &motion)));
-        assert_eq!(discovery.motion, Some(MotionService { id: 27 }));
+        assert_eq!(
+            discovery.motion,
+            Some(MotionService {
+                id: 27,
+                remote_hid: false
+            })
+        );
         assert_eq!(discovery.heart_rate, None);
 
         let mut discovery = Discovery::default();
@@ -551,7 +688,7 @@ mod tests {
 
     #[test]
     fn a_busy_control_worker_does_not_block_or_lose_the_latest_refresh() {
-        use std::sync::{mpsc, Arc, Mutex};
+        use std::sync::{Arc, Mutex, mpsc};
         use std::time::Duration;
         let control = Arc::new(Mutex::new(()));
         let held = control.lock().unwrap();
@@ -559,8 +696,14 @@ mod tests {
         let (sent, received) = mpsc::channel();
         let queue = pending.clone();
         let producer = std::thread::spawn(move || {
-            queue.publish(Some(MotionService { id: 16 }));
-            queue.publish(Some(MotionService { id: 27 }));
+            queue.publish(Some(MotionService {
+                id: 16,
+                remote_hid: false,
+            }));
+            queue.publish(Some(MotionService {
+                id: 27,
+                remote_hid: false,
+            }));
             sent.send(()).unwrap();
         });
         received
@@ -569,7 +712,13 @@ mod tests {
         assert!(pending.is_pending());
         drop(held);
         producer.join().unwrap();
-        assert_eq!(pending.take(), Some(Some(MotionService { id: 27 })));
+        assert_eq!(
+            pending.take(),
+            Some(Some(MotionService {
+                id: 27,
+                remote_hid: false
+            }))
+        );
         assert_eq!(pending.take(), None);
         pending.publish(None);
         assert_eq!(pending.take(), Some(None));

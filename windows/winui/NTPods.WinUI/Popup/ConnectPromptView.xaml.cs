@@ -71,7 +71,7 @@ public sealed partial class ConnectPromptView : UserControl
 
     public bool SetBattery(byte? left, byte? right, byte? caseLevel,
         bool leftCharging, bool rightCharging, bool caseCharging,
-        bool headphone, byte? headphoneLevel, bool headphoneCharging)
+        bool headphone, byte? headphoneLevel, bool headphoneCharging, bool caseLive = true)
     {
         left = Valid(left);
         right = Valid(right);
@@ -87,7 +87,8 @@ public sealed partial class ConnectPromptView : UserControl
         bool wasHeadphone = CaseCell.Visibility == Visibility.Collapsed;
         bool wasSplit = RightRow.Visibility == Visibility.Visible;
         CaseCell.Visibility = headphone ? Visibility.Collapsed : Visibility.Visible;
-        Grid.SetColumnSpan(BudsCell, headphone ? 2 : 1);
+        Grid.SetColumnSpan(BudsCell, headphone ? 3 : 1);
+        RightBatteryColumn.Width = new GridLength(0);
         if (headphone)
         {
             BudsLabel.Text = Localize.Get("Device_DefaultName");
@@ -104,22 +105,26 @@ public sealed partial class ConnectPromptView : UserControl
         }
         leftCharging &= left.HasValue;
         rightCharging &= right.HasValue;
-        caseCharging &= caseLevel.HasValue;
+        caseCharging &= caseLevel.HasValue && caseLive;
         bool split = PairingBatteryLayout.Split(left, right, leftCharging, rightCharging);
-        BudsLabel.Text = Localize.Get("ConnectPrompt_AirPods");
-        BudsValue.Text = split
-            ? $"{Localize.Get("BatteryLeftLabel_Text")} {Percent(left)}"
-            : Percent(left);
-        RightValue.Text = $"{Localize.Get("BatteryRightLabel_Text")} {Percent(right)}";
+        RightBatteryColumn.Width = split ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
+        BudsLabel.Text = Localize.Get(split ? "BatteryLeftLabel_Text" : "ConnectPrompt_AirPods");
+        BudsValue.Text = Percent(left);
+        RightValue.Text = Percent(right);
         RightRow.Visibility = split ? Visibility.Visible : Visibility.Collapsed;
-        BudsValue.FontSize = split ? 14 : 18;
+        BudsValue.FontSize = 18;
         BudsRing.Value = left ?? 0;
         BudsRing.Opacity = left.HasValue ? 1 : 0.4;
         BudsCharging.Visibility = left.HasValue && leftCharging ? Visibility.Visible : Visibility.Collapsed;
+        RightRing.Value = right ?? 0;
+        RightRing.Opacity = right.HasValue ? 1 : 0.4;
         RightCharging.Visibility = right.HasValue && rightCharging ? Visibility.Visible : Visibility.Collapsed;
         CaseValue.Text = Percent(caseLevel);
         CaseRing.Value = caseLevel ?? 0;
-        CaseRing.Opacity = caseLevel.HasValue ? 1 : 0.4;
+        CaseRing.Opacity = CaseValue.Opacity = caseLevel.HasValue && caseLive ? 1 : 0.4;
+        ToolTipService.SetToolTip(CaseValue, caseLevel.HasValue && !caseLive ? Localize.Get("Battery.LastKnown") : null);
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetHelpText(CaseValue,
+            caseLevel.HasValue && !caseLive ? Localize.Get("Battery.LastKnown") : "");
         CaseCharging.Visibility = caseLevel.HasValue && caseCharging ? Visibility.Visible : Visibility.Collapsed;
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(BudsValue,
             Description(split ? Localize.Get("BatteryLeftLabel_Text") : BudsLabel.Text, left, leftCharging));

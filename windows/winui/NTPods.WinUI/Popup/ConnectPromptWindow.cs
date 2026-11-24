@@ -14,6 +14,7 @@ namespace NTPods.WinUI.Popup;
 public sealed class ConnectPromptWindow : Window
 {
     private readonly ConnectPromptView _view = new();
+    private readonly PairingBatteryState _batteryState = new();
     private readonly IslandMotion _motion = new(double.PositiveInfinity, openingMilliseconds: 420);
     private readonly UISettings _settings = new();
     private readonly Stopwatch _clock = Stopwatch.StartNew();
@@ -86,6 +87,7 @@ public sealed class ConnectPromptWindow : Window
             ++_generation;
             _hiding = false;
             _paired = false;
+            _batteryState.Clear();
             _interacted = false;
             _lidInvitation = model.HasValue;
             _expiry.Stop();
@@ -152,6 +154,7 @@ public sealed class ConnectPromptWindow : Window
     {
         if (_closed || _hiding || !PromptVisible || _request?.IsCancellationRequested == true) return;
         _paired = true;
+        _batteryState.Clear();
         _expiry.Stop();
         _view.SetPaired();
         RefreshLayout();
@@ -159,11 +162,15 @@ public sealed class ConnectPromptWindow : Window
 
     public void UpdatePairedBattery(byte? left, byte? right, byte? caseLevel,
         bool leftCharging, bool rightCharging, bool caseCharging,
-        bool headphone, byte? headphoneLevel, bool headphoneCharging)
+        bool headphone, byte? headphoneLevel, bool headphoneCharging, bool caseLive = true)
     {
         if (_closed || _hiding || !_paired) return;
+        caseLevel = caseLive ? BatteryPresentation.Present(caseLevel) : null;
+        caseLive = caseLevel.HasValue;
+        caseCharging &= caseLive;
+        caseLevel = _batteryState.RetainCase(caseLevel);
         if (_view.SetBattery(left, right, caseLevel, leftCharging, rightCharging, caseCharging,
-            headphone, headphoneLevel, headphoneCharging)) RefreshLayout();
+            headphone, headphoneLevel, headphoneCharging, caseLive)) RefreshLayout();
     }
 
     public void HidePrompt()

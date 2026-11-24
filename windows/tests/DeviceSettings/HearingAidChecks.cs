@@ -86,23 +86,25 @@ internal static class HearingAidChecks
     {
         var request = new HearingAidRequest("set_hearing_aid_mode");
         request.Update(true, 1);
-        check(request.QueueEdit(requireApply: true) && request.ManualEditQueued && !request.TakeEdit() && request.EditQueued,
-            "An audiogram edit must remain queued until Apply, even after the tuning debounce expires.");
-        check(request.QueueEdit() && request.ManualEditQueued && !request.TakeEdit(),
-            "A later slider gesture must not automatically send an uncommitted audiogram.");
-        check(request.TakeEdit(explicitApply: true) && !request.ManualEditQueued && !request.EditQueued,
-            "Apply must take a complete audiogram draft once and clear its manual queue.");
+        check(request.QueueEdit() && request.TakeEdit() && !request.EditQueued,
+            "A complete validated edit is submitted without an Apply action.");
+        ulong writing = request.Begin(true, "set_hearing_aid");
+        check(request.QueueEdit() && !request.TakeEdit() && request.EditQueued,
+            "New gestures wait behind the current profile write without losing the final value.");
+        request.Complete(new("set_hearing_aid", writing, true, ""));
+        check(request.TakeEdit() && !request.EditQueued,
+            "Completion releases the coalesced next edit exactly once.");
         check(request.QueueEdit() && request.TakeEdit(),
             "A tuning-only gesture retains automatic debouncing after a manual draft has finished.");
-        request.QueueEdit(requireApply: true);
+        request.QueueEdit();
         check(!request.Update(false, 1) && request.EditQueued,
             "An old mode report must not discard a newer audiogram draft.");
-        check(request.Update(false, 2) && !request.EditQueued && !request.ManualEditQueued,
+        check(request.Update(false, 2) && !request.EditQueued,
             "A fresh Off report must invalidate the card draft and its queued Apply.");
         request.Update(true, 3);
-        check(!request.TakeEdit(explicitApply: true),
+        check(!request.TakeEdit(),
             "Re-enabling the mode must not revive edits discarded by Off.");
-        request.QueueEdit(requireApply: true);
+        request.QueueEdit();
         check(request.Update(null, 4) && !request.EditQueued,
             "A fresh unknown mode must invalidate an unsent personal draft.");
 
@@ -118,7 +120,7 @@ internal static class HearingAidChecks
         request.Update(true, 7);
         check(!edit.Dirty && edit.Draft!.SameValues(original) && !request.TakeEdit(),
             "Turning the mode off and on must restore actual settings instead of resurrecting an unsent tone draft.");
-        request.QueueEdit(requireApply: true);
+        request.QueueEdit();
         check(!request.Update(false, 8, verifying: true) && !request.EditQueued,
             "Temporary verification state cancels scheduling without discarding the preserved readback.");
 
@@ -385,5 +387,28 @@ internal static class HearingAidChecks
         edit.Update(new Snapshot { DeviceId = "legacy", HearingAidSettings = original }, true);
         check(edit.Draft!.SameValues(original) && !edit.Editable && !edit.CanApply,
             "Older snapshots can display reported settings but cannot authorize editing.");
+        snapshot = new Snapshot { DeviceId = "live", HearingAidSettings = original, HearingAidEditable = true };
+        edit.Update(snapshot, true);
+        edit.EditTone(0.5f);
+        var written = edit.Draft!;
+        edit.Begin();
+        edit.EditConversationBoost(false);
+        var latest = edit.Draft!;
+        snapshot.HearingAidPending = true;
+        snapshot.HearingAidEditable = false;
+        check(!edit.Update(snapshot, true) && edit.Sending && edit.Dirty && edit.CanApply,
+            "A pending own write must retain the latest gesture and its validated hearing profile.");
+        snapshot.HearingAidPending = false;
+        snapshot.HearingAidEditable = true;
+        snapshot.HearingAidSettings = written;
+        edit.Update(snapshot, true);
+        check(!edit.Sending && edit.Dirty && edit.Draft!.SameValues(latest) && edit.Baseline!.SameValues(written),
+            "Own readback rebases the next hearing edit while retaining both complete audiograms.");
+        edit.Begin();
+        edit.EditTone(-0.5f);
+        snapshot.HearingAidError = "Read failed.";
+        edit.Update(snapshot, true);
+        check(!edit.Sending && !edit.CanApply && edit.Draft is null,
+            "A failed readback discards pending hearing edits and cannot trigger an automatic retry.");
     }
 }

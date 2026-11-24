@@ -8,8 +8,8 @@ namespace NTPods.WinUI.Services;
 public static class StartupService
 {
     private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
-    private const string AppValue = "NTPods";        // the WinUI tray app
-    private const string DaemonValue = "NTPods Daemon"; // the headless daemon
+    private const string AppValue = "NTPods Dongle";        // the WinUI tray app
+    private const string DaemonValue = "NTPods Dongle Daemon"; // the headless daemon
 
     public static (bool Enabled, bool HasEntries) ReadState()
     {
@@ -60,12 +60,12 @@ public static class StartupService
     {
         string[] candidates =
         {
-            Path.Combine(AppContext.BaseDirectory, "ntpodsd.exe"),
-            // MSI layout: ntpodsd.exe sits one folder up, next to winui\.
-            Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "ntpodsd.exe")),
+            Path.Combine(AppContext.BaseDirectory, "ntpodsd-dongle.exe"),
+            // MSI layout: ntpodsd-dongle.exe sits one folder up, next to winui\.
+            Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "ntpodsd-dongle.exe")),
             Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-                "NTPods", "ntpodsd.exe"),
+                "NTPods", "ntpodsd-dongle.exe"),
         };
         foreach (var c in candidates)
             if (File.Exists(c)) return c;

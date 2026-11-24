@@ -68,8 +68,16 @@ internal static class BatteryFreshnessChecks
             "Hiding disconnected components must preserve live readings and a case omitted from a fresh packet.");
         Check(BatteryPresentation.Reading(state, BatteryPart.Right, true) == 72 && state.BatteryFreshness.Right.TimestampMs == 1_792_000_000_000,
             "Re-enabling retained readings must restore the original value and age without changing observations.");
+        state.BatteryFreshness.Case.Present = false;
+        state.Battery.CaseCharging = true;
+        Check(BatteryPresentation.Reading(state, BatteryPart.Case, false) == 90 &&
+            state.BatteryFreshness.Case.TimestampMs == 1_792_000_000_000 &&
+            !BatteryPresentation.IsLive(state, BatteryPart.Case) && !BatteryPresentation.IsCharging(state, BatteryPart.Case),
+            "Removing buds keeps the selected pair's case percentage and original age without stale charging.");
         state.Connected = false;
         state.BatteryLive = false;
+        Check(BatteryPresentation.Reading(state, BatteryPart.Case, false) is null,
+            "A full disconnect still honors the disabled cache preference.");
         Check(BatteryPresentation.Reading(state, BatteryPart.Left, false) is null && state.Battery.Left == 70 && state.Model == "AirPods Pro 3",
             "Hiding cached values on disconnect cannot delete battery samples or model metadata.");
         state.BatterySource = "ble";

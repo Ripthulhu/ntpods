@@ -17,6 +17,12 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'C# IPC contract checks failed.' }
     & $cargo run --quiet --locked --manifest-path $manifest --example mic_wire_fixtures -- check $csharpEvents
     if ($LASTEXITCODE -ne 0) { throw 'Rust/C# IPC roundtrip checks failed.' }
+    & $cargo run --quiet --locked --manifest-path $manifest --example accommodations_wire_fixtures -- emit $rustEvents
+    if ($LASTEXITCODE -ne 0) { throw 'Rust accommodations fixture generation failed.' }
+    & $dotnet run --project $project --configuration Release -- --accommodations $rustEvents $csharpEvents
+    if ($LASTEXITCODE -ne 0) { throw 'C# accommodations contract checks failed.' }
+    & $cargo run --quiet --locked --manifest-path $manifest --example accommodations_wire_fixtures -- check $csharpEvents
+    if ($LASTEXITCODE -ne 0) { throw 'Rust/C# accommodations roundtrip checks failed.' }
     & $cargo run --quiet --locked --manifest-path $manifest --example companion_preferences_fixtures -- emit $rustEvents
     if ($LASTEXITCODE -ne 0) { throw 'Rust preference fixture generation failed.' }
     & $dotnet run --project $project --configuration Release -- --preferences $rustEvents $csharpEvents

@@ -48,6 +48,7 @@ public sealed partial class MainWindow : Window
         Closed += (_, _) =>
         {
             _closed = true;
+            DevicePageView.StopHeadTracking();
             DevicePageView.StopNearbyFinder();
             if (_sizingRoot is not null) _sizingRoot.Changed -= OnRootChanged;
             FinishEntrance();
@@ -60,8 +61,18 @@ public sealed partial class MainWindow : Window
 
         DevicePageView.Client = _client;
         DevicePageView.SettingsRequested += () => ShowSettings(true);
-        InitializePairing();
+        DevicePageView.PhoneConnectionRequested += async () =>
+        {
+            ShowSettings(true);
+            await SettingsPageView.ShowPhoneConnectionAsync();
+        };
         SettingsPageView.Client = _client;
+        SettingsPageView.SetCompanionSession(_client.SessionEpoch, _client.IsReady);
+        Activated += async (_, args) =>
+        {
+            if (args.WindowActivationState != WindowActivationState.Deactivated)
+                await SettingsPageView.RefreshPhoneConnectionAsync();
+        };
         DevicePageView.SetDaemonReady(_client.IsReady);
 
         // The settings theme picker owns the choice; the window root owns the theme.
@@ -80,6 +91,7 @@ public sealed partial class MainWindow : Window
         ApplyTitleBarTheme();
         AppWindow.Changed += (sender, e) =>
         {
+            if (e.DidVisibilityChange) DevicePageView.SetRoomWindowVisible(sender.IsVisible && !_showingSettings);
             if (e.DidVisibilityChange && !sender.IsVisible)
             {
                 DevicePageView.CancelShortcutCapture();
@@ -207,8 +219,8 @@ public sealed partial class MainWindow : Window
         _pairingShuttingDown = closing;
         if (closing)
         {
-            StopPairing();
             DevicePageView.StopHeadTracking();
+            StopPairing();
             DevicePageView.StopNearbyFinder();
         }
         else UpdatePairingAvailability();
@@ -239,8 +251,8 @@ public sealed partial class MainWindow : Window
     private void OnClosing(AppWindow sender, AppWindowClosingEventArgs args)
     {
         args.Cancel = true;   // Keep the tray client alive when the window closes.
-        DevicePageView.StopHeadTracking();
         DevicePageView.StopNearbyFinder();
+        SettingsPageView.DismissPhoneConnection();
         FinishEntrance();
         FinishNavigation();
         AppWindow.Hide();
@@ -252,10 +264,10 @@ public sealed partial class MainWindow : Window
     {
         if (_showingSettings == settings) return;
         _showingSettings = settings;
+        DevicePageView.SetRoomWindowVisible(!settings && AppWindow.IsVisible);
         UpdatePairingAvailability();
         if (settings)
         {
-            DevicePageView.StopHeadTracking();
             DevicePageView.StopNearbyFinder();
         }
         DevicePageView.IsHitTestVisible = !settings;
@@ -369,7 +381,11 @@ public sealed partial class MainWindow : Window
             string reason = _closed ? "closed" : epoch != _client.SessionEpoch ? "epoch" : !ready ? "offline" : "accepted";
             CompanionUiTrace.Write("status_dispatch", new { epoch, current_epoch = _client.SessionEpoch, ready, closed = _closed, reason,
                 phase = CompanionUiTrace.Phase(status.Phase) });
-            if (reason == "accepted") DevicePageView.UpdateCompanionStatus(status, receivedAt);
+            if (reason == "accepted")
+            {
+                DevicePageView.UpdateCompanionStatus(status, receivedAt);
+                SettingsPageView.UpdateCompanionStatus(status);
+            }
         });
         if (!queued) CompanionUiTrace.Write("status_queue_failed", new { epoch });
     }
@@ -411,7 +427,7 @@ public sealed partial class MainWindow : Window
 
     private void OnCompanionResult(DaemonEvent.CommandResult result)
     {
-        if (result.Command is not ("companion_switch" or "companion_set_preference" or "companion_call_consent")) return;
+        if (result.Command is not ("companion_switch" or "companion_set_preference" or "companion_call_consent" or "companion_link" or "companion_forget" or "companion_begin_pairing" or "companion_cancel_pairing")) return;
         ulong epoch = _client.SessionEpoch;
         CompanionUiTrace.Write("result_callback", new { epoch, request_id = result.RequestId });
         bool queued = DispatcherQueue.TryEnqueue(() =>
@@ -420,7 +436,11 @@ public sealed partial class MainWindow : Window
             string reason = _closed ? "closed" : epoch != _client.SessionEpoch ? "epoch" : !ready ? "offline" : "accepted";
             CompanionUiTrace.Write("result_dispatch", new { epoch, current_epoch = _client.SessionEpoch, ready, closed = _closed, reason,
                 request_id = result.RequestId });
-            if (reason == "accepted") DevicePageView.CompleteCompanion(result, epoch);
+            if (reason == "accepted")
+            {
+                DevicePageView.CompleteCompanion(result, epoch);
+                SettingsPageView.CompleteCompanion(result, epoch);
+            }
         });
         if (!queued) CompanionUiTrace.Write("result_queue_failed", new { epoch, request_id = result.RequestId });
     }
@@ -434,6 +454,7 @@ public sealed partial class MainWindow : Window
             bool ready = connected && _client.IsReady;
             DevicePageView.SetDaemonReady(ready);
             DevicePageView.SetCompanionSession(epoch, ready);
+            SettingsPageView.SetCompanionSession(epoch, ready);
             if (!ready)
             {
                 _companionQueriedEpoch = null;

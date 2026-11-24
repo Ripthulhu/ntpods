@@ -1,0 +1,18 @@
+:root { color-scheme: dark; --bg: #101a25; --ink: #e6eef8; --muted: #a4b4c8; --tag: #172435de; --edge: #829ab047; --accent: #72c4ff; }
+:root[data-theme=light] { color-scheme: light; --bg: #e3eaf0; --ink: #192939; --muted: #405467; --tag: #f2f7fbdc; --edge: #48627b55; --accent: #0067a9; }
+:root[data-theme=contrast] { --bg: Canvas; --ink: CanvasText; --muted: CanvasText; --tag: Canvas; --edge: CanvasText; --accent: Highlight; }
+* { box-sizing: border-box; }
+html,body,main { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+body { background: var(--bg); color: var(--ink); font: 500 12px/1.25 "Segoe UI Variable", "Segoe UI", sans-serif; user-select: none; }
+main { position: relative; isolation: isolate; touch-action: none; }
+canvas { display: block; width: 100%; height: 100%; outline: none; cursor: grab; }
+canvas:active { cursor: grabbing; }
+canvas:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+#labels,#screen,.speaker-label { position: absolute; pointer-events: none; }
+#labels { inset: 0; }
+.speaker-label,#screen { left: 0; top: 0; white-space: nowrap; transform: translate(-50%, -50%); }
+.speaker-label { color: var(--ink); background: var(--tag); padding: 2px 5px; border: 1px solid var(--edge); border-radius: 5px; line-height: 13px; font-size: 10px; font-weight: 650; letter-spacing: .025em; }
+.speaker-label[data-selected=true] { border-color: var(--accent); color: var(--accent); }
+.speaker-label[data-active=true] { background: color-mix(in srgb, var(--tag) 76%, var(--accent)); }
+.speaker-label[data-active=true]::after { content: ""; position: absolute; display: block; left: 2px; bottom: 0; height: 2px; width: calc((100% - 4px) * var(--strength)); border-radius: 2px; background: var(--accent); }
+#screen { font-size: 10px; font-weight: 650; color: var(--muted); letter-spacing: .08em; }

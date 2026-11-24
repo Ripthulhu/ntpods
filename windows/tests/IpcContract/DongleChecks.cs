@@ -22,6 +22,32 @@ internal static class DongleChecks
         var legacy = JsonNode.Parse(lines[1])!.AsObject(); legacy.Remove("dongle");
         if ((Wire.ParseEvent(legacy.ToJsonString()) as DaemonEvent.State)?.Snapshot.Dongle is not { Present: false, Session: 0 })
             throw new InvalidOperationException("Older daemons must not invent a dongle.");
+        foreach (string serial in new[] { "", "a b", new string('x', 65), "board\n" })
+        {
+            var broken = JsonNode.Parse(lines[0])!.AsObject();
+            broken["dongle"]!["serial"] = serial;
+            if (Wire.ParseEvent(broken.ToJsonString()) is not null)
+                throw new InvalidOperationException("Malformed board identities must not become selection keys.");
+        }
+        var duplicate = JsonNode.Parse(lines[0])!.AsObject();
+        duplicate["dongle"]!["available_devices"]![1]!["serial"] = "BOARD-A";
+        if (Wire.ParseEvent(duplicate.ToJsonString()) is not null)
+            throw new InvalidOperationException("Duplicate board identities must not become an unambiguous selection.");
+        var nullSerial = JsonNode.Parse(lines[0])!.AsObject();
+        nullSerial["dongle"]!["available_devices"]![0]!["serial"] = null;
+        if (Wire.ParseEvent(nullSerial.ToJsonString()) is not null)
+            throw new InvalidOperationException("Null discovery identities must be rejected without throwing.");
+        var oldBoard = JsonNode.Parse(lines[0])!.AsObject();
+        foreach (string field in new[] { "serial", "available_devices", "usb_audio_available" }) oldBoard["dongle"]!.AsObject().Remove(field);
+        if (Wire.ParseEvent(oldBoard.ToJsonString()) is not DaemonEvent.State)
+            throw new InvalidOperationException("Legacy dongle snapshots must remain readable without board discovery metadata.");
+        foreach (string identity in new[] { "", "000000000000", "00112233445z", "dongle:7:1" })
+        {
+            var broken = JsonNode.Parse(lines[0])!.AsObject();
+            broken["dongle"]!["paired_device_id"] = identity;
+            if (Wire.ParseEvent(broken.ToJsonString()) is not null)
+                throw new InvalidOperationException("Malformed durable USB peer identities must not become preference keys.");
+        }
         foreach (string field in new[] { "battery_present", "battery_case_source" })
         {
             var broken = JsonNode.Parse(lines[0])!.AsObject();
@@ -50,10 +76,12 @@ internal static class DongleChecks
             new StartHardwareCheckCmd { RequestId = ulong.MaxValue, DeviceId = $"dongle:{ulong.MaxValue}:{uint.MaxValue}", BudsInCaseConfirmed = true },
             new SetDongleAudioProfileCmd { Codec = 3, Variable = true, Bitrate = 174000 },
             new GetDonglePerformanceCmd(),
+            new SetDongleReconnectPolicyCmd { Automatic = false },
         ];
         foreach (object command in healthCommands)
             result.Add(Wire.ToLine(new DongleHealthCmd { Session = ulong.MaxValue, Generation = uint.MaxValue, Command = command }).TrimEnd('\n'));
-        foreach (string field in new[] { "health", "hearing_aid_settings", "hardware_diagnostics", "hearing_metadata" })
+        result.Add(Wire.ToLine(new SelectDongleCmd { Serial = "BOARD-B" }).TrimEnd('\n'));
+        foreach (string field in new[] { "health", "hearing_aid_settings", "hardware_diagnostics", "hearing_metadata", "transparency" })
         {
             var broken = JsonNode.Parse(lines[0])!.AsObject();
             if (field == "health") broken["dongle"]!["health"] = null;

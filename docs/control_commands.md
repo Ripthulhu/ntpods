@@ -24,7 +24,7 @@ settings or paired state fields.
 | `0x12` | VoiceTrigger for Siri | `0x01` = enabled, `0x02` = disabled. |
 | `0x14` | SingleClickMode | One byte; values unverified. |
 | `0x15` | DoubleClickMode | One byte; values unverified. |
-| `0x16` | ClickHoldMode | Right byte, then left byte; `0x01` = Noise control, `0x05` = Siri. |
+| `0x16` | ClickHoldMode | Right byte, then left byte; `0x01` = Siri/Assistant, `0x05` = Noise control. See [primary evidence](WINDOWS-AIRPODS-CONTROL-PROTOCOL.md#hold-action-evidence). |
 | `0x17` | DoubleClickInterval | `0x00` = Default, `0x01` = Slower, `0x02` = Slowest. |
 | `0x18` | ClickHoldInterval | 0x00 = Default, `0x01` = Slower, `0x02` = Slowest. |
 | `0x1A` | ListeningModeConfigs | Bitmask, Off mode = `0x01`, ANC=`0x02`, Transparency = `0x04`, Adaptive = `0x08`. |

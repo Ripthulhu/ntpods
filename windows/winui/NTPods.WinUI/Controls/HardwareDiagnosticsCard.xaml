@@ -8,15 +8,12 @@
         <StackPanel Spacing="16">
             <TextBlock Text="{Binding [HardwareChecks_Description], Source={StaticResource Loc}}"
                        FontSize="13" TextWrapping="Wrap" Foreground="{ThemeResource AppleSecondaryBrush}" />
-            <Button x:Name="ReadButton" HorizontalAlignment="Stretch" Click="Read_Click">
-                <TextBlock Text="{Binding [HardwareChecks_Refresh], Source={StaticResource Loc}}" TextWrapping="Wrap" />
-            </Button>
             <TextBlock x:Name="EmptyText" Text="{Binding [HardwareChecks_NotRead], Source={StaticResource Loc}}"
                        FontSize="13" TextWrapping="Wrap" Foreground="{ThemeResource AppleSecondaryBrush}" />
             <StackPanel x:Name="Results" Spacing="16" Visibility="Collapsed">
                 <StackPanel Spacing="4">
-                    <TextBlock Text="{Binding [HardwareChecks_Left], Source={StaticResource Loc}}" FontSize="16" />
-                    <TextBlock x:Name="LeftResult" FontSize="16" TextWrapping="Wrap" />
+                    <TextBlock Text="{Binding [HardwareChecks_Left], Source={StaticResource Loc}}" FontSize="14" />
+                    <TextBlock x:Name="LeftResult" FontSize="14" TextWrapping="Wrap" />
                     <TextBlock x:Name="LeftFlags" FontSize="13" TextWrapping="Wrap"
                                Foreground="{ThemeResource AppleSecondaryBrush}" />
                     <TextBlock x:Name="LeftTime" FontSize="13" TextWrapping="Wrap"
@@ -26,8 +23,8 @@
                 </StackPanel>
                 <Border Style="{StaticResource InsetDivider}" Margin="0" />
                 <StackPanel Spacing="4">
-                    <TextBlock Text="{Binding [HardwareChecks_Right], Source={StaticResource Loc}}" FontSize="16" />
-                    <TextBlock x:Name="RightResult" FontSize="16" TextWrapping="Wrap" />
+                    <TextBlock Text="{Binding [HardwareChecks_Right], Source={StaticResource Loc}}" FontSize="14" />
+                    <TextBlock x:Name="RightResult" FontSize="14" TextWrapping="Wrap" />
                     <TextBlock x:Name="RightFlags" FontSize="13" TextWrapping="Wrap"
                                Foreground="{ThemeResource AppleSecondaryBrush}" />
                     <TextBlock x:Name="RightTime" FontSize="13" TextWrapping="Wrap"
@@ -53,13 +50,10 @@
             </StackPanel>
             <Border Style="{StaticResource InsetDivider}" Margin="0" />
             <StackPanel Spacing="8">
-                <TextBlock Text="{Binding [HardwareChecks_DeviceData], Source={StaticResource Loc}}" FontSize="16" />
+                <TextBlock Text="{Binding [HardwareChecks_DeviceData], Source={StaticResource Loc}}" FontSize="14" />
                 <TextBlock Text="{Binding [HardwareChecks_DeviceDataHelp], Source={StaticResource Loc}}"
                            FontSize="13" TextWrapping="Wrap" Foreground="{ThemeResource AppleSecondaryBrush}" />
             </StackPanel>
-            <Button x:Name="MetadataReadButton" HorizontalAlignment="Stretch" Click="ReadMetadata_Click">
-                <TextBlock Text="{Binding [HardwareChecks_ReadDeviceData], Source={StaticResource Loc}}" TextWrapping="Wrap" />
-            </Button>
             <TextBlock x:Name="MetadataEmpty" Text="{Binding [HardwareChecks_DeviceDataNotRead], Source={StaticResource Loc}}"
                        FontSize="13" TextWrapping="Wrap" Foreground="{ThemeResource AppleSecondaryBrush}" />
             <StackPanel x:Name="MetadataResults" Spacing="8" Visibility="Collapsed">
@@ -69,7 +63,7 @@
                           HorizontalContentAlignment="Stretch">
                     <Expander.Header>
                         <TextBlock Text="{Binding [HardwareChecks_RawCurve], Source={StaticResource Loc}}"
-                                   FontSize="16" TextWrapping="Wrap" />
+                                   FontSize="14" TextWrapping="Wrap" />
                     </Expander.Header>
                     <StackPanel Spacing="8">
                         <TextBlock Text="{Binding [HardwareChecks_RawDataHelp], Source={StaticResource Loc}}"

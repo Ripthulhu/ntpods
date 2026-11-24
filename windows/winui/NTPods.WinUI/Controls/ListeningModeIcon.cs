@@ -34,6 +34,7 @@ public sealed class ListeningModeIcon : UserControl
         IsHitTestVisible = false;
         IsTabStop = false;
         RegisterPropertyChangedCallback(ForegroundProperty, (_, _) => ObserveForeground());
+        ActualThemeChanged += (_, _) => { _rendered = null; ObserveForeground(); };
         SizeChanged += (_, _) => Draw();
         Loaded += (_, _) =>
         {

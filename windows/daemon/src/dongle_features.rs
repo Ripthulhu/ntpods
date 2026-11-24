@@ -1,29 +1,74 @@
 //! Typed dongle features; device reports remain separate from accepted requests.
+use crate::dongle_protocol::spec::{self, feature};
 use ntpods_ipc::{DongleAudioState, DonglePerformanceState, NearbyFinderState};
 use std::collections::BTreeMap;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FirmwareVersion {
+    pub major: u8,
+    pub minor: u8,
+    pub patch: u16,
+    pub variant: u8,
+}
+
+pub fn firmware_version(bytes: &[u8]) -> Result<FirmwareVersion, String> {
+    use spec::firmware_version as wire;
+    if bytes.len() != wire::SIZE
+        || bytes[wire::VERSION_OFFSET] != wire::VERSION
+        || !matches!(
+            bytes[wire::VARIANT_OFFSET],
+            spec::firmware_variant::STANDARD | spec::firmware_variant::RADIO0076
+        )
+    {
+        return Err("Unsupported dongle firmware version response.".into());
+    }
+    Ok(FirmwareVersion {
+        major: bytes[wire::MAJOR_OFFSET],
+        minor: bytes[wire::MINOR_OFFSET],
+        patch: u16::from_le_bytes(
+            bytes[wire::PATCH_OFFSET..wire::PATCH_OFFSET + wire::PATCH_SIZE]
+                .try_into()
+                .unwrap(),
+        ),
+        variant: bytes[wire::VARIANT_OFFSET],
+    })
+}
+
 pub fn audio(bytes: &[u8]) -> Result<DongleAudioState, String> {
-    if bytes.len() != 20
-        || bytes[0] != 1
-        || bytes[1..=2].iter().any(|codec| *codec > 3)
-        || bytes[3] > 1
-        || bytes[12] > 1
-        || bytes[13] > 6
-        || bytes[14] > 2
-        || bytes[15] & !15 != 0
-        || u16::from_le_bytes([bytes[18], bytes[19]]) != 100
+    use spec::audio_profile::*;
+    if bytes.len() != SIZE
+        || bytes[VERSION_OFFSET] != VERSION
+        || [bytes[REQUESTED_CODEC_OFFSET], bytes[ACTUAL_CODEC_OFFSET]]
+            .iter()
+            .any(|codec| *codec > spec::control::codec::AAC_ELD)
+        || bytes[RATE_MODE_OFFSET] > rate_mode::VARIABLE_BITRATE
+        || bytes[GAME_MODE_REQUESTED_OFFSET] > 1
+        || bytes[GAME_MODE_STATE_OFFSET] > game_mode_state::RESTORING
+        || bytes[INPUT_OWNERSHIP_OFFSET] > spec::input_ownership::PHONE
+        || bytes[FLAGS_OFFSET] & flag::UNDEFINED_BITS != 0
+        || u16::from_le_bytes(
+            bytes[STARTUP_PRIMING_MILLISECONDS_OFFSET
+                ..STARTUP_PRIMING_MILLISECONDS_OFFSET + STARTUP_PRIMING_MILLISECONDS_SIZE]
+                .try_into()
+                .unwrap(),
+        ) != u16::from(STARTUP_PRIMING_MILLISECONDS)
     {
         return Err("Unsupported dongle audio profile.".into());
     }
     let u32_at = |offset| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
-    let delay = u16::from_le_bytes([bytes[16], bytes[17]]);
+    let delay = u16::from_le_bytes(
+        bytes[DELAY_TENTHS_MILLISECONDS_OFFSET
+            ..DELAY_TENTHS_MILLISECONDS_OFFSET + DELAY_TENTHS_MILLISECONDS_SIZE]
+            .try_into()
+            .unwrap(),
+    );
     Ok(DongleAudioState {
-        requested_codec: bytes[1],
-        codec: bytes[2],
-        variable: bytes[3] == 1,
-        requested_bitrate: u32_at(4),
-        bitrate: u32_at(8),
-        game_mode_requested: bytes[12] == 1,
+        requested_codec: bytes[REQUESTED_CODEC_OFFSET],
+        codec: bytes[ACTUAL_CODEC_OFFSET],
+        variable: bytes[RATE_MODE_OFFSET] == rate_mode::VARIABLE_BITRATE,
+        requested_bitrate: u32_at(REQUESTED_BITRATE_OFFSET),
+        bitrate: u32_at(ACTUAL_BITRATE_OFFSET),
+        game_mode_requested: bytes[GAME_MODE_REQUESTED_OFFSET] == 1,
         game_mode_state: [
             "off",
             "pending",
@@ -32,45 +77,89 @@ pub fn audio(bytes: &[u8]) -> Result<DongleAudioState, String> {
             "failed",
             "unsupported",
             "restoring",
-        ][usize::from(bytes[13])]
+        ][usize::from(bytes[GAME_MODE_STATE_OFFSET])]
         .into(),
-        input: bytes[14],
-        pending: bytes[15] & 1 != 0,
-        streaming: bytes[15] & 2 != 0,
-        microphone_active: bytes[15] & 4 != 0,
-        game_mode_supported: bytes[15] & 8 != 0,
-        reported_delay_tenths_ms: (delay != u16::MAX).then_some(delay),
-        priming_ms: 100,
+        input: bytes[INPUT_OWNERSHIP_OFFSET],
+        pending: bytes[FLAGS_OFFSET] & flag::PROFILE_PENDING != 0,
+        streaming: bytes[FLAGS_OFFSET] & flag::STREAMING != 0,
+        microphone_active: bytes[FLAGS_OFFSET] & flag::MICROPHONE != 0,
+        game_mode_supported: bytes[FLAGS_OFFSET] & flag::GAME_MODE_SUPPORTED != 0,
+        reported_delay_tenths_ms: (u32::from(delay) != DELAY_UNKNOWN).then_some(delay),
+        priming_ms: u16::from(STARTUP_PRIMING_MILLISECONDS),
     })
 }
 
+pub fn reconnect_policy(bytes: &[u8]) -> Result<bool, String> {
+    match bytes {
+        [1, spec::reconnect_policy::MANUAL] => Ok(false),
+        [1, spec::reconnect_policy::AUTOMATIC] => Ok(true),
+        _ => Err("Unsupported reconnect policy response.".into()),
+    }
+}
+
+pub fn set_reconnect_policy(
+    saved: &mut Option<bool>,
+    automatic: bool,
+    mut request: impl FnMut(&[u8]) -> Result<Vec<u8>, String>,
+) -> Result<(), String> {
+    let read = [feature::RECONNECT_POLICY];
+    *saved = None;
+    *saved = Some(reconnect_policy(&request(&read)?)?);
+    if *saved == Some(automatic) {
+        return Ok(());
+    }
+    // Firmware verifies flash before acknowledging. If the receipt was lost, read once without replaying the write.
+    let response = request(&[feature::RECONNECT_POLICY, u8::from(automatic)])
+        .and_then(|bytes| reconnect_policy(&bytes));
+    if response == Ok(automatic) {
+        *saved = Some(automatic);
+        return Ok(());
+    }
+    *saved = request(&read)
+        .ok()
+        .and_then(|bytes| reconnect_policy(&bytes).ok());
+    if *saved == Some(automatic) {
+        Ok(())
+    } else {
+        Err(response
+            .err()
+            .unwrap_or_else(|| "Reconnect policy was not confirmed.".into()))
+    }
+}
+
 pub fn performance(bytes: &[u8]) -> Result<DonglePerformanceState, String> {
-    if bytes.len() != 64 || bytes[0] != 1 || bytes[1] > 2 || bytes[2] > 3 || bytes[3] & !15 != 0 {
+    use spec::performance::*;
+    if bytes.len() != SIZE
+        || bytes[VERSION_OFFSET] != VERSION
+        || bytes[INPUT_OWNERSHIP_OFFSET] > spec::input_ownership::PHONE
+        || bytes[ACTUAL_CODEC_OFFSET] > spec::control::codec::AAC_ELD
+        || bytes[FLAGS_OFFSET] & flag::UNDEFINED_BITS != 0
+    {
         return Err("Unsupported dongle performance snapshot.".into());
     }
     let field = |offset| {
         let value = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
-        (value != u32::MAX).then_some(value)
+        (value != UNAVAILABLE).then_some(value)
     };
     let state = DonglePerformanceState {
-        input: bytes[1],
-        codec: bytes[2],
-        flags: bytes[3],
-        uptime_ms: field(4),
-        pcm_used: field(8),
-        pcm_capacity: field(12),
-        pcm_high_water: field(16),
-        underflow_frames: field(20),
-        dropped_frames: field(24),
-        encoded_units: field(28),
-        encode_us: field(32),
-        encode_max_us: field(36),
-        send_failures: field(40),
-        recoveries: field(44),
-        heap_capacity: field(48),
-        heap_allocated: field(52),
-        heap_remaining: field(56),
-        heap_arena: field(60),
+        input: bytes[INPUT_OWNERSHIP_OFFSET],
+        codec: bytes[ACTUAL_CODEC_OFFSET],
+        flags: bytes[FLAGS_OFFSET],
+        uptime_ms: field(UPTIME_MILLISECONDS_OFFSET),
+        pcm_used: field(PCM_FRAMES_USED_OFFSET),
+        pcm_capacity: field(PCM_FRAMES_CAPACITY_OFFSET),
+        pcm_high_water: field(PCM_FRAMES_HIGH_WATER_MARK_OFFSET),
+        underflow_frames: field(PCM_UNDERFLOW_FRAMES_OFFSET),
+        dropped_frames: field(PCM_DROPPED_FRAMES_OFFSET),
+        encoded_units: field(ENCODED_UNITS_OFFSET),
+        encode_us: field(LAST_ENCODE_MICROSECONDS_OFFSET),
+        encode_max_us: field(MAXIMUM_ENCODE_MICROSECONDS_OFFSET),
+        send_failures: field(SEND_FAILURES_OFFSET),
+        recoveries: field(RECOVERY_REQUESTS_OFFSET),
+        heap_capacity: field(LINKED_HEAP_CAPACITY_OFFSET),
+        heap_allocated: field(HEAP_ALLOCATED_BYTES_OFFSET),
+        heap_remaining: field(HEAP_REMAINING_BYTES_OFFSET),
+        heap_arena: field(ALLOCATOR_ARENA_BYTES_OFFSET),
     };
     if state
         .pcm_used
@@ -95,14 +184,23 @@ pub fn performance(bytes: &[u8]) -> Result<DonglePerformanceState, String> {
 }
 
 pub fn nearby(bytes: &[u8], revision: u64) -> Result<NearbyFinderState, String> {
-    if bytes.len() != 24 || bytes[0] != 1 || bytes[1] & 0x7f > 4 || bytes[3] > 3 {
+    use spec::nearby_finder::*;
+    if bytes.len() != SIZE
+        || bytes[VERSION_OFFSET] != VERSION
+        || bytes[STATE_OFFSET] & STATE_MASK > state::PAUSED
+        || bytes[TREND_OFFSET] > trend::WEAKER
+    {
         return Err("Unsupported dongle nearby-finder snapshot.".into());
     }
-    let state = bytes[1] & 0x7f;
-    let identity = bytes[1] & 0x80 != 0;
-    let latest = bytes[2] as i8;
-    let q8 = i32::from_le_bytes(bytes[20..24].try_into().unwrap());
-    let rssi = if q8 == i32::MIN {
+    let state = bytes[STATE_OFFSET] & STATE_MASK;
+    let identity = bytes[STATE_OFFSET] & IDENTITY_AVAILABLE_FLAG != 0;
+    let latest = bytes[RSSI_OFFSET] as i8;
+    let q8 = i32::from_le_bytes(
+        bytes[SMOOTHED_RSSI_OFFSET..SMOOTHED_RSSI_OFFSET + SMOOTHED_RSSI_SIZE]
+            .try_into()
+            .unwrap(),
+    );
+    let rssi = if q8 == SMOOTHED_RSSI_UNKNOWN {
         None
     } else {
         if !(-126 * 256..=20 * 256).contains(&q8) {
@@ -110,25 +208,35 @@ pub fn nearby(bytes: &[u8], revision: u64) -> Result<NearbyFinderState, String> 
         }
         Some((f64::from(q8) / 256.0).round() as i16)
     };
-    if (latest != 127 && !(-126..=20).contains(&latest))
-        || (state != 0 && !identity)
+    if (latest != RSSI_UNKNOWN as i8 && !(-126..=20).contains(&latest))
+        || (state != state::STOPPED && !identity)
         || (!identity && rssi.is_some())
     {
         return Err("Unverified dongle signal reading.".into());
     }
-    let age = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+    let age = u32::from_le_bytes(
+        bytes[LAST_HEARD_AGE_MILLISECONDS_OFFSET
+            ..LAST_HEARD_AGE_MILLISECONDS_OFFSET + LAST_HEARD_AGE_MILLISECONDS_SIZE]
+            .try_into()
+            .unwrap(),
+    );
     Ok(NearbyFinderState {
         revision,
-        active: state != 0,
-        paused: state == 4,
+        active: state != state::STOPPED,
+        paused: state == state::PAUSED,
         available_identity: identity,
         rssi,
-        trend: ["unknown", "stronger", "steady", "weaker"][usize::from(bytes[3])].into(),
-        last_heard_age_ms: (age != u32::MAX).then_some(u64::from(age)),
+        trend: ["unknown", "stronger", "steady", "weaker"][usize::from(bytes[TREND_OFFSET])].into(),
+        last_heard_age_ms: (age != AGE_UNKNOWN).then_some(u64::from(age)),
     })
 }
 
-pub fn audio_request(codec: u8, variable: bool, bitrate: u32) -> Result<[u8; 7], String> {
+pub fn audio_request(
+    codec: u8,
+    variable: bool,
+    bitrate: u32,
+) -> Result<[u8; spec::configure_audio_profile::REQUEST_SIZE], String> {
+    use spec::configure_audio_profile::*;
     if codec > 3
         || (codec <= 1 && (variable || bitrate != 0))
         || (variable && codec != 3)
@@ -137,8 +245,12 @@ pub fn audio_request(codec: u8, variable: bool, bitrate: u32) -> Result<[u8; 7],
     {
         return Err("Unsupported dongle audio profile.".into());
     }
-    let mut request = [3, codec, u8::from(variable), 0, 0, 0, 0];
-    request[3..].copy_from_slice(&bitrate.to_le_bytes());
+    let mut request = [0; REQUEST_SIZE];
+    request[FEATURE_OFFSET] = feature::CONFIGURE_AUDIO_PROFILE;
+    request[REQUESTED_CODEC_OFFSET] = codec;
+    request[RATE_MODE_OFFSET] = u8::from(variable);
+    request[REQUESTED_BITRATE_OFFSET..REQUESTED_BITRATE_OFFSET + REQUESTED_BITRATE_SIZE]
+        .copy_from_slice(&bitrate.to_le_bytes());
     Ok(request)
 }
 
@@ -154,13 +266,15 @@ impl Ears {
         &mut self,
         packet: Option<&crate::dongle_rpc::Cached>,
     ) -> Result<Option<EarAction>, ()> {
-        let without_case = |statuses: [crate::aap::EarStatus; 2]| statuses.map(|status| {
-            if status == crate::aap::EarStatus::InCase {
-                crate::aap::EarStatus::Disconnected
-            } else {
-                status
-            }
-        });
+        let without_case = |statuses: [crate::aap::EarStatus; 2]| {
+            statuses.map(|status| {
+                if status == crate::aap::EarStatus::InCase {
+                    crate::aap::EarStatus::Disconnected
+                } else {
+                    status
+                }
+            })
+        };
         let Some(packet) = packet else {
             self.wearing = None;
             return Err(());
@@ -208,24 +322,25 @@ pub struct Setting {
 }
 
 pub fn settings(bytes: &[u8]) -> Result<BTreeMap<u8, Setting>, String> {
-    if bytes.len() < 2
-        || bytes[0] != 1
-        || bytes[1] > 32
-        || bytes.len() != 2 + usize::from(bytes[1]) * 13
+    use spec::settings_snapshot::*;
+    if bytes.len() < HEADER_SIZE
+        || bytes[VERSION_OFFSET] != VERSION
+        || bytes[COUNT_OFFSET] > 32
+        || bytes.len() != HEADER_SIZE + usize::from(bytes[COUNT_OFFSET]) * RECORD_SIZE
     {
         return Err("Unsupported dongle settings snapshot.".into());
     }
     let mut result = BTreeMap::new();
-    for record in bytes[2..].chunks_exact(13) {
-        let id = record[0];
+    for record in bytes[HEADER_SIZE..].chunks_exact(RECORD_SIZE) {
+        let id = record[IDENTIFIER_OFFSET];
         let u32_at = |offset| u32::from_le_bytes(record[offset..offset + 4].try_into().unwrap());
         let setting = Setting {
-            age_ms: u32_at(1),
-            revision: u32_at(5),
-            value: u32_at(9),
+            age_ms: u32_at(AGE_MILLISECONDS_OFFSET),
+            revision: u32_at(REVISION_OFFSET),
+            value: u32_at(VALUE_OFFSET),
         };
         if setting.revision == 0
-            || !crate::device_settings::valid_control(id, setting.value)
+            || !spec::setting::IDS.contains(&id)
             || result.insert(id, setting).is_some()
         {
             return Err("Malformed dongle setting report.".into());
@@ -238,7 +353,7 @@ pub fn setting_request(id: u8, value: u32) -> Result<[u8; 6], String> {
     if !crate::device_settings::valid_control(id, value) {
         return Err("Unsupported AirPods setting value.".into());
     }
-    let mut request = [1, id, 0, 0, 0, 0];
+    let mut request = [feature::WRITE_SETTING, id, 0, 0, 0, 0];
     request[2..].copy_from_slice(&value.to_le_bytes());
     Ok(request)
 }
@@ -246,6 +361,178 @@ pub fn setting_request(id: u8, value: u32) -> Result<[u8; 6], String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn canonical_typed_layouts_use_the_production_decoders() {
+        use crate::dongle_protocol::golden;
+        let fixtures = golden::fixtures();
+        let mut covered = std::collections::BTreeSet::new();
+        for vector in fixtures["layouts"].as_array().unwrap() {
+            let bytes = golden::bytes(&vector["hex"]);
+            let fields = &vector["fields"];
+            let layout = vector["layout"].as_str().unwrap();
+            match layout {
+                "audio_profile" => {
+                    let report = audio(&bytes).unwrap();
+                    assert_eq!(
+                        [
+                            "off",
+                            "pending",
+                            "sent",
+                            "confirmed",
+                            "failed",
+                            "unsupported",
+                            "restoring"
+                        ][usize::from(bytes[spec::audio_profile::GAME_MODE_STATE_OFFSET])],
+                        fields["game_mode_state"].as_str().unwrap()
+                    );
+                    assert_eq!(
+                        report.requested_bitrate,
+                        fields["requested_bitrate"].as_u64().unwrap_or(0) as u32
+                    );
+                    assert_eq!(
+                        report.bitrate,
+                        fields["actual_bitrate"].as_u64().unwrap_or(0) as u32
+                    );
+                    let delay = fields["delay_tenths_milliseconds"].as_u64().unwrap() as u16;
+                    assert_eq!(
+                        report.reported_delay_tenths_ms,
+                        (delay != u16::MAX).then_some(delay)
+                    );
+                }
+                "performance" => {
+                    let report = performance(&bytes).unwrap();
+                    assert_eq!(
+                        report.uptime_ms,
+                        fields["uptime_milliseconds"].as_u64().map(|v| v as u32)
+                    );
+                    assert_eq!(
+                        report.pcm_used,
+                        Some(fields["pcm_frames_used"].as_u64().unwrap_or(0) as u32)
+                    );
+                    let available = fields["heap_remaining_bytes"].as_u64().unwrap() as u32;
+                    assert_eq!(
+                        report.heap_remaining,
+                        (available != u32::MAX).then_some(available)
+                    );
+                }
+                "nearby_finder" => {
+                    let report =
+                        nearby(&bytes, 42).unwrap_or_else(|e| panic!("{}: {e}", vector["name"]));
+                    assert_eq!(report.revision, 42);
+                    assert_eq!(report.trend, fields["trend"].as_str().unwrap());
+                    let q8 = fields["smoothed_rssi"].as_i64().unwrap() as i32;
+                    assert_eq!(
+                        report.rssi,
+                        (q8 != i32::MIN).then(|| (f64::from(q8) / 256.0).round() as i16)
+                    );
+                }
+                "firmware_version" => {
+                    let report = firmware_version(&bytes).unwrap();
+                    assert_eq!(report.major, fields["major"].as_u64().unwrap() as u8);
+                    assert_eq!(report.minor, fields["minor"].as_u64().unwrap() as u8);
+                    assert_eq!(report.patch, fields["patch"].as_u64().unwrap() as u16);
+                    assert_eq!(report.variant, fields["variant"].as_u64().unwrap() as u8);
+                }
+                "configure_audio_profile" => {
+                    let wire = &spec::configure_audio_profile::REQUEST_SIZE;
+                    assert_eq!(bytes.len(), *wire);
+                    let result = audio_request(
+                        bytes[1],
+                        bytes[2] != 0,
+                        u32::from_le_bytes(bytes[3..7].try_into().unwrap()),
+                    );
+                    if vector["valid"] == false {
+                        assert!(result.is_err());
+                    } else {
+                        assert_eq!(result.unwrap().as_slice(), bytes);
+                    }
+                }
+                _ => continue,
+            }
+            covered.insert(layout);
+        }
+        assert_eq!(
+            covered,
+            [
+                "audio_profile",
+                "configure_audio_profile",
+                "firmware_version",
+                "nearby_finder",
+                "performance"
+            ]
+            .into_iter()
+            .collect()
+        );
+        for vector in fixtures["settings_sessions"].as_array().unwrap() {
+            let bytes = golden::bytes(&vector["snapshot"]);
+            let records = settings(&bytes).unwrap();
+            assert_eq!(
+                records.len(),
+                bytes[spec::settings_snapshot::COUNT_OFFSET] as usize
+            );
+        }
+    }
+
+    #[test]
+    fn reconnect_policy_keeps_unknown_separate_from_manual() {
+        assert_eq!(reconnect_policy(&[1, 0]), Ok(false));
+        assert_eq!(reconnect_policy(&[1, 1]), Ok(true));
+        for bad in [&[][..], &[0, 0], &[1, 2], &[1, 1, 0]] {
+            assert!(reconnect_policy(bad).is_err());
+        }
+    }
+    #[test]
+    fn reconnect_policy_confirms_without_replaying_a_write() {
+        let read = &[feature::RECONNECT_POLICY][..];
+        let set = &[feature::RECONNECT_POLICY, 1][..];
+        let mut saved = None;
+        let mut script = [
+            (read, Ok(vec![1, 0])),
+            (set, Err("receipt lost".into())),
+            (read, Ok(vec![1, 1])),
+        ]
+        .into_iter();
+        set_reconnect_policy(&mut saved, true, |request| {
+            let (expected, reply) = script.next().unwrap();
+            assert_eq!(request, expected);
+            reply
+        })
+        .unwrap();
+        assert_eq!(script.len(), 0);
+        assert_eq!(saved, Some(true));
+        set_reconnect_policy(&mut saved, true, |request| {
+            assert_eq!(request, read);
+            Ok(vec![1, 1])
+        })
+        .unwrap();
+        assert!(set_reconnect_policy(&mut saved, true, |_| Err("removed".into())).is_err());
+        assert_eq!(saved, None);
+        let mut replies = [Ok(vec![1, 0]), Err("busy".into()), Ok(vec![1, 0])].into_iter();
+        assert!(set_reconnect_policy(&mut saved, true, |_| replies.next().unwrap()).is_err());
+        assert_eq!(saved, Some(false));
+    }
+    #[test]
+    fn firmware_version_requires_exact_schema_length_and_supported_variant() {
+        let good = [1, 1, 2, 3, 1, 1];
+        assert_eq!(
+            firmware_version(&good).unwrap(),
+            FirmwareVersion {
+                major: 1,
+                minor: 2,
+                patch: 259,
+                variant: 1
+            }
+        );
+        for len in 0..good.len() {
+            assert!(firmware_version(&good[..len]).is_err());
+        }
+        assert!(firmware_version(&[good.as_slice(), &[0]].concat()).is_err());
+        for (offset, value) in [(0, 0), (0, 2), (5, 2)] {
+            let mut bad = good;
+            bad[offset] = value;
+            assert!(firmware_version(&bad).is_err());
+        }
+    }
     #[test]
     fn audio_profiles_keep_requested_and_actual_codec_delay_and_limit_separate() {
         let mut bytes = [0; 20];
@@ -363,7 +650,27 @@ mod tests {
             [1, 0x16, 1, 5, 0, 0]
         );
         assert!(setting_request(0x16, 1).is_err());
+        assert!(setting_request(0x16, 0x01050501).is_err());
+        assert!(setting_request(0x24, 0x00022301).is_err());
         assert!(setting_request(0xff, 1).is_err());
+    }
+
+    #[test]
+    fn unfamiliar_known_values_do_not_discard_other_settings_in_the_snapshot() {
+        let bytes = [
+            &[1, 3][..],
+            record(0x24, 15, 1, 0x00022301).as_slice(),
+            record(0x16, 100, 2, 0x01050501).as_slice(),
+            record(0x28, 0, 3, 1).as_slice(),
+        ]
+        .concat();
+        let parsed = settings(&bytes).unwrap();
+        assert_eq!(parsed.len(), 3);
+        assert_eq!(parsed[&0x24].value, 0x00022301);
+        assert_eq!(parsed[&0x16].value, 0x01050501);
+        assert_eq!(parsed[&0x28].value, 1);
+        let unknown = [&[1, 1][..], record(0x03, 0, 1, 1).as_slice()].concat();
+        assert!(settings(&unknown).is_err());
     }
     #[test]
     fn ear_actions_need_a_fresh_transition_and_never_replay_cached_or_invalid_state() {
@@ -396,7 +703,10 @@ mod tests {
             after_microphone.observe(Some(&report(10, 60000, 0, 0))),
             Err(())
         );
-        assert_eq!(after_microphone.observe(Some(&report(10, 61000, 0, 0))), Err(()));
+        assert_eq!(
+            after_microphone.observe(Some(&report(10, 61000, 0, 0))),
+            Err(())
+        );
         assert_eq!(
             after_microphone.observe(Some(&report(11, 0, 1, 0))),
             Ok(Some(EarAction::Pause))
@@ -407,36 +717,66 @@ mod tests {
     fn one_bud_case_transitions_keep_the_other_bud_usable_in_both_orientations() {
         for solo in [[0, 2], [2, 0]] {
             let report = |revision, statuses: [u8; 2]| crate::dongle_rpc::Cached {
-                revision, age_ms: 0,
+                revision,
+                age_ms: 0,
                 packet: vec![4, 0, 4, 0, 6, 0, statuses[0], statuses[1]],
             };
             let removed = solo.map(|status| if status == 2 { 1 } else { status });
             let mut ears = Ears::default();
             assert_eq!(ears.observe(Some(&report(1, [0, 0]))), Ok(None));
             assert_eq!(ears.observe(Some(&report(2, solo))), Ok(None));
-            assert_eq!(ears.observe(Some(&report(3, removed))), Ok(Some(EarAction::Pause)));
-            assert_eq!(ears.observe(Some(&report(4, solo))), Ok(Some(EarAction::Resume)));
-            assert_eq!(ears.observe(Some(&report(5, [2, 2]))), Ok(Some(EarAction::Pause)));
-            assert_eq!(ears.observe(Some(&report(6, solo))), Ok(Some(EarAction::Resume)));
+            assert_eq!(
+                ears.observe(Some(&report(3, removed))),
+                Ok(Some(EarAction::Pause))
+            );
+            assert_eq!(
+                ears.observe(Some(&report(4, solo))),
+                Ok(Some(EarAction::Resume))
+            );
+            assert_eq!(
+                ears.observe(Some(&report(5, [2, 2]))),
+                Ok(Some(EarAction::Pause))
+            );
+            assert_eq!(
+                ears.observe(Some(&report(6, solo))),
+                Ok(Some(EarAction::Resume))
+            );
         }
     }
 
     #[test]
     fn stale_case_state_and_report_gaps_cannot_qualify_a_transitional_partner() {
         let report = |revision, age_ms, first, second| crate::dongle_rpc::Cached {
-            revision, age_ms, packet: vec![4, 0, 4, 0, 6, 0, first, second],
+            revision,
+            age_ms,
+            packet: vec![4, 0, 4, 0, 6, 0, first, second],
         };
         let mut ears = Ears::default();
         assert_eq!(ears.observe(Some(&report(1, 0, 2, 0))), Ok(None));
-        assert_eq!(ears.observe(Some(&report(2, 0, 2, 1))), Ok(Some(EarAction::Pause)));
+        assert_eq!(
+            ears.observe(Some(&report(2, 0, 2, 1))),
+            Ok(Some(EarAction::Pause))
+        );
         assert_eq!(ears.observe(Some(&report(2, 1501, 2, 1))), Err(()));
         assert_eq!(ears.observe(Some(&report(3, 0, 4, 0))), Ok(None));
-        assert_eq!(ears.wearing, Some([crate::aap::EarStatus::Disconnected, crate::aap::EarStatus::InEar]));
+        assert_eq!(
+            ears.wearing,
+            Some([
+                crate::aap::EarStatus::Disconnected,
+                crate::aap::EarStatus::InEar
+            ])
+        );
         assert_eq!(ears.observe(None), Err(()));
         assert_eq!(ears.observe(Some(&report(4, 0, 0, 3))), Ok(None));
         let mut reconnected = Ears::default();
         assert_eq!(reconnected.observe(Some(&report(1, 60000, 2, 0))), Err(()));
         assert_eq!(reconnected.observe(Some(&report(2, 0, 4, 0))), Ok(None));
-        assert_eq!(reconnected.wearing, Some([crate::aap::EarStatus::Disconnected, crate::aap::EarStatus::InEar]));
+        assert_eq!(
+            reconnected.wearing,
+            Some([
+                crate::aap::EarStatus::Disconnected,
+                crate::aap::EarStatus::InEar
+            ])
+        );
     }
 }

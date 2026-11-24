@@ -108,17 +108,15 @@
   <data name="HearingAid.TurnOff" xml:space="preserve"><value>Desativar a assistência auditiva</value></data>
   <data name="HearingAid.EnableUnconfirmed" xml:space="preserve"><value>A assistência auditiva pode ainda estar ativa. Tenta desativá-la.</value></data>
   <data name="HearingAid.ReadOnly" xml:space="preserve"><value>Estes ajustes são só de leitura. Podes ativar ou desativar o perfil auditivo guardado.</value></data>
-  <data name="HearingAid.ReadFirst" xml:space="preserve"><value>Lê as definições auditivas guardadas antes de as editares.</value></data>
+  <data name="HearingAid.ReadFirst" xml:space="preserve"><value>A carregar as definições auditivas guardadas.</value></data>
   <data name="HearingAid.SetupRequired" xml:space="preserve"><value>Configura primeiro o aparelho auditivo num iPhone ou iPad.</value></data>
   <data name="MediaAssistSwitch.Header" xml:space="preserve"><value>Assistência multimédia</value></data>
   <data name="MediaAssist.Help" xml:space="preserve"><value>Usa o perfil auditivo guardado para conteúdos multimédia.</value></data>
   <data name="MediaAssist.TurnOff" xml:space="preserve"><value>Desativar a assistência multimédia</value></data>
   <data name="MediaAssist.EnableUnconfirmed" xml:space="preserve"><value>A assistência multimédia pode ainda estar ativa. Tenta desativá-la.</value></data>
   <data name="HearingAid.InvalidAudiogram" xml:space="preserve"><value>Introduz um valor de 0 a 90 dB HL para cada frequência em ambos os ouvidos.</value></data>
-  <data name="HearingAidTitle.Text" xml:space="preserve"><value>Assistência auditiva</value></data>
+  <data name="HearingAidTitle.Text" xml:space="preserve"><value>Aparelho auditivo</value></data>
   <data name="HearingAidSubtitle.Text" xml:space="preserve"><value>Usa o perfil auditivo guardado nos teus AirPods.</value></data>
-  <data name="HearingAidWarning.Title" xml:space="preserve"><value>Experimental</value></data>
-  <data name="HearingAidWarning.Message" xml:space="preserve"><value>Amplificação sem um audiograma adequado pode causar feedback — mantém num nível confortável.</value></data>
   <data name="HearingAidSwitch.Header" xml:space="preserve"><value>Aparelho auditivo</value></data>
   <data name="HearingAidAmp.Header" xml:space="preserve"><value>Amplificação</value></data>
   <data name="HearingAidBalance.Header" xml:space="preserve"><value>Balanço (esquerda / direita)</value></data>
@@ -320,7 +318,7 @@
   <data name="NoiseControl.Pending" xml:space="preserve"><value>A mudar para {0}…</value></data>
   <data name="DeviceSetting.Confirmed" xml:space="preserve"><value>Comunicado pelos AirPods.</value></data>
   <data name="DeviceSetting.Sent" xml:space="preserve"><value>Enviado para os AirPods, ainda sem confirmação.</value></data>
-  <data name="DeviceSetting.Unsent" xml:space="preserve"><value>As alterações estão prontas a aplicar.</value></data>
+  <data name="DeviceSetting.Unsent" xml:space="preserve"><value>A atualizar as definições.</value></data>
   <data name="Equalizer.Title" xml:space="preserve"><value>Equalizador</value></data>
   <data name="Equalizer.Description" xml:space="preserve"><value>Ajuste os graves, médios e agudos. Cada banda é neutra a 50.</value></data>
   <data name="Equalizer.Bass" xml:space="preserve"><value>Graves</value></data>
@@ -334,17 +332,17 @@
   <data name="Equalizer.CustomActive" xml:space="preserve"><value>Equalização personalizada</value></data>
   <data name="Equalizer.Values" xml:space="preserve"><value>Graves {0} · Médios {1} · Agudos {2}</value></data>
   <data name="DeviceControls.Title" xml:space="preserve"><value>Definições dos AirPods</value></data>
-  <data name="DeviceControls.Description" xml:space="preserve"><value>Atualize as definições quando nenhuma aplicação estiver a usar o microfone.</value></data>
+  <data name="DeviceControls.Description" xml:space="preserve"><value>As definições são atualizadas automaticamente quando os AirPods se ligam.</value></data>
   <data name="DeviceControls.Refresh" xml:space="preserve"><value>Atualizar definições do dispositivo</value></data>
-  <data name="DeviceControls.RefreshHint" xml:space="preserve"><value>Ler as definições mais recentes dos AirPods. Pare a gravação primeiro.</value></data>
+  <data name="DeviceControls.RefreshHint" xml:space="preserve"><value>As definições são atualizadas automaticamente. A leitura é suspensa durante a utilização do microfone.</value></data>
   <data name="DeviceControls.ErrorTitle" xml:space="preserve"><value>Definição não confirmada</value></data>
-  <data name="DeviceControls.Playback" xml:space="preserve"><value>Reprodução e microfone</value></data>
+  <data name="DeviceControls.Playback" xml:space="preserve"><value>Reprodução</value></data>
   <data name="DeviceControls.Stem" xml:space="preserve"><value>Controlos das hastes</value></data>
   <data name="DeviceControls.ButtonNoiseCycle" xml:space="preserve"><value>Modos do botão de controlo de ruído</value></data>
   <data name="DeviceControls.LegacyCycleHint" xml:space="preserve"><value>Escolha pelo menos dois modos.</value></data>
-  <data name="DeviceControls.Comfort" xml:space="preserve"><value>Acessibilidade e carregamento</value></data>
-  <data name="DeviceControls.SleepDetection" xml:space="preserve"><value>Pausar durante o sono</value></data>
-  <data name="DeviceControls.MicrophoneSide" xml:space="preserve"><value>Microfone preferido</value></data>
+  <data name="DeviceControls.Comfort" xml:space="preserve"><value>Caixa de carregamento</value></data>
+  <data name="DeviceControls.SleepDetection" xml:space="preserve"><value>Pausar multimédia ao adormecer</value></data>
+  <data name="DeviceControls.MicrophoneSide" xml:space="preserve"><value>Modo do microfone</value></data>
   <data name="DeviceControls.MicrophoneHint" xml:space="preserve"><value>Escolha o lado do microfone dos AirPods. O acesso automático à gravação é definido na secção Microfone.</value></data>
   <data name="DeviceControls.Automatic" xml:space="preserve"><value>Automático</value></data>
   <data name="DeviceControls.Right" xml:space="preserve"><value>Sempre à direita</value></data>
@@ -372,17 +370,17 @@
   <data name="DeviceControls.ToneVolume" xml:space="preserve"><value>Volume dos sinais sonoros</value></data>
   <data name="DeviceControls.CaseSounds" xml:space="preserve"><value>Sons da caixa de carregamento</value></data>
   <data name="DeviceControls.CaseVolume" xml:space="preserve"><value>Volume da caixa de carregamento</value></data>
-  <data name="DeviceControls.OptimizedCharging" xml:space="preserve"><value>Carregamento otimizado da bateria</value></data>
+  <data name="DeviceControls.OptimizedCharging" xml:space="preserve"><value>Limite de carga otimizada</value></data>
   <data name="DeviceControls.Waiting" xml:space="preserve"><value>A aguardar o dispositivo</value></data>
   <data name="DeviceControls.Apply" xml:space="preserve"><value>Aplicar</value></data>
   <data name="AdaptiveNoise.Apply" xml:space="preserve"><value>Aplicar ruído adaptativo</value></data>
   <data name="AdaptiveNoise.SelectAdaptive" xml:space="preserve"><value>Selecione Adaptativo em Modo de audição para ajustar a intensidade.</value></data>
-  <data name="AdaptiveNoise.RefreshMode" xml:space="preserve"><value>O modo de audição não está confirmado. Atualize as definições do dispositivo antes de ajustar a intensidade.</value></data>
+  <data name="AdaptiveNoise.RefreshMode" xml:space="preserve"><value>A aguardar o modo de audição indicado pelos AirPods.</value></data>
   <data name="DeviceControls.ApplyNoiseCycle" xml:space="preserve"><value>Aplicar sequência dos modos de audição</value></data>
   <data name="DeviceControls.ApplyHoldActions" xml:space="preserve"><value>Aplicar ações de premir sem soltar</value></data>
   <data name="DeviceControls.ApplyToneVolume" xml:space="preserve"><value>Aplicar volume dos sinais sonoros</value></data>
   <data name="DeviceControls.ApplyCaseVolume" xml:space="preserve"><value>Aplicar volume da caixa de carregamento</value></data>
-  <data name="DeviceControls.ChooseVolume" xml:space="preserve"><value>Volume atual desconhecido. Aplicar escolhe {0:0} / 100.</value></data>
+  <data name="DeviceControls.ChooseVolume" xml:space="preserve"><value>Escolha um volume: {0:0} / 100.</value></data>
   <data name="SettingsRevealSerial.Content" xml:space="preserve"><value>Mostrar número de série</value></data>
   <data name="DeviceName.Label" xml:space="preserve"><value>Nome dos AirPods</value></data>
   <data name="DeviceActions.Label" xml:space="preserve"><value>Ações do dispositivo</value></data>
@@ -392,8 +390,8 @@
   <data name="Battery_Charging" xml:space="preserve"><value>A carregar</value></data>
   <data name="NoiseControl.GesturePreview" xml:space="preserve"><value>Solte para aplicar {0}.</value></data>
   <data name="NoiseControl.StrengthPreview" xml:space="preserve"><value>Solte para aplicar uma intensidade adaptativa de {0}%.</value></data>
-  <data name="NoiseControl.RequestTimeout" xml:space="preserve"><value>Os AirPods não confirmaram esta alteração. Atualize as definições do dispositivo e tente novamente.</value></data>
-  <data name="NoiseControl.OffUnavailable" xml:space="preserve"><value>Os AirPods indicam o modo Desativado, mas o controlo está indisponível. Atualize as definições do dispositivo.</value></data>
+  <data name="NoiseControl.RequestTimeout" xml:space="preserve"><value>Os AirPods não confirmaram a alteração. Tente novamente quando estiverem ligados.</value></data>
+  <data name="NoiseControl.OffUnavailable" xml:space="preserve"><value>Desativado não está disponível com as definições atuais dos AirPods.</value></data>
   <data name="ConversationVolume_Title" xml:space="preserve"><value>Volume enquanto fala</value></data>
   <data name="ConversationVolume_Help" xml:space="preserve"><value>Comportamento da reprodução neste PC enquanto fala.</value></data>
   <data name="ConversationVolume_Error" xml:space="preserve"><value>Não foi possível guardar as definições de conversa. Tente novamente.</value></data>
@@ -434,9 +432,9 @@
   <data name="Playback.Variable" xml:space="preserve"><value>Variável (experimental)</value></data>
   <data name="Playback.VariableHelp" xml:space="preserve"><value>Taxa de bits variável AAC-ELD, até 256 kbps.</value></data>
   <data name="Playback.PeakBitrate" xml:space="preserve"><value>Limite de débito negociado: {0} kbps.</value></data>
-  <data name="Transparency.Title" xml:space="preserve"><value>Transparência personalizada</value></data>
-  <data name="Transparency.Help" xml:space="preserve"><value>Experimental. Ajusta o som exterior no modo Transparência. Leia as definições atuais antes de as alterar.</value></data>
-  <data name="Transparency.Enable" xml:space="preserve"><value>Usar definições personalizadas</value></data>
+  <data name="Transparency.Title" xml:space="preserve"><value>Transparência</value></data>
+  <data name="Transparency.Help" xml:space="preserve"><value>As alterações são aplicadas automaticamente. As definições não alteradas são preservadas.</value></data>
+  <data name="Transparency.Enable" xml:space="preserve"><value>Modo Transparência</value></data>
   <data name="Transparency.Ear" xml:space="preserve"><value>AirPod</value></data>
   <data name="Transparency.Left" xml:space="preserve"><value>AirPod esquerdo</value></data>
   <data name="Transparency.Right" xml:space="preserve"><value>AirPod direito</value></data>
@@ -493,7 +491,7 @@
   <data name="HardwareChecks.Title" xml:space="preserve"><value>Verificações do hardware</value></data>
   <data name="HardwareChecks.Description" xml:space="preserve"><value>Atualizar lê os resultados guardados sem iniciar uma verificação.</value></data>
   <data name="HardwareChecks.Refresh" xml:space="preserve"><value>Atualizar</value></data>
-  <data name="HardwareChecks.NotRead" xml:space="preserve"><value>Ainda não foram lidas verificações.</value></data>
+  <data name="HardwareChecks.NotRead" xml:space="preserve"><value>Não há verificações guardadas disponíveis.</value></data>
   <data name="HardwareChecks.Left" xml:space="preserve"><value>Esquerdo</value></data>
   <data name="HardwareChecks.Right" xml:space="preserve"><value>Direito</value></data>
   <data name="HardwareChecks.NoSavedResult" xml:space="preserve"><value>Sem resultado guardado</value></data>
@@ -586,7 +584,7 @@
   <data name="HardwareChecks.DeviceData" xml:space="preserve"><value>Dados do dispositivo</value></data>
   <data name="HardwareChecks.DeviceDataHelp" xml:space="preserve"><value>Ler o modo de teste comunicado e a calibração de áudio guardada.</value></data>
   <data name="HardwareChecks.ReadDeviceData" xml:space="preserve"><value>Ler dados do dispositivo</value></data>
-  <data name="HardwareChecks.DeviceDataNotRead" xml:space="preserve"><value>Ainda não foram lidos dados do dispositivo.</value></data>
+  <data name="HardwareChecks.DeviceDataNotRead" xml:space="preserve"><value>Os dados do dispositivo não estão disponíveis.</value></data>
   <data name="HardwareChecks.DeviceDataTimedOut" xml:space="preserve"><value>A leitura dos dados excedeu o tempo limite. Volte a ligar os AirPods e tente novamente.</value></data>
   <data name="HardwareChecks.TestModeRaw" xml:space="preserve"><value>Modo de teste (valor original): {0}</value></data>
   <data name="HardwareChecks.SensitivityRaw" xml:space="preserve"><value>Sensibilidade de saída (valor original): {0}</value></data>
@@ -630,17 +628,24 @@
   <data name="CompanionSettings.Unavailable" xml:space="preserve"><value>As definições partilhadas estão indisponíveis.</value></data>
   <data name="Dongle_Title" xml:space="preserve"><value>AirPods Dongle</value></data>
   <data name="Dongle_OutputHelp" xml:space="preserve"><value>Escolha «AirPods Dongle» como saída de som do Windows.</value></data>
+  <data name="Dongle_AutoConnect" xml:space="preserve"><value>Ligar automaticamente</value></data>
+  <data name="Dongle_AutoConnectHelp" xml:space="preserve"><value>Voltar a ligar aos AirPods guardados quando estiverem ao alcance.</value></data>
+  <data name="Dongle_AutoConnectBusy" xml:space="preserve"><value>Para alterar esta definição, pare o seguimento da cabeça, a reprodução e a gravação. Desligue as fontes de áudio Bluetooth ativas.</value></data>
+  <data name="Dongle_AutoConnectError" xml:space="preserve"><value>O adaptador não conseguiu confirmar esta definição. Aguarde até a ligação estabilizar e tente novamente.</value></data>
   <data name="Dongle_Reconnect" xml:space="preserve"><value>Voltar a ligar AirPods</value></data>
   <data name="Dongle_Pair" xml:space="preserve"><value>Emparelhar AirPods…</value></data>
   <data name="Dongle_Phone" xml:space="preserve"><value>Emparelhar telemóvel</value></data>
   <data name="Dongle_PhoneWaiting" xml:space="preserve"><value>Selecione AirPods Dongle nas definições Bluetooth do telemóvel.</value></data>
-  <data name="Dongle_Connected" xml:space="preserve"><value>AirPods ligados por USB</value></data>
+  <data name="Dongle_Connected" xml:space="preserve"><value>AirPods ligados ao adaptador</value></data>
   <data name="Dongle_NotConnected" xml:space="preserve"><value>AirPods desligados</value></data>
-  <data name="Dongle_NativeHelp" xml:space="preserve"><value>A ligação Bluetooth automática do PC fica em pausa enquanto o adaptador está ligado. Ligar no cabeçalho continua a usar o Bluetooth do PC.</value></data>
+  <data name="Dongle_NativeHelp" xml:space="preserve"><value>Ligar no cabeçalho liga os AirPods ao adaptador selecionado. O Bluetooth do PC é independente.</value></data>
   <data name="Dongle_PairHelp" xml:space="preserve"><value>Coloque a reprodução e a gravação USB em pausa e desligue o telemóvel. Ative o modo de emparelhamento dos AirPods antes de continuar.</value></data>
   <data name="Dongle_BatteryAge" xml:space="preserve"><value>Último relatório: há {0} segundos</value></data>
   <data name="Dongle_Unknown" xml:space="preserve"><value>Ainda não há informação da bateria.</value></data>
-  <data name="Dongle_Multiple" xml:space="preserve"><value>Desligue os outros adaptadores AirPods para escolher este.</value></data>
+  <data name="Dongle_Multiple" xml:space="preserve"><value>Escolha um adaptador para utilizar os seus controlos.</value></data>
+  <data name="Dongle_Choose" xml:space="preserve"><value>Escolher adaptador</value></data>
+  <data name="Dongle_SelectedMissing" xml:space="preserve"><value>O adaptador selecionado está desligado</value></data>
+  <data name="Dongle_ControlOnlyHelp" xml:space="preserve"><value>O áudio USB está indisponível de momento. Os controlos do adaptador continuam disponíveis.</value></data>
   <data name="Dongle_Busy" xml:space="preserve"><value>O adaptador está ocupado. Aguarde ou coloque a reprodução em pausa e tente novamente.</value></data>
   <data name="Dongle_Stale" xml:space="preserve"><value>A ligação mudou. Tente novamente.</value></data>
   <data name="Dongle_Timeout" xml:space="preserve"><value>O adaptador não confirmou o pedido. Verifique a ligação antes de tentar novamente.</value></data>
@@ -658,4 +663,143 @@
   <data name="Dongle_Drops" xml:space="preserve"><value>Memória intermédia vazia: {0} fotogramas; descartados: {1}</value></data>
   <data name="Dongle_Recovery" xml:space="preserve"><value>Falhas de envio: {0}; recuperações: {1}</value></data>
   <data name="Dongle_CountersHelp" xml:space="preserve"><value>Os contadores iniciam com o adaptador. O tempo de codificação não representa a latência de escuta.</value></data>
+  <data name="Transparency.OwnVoice" xml:space="preserve"><value>Amplificação da própria voz</value></data>
+  <data name="Apple.HearingHealth" xml:space="preserve"><value>Saúde auditiva</value></data>
+  <data name="Apple.HearingProtection" xml:space="preserve"><value>Proteção auditiva</value></data>
+  <data name="Apple.HearingAid" xml:space="preserve"><value>Aparelho auditivo</value></data>
+  <data name="Apple.Recorder" xml:space="preserve"><value>Gravador</value></data>
+  <data name="Apple.PressHold" xml:space="preserve"><value>Manter premidos os AirPods</value></data>
+  <data name="Apple.CallControls" xml:space="preserve"><value>Controlos de chamadas</value></data>
+  <data name="Apple.Equalizer" xml:space="preserve"><value>Equalizador</value></data>
+  <data name="Apple.MicrophoneMode" xml:space="preserve"><value>Modo do microfone</value></data>
+  <data name="Apple.Accessibility" xml:space="preserve"><value>Acessibilidade</value></data>
+  <data name="Apple.Transparency" xml:space="preserve"><value>Transparência</value></data>
+  <data name="Accommodations.Title" xml:space="preserve"><value>Adaptações dos auscultadores</value></data>
+  <data name="Accommodations.Help" xml:space="preserve"><value>Personalize os auscultadores compatíveis para sons suaves e a afinação de áudio que preferir.</value></data>
+  <data name="Accommodations.AudioTuning" xml:space="preserve"><value>Afinação de áudio</value></data>
+  <data name="Accommodations.Custom" xml:space="preserve"><value>Definições personalizadas</value></data>
+  <data name="Accommodations.BalancedTone" xml:space="preserve"><value>Tom equilibrado</value></data>
+  <data name="Accommodations.Audiogram" xml:space="preserve"><value>Audiograma</value></data>
+  <data name="Accommodations.AudiogramHelp" xml:space="preserve"><value>Use o perfil auditivo guardado nos AirPods.</value></data>
+  <data name="Accommodations.VocalRange" xml:space="preserve"><value>Gama vocal</value></data>
+  <data name="Accommodations.Brightness" xml:space="preserve"><value>Brilho</value></data>
+  <data name="Accommodations.BalancedHelp" xml:space="preserve"><value>Reforça o som numa gama de frequências.</value></data>
+  <data name="Accommodations.VocalHelp" xml:space="preserve"><value>Realça a gama vocal.</value></data>
+  <data name="Accommodations.BrightnessHelp" xml:space="preserve"><value>Realça as frequências altas.</value></data>
+  <data name="Accommodations.CustomHelp" xml:space="preserve"><value>A curva atual não corresponde a uma predefinição verificada. Escolha uma afinação para a substituir.</value></data>
+  <data name="Accommodations.Optimization" xml:space="preserve"><value>Otimização</value></data>
+  <data name="Accommodations.OptimizationHelp" xml:space="preserve"><value>Os sons suaves serão amplificados de forma ligeira, moderada ou forte.</value></data>
+  <data name="Accommodations.Slight" xml:space="preserve"><value>Ligeira</value></data>
+  <data name="Accommodations.Moderate" xml:space="preserve"><value>Moderada</value></data>
+  <data name="Accommodations.Strong" xml:space="preserve"><value>Forte</value></data>
+  <data name="Accommodations.CustomizedAudio" xml:space="preserve"><value>Áudio personalizado</value></data>
+  <data name="Accommodations.Phone" xml:space="preserve"><value>Telefone</value></data>
+  <data name="Accommodations.Media" xml:space="preserve"><value>Multimédia</value></data>
+  <data name="Accommodations.Unconfirmed" xml:space="preserve"><value>Não foi possível verificar a alteração. Volte a ligar os AirPods antes de tentar novamente.</value></data>
+  <data name="Transparency.Balance" xml:space="preserve"><value>Balanço</value></data>
+  <data name="Transparency.CustomGainRange" xml:space="preserve"><value>Estes ganhos personalizados por ouvido não podem ser editados com os controlos combinados. Os restantes ajustes preservam-nos.</value></data>
+  <data name="Accommodations.SelectDestination" xml:space="preserve"><value>Selecione Telefone ou Multimédia para ativar as adaptações dos auscultadores.</value></data>
+  <data name="Apple.Name" xml:space="preserve"><value>Nome</value></data>
+  <data name="Apple.Left" xml:space="preserve"><value>Esquerdo</value></data>
+  <data name="Apple.Right" xml:space="preserve"><value>Direito</value></data>
+  <data name="Accommodations.ReadOnly" xml:space="preserve"><value>Não é possível efetuar alterações nesta ligação.</value></data>
+  <data name="Dongle_BluetoothAudioPair" xml:space="preserve"><value>Emparelhar fonte de áudio Bluetooth…</value></data>
+  <data name="Dongle_BluetoothAudioPairHelp" xml:space="preserve"><value>Torna o adaptador detetável para áudio de um telemóvel ou PC. Não associa o telemóvel ao NTPods.</value></data>
+  <data name="CompanionSetup_Title" xml:space="preserve"><value>Ligação ao telemóvel</value></data>
+  <data name="CompanionSetup_AdapterHelp" xml:space="preserve"><value>Ligue o LibrePods do telemóvel através do adaptador Bluetooth deste PC. Os AirPods podem continuar ligados ao adaptador USB.</value></data>
+  <data name="CompanionSetup_NotLinked" xml:space="preserve"><value>Nenhum telemóvel associado</value></data>
+  <data name="CompanionSetup_Connected" xml:space="preserve"><value>Ligado a {0}</value></data>
+  <data name="CompanionSetup_Waiting" xml:space="preserve"><value>A aguardar o LibrePods em {0}</value></data>
+  <data name="CompanionSetup_Checking" xml:space="preserve"><value>A verificar a ligação ao telemóvel…</value></data>
+  <data name="CompanionSetup_OtherAirPods" xml:space="preserve"><value>Esta ligação ao telemóvel está configurada para outros AirPods.</value></data>
+  <data name="CompanionSetup_Saving" xml:space="preserve"><value>A atualizar a ligação ao telemóvel…</value></data>
+  <data name="CompanionSetup_Manage" xml:space="preserve"><value>Gerir ligação ao telemóvel</value></data>
+  <data name="CompanionSetup_Link" xml:space="preserve"><value>Associar telemóvel</value></data>
+  <data name="CompanionSetup_Unlink" xml:space="preserve"><value>Desassociar telemóvel</value></data>
+  <data name="CompanionSetup_CreateCode" xml:space="preserve"><value>Criar código de associação</value></data>
+  <data name="CompanionSetup_Done" xml:space="preserve"><value>Concluído</value></data>
+  <data name="CompanionSetup_PhoneStep" xml:space="preserve"><value>No telemóvel, abra LibrePods → Definições → Ligação ao PC → Associar PC. Selecione este PC e os mesmos AirPods e introduza os oito algarismos. Mantenha esta janela aberta.</value></data>
+  <data name="CompanionSetup_BackendUnavailable" xml:space="preserve"><value>O NTPods está a voltar a ligar. Tente novamente quando estiver pronto.</value></data>
+  <data name="CompanionSetup_SelectAirPods" xml:space="preserve"><value>Selecione os AirPods no NTPods antes de criar um código de associação.</value></data>
+  <data name="CompanionSetup_LoadingPhones" xml:space="preserve"><value>A ler os dispositivos Bluetooth emparelhados…</value></data>
+  <data name="CompanionSetup_NoPhones" xml:space="preserve"><value>Emparelhe o telemóvel com este PC nas definições Bluetooth e volte aqui.</value></data>
+  <data name="CompanionSetup_SelectPhone" xml:space="preserve"><value>Escolha o telemóvel e crie um código para o LibrePods.</value></data>
+  <data name="CompanionSetup_YourPhone" xml:space="preserve"><value>O seu telemóvel</value></data>
+  <data name="CompanionSetup_PhoneFallback" xml:space="preserve"><value>o seu telemóvel</value></data>
+  <data name="CompanionSetup_OpenBluetooth" xml:space="preserve"><value>Abrir definições Bluetooth</value></data>
+  <data name="CompanionSetup_Refresh" xml:space="preserve"><value>Atualizar dispositivos emparelhados</value></data>
+  <data name="CompanionSetup_Code" xml:space="preserve"><value>Código de associação de oito algarismos</value></data>
+  <data name="CompanionSetup_CopyCode" xml:space="preserve"><value>Copiar código de associação</value></data>
+  <data name="CompanionSetup_Copied" xml:space="preserve"><value>Copiado</value></data>
+  <data name="CompanionSetup_KeepPrivate" xml:space="preserve"><value>Partilhe este código apenas com o seu telemóvel. Expira em dois minutos.</value></data>
+  <data name="CompanionSetup_BluetoothStep" xml:space="preserve"><value>Primeiro, emparelhe o telemóvel com este PC nas definições Bluetooth.</value></data>
+  <data name="CompanionSetup_ReplaceHelp" xml:space="preserve"><value>A ligação atual só é substituída quando a associação termina com êxito. A transferência de chamadas pode ser reativada depois.</value></data>
+  <data name="CompanionSetup_OpenFailed" xml:space="preserve"><value>Abra Definições do Windows → Bluetooth e dispositivos para emparelhar o telemóvel.</value></data>
+  <data name="CompanionSetup_CopyFailed" xml:space="preserve"><value>Não foi possível copiar o código. Introduza os oito algarismos no LibrePods.</value></data>
+  <data name="CompanionSetup_LoadFailed" xml:space="preserve"><value>Não foi possível ler os dispositivos emparelhados. Verifique se o Bluetooth do PC está ligado e atualize.</value></data>
+  <data name="CompanionSetup_SaveFailed" xml:space="preserve"><value>Não foi possível atualizar a ligação ao telemóvel. Verifique os dispositivos selecionados e tente novamente.</value></data>
+  <data name="CompanionSetup_Expires" xml:space="preserve"><value>O código expira dentro de {0} s.</value></data>
+  <data name="CompanionSetup_Authenticating" xml:space="preserve"><value>A verificar o código e a associar o telemóvel…</value></data>
+  <data name="CompanionSetup_Completed" xml:space="preserve"><value>Telemóvel associado. Pode fechar esta janela.</value></data>
+  <data name="CompanionSetup_Expired" xml:space="preserve"><value>Este código expirou. Crie um novo código para tentar novamente.</value></data>
+  <data name="CompanionSetup_Cancelled" xml:space="preserve"><value>Este código já não está ativo. Crie um novo código para associar o telemóvel.</value></data>
+  <data name="CompanionSetup_PairingFailed" xml:space="preserve"><value>Não foi possível associar as aplicações. Verifique o Bluetooth e os dispositivos selecionados e crie um novo código.</value></data>
+  <data name="Spatial_Title" xml:space="preserve"><value>Áudio espacial</value></data>
+  <data name="Spatial_Start" xml:space="preserve"><value>Iniciar seguimento da cabeça</value></data>
+  <data name="Spatial_Calibrate" xml:space="preserve"><value>Calibrar o seguimento da cabeça</value></data>
+  <data name="Spatial_Compare" xml:space="preserve"><value>Comparar perfis auditivos</value></data>
+  <data name="Spatial_Error" xml:space="preserve"><value>Verifique se o adaptador selecionado e a saída Steam Streaming Speakers em 5.1 ou 7.1 estão disponíveis.</value></data>
+  <data name="Spatial_Missing" xml:space="preserve"><value>Esta versão não inclui o processador de áudio espacial.</value></data>
+  <data name="Spatial_Connect" xml:space="preserve"><value>Ligue os AirPods a este adaptador e pare de utilizar o microfone.</value></data>
+  <data name="Spatial_Route" xml:space="preserve"><value>Configure Steam Streaming Speakers para 5.1 ou 7.1 e selecione essa saída no jogo ou leitor.</value></data>
+  <data name="Spatial_Stop" xml:space="preserve"><value>Parar o seguimento da cabeça</value></data>
+  <data name="Spatial_Playing" xml:space="preserve"><value>O seguimento da cabeça está ativo neste adaptador.</value></data>
+  <data name="Spatial_Stopping" xml:space="preserve"><value>A parar o seguimento da cabeça…</value></data>
+  <data name="Spatial_Starting" xml:space="preserve"><value>A iniciar áudio espacial…</value></data>
+  <data name="Spatial_WaitMotion" xml:space="preserve"><value>À espera de movimento. Coloque os AirPods e olhe para o ecrã.</value></data>
+  <data name="Spatial_Face" xml:space="preserve"><value>Olhe para o ecrã sem se mexer.</value></data>
+  <data name="Spatial_LookUp" xml:space="preserve"><value>Levante a cabeça cerca de 25 graus e mantenha a posição.</value></data>
+  <data name="Spatial_FaceAgain" xml:space="preserve"><value>Volte à postura inicial. Olhe para o mesmo ponto e mantenha a posição até o guia fechar.</value></data>
+  <data name="Spatial_Calibrated" xml:space="preserve"><value>Calibração guardada.</value></data>
+  <data name="Spatial_ProfileReady" xml:space="preserve"><value>Escolha A, B ou C. Ouça cada perfil e guarde o seu preferido.</value></data>
+  <data name="Spatial_ProfilePlaying" xml:space="preserve"><value>Ouça a voz e os passos.</value></data>
+  <data name="Spatial_ProfileSaved" xml:space="preserve"><value>Perfil auditivo guardado.</value></data>
+  <data name="Spatial_SetupError" xml:space="preserve"><value>Verifique a ligação dos AirPods, pare de utilizar o microfone e tente novamente.</value></data>
+  <data name="Spatial_ProfileChoice" xml:space="preserve"><value>Perfil auditivo</value></data>
+  <data name="Spatial_Preview" xml:space="preserve"><value>Reproduzir amostra</value></data>
+  <data name="Spatial_Save" xml:space="preserve"><value>Guardar o perfil selecionado</value></data>
+  <data name="Spatial_SoundSettings" xml:space="preserve"><value>Definições de som do Windows</value></data>
+  <data name="Spatial_RetryFace" xml:space="preserve"><value>Olhe para o ecrã sem se mexer e aguarde pela seta para cima.</value></data>
+  <data name="Spatial_RetryUp" xml:space="preserve"><value>Levante o queixo cerca de 25 graus, sem rodar nem inclinar a cabeça para o lado.</value></data>
+  <data name="Spatial_RetryReturn" xml:space="preserve"><value>Repita a calibração. Volte a colocar o queixo à altura inicial e olhe para o mesmo ponto do ecrã.</value></data>
+  <data name="Spatial_RetryMotion" xml:space="preserve"><value>Não foi detetado movimento. Coloque os dois AirPods, pare de utilizar o microfone e volte a ligá-los ao adaptador antes de tentar novamente.</value></data>
+  <data name="Room_Title" xml:space="preserve"><value>Sala de audição</value></data>
+  <data name="Room_Placement" xml:space="preserve"><value>Posição das colunas</value></data>
+  <data name="Room_Width" xml:space="preserve"><value>Largura do palco sonoro</value></data>
+  <data name="Room_WidthHelp" xml:space="preserve"><value>A 100%, as colunas mantêm os ângulos escolhidos. Um valor mais alto desloca-as para os lados.</value></data>
+  <data name="Room_Speaker" xml:space="preserve"><value>Coluna</value></data>
+  <data name="Room_Azimuth" xml:space="preserve"><value>Azimute</value></data>
+  <data name="Room_Elevation" xml:space="preserve"><value>Elevação</value></data>
+  <data name="Room_Level" xml:space="preserve"><value>Nível do canal</value></data>
+  <data name="Room_Reset" xml:space="preserve"><value>Repor esta disposição</value></data>
+  <data name="Room_Screen" xml:space="preserve"><value>Ecrã</value></data>
+  <data name="Room_Pose" xml:space="preserve"><value>Rotação {0}°   Inclinação {1}°   Rolamento {2}°</value></data>
+  <data name="Room_Yaw" xml:space="preserve"><value>Rotação {0}°</value></data>
+  <data name="Room_NoPose" xml:space="preserve"><value>Orientação da cabeça indisponível</value></data>
+  <data name="Room_Preview" xml:space="preserve"><value>Inicie o seguimento para ver os canais ativos.</value></data>
+  <data name="Room_Quiet" xml:space="preserve"><value>Sem canais ativos</value></data>
+  <data name="Room_Active" xml:space="preserve"><value>Canais ativos · {0}</value></data>
+  <data name="Room_Recovering" xml:space="preserve"><value>A aguardar o regresso do movimento. O áudio espacial continua ativo.</value></data>
+  <data name="Room_FL" xml:space="preserve"><value>Frontal esquerda</value></data>
+  <data name="Room_C" xml:space="preserve"><value>Central</value></data>
+  <data name="Room_FR" xml:space="preserve"><value>Frontal direita</value></data>
+  <data name="Room_SL" xml:space="preserve"><value>Lateral esquerda</value></data>
+  <data name="Room_SR" xml:space="preserve"><value>Lateral direita</value></data>
+  <data name="Room_BL" xml:space="preserve"><value>Traseira esquerda</value></data>
+  <data name="Room_BR" xml:space="preserve"><value>Traseira direita</value></data>
+  <data name="Room_LFE" xml:space="preserve"><value>Efeitos de baixa frequência</value></data>
+  <data name="Room_ViewReset" xml:space="preserve"><value>Repor vista</value></data>
+  <data name="Room_OrbitHint" xml:space="preserve"><value>Arraste a sala para rodar a vista ou uma coluna para a mover. Use a roda para ampliar ou reduzir.</value></data>
+  <data name="Room_CameraKeys" xml:space="preserve"><value>Use as setas para rodar, mais e menos para ampliar ou reduzir e Home para repor a vista.</value></data>
+  <data name="Spatial_WaitRoute" xml:space="preserve"><value>A aguardar que estes AirPods voltem a ligar-se a este adaptador.</value></data>
 </root>

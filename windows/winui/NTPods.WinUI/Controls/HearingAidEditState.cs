@@ -6,6 +6,10 @@ internal sealed class HearingAidEditState
 {
     private string _deviceId = "";
     private HearingAidSettings? _baseline;
+    private HearingAidSettings? _written;
+    private bool _pending;
+    private ulong? _session;
+    public bool Sending => _written is not null;
     public HearingAidSettings? Baseline => _baseline is { } value ? Copy(value) : null;
     public HearingAidSettings? Draft { get; private set; }
     public bool Dirty { get; private set; }
@@ -18,12 +22,36 @@ internal sealed class HearingAidEditState
     public bool Update(Snapshot snapshot, bool available)
     {
         bool validRead = snapshot.HearingAidError is null && snapshot.HearingAidSettings is { IsValid: true };
-        if (_deviceId != snapshot.DeviceId || !available || !validRead)
+        if (_deviceId != snapshot.DeviceId || _session != snapshot.HeadphoneAccommodations?.Session || !available || !validRead)
         {
             Reset();
             _deviceId = snapshot.DeviceId;
+            _session = snapshot.HeadphoneAccommodations?.Session;
         }
         if (!available || !validRead || snapshot.HearingAidSettings is not { } settings) return true;
+        if (_written is not null)
+        {
+            if (!snapshot.HearingAidPending && settings.SameValues(_written))
+            {
+                _baseline = Copy(settings);
+                _written = null;
+                _pending = false;
+                Editable = snapshot.HearingAidEditable;
+                Dirty = Draft?.SameValues(settings) == false;
+                return !Dirty && !InvalidCurve;
+            }
+            if (_pending && !snapshot.HearingAidPending || !settings.SameValues(_baseline) && !settings.SameValues(_written))
+            {
+                _written = null;
+                _pending = false;
+                _baseline = null;
+            }
+            else
+            {
+                _pending = snapshot.HearingAidPending;
+                return false;
+            }
+        }
         bool editable = snapshot.HearingAidEditable;
         bool editabilityChanged = Editable != editable;
         Editable = editable;
@@ -71,13 +99,34 @@ internal sealed class HearingAidEditState
     {
         if (!CanApply || !value.IsValid) return false;
         Draft = value;
-        Dirty = true;
+        Dirty = !value.SameValues(_written ?? _baseline);
         return true;
+    }
+
+    public void Begin()
+    {
+        _written = Draft is { } value ? Copy(value) : null;
+        Dirty = false;
+        _pending = false;
+    }
+
+    public void CancelWrite()
+    {
+        _written = null;
+        _pending = false;
+        Draft = _baseline is { } value ? Copy(value) : null;
+        if (Draft is { } restored)
+        {
+            Amplification = Math.Clamp((restored.LeftAmplification + restored.RightAmplification + 2) / 4, 0, 1);
+            Balance = Math.Clamp(restored.RightAmplification - restored.LeftAmplification, -1, 1);
+        }
+        Dirty = InvalidCurve = false;
     }
 
     public void Reset()
     {
-        _baseline = Draft = null;
+        _baseline = Draft = _written = null;
+        _pending = false;
         Amplification = 0.5f;
         Balance = 0;
         Dirty = InvalidCurve = Editable = false;

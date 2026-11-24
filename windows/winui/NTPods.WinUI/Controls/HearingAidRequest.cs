@@ -11,7 +11,7 @@ internal sealed class HearingAidRequest(string command = "set_hearing_aid")
     public bool? Enabled { get; private set; }
     public bool Requested { get; private set; }
     public bool EditQueued { get; private set; }
-    public bool ManualEditQueued { get; private set; }
+    public bool ProfilePending => Pending is not null && _pendingCommand == "set_hearing_aid";
     public bool EnableMayHaveApplied { get; private set; }
     public bool EnableUnconfirmed => EnableMayHaveApplied && Enabled != true;
     public bool CanDisable => Enabled == true || EnableMayHaveApplied;
@@ -36,17 +36,16 @@ internal sealed class HearingAidRequest(string command = "set_hearing_aid")
         deviceId.Length > 0 && snapshot.DeviceId == deviceId && snapshot.HearingAidPending &&
         (mode.Pending is not null || media.Pending is not null);
 
-    public bool QueueEdit(bool requireApply = false)
+    public bool QueueEdit()
     {
-        EditQueued = Enabled == true && Pending is null;
-        ManualEditQueued = EditQueued && (ManualEditQueued || requireApply);
+        EditQueued = Enabled == true && (Pending is null || ProfilePending);
         return EditQueued;
     }
-    public void CancelEdit() => EditQueued = ManualEditQueued = false;
+    public void CancelEdit() => EditQueued = false;
 
-    public bool TakeEdit(bool explicitApply = false)
+    public bool TakeEdit()
     {
-        if (ManualEditQueued && !explicitApply) return false;
+        if (Pending is not null) return false;
         bool apply = EditQueued && Enabled == true && Pending is null;
         CancelEdit();
         return apply;

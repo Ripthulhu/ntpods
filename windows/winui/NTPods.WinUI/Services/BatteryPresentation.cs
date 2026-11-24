@@ -36,7 +36,8 @@ internal static class BatteryPresentation
 
     public static byte? Reading(Snapshot s, BatteryPart part) => Reading(s, part, AppSettings.CacheDisconnectedBattery(s.DeviceId));
     internal static byte? Reading(Snapshot s, BatteryPart part, bool retainDisconnected) =>
-        !retainDisconnected && (Observation(s, part)?.Present == false || !s.Connected && !IsLive(s, part))
+        !retainDisconnected && ((part != BatteryPart.Case && Observation(s, part)?.Present == false) ||
+            !s.Connected && !IsLive(s, part))
             ? null : RawReading(s, part);
 
     private static BatteryObservation? Observation(Snapshot s, BatteryPart part) => part switch
@@ -78,8 +79,11 @@ internal static class BatteryPresentation
         return !IsLive(s) || IsLive(s, part) ? text : $"{text} ({Localize.Get("Battery.LastKnown")})";
     }
 
-    public static string StatusKey(Snapshot snapshot) => snapshot.Connected
-        ? snapshot.LinkStale ? "Status_ControlUnavailable" : "Status_Connected"
+    // The control session can stay connected while audio is unavailable.
+    public static string StatusKey(Snapshot snapshot) => snapshot.Connected && snapshot.LinkStale
+        ? "Status_ControlUnavailable"
+        : snapshot.AudioOutputReady ? "Status_Connected"
+        : snapshot.PlaybackState is "starting" or "stopping" ? "Status_Connecting"
         : IsLive(snapshot) && HasData(snapshot)
             ? IsCharging(snapshot) ? "Battery.NearbyCharging" : "Battery.Nearby"
             : "Status_Disconnected";

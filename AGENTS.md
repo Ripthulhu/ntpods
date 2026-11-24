@@ -54,8 +54,8 @@ older design notes if they disagree.
 - New controls must fit the existing groups, spacing, typography and concise
   wording. Preserve native keyboard behavior, visible focus, accessible names,
   high contrast, and localized text without clipped labels or resource-key text.
-  Submenu headers share the existing 16-DIP normal text style; section captions
-  and supporting text retain their smaller sizes.
+  Main and submenu headers use the shared 22-DIP bold style. Body controls use
+  14-DIP text; section captions and supporting text retain their smaller sizes.
 
 For visual changes, compare the affected view before and after in its relevant
 states, including light/dark and a narrow window. Check animation interruptions,

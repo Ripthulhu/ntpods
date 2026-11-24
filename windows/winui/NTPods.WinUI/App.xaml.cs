@@ -41,7 +41,7 @@ public partial class App : Application
 
     protected override async void OnLaunched(LaunchActivatedEventArgs args)
     {
-        _instance = AppInstance.FindOrRegisterForKey("NTPods.WinUI");
+        _instance = AppInstance.FindOrRegisterForKey("NTPods.Dongle.WinUI");
         if (!_instance.IsCurrent)
         {
             await _instance.RedirectActivationToAsync(AppInstance.GetCurrent().GetActivatedEventArgs());

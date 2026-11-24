@@ -1,9 +1,5 @@
 # Contributing
 
-NTPods has a Rust backend, a WinUI app and three Windows kernel drivers.
-Start with the code for the feature you want to change; most tests run without
-AirPods or installed drivers.
-
 ## Code layout
 
 | Area | Where to work |
@@ -24,13 +20,9 @@ AirPods or installed drivers.
 | AAC and AAC-ELD playback | `windows/playback`, `windows/daemon/src/playback` |
 | Installation and packaging | `windows/installer`, `windows/build.ps1` |
 
-The backend owns Bluetooth connections and publishes state through named pipes.
-The UI displays that state and sends commands; it does not open the drivers.
-The microphone driver receives PCM from the backend. The playback driver sends
-PCM to the backend for encoding and AVDTP transport. Windows keeps control of the radio.
-
-The normal build includes [AAC and AAC-ELD playback](windows/playback/README.md).
-The codec and bitrate are selected in the app; both use the same AirPods output.
+The backend owns the dongle HID session and publishes state through named
+pipes. Windows sends USB audio directly to the dongle.
+See the [dongle setup and control guide](docs/PICO-DONGLE.md).
 
 For Bluetooth work, start with the [protocol reference](docs/AIRPODS-PROTOCOL.md)
 and [macOS capture procedure](docs/MACOS-PROTOCOL-CAPTURE.md). Keep decoded fields,
@@ -45,9 +37,8 @@ repository root, PowerShell 7 runs the build and its automated checks:
 ./windows/build.ps1
 ```
 
-This builds the app, the drivers and MSI. It does not install them or change
-boot settings. Test Mode is required to load the drivers, not to compile them.
-Use this script for WinUI builds; `dotnet build` alone can miss the resource targets.
+This builds and tests the app and produces a portable ZIP.
+Use this script for WinUI builds so the package includes the WinUI resources.
 
 For a smaller change, run the relevant checks:
 
@@ -68,18 +59,9 @@ dotnet run --project windows/tests/ClientSession --configuration Release
 dotnet run --project windows/tests/IslandMotion --configuration Release
 ```
 
-For backend tests, use VS2022 Developer PowerShell after fetching FFmpeg:
-
 ```powershell
-bash windows/daemon/fetch-ffmpeg.sh
-$env:PATH = "$(Resolve-Path windows/daemon/vendor/ffmpeg/bin);$env:PATH"
-cargo test --locked --features experimental-playback --manifest-path windows/daemon/Cargo.toml
+cargo test --locked --manifest-path windows/daemon/Cargo.toml
 ```
-
-[windows/tests/README.md](windows/tests/README.md) describes the checks.
-Driver changes also need the C/C++ tests run by `windows/build.ps1`.
-[WINDOWS-VALIDATION.md](docs/WINDOWS-VALIDATION.md) summarizes hardware coverage
-and remaining checks. Unit tests alone cannot establish hardware support.
 
 ## Making changes
 
@@ -98,11 +80,6 @@ and remaining checks. Unit tests alone cannot establish hardware support.
   code cannot explain. Avoid narrating each statement or recounting the change.
 - Keep recordings, device addresses, private certificates and build output out
   of commits. Preserve copyright and license notices.
-
-Rebuild after changing source or dependencies before packaging a release.
-`windows/package-release.ps1` checks the source commit and tested file hashes.
-Keep the FFmpeg DLLs, source archives and build recipes matched; see
-[THIRD_PARTY.md](THIRD_PARTY.md).
 
 In a pull request, explain the behavior changed and how you checked it.
 For connection or audio changes, include the AirPods model, firmware, Bluetooth

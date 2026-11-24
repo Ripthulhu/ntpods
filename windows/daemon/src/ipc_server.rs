@@ -1,11 +1,7 @@
 //! Per-client named-pipe transport, bounded NDJSON framing and handle cleanup.
 
-use super::{
-    apply_command, log, probe_hearing_test_mode, publish_head_tracking, security,
-    set_head_tracking, start_nearby_finder, stop_nearby_finder, volume, wide, Ctx,
-};
+use super::{apply_dongle_command, dongle_health, log, security, wide, Ctx};
 use ntpods_ipc::{Command, PIPE_CMDS, PIPE_EVENTS};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -71,13 +67,10 @@ fn decode_command_chunk(acc: &mut Vec<u8>, bytes: &[u8]) -> Option<Vec<Command>>
 
 /// Per-client reader: parse NDJSON commands and apply them until it disconnects.
 fn client_reader(pipe: Arc<Pipe>, ctx: Ctx) {
-    volume::init(); // this thread applies StepVolume/ToggleMute (WASAPI needs COM)
     let h = pipe.0;
     let mut buf = [0u8; 4096];
     let mut acc = Vec::new();
-    let mut head_tracking_owner = None;
     let mut nearby_finder_owner: Option<(String, u64)> = None;
-    let mut hearing_probe_owner: Option<Arc<AtomicBool>> = None;
     loop {
         let mut read = 0u32;
         let ok = unsafe {
@@ -97,22 +90,8 @@ fn client_reader(pipe: Arc<Pipe>, ctx: Ctx) {
         };
         for cmd in commands {
             match cmd {
-                Command::ProbeHearingTestMode {
-                    request_id,
-                    device_id,
-                    enable_check,
-                } => {
-                    if let Some(owner) = hearing_probe_owner.take() {
-                        owner.store(false, Ordering::Release);
-                    }
-                    hearing_probe_owner =
-                        probe_hearing_test_mode(&ctx, request_id, device_id, enable_check);
-                }
-                Command::SetHeadTracking { on } => {
-                    head_tracking_owner = Some(set_head_tracking(&ctx, on));
-                }
                 Command::StartNearbyFinder { device_id } => {
-                    if let Some(owner) = start_nearby_finder(&ctx, &device_id) {
+                    if let Some(owner) = dongle_health::start_finder(&ctx, &device_id) {
                         nearby_finder_owner = Some((device_id, owner));
                     }
                 }
@@ -122,25 +101,16 @@ fn client_reader(pipe: Arc<Pipe>, ctx: Ctx) {
                         .is_some_and(|(id, _)| id == &device_id)
                     {
                         if let Some((id, owner)) = nearby_finder_owner.take() {
-                            stop_nearby_finder(&ctx, &id, owner);
+                            dongle_health::stop_finder(&ctx, &id, owner);
                         }
                     }
                 }
-                cmd => apply_command(&ctx, cmd),
+                cmd => apply_dongle_command(&ctx, cmd),
             }
         }
     }
-    if let Some(owner) = head_tracking_owner {
-        let mut tracking = ctx.head_tracking.lock().unwrap();
-        if tracking.release(owner) {
-            publish_head_tracking(&ctx, &tracking);
-        }
-    }
     if let Some((device_id, owner)) = nearby_finder_owner {
-        stop_nearby_finder(&ctx, &device_id, owner);
-    }
-    if let Some(owner) = hearing_probe_owner {
-        owner.store(false, Ordering::Release);
+        dongle_health::stop_finder(&ctx, &device_id, owner);
     }
     // Dropping the final Arc closes the command pipe.
 }

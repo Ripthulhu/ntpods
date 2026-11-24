@@ -1,0 +1,849 @@
+{
+  "$comment": "Golden vectors for protocol/dongle-protocol.json. Hex strings are raw bytes; names refer to the spec's canonical names. See protocol/README.md.",
+  "protocol_version": 1,
+  "control_commands": [
+    {
+      "name": "reconnect airpods",
+      "hex": "02415044470140012a000000a1b2c3d4e5f607000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "valid": true,
+      "fields": {"opcode": "reconnect_airpods", "connection_generation": 42, "selected_address": "a1b2c3d4e5f6", "command_sequence": 7, "argument": 0}
+    },
+    {
+      "name": "pair airpods",
+      "hex": "02415044470140022a000000a1b2c3d4e5f608000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "valid": true,
+      "fields": {"opcode": "pair_airpods", "connection_generation": 42, "selected_address": "a1b2c3d4e5f6", "command_sequence": 8, "argument": 0}
+    },
+    {
+      "name": "change listening mode to anc",
+      "hex": "02415044470140032a000000a1b2c3d4e5f609000000020000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "valid": true,
+      "fields": {"opcode": "change_listening_mode", "connection_generation": 42, "selected_address": "a1b2c3d4e5f6", "command_sequence": 9, "argument": 2}
+    },
+    {
+      "name": "change listening mode to transparency",
+      "hex": "02415044470140032a000000a1b2c3d4e5f60a000000030000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "valid": true,
+      "fields": {"opcode": "change_listening_mode", "connection_generation": 42, "selected_address": "a1b2c3d4e5f6", "command_sequence": 10, "argument": 3}
+    },
+    {
+      "name": "open phone pairing",
+      "hex": "02415044470140042a000000a1b2c3d4e5f6feffffff000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "valid": true,
+      "fields": {"opcode": "open_phone_pairing", "connection_generation": 42, "selected_address": "a1b2c3d4e5f6", "command_sequence": 4294967294, "argument": 0}
+    },
+    {
+      "name": "rejected: report id 3",
+      "hex": "03415044470140012a000000a1b2c3d4e5f607000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "valid": false
+    },
+    {
+      "name": "rejected: magic",
+      "hex": "02585044470140012a000000a1b2c3d4e5f607000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "valid": false
+    },
+    {
+      "name": "rejected: version 2",
+      "hex": "02415044470240012a000000a1b2c3d4e5f607000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "valid": false
+    },
+    {
+      "name": "rejected: length byte 63",
+      "hex": "0241504447013f012a000000a1b2c3d4e5f607000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "valid": false
+    },
+    {
+      "name": "rejected: zero sequence",
+      "hex": "02415044470140012a000000a1b2c3d4e5f600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "valid": false
+    },
+    {
+      "name": "rejected: reserved byte set",
+      "hex": "02415044470140012a000000a1b2c3d4e5f607000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001",
+      "valid": false
+    },
+    {
+      "name": "rejected: listening mode off is not exposed",
+      "hex": "02415044470140032a000000a1b2c3d4e5f607000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "valid": false
+    },
+    {
+      "name": "rejected: listening mode adaptive is not exposed",
+      "hex": "02415044470140032a000000a1b2c3d4e5f607000000040000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "valid": false
+    },
+    {
+      "name": "rejected: argument on reconnect",
+      "hex": "02415044470140012a000000a1b2c3d4e5f607000000020000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "valid": false
+    },
+    {
+      "name": "rejected: opcode 0",
+      "hex": "02415044470140002a000000a1b2c3d4e5f607000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "valid": false
+    },
+    {
+      "name": "rejected: opcode 5",
+      "hex": "02415044470140052a000000a1b2c3d4e5f607000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "valid": false
+    },
+    {
+      "name": "rejected: short report",
+      "hex": "02415044470140012a000000a1b2c3d4e5f6070000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "valid": false
+    }
+  ],
+  "control_status": [
+    {
+      "name": "status with result none",
+      "hex": "0241504447014003e8030000a1b2c3d4e5f6025f5b3e0503000000000f0000001e000000000000000000ff030704000000000000000000000000000000000000",
+      "fields": {
+        "flags": ["a2dp_connected", "aacp_ready"],
+        "connection_generation": 1000,
+        "selected_address": "a1b2c3d4e5f6",
+        "listening_mode": "anc",
+        "battery_percent": [95, 91, 62],
+        "charging_components": 5,
+        "output_codec": "aac_eld",
+        "battery_ages_milliseconds": [0, 15, 30],
+        "last_command_sequence": 0,
+        "last_command_result": "none",
+        "last_command_opcode": 0,
+        "capabilities": [
+          "pair_and_reconnect",
+          "phone_pairing",
+          "settings_transport",
+          "typed_features",
+          "settings_workflow_lease",
+          "battery_observation_flags",
+          "usb_host_volume_authority",
+          "active_audio_runtime_update",
+          "explicit_routing_handover",
+          "confirmed_noise_control"
+        ],
+        "present_components": 7,
+        "case_observed_components": 4
+      }
+    },
+    {
+      "name": "status with result accepted",
+      "hex": "0241504447014047e9030000a1b2c3d4e5f603ffffff0002ffffffffffffffffffffffff070000000101ff030000000000000000000000000000000000000000",
+      "fields": {
+        "flags": ["a2dp_connected", "aacp_ready", "streaming", "usb_playback"],
+        "connection_generation": 1001,
+        "selected_address": "a1b2c3d4e5f6",
+        "listening_mode": "transparency",
+        "battery_percent": [255, 255, 255],
+        "charging_components": 0,
+        "output_codec": "aac",
+        "battery_ages_milliseconds": [4294967295, 4294967295, 4294967295],
+        "last_command_sequence": 7,
+        "last_command_result": "accepted",
+        "last_command_opcode": 1,
+        "capabilities": [
+          "pair_and_reconnect",
+          "phone_pairing",
+          "settings_transport",
+          "typed_features",
+          "settings_workflow_lease",
+          "battery_observation_flags",
+          "usb_host_volume_authority",
+          "active_audio_runtime_update",
+          "explicit_routing_handover",
+          "confirmed_noise_control"
+        ],
+        "present_components": 0,
+        "case_observed_components": 0
+      }
+    },
+    {
+      "name": "status with result busy",
+      "hex": "0241504447014018ea030000a1b2c3d4e5f6006400320701feffffff0100000002000000080000000202fd030700000000000000000000000000000000000000",
+      "fields": {
+        "flags": ["phone_connected", "microphone_active"],
+        "connection_generation": 1002,
+        "selected_address": "a1b2c3d4e5f6",
+        "listening_mode": "unknown",
+        "battery_percent": [100, 0, 50],
+        "charging_components": 7,
+        "output_codec": "sbc",
+        "battery_ages_milliseconds": [4294967294, 1, 2],
+        "last_command_sequence": 8,
+        "last_command_result": "busy",
+        "last_command_opcode": 2,
+        "capabilities": [
+          "pair_and_reconnect",
+          "phone_pairing",
+          "settings_transport",
+          "typed_features",
+          "settings_workflow_lease",
+          "battery_observation_flags",
+          "usb_host_volume_authority",
+          "active_audio_runtime_update",
+          "explicit_routing_handover"
+        ],
+        "present_components": 7,
+        "case_observed_components": 0
+      }
+    },
+    {
+      "name": "status with result stale",
+      "hex": "0241504447014000eb03000000000000000001ffffff0000ffffffffffffffffffffffff090000000301ff030000000000000000000000000000000000000000",
+      "fields": {
+        "flags": [],
+        "connection_generation": 1003,
+        "selected_address": "000000000000",
+        "listening_mode": "off",
+        "battery_percent": [255, 255, 255],
+        "charging_components": 0,
+        "output_codec": "unknown",
+        "battery_ages_milliseconds": [4294967295, 4294967295, 4294967295],
+        "last_command_sequence": 9,
+        "last_command_result": "stale",
+        "last_command_opcode": 1,
+        "capabilities": [
+          "pair_and_reconnect",
+          "phone_pairing",
+          "settings_transport",
+          "typed_features",
+          "settings_workflow_lease",
+          "battery_observation_flags",
+          "usb_host_volume_authority",
+          "active_audio_runtime_update",
+          "explicit_routing_handover",
+          "confirmed_noise_control"
+        ],
+        "present_components": 0,
+        "case_observed_components": 0
+      }
+    },
+    {
+      "name": "status with result unsupported",
+      "hex": "0241504447014002ec030000a1b2c3d4e5f6040a141e010364000000c80000002c0100000a0000000403ff030707000000000000000000000000000000000000",
+      "fields": {
+        "flags": ["aacp_ready"],
+        "connection_generation": 1004,
+        "selected_address": "a1b2c3d4e5f6",
+        "listening_mode": "adaptive",
+        "battery_percent": [10, 20, 30],
+        "charging_components": 1,
+        "output_codec": "aac_eld",
+        "battery_ages_milliseconds": [100, 200, 300],
+        "last_command_sequence": 10,
+        "last_command_result": "unsupported",
+        "last_command_opcode": 3,
+        "capabilities": [
+          "pair_and_reconnect",
+          "phone_pairing",
+          "settings_transport",
+          "typed_features",
+          "settings_workflow_lease",
+          "battery_observation_flags",
+          "usb_host_volume_authority",
+          "active_audio_runtime_update",
+          "explicit_routing_handover",
+          "confirmed_noise_control"
+        ],
+        "present_components": 7,
+        "case_observed_components": 7
+      }
+    },
+    {
+      "name": "status with result disconnected",
+      "hex": "0241504447014020ed030000a1b2c3d4e5f60001020302000500000005000000050000000b0000000501fd030300000000000000000000000000000000000000",
+      "fields": {
+        "flags": ["phone_pairing"],
+        "connection_generation": 1005,
+        "selected_address": "a1b2c3d4e5f6",
+        "listening_mode": "unknown",
+        "battery_percent": [1, 2, 3],
+        "charging_components": 2,
+        "output_codec": "unknown",
+        "battery_ages_milliseconds": [5, 5, 5],
+        "last_command_sequence": 11,
+        "last_command_result": "disconnected",
+        "last_command_opcode": 1,
+        "capabilities": [
+          "pair_and_reconnect",
+          "phone_pairing",
+          "settings_transport",
+          "typed_features",
+          "settings_workflow_lease",
+          "battery_observation_flags",
+          "usb_host_volume_authority",
+          "active_audio_runtime_update",
+          "explicit_routing_handover"
+        ],
+        "present_components": 3,
+        "case_observed_components": 0
+      }
+    },
+    {
+      "name": "status with result malformed",
+      "hex": "0241504447014001ee030000a1b2c3d4e5f6025050ff00020700000008000000ffffffff0c0000000600ff030304000000000000000000000000000000000000",
+      "fields": {
+        "flags": ["a2dp_connected"],
+        "connection_generation": 1006,
+        "selected_address": "a1b2c3d4e5f6",
+        "listening_mode": "anc",
+        "battery_percent": [80, 80, 255],
+        "charging_components": 0,
+        "output_codec": "aac",
+        "battery_ages_milliseconds": [7, 8, 4294967295],
+        "last_command_sequence": 12,
+        "last_command_result": "malformed",
+        "last_command_opcode": 0,
+        "capabilities": [
+          "pair_and_reconnect",
+          "phone_pairing",
+          "settings_transport",
+          "typed_features",
+          "settings_workflow_lease",
+          "battery_observation_flags",
+          "usb_host_volume_authority",
+          "active_audio_runtime_update",
+          "explicit_routing_handover",
+          "confirmed_noise_control"
+        ],
+        "present_components": 3,
+        "case_observed_components": 4
+      }
+    }
+  ],
+  "rpc_frames": [
+    {
+      "name": "request: send att request fragment",
+      "hex": "03415044470140012a000000010000000300000003000a2a00000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "request_valid": true,
+      "fields": {
+        "operation": "send_att_request",
+        "connection_generation": 42,
+        "transaction_sequence": 1,
+        "total_length": 3,
+        "fragment_offset": 0,
+        "fragment_length": 3,
+        "response_phase": "idle",
+        "payload": "0a2a00"
+      }
+    },
+    {
+      "name": "request: send aacp packet",
+      "hex": "03415044470140022a000000020000000b0000000b000400040009000d0200000000000000000000000000000000000000000000000000000000000000000000",
+      "request_valid": true,
+      "fields": {
+        "operation": "send_aacp_packet",
+        "connection_generation": 42,
+        "transaction_sequence": 2,
+        "total_length": 11,
+        "fragment_offset": 0,
+        "fragment_length": 11,
+        "response_phase": "idle",
+        "payload": "0400040009000d02000000"
+      }
+    },
+    {
+      "name": "request: read cached report slot 6",
+      "hex": "03415044470140032a00000003000000010000000100060000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "request_valid": true,
+      "fields": {
+        "operation": "read_cached_report",
+        "connection_generation": 42,
+        "transaction_sequence": 3,
+        "total_length": 1,
+        "fragment_offset": 0,
+        "fragment_length": 1,
+        "response_phase": "idle",
+        "payload": "06"
+      }
+    },
+    {
+      "name": "request: select response page at offset 42",
+      "hex": "03415044470140042a0000000300000000002a000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "request_valid": true,
+      "fields": {
+        "operation": "select_response_page",
+        "connection_generation": 42,
+        "transaction_sequence": 3,
+        "total_length": 0,
+        "fragment_offset": 42,
+        "fragment_length": 0,
+        "response_phase": "idle",
+        "payload": ""
+      }
+    },
+    {
+      "name": "request: cancel transaction",
+      "hex": "03415044470140052a00000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "request_valid": true,
+      "fields": {
+        "operation": "cancel_transaction",
+        "connection_generation": 42,
+        "transaction_sequence": 4,
+        "total_length": 0,
+        "fragment_offset": 0,
+        "fragment_length": 0,
+        "response_phase": "idle",
+        "payload": ""
+      }
+    },
+    {
+      "name": "request: commit transaction",
+      "hex": "03415044470140062a00000005000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "request_valid": true,
+      "fields": {
+        "operation": "commit_transaction",
+        "connection_generation": 42,
+        "transaction_sequence": 5,
+        "total_length": 0,
+        "fragment_offset": 0,
+        "fragment_length": 0,
+        "response_phase": "idle",
+        "payload": ""
+      }
+    },
+    {
+      "name": "request: typed feature write ear-detection on",
+      "hex": "03415044470140072a00000006000000060000000600010a02000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "request_valid": true,
+      "fields": {
+        "operation": "typed_feature_request",
+        "connection_generation": 42,
+        "transaction_sequence": 6,
+        "total_length": 6,
+        "fragment_offset": 0,
+        "fragment_length": 6,
+        "response_phase": "idle",
+        "payload": "010a02000000"
+      }
+    },
+    {
+      "name": "request: second fragment of a 60-byte upload",
+      "hex": "03415044470140072a000000070000003c002a0012002a2b2c2d2e2f303132333435363738393a3b000000000000000000000000000000000000000000000000",
+      "request_valid": true,
+      "fields": {
+        "operation": "typed_feature_request",
+        "connection_generation": 42,
+        "transaction_sequence": 7,
+        "total_length": 60,
+        "fragment_offset": 42,
+        "fragment_length": 18,
+        "response_phase": "idle",
+        "payload": "2a2b2c2d2e2f303132333435363738393a3b"
+      }
+    },
+    {
+      "name": "response: idle (passes the request header check)",
+      "hex": "03415044470140072a00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "request_valid": true,
+      "fields": {
+        "operation": "typed_feature_request",
+        "connection_generation": 42,
+        "transaction_sequence": 0,
+        "total_length": 0,
+        "fragment_offset": 0,
+        "fragment_length": 0,
+        "response_phase": "idle",
+        "payload": ""
+      }
+    },
+    {
+      "name": "response: assembling 42 of 60",
+      "hex": "03415044470140072a000000070000003c002a000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "request_valid": false,
+      "fields": {
+        "operation": "typed_feature_request",
+        "connection_generation": 42,
+        "transaction_sequence": 7,
+        "total_length": 60,
+        "fragment_offset": 42,
+        "fragment_length": 0,
+        "response_phase": "assembling",
+        "payload": ""
+      }
+    },
+    {
+      "name": "response: running",
+      "hex": "03415044470140072a00000006000000000000000002000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "request_valid": false,
+      "fields": {
+        "operation": "typed_feature_request",
+        "connection_generation": 42,
+        "transaction_sequence": 6,
+        "total_length": 0,
+        "fragment_offset": 0,
+        "fragment_length": 0,
+        "response_phase": "running",
+        "payload": ""
+      }
+    },
+    {
+      "name": "response: complete firmware version",
+      "hex": "03415044470140072a00000008000000060000000603010001420000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "request_valid": false,
+      "fields": {
+        "operation": "typed_feature_request",
+        "connection_generation": 42,
+        "transaction_sequence": 8,
+        "total_length": 6,
+        "fragment_offset": 0,
+        "fragment_length": 6,
+        "response_phase": "complete",
+        "payload": "010001420000"
+      }
+    },
+    {
+      "name": "response: failed malformed",
+      "hex": "03415044470140072a00000009000000010000000104010000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "request_valid": false,
+      "fields": {
+        "operation": "typed_feature_request",
+        "connection_generation": 42,
+        "transaction_sequence": 9,
+        "total_length": 1,
+        "fragment_offset": 0,
+        "fragment_length": 1,
+        "response_phase": "failed",
+        "payload": "01"
+      }
+    },
+    {
+      "name": "response: failed busy",
+      "hex": "03415044470140072a00000009000000010000000104020000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "request_valid": false,
+      "fields": {
+        "operation": "typed_feature_request",
+        "connection_generation": 42,
+        "transaction_sequence": 9,
+        "total_length": 1,
+        "fragment_offset": 0,
+        "fragment_length": 1,
+        "response_phase": "failed",
+        "payload": "02"
+      }
+    },
+    {
+      "name": "response: failed stale",
+      "hex": "03415044470140072a00000009000000010000000104030000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "request_valid": false,
+      "fields": {
+        "operation": "typed_feature_request",
+        "connection_generation": 42,
+        "transaction_sequence": 9,
+        "total_length": 1,
+        "fragment_offset": 0,
+        "fragment_length": 1,
+        "response_phase": "failed",
+        "payload": "03"
+      }
+    },
+    {
+      "name": "response: failed disconnected",
+      "hex": "03415044470140072a00000009000000010000000104040000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "request_valid": false,
+      "fields": {
+        "operation": "typed_feature_request",
+        "connection_generation": 42,
+        "transaction_sequence": 9,
+        "total_length": 1,
+        "fragment_offset": 0,
+        "fragment_length": 1,
+        "response_phase": "failed",
+        "payload": "04"
+      }
+    },
+    {
+      "name": "response: failed timeout",
+      "hex": "03415044470140072a00000009000000010000000104050000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "request_valid": false,
+      "fields": {
+        "operation": "typed_feature_request",
+        "connection_generation": 42,
+        "transaction_sequence": 9,
+        "total_length": 1,
+        "fragment_offset": 0,
+        "fragment_length": 1,
+        "response_phase": "failed",
+        "payload": "05"
+      }
+    },
+    {
+      "name": "response: failed transport",
+      "hex": "03415044470140072a00000009000000010000000104060000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "request_valid": false,
+      "fields": {
+        "operation": "typed_feature_request",
+        "connection_generation": 42,
+        "transaction_sequence": 9,
+        "total_length": 1,
+        "fragment_offset": 0,
+        "fragment_length": 1,
+        "response_phase": "failed",
+        "payload": "06"
+      }
+    },
+    {
+      "name": "response: failed unsupported",
+      "hex": "03415044470140072a00000009000000010000000104070000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "request_valid": false,
+      "fields": {
+        "operation": "typed_feature_request",
+        "connection_generation": 42,
+        "transaction_sequence": 9,
+        "total_length": 1,
+        "fragment_offset": 0,
+        "fragment_length": 1,
+        "response_phase": "failed",
+        "payload": "07"
+      }
+    },
+    {
+      "name": "response: failed cancelled",
+      "hex": "03415044470140072a00000009000000010000000104080000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "request_valid": false,
+      "fields": {
+        "operation": "typed_feature_request",
+        "connection_generation": 42,
+        "transaction_sequence": 9,
+        "total_length": 1,
+        "fragment_offset": 0,
+        "fragment_length": 1,
+        "response_phase": "failed",
+        "payload": "08"
+      }
+    },
+    {
+      "name": "rejected: fragment length 43",
+      "hex": "03415044470140072a0000000a0000002b0000002b00000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "request_valid": false,
+      "fields": {
+        "operation": "typed_feature_request",
+        "connection_generation": 42,
+        "transaction_sequence": 10,
+        "total_length": 43,
+        "fragment_offset": 0,
+        "fragment_length": 43,
+        "response_phase": "idle",
+        "payload": "000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
+      "name": "rejected: nonzero padding",
+      "hex": "03415044470140072a0000000b000000010000000100020000000000000000000000000000000000000000000000000000000000000000000000000000000001",
+      "request_valid": false,
+      "fields": {
+        "operation": "typed_feature_request",
+        "connection_generation": 42,
+        "transaction_sequence": 11,
+        "total_length": 1,
+        "fragment_offset": 0,
+        "fragment_length": 1,
+        "response_phase": "idle",
+        "payload": "02"
+      }
+    },
+    {
+      "name": "rejected: report id 2",
+      "hex": "02415044470140072a0000000c000000010000000100020000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "request_valid": false,
+      "fields": {
+        "operation": "typed_feature_request",
+        "connection_generation": 42,
+        "transaction_sequence": 12,
+        "total_length": 1,
+        "fragment_offset": 0,
+        "fragment_length": 1,
+        "response_phase": "idle",
+        "payload": "02"
+      }
+    },
+    {
+      "name": "rejected: version 2",
+      "hex": "03415044470240072a0000000d000000010000000100020000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "request_valid": false,
+      "fields": {
+        "operation": "typed_feature_request",
+        "connection_generation": 42,
+        "transaction_sequence": 13,
+        "total_length": 1,
+        "fragment_offset": 0,
+        "fragment_length": 1,
+        "response_phase": "idle",
+        "payload": "02"
+      }
+    }
+  ],
+  "features": [
+    {
+      "name": "write listening mode transparency",
+      "feature": "write_setting",
+      "payload": "010d03000000",
+      "setting": "listening_mode",
+      "value": "transparency"
+    },
+    {"name": "write ear detection off", "feature": "write_setting", "payload": "010a01000000", "setting": "ear_detection", "value": "off"},
+    {"name": "write tone volume 40 percent", "feature": "write_setting", "payload": "011f28500000", "setting": "tone_volume", "value": 20520},
+    {"name": "write hold modes off+anc+adaptive", "feature": "write_setting", "payload": "011a0b000000", "setting": "hold_modes", "value": 11},
+    {"name": "write hold actions noise-control,siri", "feature": "write_setting", "payload": "011601050000", "setting": "hold_actions", "value": 1281},
+    {"name": "write call controls swapped", "feature": "write_setting", "payload": "012400020000", "setting": "call_controls", "value": "swapped"},
+    {"name": "write en352 protection on", "feature": "write_setting", "payload": "013701000000", "setting": "en352_protection", "value": "on"},
+    {"name": "read legacy settings snapshot", "feature": "read_settings_snapshot", "payload": "02"},
+    {"name": "read extended settings snapshot", "feature": "read_settings_snapshot", "payload": "0201"},
+    {"name": "acquire settings workflow lease", "feature": "settings_workflow_lease", "payload": "0a0000000000"},
+    {"name": "renew settings workflow lease token 7", "feature": "settings_workflow_lease", "payload": "0a0107000000"},
+    {"name": "query reconnect policy", "feature": "reconnect_policy", "payload": "17"},
+    {"name": "set reconnect policy automatic", "feature": "reconnect_policy", "payload": "1701"},
+    {"name": "read firmware version", "feature": "read_firmware_version", "payload": "18"},
+    {"name": "read routing status", "feature": "read_routing_status", "payload": "14"}
+  ],
+  "aacp_readback": [
+    {
+      "name": "battery report left 95 charging, right 91 not charging, case 62 optimized charging",
+      "hex": "0400040004000304015f010002015b020008013e0500",
+      "expect": {"listening_mode": "unknown", "battery_percent": [95, 91, 62], "charging_components": 5, "known": [true, true, true]}
+    },
+    {
+      "name": "battery report right disconnected",
+      "hex": "040004000400010201640400",
+      "expect": {"listening_mode": "unknown", "battery_percent": [255, 255, 255], "charging_components": 0, "known": [false, true, false]}
+    },
+    {
+      "name": "listening mode transparency report",
+      "hex": "0400040009000d03000000",
+      "expect": {"listening_mode": "transparency", "battery_percent": [255, 255, 255], "charging_components": 0, "known": [false, false, false]}
+    },
+    {
+      "name": "rejected: battery level 101 changes nothing",
+      "hex": "0400040004000204015f01000201650200",
+      "expect": {"listening_mode": "unknown", "battery_percent": [255, 255, 255], "charging_components": 0, "known": [false, false, false]}
+    },
+    {
+      "name": "rejected: listening mode value 0x103",
+      "hex": "0400040009000d03010000",
+      "expect": {"listening_mode": "unknown", "battery_percent": [255, 255, 255], "charging_components": 0, "known": [false, false, false]}
+    },
+    {
+      "name": "rejected: truncated battery report",
+      "hex": "0400040004000204015f01000201",
+      "expect": {"listening_mode": "unknown", "battery_percent": [255, 255, 255], "charging_components": 0, "known": [false, false, false]}
+    }
+  ],
+  "settings_sessions": [
+    {
+      "name": "legacy snapshot omits appended controls",
+      "packets": [
+        {"hex": "040004001d000000000000416972506f64732050726f0041333036330078007800382e312e300078007800780078007800384133353600", "at": 10},
+        {"hex": "0400040009000d02000000", "at": 100},
+        {"hex": "0400040009000a01000000", "at": 150},
+        {"hex": "0400040009000d03000000", "at": 200},
+        {"hex": "0400040009001605010500", "at": 250},
+        {"hex": "0400040009003701000000", "at": 300},
+        {"hex": "0400040009001f28500000", "at": 350}
+      ],
+      "now": 1000,
+      "extended": false,
+      "snapshot": "01040a5203000001000000010000000d20030000020000000300000016ee02000001000000050100001f8a0200000100000028500000"
+    },
+    {
+      "name": "extended snapshot includes en352 protection",
+      "packets": [
+        {"hex": "040004001d000000000000416972506f64732050726f0041333036330078007800382e312e300078007800780078007800384133353600", "at": 10},
+        {"hex": "0400040009000d02000000", "at": 100},
+        {"hex": "0400040009000a01000000", "at": 150},
+        {"hex": "0400040009000d03000000", "at": 200},
+        {"hex": "0400040009001605010500", "at": 250},
+        {"hex": "0400040009003701000000", "at": 300},
+        {"hex": "0400040009001f28500000", "at": 350}
+      ],
+      "now": 1000,
+      "extended": true,
+      "snapshot": "01050a5203000001000000010000000d20030000020000000300000016ee02000001000000050100001f8a020000010000002850000037bc0200000100000001000000"
+    },
+    {
+      "name": "invalid reports clear known values but advance revisions",
+      "packets": [
+        {"hex": "0400040009000d02000000", "at": 5},
+        {"hex": "0400040009000d09000000", "at": 6},
+        {"hex": "0400040009002801000000", "at": 7},
+        {"hex": "040004000900280100", "at": 8}
+      ],
+      "now": 20,
+      "extended": false,
+      "snapshot": "0100"
+    },
+    {
+      "name": "identical reports advance revision; unknown control ignored",
+      "packets": [{"hex": "0400040009003102000000", "at": 1}, {"hex": "0400040009003102000000", "at": 2}, {"hex": "0400040009003801000000", "at": 3}],
+      "now": 10,
+      "extended": false,
+      "snapshot": "010131080000000200000002000000"
+    }
+  ],
+  "setting_values": [
+    {"setting": "microphone", "valid": ["auto", "right", "left"], "invalid": [3, 255]},
+    {"setting": "ear_detection", "valid": ["on", "off"], "invalid": [0, 3]},
+    {"setting": "listening_mode", "valid": ["off", "anc", "transparency", "adaptive"], "invalid": [0, 5]},
+    {"setting": "hold_actions", "valid": [257, 261, 1281, 1285], "invalid": [1, 258, 66821, 5]},
+    {"setting": "hold_modes", "valid": [3, 11, 15, 12], "invalid": [0, 1, 8, 16, 19]},
+    {"setting": "tone_volume", "valid": [20480, 20580, 20520], "invalid": [20581, 100, 16484, 86016]},
+    {"setting": "call_controls", "valid": ["default", "swapped"], "invalid": [0, 256, 1024]},
+    {"setting": "crown_direction", "valid": ["default", "reversed"], "invalid": [0, 3]},
+    {"setting": "adaptive_strength", "valid": [0, 50, 100], "invalid": [101, 4294967295]},
+    {"setting": "case_volume", "valid": [0, 100], "invalid": [101]},
+    {"setting": "allow_off", "valid": ["on", "off"], "invalid": [0, 3]},
+    {"setting": "gain_swipe", "valid": ["on", "off"], "invalid": [0]},
+    {"setting": "press_speed", "valid": ["default", "slower", "slowest"], "invalid": [3]}
+  ],
+  "phone_frames": [
+    {"name": "read report 2", "hex": "4150444701010200", "valid": true, "requests": 1},
+    {
+      "name": "write report 3",
+      "hex": "415044470102034003415044470140000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "valid": true,
+      "requests": 1
+    },
+    {"name": "two coalesced reads", "hex": "41504447010102004150444701010300", "valid": true, "requests": 2},
+    {
+      "name": "rejected: read with nonzero length",
+      "hex": "415044470101024002415044470140000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "valid": false,
+      "requests": 0
+    },
+    {"name": "rejected: unknown report id 4", "hex": "4150444701010400", "valid": false, "requests": 0},
+    {
+      "name": "rejected: write whose report id differs",
+      "hex": "415044470102024003415044470140000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "valid": false,
+      "requests": 0
+    },
+    {"name": "rejected: version 2", "hex": "4150444702010200", "valid": false, "requests": 0},
+    {"name": "rejected: response operation from host", "hex": "4150444701810200", "valid": false, "requests": 0}
+  ],
+  "layouts": [
+    {"name": "configure AAC-ELD variable bitrate 192000", "layout": "configure_audio_profile", "valid": true, "hex": "03030100ee0200", "fields": {"feature": 3, "requested_codec": "aac_eld", "rate_mode": "variable_bitrate", "requested_bitrate": 192000}},
+    {"name": "configure automatic codec", "layout": "configure_audio_profile", "valid": true, "hex": "03000000000000", "fields": {"feature": 3, "requested_codec": "automatic", "rate_mode": "constant_bitrate", "requested_bitrate": 0}},
+    {"name": "rejected: AAC with variable bitrate", "layout": "configure_audio_profile", "valid": false, "hex": "03020100f40100", "fields": {"feature": 3, "requested_codec": "aac", "rate_mode": "variable_bitrate", "requested_bitrate": 128000}},
+    {"name": "rejected: SBC with a bitrate", "layout": "configure_audio_profile", "valid": false, "hex": "03010000f40100", "fields": {"feature": 3, "requested_codec": "sbc", "rate_mode": "constant_bitrate", "requested_bitrate": 128000}},
+    {"name": "enable Game Mode", "layout": "set_game_mode", "hex": "0401", "fields": {"feature": 4, "enabled": 1}},
+    {"name": "audio profile: AAC-ELD streaming over USB, Game Mode confirmed at 60.0 ms", "layout": "audio_profile", "hex": "0103030100ee0200e0ea02000103010a58026400", "fields": {"version": 1, "requested_codec": "aac_eld", "actual_codec": "aac_eld", "rate_mode": "variable_bitrate", "requested_bitrate": 192000, "actual_bitrate": 191200, "game_mode_requested": 1, "game_mode_state": "confirmed", "input_ownership": "usb", "flags": ["streaming", "game_mode_supported"], "delay_tenths_milliseconds": 600, "startup_priming_milliseconds": 100}},
+    {"name": "audio profile: idle on SBC, no delay report yet", "layout": "audio_profile", "hex": "01000100000000000000000000000000ffff6400", "fields": {"version": 1, "requested_codec": "automatic", "actual_codec": "sbc", "rate_mode": "constant_bitrate", "game_mode_state": "off", "input_ownership": "idle", "flags": [], "delay_tenths_milliseconds": 65535, "startup_priming_milliseconds": 100}},
+    {"name": "audio profile: phone input, profile change pending, Game Mode restoring", "layout": "audio_profile", "hex": "01020200605b0300605b030000060205dc056400", "fields": {"version": 1, "requested_codec": "aac", "actual_codec": "aac", "rate_mode": "constant_bitrate", "requested_bitrate": 220000, "actual_bitrate": 220000, "game_mode_state": "restoring", "input_ownership": "phone", "flags": ["profile_pending", "microphone"], "delay_tenths_milliseconds": 1500, "startup_priming_milliseconds": 100}},
+    {"name": "performance: streaming USB AAC-ELD with AACP ready", "layout": "performance", "hex": "0101030980ee3600c0030000000f0000a00500000000000080010000e02e0000340800003c0f000000000000010000000000040090920100706d0200b0ad0100", "fields": {"version": 1, "input_ownership": "usb", "actual_codec": "aac_eld", "flags": ["streaming", "aacp_ready"], "uptime_milliseconds": 3600000, "pcm_frames_used": 960, "pcm_frames_capacity": 3840, "pcm_frames_high_water_mark": 1440, "pcm_underflow_frames": 0, "pcm_dropped_frames": 384, "encoded_units": 12000, "last_encode_microseconds": 2100, "maximum_encode_microseconds": 3900, "send_failures": 0, "recovery_requests": 1, "linked_heap_capacity": 262144, "heap_allocated_bytes": 103056, "heap_remaining_bytes": 159088, "allocator_arena_bytes": 110000}},
+    {"name": "performance: idle, heap accounting unavailable", "layout": "performance", "hex": "0100000488130000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ffffffff00000000", "fields": {"version": 1, "input_ownership": "idle", "actual_codec": "unknown", "flags": ["phone_connected"], "uptime_milliseconds": 5000, "heap_remaining_bytes": 4294967295}},
+    {"name": "nearby: heard with identity, stronger at -60 dBm", "layout": "nearby_finder", "hex": "0182c401dc0500000c000000000000000300000000c4ffff", "fields": {"version": 1, "state": 130, "rssi": -60, "trend": "stronger", "last_heard_age_milliseconds": 1500, "matched_reports": 12, "pause_flags": 0, "session": 3, "smoothed_rssi": -15360}},
+    {"name": "nearby: stopped, nothing heard", "layout": "nearby_finder", "hex": "01007f00ffffffff00000000000000000000000000000080", "fields": {"version": 1, "state": "stopped", "rssi": 127, "trend": "unknown", "last_heard_age_milliseconds": 4294967295, "smoothed_rssi": -2147483648}},
+    {"name": "nearby: paused by BLE scan policy", "layout": "nearby_finder", "hex": "01847f00ffffffff00000000020000000500000000000080", "fields": {"version": 1, "state": 132, "rssi": 127, "trend": "unknown", "last_heard_age_milliseconds": 4294967295, "pause_flags": 2, "session": 5, "smoothed_rssi": -2147483648}},
+    {"name": "physical volume: authority held, level 64 confirmed", "layout": "physical_volume", "hex": "011940ff0900000007000000681000000300000000000000", "fields": {"version": 1, "flags": ["known_physical_gain", "active_authority", "eligible_usb_scope"], "confirmed_level": 64, "desired_level": 255, "observation_revision": 9, "authority_token": 7, "remaining_lease_milliseconds": 4200, "usb_media_generation": 3}},
+    {"name": "physical volume: request in flight, gain unknown", "layout": "physical_volume", "hex": "0106ff640a00000000000000000000000300000000000000", "fields": {"version": 1, "flags": ["pending_request", "in_flight_request"], "confirmed_level": 255, "desired_level": 100, "observation_revision": 10, "usb_media_generation": 3}},
+    {"name": "acquire volume authority", "layout": "volume_authority", "valid": true, "hex": "11000000000000", "fields": {"feature": 17, "action": "acquire", "token": 0, "level": 0}},
+    {"name": "renew volume authority token 7", "layout": "volume_authority", "valid": true, "hex": "11010700000000", "fields": {"feature": 17, "action": "renew", "token": 7, "level": 0}},
+    {"name": "release volume authority token 7", "layout": "volume_authority", "valid": true, "hex": "11020700000000", "fields": {"feature": 17, "action": "release", "token": 7, "level": 0}},
+    {"name": "set level 100 with token 7", "layout": "volume_authority", "valid": true, "hex": "11030700000064", "fields": {"feature": 17, "action": "set_level", "token": 7, "level": 100}},
+    {"name": "rejected: acquire with a token", "layout": "volume_authority", "valid": false, "hex": "11000700000000", "fields": {"feature": 17, "action": "acquire", "token": 7, "level": 0}},
+    {"name": "rejected: renew without a token", "layout": "volume_authority", "valid": false, "hex": "11010000000000", "fields": {"feature": 17, "action": "renew", "token": 0, "level": 0}},
+    {"name": "rejected: renew with a level", "layout": "volume_authority", "valid": false, "hex": "11010700000005", "fields": {"feature": 17, "action": "renew", "token": 7, "level": 5}},
+    {"name": "rejected: set level 128", "layout": "volume_authority", "valid": false, "hex": "11030700000080", "fields": {"feature": 17, "action": "set_level", "token": 7, "level": 128}},
+    {"name": "rejected: unknown action 4", "layout": "volume_authority", "valid": false, "hex": "11040700000000", "fields": {"feature": 17, "action": 4, "token": 7, "level": 0}},
+    {"name": "firmware: standard 0.1.67", "layout": "firmware_version", "hex": "010001430000", "fields": {"version": 1, "major": 0, "minor": 1, "patch": 67, "variant": 0}},
+    {"name": "firmware: radio0076 with 16-bit patch", "layout": "firmware_version", "hex": "010102030101", "fields": {"version": 1, "major": 1, "minor": 2, "patch": 259, "variant": 1}}
+  ]
+}

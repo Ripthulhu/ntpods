@@ -2,6 +2,14 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using NTPods.WinUI.Ipc;
 
+CompanionPairingChecks.Run();
+
+if (args is ["--accommodations", var accommodationsInput, var accommodationsOutput])
+{
+    AccommodationsChecks.Run(accommodationsInput, accommodationsOutput);
+    return;
+}
+
 if (args is ["--dongle", var dongleInput, var dongleOutput])
 {
     DongleChecks.Run(dongleInput, dongleOutput);
@@ -101,8 +109,9 @@ for (var index = 0; index < lines.Length - 2; ++index)
         s.LoudSoundReductionError == (raw.RootElement.TryGetProperty("loud_sound_reduction_error", out var reductionError) &&
         reductionError.ValueKind != JsonValueKind.Null ? reductionError.GetString() : null),
         "Confirmed, pending and failed Loud Sound Reduction states must remain separate across IPC.");
-    Check(s.Transparency == (raw.RootElement.TryGetProperty("transparency", out var transparency) && transparency.ValueKind != JsonValueKind.Null
-            ? transparency.Deserialize<TransparencySettings>() : null) &&
+    var expectedTransparency = raw.RootElement.TryGetProperty("transparency", out var transparency) && transparency.ValueKind != JsonValueKind.Null
+        ? transparency.Deserialize<TransparencySettings>() : null;
+    Check((s.Transparency is null ? expectedTransparency is null : s.Transparency.SameValues(expectedTransparency)) &&
         s.TransparencyPending == (raw.RootElement.TryGetProperty("transparency_pending", out var transparencyPending) && transparencyPending.GetBoolean()) &&
         s.TransparencyError == (raw.RootElement.TryGetProperty("transparency_error", out var transparencyError) && transparencyError.ValueKind != JsonValueKind.Null
             ? transparencyError.GetString() : null),
@@ -127,7 +136,7 @@ for (var index = 0; index < lines.Length - 2; ++index)
         var phase = phases[index];
         Check(!s.PlaybackAacBitrate.Variable && s.PlaybackAacEldBitrate.Variable == (phase == "capturing"),
             "Variable bitrate must stay attached to the AAC-ELD preference.");
-        Check(s.Transparency == (phase == "unavailable" ? null : Transparency(phase == "capturing")) &&
+        Check((phase == "unavailable" ? s.Transparency is null : s.Transparency?.SameValues(Transparency(phase == "capturing")) == true) &&
             s.TransparencyPending == (phase == "starting") &&
             s.TransparencyError == (phase == "error" ? "Transparency settings could not be read." : null),
             "Per-ear Transparency values changed across IPC.");
@@ -368,12 +377,20 @@ foreach (string key in transparencyState["transparency"]!.AsObject().Select(pair
     Check(Wire.ParseEvent(missing.ToJsonString()) is null, "Incomplete Transparency settings must be rejected.");
 }
 foreach (var (key, value) in new[] {
-    ("left_amplification", -1.01f), ("right_amplification", 1.01f), ("left_tone", -1.01f), ("right_tone", 1.01f),
-    ("left_ambient_noise_reduction", -0.01f), ("right_ambient_noise_reduction", 1.01f) })
+    ("left_amplification", -1.01f), ("right_amplification", 2.01f), ("left_tone", -1.01f), ("right_tone", 1.01f),
+    ("left_ambient_noise_reduction", -0.01f), ("right_ambient_noise_reduction", 1.01f),
+    ("own_voice", -0.01f), ("own_voice", 1.01f) })
 {
     var invalid = transparencyState.DeepClone();
     invalid["transparency"]![key] = value;
     Check(Wire.ParseEvent(invalid.ToJsonString()) is null, "Out-of-range Transparency settings must be rejected.");
+}
+foreach (string key in new[] { "left_eq", "right_eq" })
+foreach (string value in new[] { "null", "[]", "[0,0,0,0,0,0,0]", "[0,0,0,0,0,0,0,-1]", "[0,0,0,0,0,0,0,101]", "[0,0,0,0,0,0,0,1e40]" })
+{
+    var invalid = transparencyState.DeepClone();
+    invalid["transparency"]![key] = JsonNode.Parse(value);
+    Check(Wire.ParseEvent(invalid.ToJsonString()) is null, "Invalid Transparency curves must never become editable defaults.");
 }
 foreach (string invalidValue in new[] { "{}", "[]", "1", "true", "\"settings\"" })
     Check(Wire.ParseEvent("{\"event\":\"state\",\"transparency\":" + invalidValue + "}") is null,
@@ -555,6 +572,15 @@ Check(Wire.ParseEvent("{\"event\":\"overlay\",\"title\":\"a\",\"body\":\"b\"}") 
 Check(Wire.ParseEvent("{\"event\":\"connect_prompt\",\"name\":\"buds\"}") is DaemonEvent.ConnectPrompt("buds"), "Connect prompt dispatch changed");
 Check(Wire.ParseEvent("{\"event\":\"head_tracking\",\"timestamp_ms\":1792000000100,\"horizontal\":-32768,\"vertical\":32767}")
     is DaemonEvent.HeadTracking(1_792_000_000_100, short.MinValue, short.MaxValue), "Motion events must preserve signed sensor samples and their observation time.");
+const string motionFields = "\"timestamp_ns\":1234567890,\"attitude_q15\":[0,0,0],\"gyro_raw\":[-10,20,-30],\"user_acceleration_raw\":[100,-200,300],\"gravity_raw\":[0,0,1000],\"counter\":77";
+string MotionEvent(string fields) => "{\"event\":\"head_tracking\",\"timestamp_ms\":42,\"horizontal\":20,\"vertical\":-30,\"motion\":{" + fields + "}}";
+Check(Wire.ParseEvent(MotionEvent(motionFields)) is DaemonEvent.HeadTracking { Motion: { TimestampNs: 1234567890, Counter: 77 } report } &&
+    report.GyroRaw!.SequenceEqual(new short[] {-10,20,-30}) && report.GravityRaw!.SequenceEqual(new short[] {0,0,1000}),
+    "Both sensor transports retain their full uncalibrated fields.");
+foreach (string invalid in new[] { motionFields.Replace("[0,0,0]", "[0,0]"),
+    motionFields.Replace("[-10,20,-30]", "[-32769,20,-30]"), motionFields.Replace("1234567890", "9223372036854775808"),
+    motionFields + ",\"counter\":1", motionFields + ",\"unexpected\":1" })
+    Check(Wire.ParseEvent(MotionEvent(invalid)) is null, "Malformed full-motion fields must not reach consumers.");
 foreach (bool ok in new[] { false, true })
 {
     string result = JsonSerializer.Serialize(new { @event = "command_result", command = "set_name", request_id = 42, ok, message = "sent" });
@@ -762,7 +788,8 @@ string linkLine = Wire.ToLine(new CompanionLinkCmd {
 });
 var linkedCommand = JsonSerializer.Deserialize<CompanionLinkCmd>(linkLine)!;
 Check(linkedCommand.PeerAddress == "AA:BB:CC:DD:EE:FF" && linkedCommand.SecretHex == companionSecret &&
-    linkedCommand.DeviceId == "001122334455", "Explicit link approval must carry the intended peer, accessory and full secret");
+    linkedCommand.DeviceId == "001122334455" && linkedCommand.RequestId == 0,
+    "Explicit link approval must carry the intended peer, accessory and full secret");
 output.Add(linkLine.TrimEnd('\n'));
 Check(Wire.ToLine(new CompanionStatusCmd()) == "{\"cmd\":\"companion_status\"}\n", "Status requests must have no audio action or secret payload");
 output.Add(Wire.ToLine(new CompanionStatusCmd()).TrimEnd('\n'));
@@ -774,13 +801,26 @@ foreach (string target in new[] { "pc", "android" })
         "Either transfer direction must preserve the exact accessory and full-width request correlation");
     output.Add(line.TrimEnd('\n'));
 }
-Check(Wire.ToLine(new CompanionForgetCmd()) == "{\"cmd\":\"companion_forget\"}\n", "Forgetting approval must remain a separate command");
+Check(Wire.ToLine(new CompanionForgetCmd()) == "{\"cmd\":\"companion_forget\",\"request_id\":0}\n", "Forgetting approval must remain a separate command");
 output.Add(Wire.ToLine(new CompanionForgetCmd()).TrimEnd('\n'));
+string correlatedLink = Wire.ToLine(new CompanionLinkCmd {
+    PeerAddress = "AA:BB:CC:DD:EE:FF", SecretHex = companionSecret, DeviceId = "001122334455", RequestId = ulong.MaxValue
+});
+Check(JsonSerializer.Deserialize<CompanionLinkCmd>(correlatedLink)!.RequestId == ulong.MaxValue &&
+    JsonSerializer.Deserialize<CompanionLinkCmd>("{\"peer_address\":\"AA:BB:CC:DD:EE:FF\",\"secret_hex\":\"" + companionSecret + "\",\"device_id\":\"001122334455\"}")!.RequestId == 0,
+    "Setup approval preserves full-width request IDs while legacy callers default to zero");
+output.Add(correlatedLink.TrimEnd('\n'));
+string correlatedForget = Wire.ToLine(new CompanionForgetCmd { RequestId = ulong.MaxValue });
+Check(JsonSerializer.Deserialize<CompanionForgetCmd>(correlatedForget)!.RequestId == ulong.MaxValue &&
+    JsonSerializer.Deserialize<CompanionForgetCmd>("{\"cmd\":\"companion_forget\"}")!.RequestId == 0,
+    "Forget approval preserves request correlation without requiring it from legacy callers");
+output.Add(correlatedForget.TrimEnd('\n'));
 File.WriteAllLines(args[1], output);
-Console.WriteLine($"C#: {lines.Length} production/legacy events, two companion events, five companion commands and malformed-input checks passed");
+Console.WriteLine($"C#: {lines.Length} production/legacy events, two companion events, seven companion commands and malformed-input checks passed");
 
 static TransparencySettings Transparency(bool enabled) => new() {
-    Enabled = enabled, LeftAmplification = -1, RightAmplification = 1, LeftTone = -0.25f, RightTone = 0.5f,
+    LeftEq = [0, 1, 2, 3, 4, 5, 6, 7], RightEq = [7, 6, 5, 4, 3, 2, 1, 0], OwnVoice = 0.5f,
+    Enabled = enabled, LeftAmplification = -1, RightAmplification = 2, LeftTone = -0.25f, RightTone = 0.5f,
     LeftConversationBoost = true, RightConversationBoost = false, LeftAmbientNoiseReduction = 0, RightAmbientNoiseReduction = 1
 };
 

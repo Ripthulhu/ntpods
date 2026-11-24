@@ -2,18 +2,26 @@
 #![allow(dead_code)]
 
 use ntpods_ipc::{Event, Snapshot};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 #[path = "../src/aap.rs"]
 mod aap;
+#[path = "../src/accommodations.rs"]
+mod accommodations;
+#[path = "../src/accommodations_control.rs"]
+mod accommodations_control;
 #[path = "../src/atomic_file.rs"]
 mod atomic_file;
 #[path = "../src/att_settings.rs"]
 mod att_settings;
 #[path = "../src/battery_ble.rs"]
 mod battery_ble;
+#[path = "../src/case_return.rs"]
+mod case_return;
+#[path = "../src/connection_request.rs"]
+mod connection_request;
 #[path = "../src/device_models.rs"]
 mod device_models;
 #[path = "../src/device_settings.rs"]
@@ -45,17 +53,49 @@ fn log(_: &str) {}
 
 #[derive(Clone)]
 struct Ctx {
+    companion_preferences: Arc<Mutex<companion_prefs::Store>>,
     dongle: Arc<dongle::Controller>,
     dongle_health: Arc<dongle_health::Controller>,
     companion_actions: Arc<Mutex<()>>,
+    case_return: Arc<Mutex<case_return::CaseReturn>>,
+    connect_requested: Arc<connection_request::ConnectionRequest>,
+    mac: Arc<AtomicU64>,
     state: Arc<Mutex<Snapshot>>,
     auto_pause: Arc<Mutex<media::AutoPausePolicy>>,
     shutting_down: Arc<AtomicBool>,
 }
 
 impl Ctx {
+    fn for_test() -> Self {
+        Self {
+            companion_preferences: Arc::default(),
+            dongle: Arc::default(),
+            dongle_health: Arc::default(),
+            companion_actions: Arc::default(),
+            case_return: Arc::default(),
+            connect_requested: Arc::new(connection_request::ConnectionRequest::new(false)),
+            mac: Arc::default(),
+            state: Arc::new(Mutex::new(Snapshot::default())),
+            auto_pause: Arc::new(Mutex::new(media::AutoPausePolicy)),
+            shutting_down: Arc::default(),
+        }
+    }
+    fn mac(&self) -> u64 {
+        self.mac.load(Ordering::Acquire)
+    }
     fn push_state(&self) {}
     fn send_event(&self, _: &Event) {}
+}
+
+mod companion_prefs {
+    #[derive(Default)]
+    pub struct Store { selected: Option<String> }
+    impl Store {
+        pub fn selected_dongle(&self) -> Option<&str> { self.selected.as_deref() }
+        pub fn set_selected_dongle(&mut self, serial: &str) -> std::io::Result<()> {
+            self.selected = Some(serial.into()); Ok(())
+        }
+    }
 }
 
 mod driver {
@@ -141,6 +181,9 @@ static TEST_GATE: Mutex<()> = Mutex::new(());
 static USB: Mutex<Option<Arc<Mutex<Hardware>>>> = Mutex::new(None);
 
 struct Hardware {
+    path: u16,
+    usb_audio_available: bool,
+    connected: bool,
     generation: u32,
     capabilities: u16,
     usb_playback: bool,
@@ -151,9 +194,15 @@ struct Hardware {
     revision: u32,
     ear_reads: usize,
     features: Vec<u8>,
+    reconnect_automatically: bool,
     finder: bool,
     reply: [u8; 64],
     request: Vec<u8>,
+    response: Vec<u8>,
+    metadata: Option<Vec<u8>>,
+    transparency: Option<Vec<u8>>,
+    clinical: Option<Vec<u8>>,
+    cached: std::collections::BTreeMap<u8, Vec<u8>>,
     op: u8,
     commit_block: Option<Arc<CommitBlock>>,
     sequences: Vec<u32>,
@@ -181,6 +230,9 @@ impl Hardware {
         reply[..7].copy_from_slice(&[3, b'A', b'P', b'D', b'G', 1, 64]);
         reply[8..12].copy_from_slice(&1u32.to_le_bytes());
         Self {
+            path: 1,
+            usb_audio_available: true,
+            connected: true,
             generation: 1,
             capabilities: 56,
             usb_playback: true,
@@ -191,9 +243,15 @@ impl Hardware {
             revision: 1,
             ear_reads: 0,
             features: Vec::new(),
+            reconnect_automatically: false,
             finder: false,
             reply,
             request: Vec::new(),
+            response: Vec::new(),
+            metadata: None,
+            transparency: None,
+            clinical: None,
+            cached: Default::default(),
             op: 0,
             commit_block: None,
             sequences: Vec::new(),
@@ -221,6 +279,32 @@ impl Hardware {
                 self.failure = 6;
                 return Vec::new();
             }
+            if self.op == 1 {
+                if self.transparency.is_some() {
+                    return match self.request[0] {
+                        0x06 => vec![0x07, 0x30, 0, 0x40, 0],
+                        0x08 if self.request[1] == 0x30 => {
+                            let mut response = vec![0x09, 21, 0x34, 0, 0x0a, 0x35, 0];
+                            response.extend_from_slice(&[0x90, 0x53, 0x4d, 0x74, 0xaf, 0x9e, 0x03, 0x94,
+                                0xdb, 0x45, 0xab, 0xf7, 0xc1, 0x1c, 0x62, 0xd5]);
+                            if self.clinical.is_some() {
+                                response.extend_from_slice(&[0x38, 0, 0x0a, 0x39, 0]);
+                                response.extend_from_slice(&[0x0a, 0x7e, 0x45, 0x41, 0x0b, 0x0f, 0x98, 0x90,
+                                    0x6f, 0x4d, 0xc5, 0x95, 5, 0, 0x12, 0xa4]);
+                            }
+                            response
+                        }
+                        0x08 => vec![1, 8, self.request[1], self.request[2], 0x0a],
+                        0x0a => [vec![0x0b], if self.request[1] == 0x35 {
+                            self.transparency.clone().unwrap() } else { self.clinical.clone().unwrap() }].concat(),
+                        0x12 => {
+                            assert_eq!(self.request[1], 0x35, "Clinical profile writes are forbidden");
+                            self.transparency = Some(self.request[3..].to_vec()); vec![0x13]
+                        },
+                        _ => panic!("Unexpected Custom Transparency request"),
+                    };
+                }
+            }
             return if self.op == 1 {
                 vec![0x0b, 7]
             } else {
@@ -228,6 +312,14 @@ impl Hardware {
             };
         }
         if self.op == 3 {
+            if let Some(packet) = self.cached.get(&self.request[0]) {
+                return [0u32.to_le_bytes().as_slice(), self.revision.to_le_bytes().as_slice(), packet].concat();
+            }
+            if self.request == [1] {
+                if let Some(packet) = self.metadata.as_ref() {
+                    return [0u32.to_le_bytes().as_slice(), 1u32.to_le_bytes().as_slice(), packet].concat();
+                }
+            }
             if self.request == [5] {
                 self.ear_reads += 1;
                 return [
@@ -302,6 +394,14 @@ impl Hardware {
                 bytes[18..20].copy_from_slice(&100u16.to_le_bytes());
                 bytes
             }
+            23 => {
+                match self.request.as_slice() {
+                    [23] => {}
+                    [23, value @ (0 | 1)] => self.reconnect_automatically = *value == 1,
+                    _ => panic!("Unexpected reconnect policy request"),
+                }
+                vec![1, u8::from(self.reconnect_automatically)]
+            }
             _ => panic!("Unexpected feature {feature}"),
         }
     }
@@ -320,27 +420,31 @@ mod dongle_hid {
     use super::*;
     pub struct Device {
         pub path: Vec<u16>,
+        pub serial: String,
+        pub usb_audio_available: bool,
         hardware: Arc<Mutex<Hardware>>,
     }
-    pub enum Discovery {
-        None,
-        Multiple,
-        One(Device),
-    }
-    pub fn discover(_: Option<&[u16]>) -> std::io::Result<Discovery> {
-        Ok(Discovery::One(Device {
-            path: vec![1],
-            hardware: USB.lock().unwrap().as_ref().unwrap().clone(),
-        }))
+    pub fn discover(_: Option<&[u16]>) -> std::io::Result<Vec<Device>> {
+        let hardware = USB.lock().unwrap().as_ref().unwrap().clone();
+        let h = hardware.lock().unwrap();
+        Ok(vec![Device {
+            path: vec![h.path],
+            serial: "test-board".into(),
+            usb_audio_available: h.usb_audio_available,
+            hardware: hardware.clone(),
+        }])
     }
     impl Device {
         pub fn read(&self) -> std::io::Result<dongle_protocol::Report> {
             let h = self.hardware.lock().unwrap();
+            if self.path != [h.path] {
+                return Err(std::io::Error::new(std::io::ErrorKind::NotConnected, "USB re-enumerated"));
+            }
             Ok(dongle_protocol::Report {
                 state: ntpods_ipc::DongleState {
                     present: true,
-                    connected: true,
-                    controls_ready: true,
+                    connected: h.connected,
+                    controls_ready: h.connected,
                     selected: true,
                     usb_playback: h.usb_playback,
                     generation: h.generation,
@@ -390,9 +494,13 @@ mod dongle_hid {
                 1 | 2 | 3 | 7 => {
                     h.op = op;
                     h.failure = 0;
-                    h.request = bytes[22..22 + usize::from(bytes[20])].to_vec();
+                    let offset = usize::from(u16::from_le_bytes(bytes[18..20].try_into().unwrap()));
+                    if offset == 0 { h.request.clear(); }
+                    assert_eq!(offset, h.request.len());
+                    h.request.extend_from_slice(&bytes[22..22 + usize::from(bytes[20])]);
                     h.reply = bytes;
-                    h.reply[18..20].copy_from_slice(&bytes[16..18]);
+                    let received = h.request.len() as u16;
+                    h.reply[18..20].copy_from_slice(&received.to_le_bytes());
                     h.reply[20] = 0;
                     h.reply[21] = 1;
                     h.reply[22..].fill(0);
@@ -403,19 +511,28 @@ mod dongle_hid {
                     let request = (h.op, h.request.clone());
                     h.commits.push(request);
                     let response = h.response();
-                    assert!(response.len() <= 42);
+                    h.response = response.clone();
                     h.reply[16..18].copy_from_slice(&(response.len() as u16).to_le_bytes());
                     h.reply[18..20].fill(0);
-                    h.reply[20] = response.len() as u8;
+                    let count = response.len().min(42);
+                    h.reply[20] = count as u8;
                     h.reply[21] = 3;
                     h.reply[22..].fill(0);
-                    h.reply[22..22 + response.len()].copy_from_slice(&response);
+                    h.reply[22..22 + count].copy_from_slice(&response[..count]);
                     if h.failure != 0 {
                         h.reply[16..18].copy_from_slice(&1u16.to_le_bytes());
                         h.reply[20] = 1;
                         h.reply[21] = 4;
                         h.reply[22] = h.failure;
                     }
+                }
+                4 => {
+                    let offset = usize::from(u16::from_le_bytes(bytes[18..20].try_into().unwrap()));
+                    let page = h.response[offset..h.response.len().min(offset + 42)].to_vec();
+                    h.reply[18..20].copy_from_slice(&bytes[18..20]);
+                    h.reply[20] = page.len() as u8;
+                    h.reply[22..].fill(0);
+                    h.reply[22..22 + page.len()].copy_from_slice(&page);
                 }
                 5 => {
                     if h.cancel_delay == 0 {
@@ -447,18 +564,15 @@ impl Fixture {
         Self::start(true)
     }
     fn start(health_worker: bool) -> Self {
+        Self::start_config(health_worker, |_| {})
+    }
+    fn start_config(health_worker: bool, configure: impl FnOnce(&mut Hardware)) -> Self {
         let gate = TEST_GATE.lock().unwrap();
         *PLAYER.lock().unwrap() = Player::default();
         let hardware = Arc::new(Mutex::new(Hardware::new()));
+        configure(&mut hardware.lock().unwrap());
         *USB.lock().unwrap() = Some(hardware.clone());
-        let ctx = Ctx {
-            dongle: Arc::default(),
-            dongle_health: Arc::default(),
-            companion_actions: Arc::default(),
-            state: Arc::new(Mutex::new(Snapshot::default())),
-            auto_pause: Arc::new(Mutex::new(media::AutoPausePolicy)),
-            shutting_down: Arc::default(),
-        };
+        let ctx = Ctx::for_test();
         dongle::start(ctx.clone());
         if health_worker {
             dongle_health::start(ctx.clone());
@@ -517,6 +631,152 @@ fn until(mut condition: impl FnMut() -> bool) {
         );
         std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+#[test]
+fn control_only_board_reads_and_changes_its_reconnect_policy_without_airpods() {
+    use ntpods_ipc::Command;
+    let fixture = Fixture::start_config(false, |h| {
+        h.connected = false;
+        h.usb_audio_available = false;
+        h.usb_playback = false;
+    });
+    dongle_health::start(fixture.ctx.clone());
+    until(|| fixture.ctx.state.lock().unwrap().dongle.health.reconnect_automatically == Some(false));
+    let d = fixture.ctx.state.lock().unwrap().dongle.clone();
+    let set = Command::DongleHealth {
+        session: d.session,
+        generation: d.generation,
+        command: Box::new(Command::SetDongleReconnectPolicy { automatic: true }),
+    };
+    assert!(dongle_health::apply(&fixture.ctx, &set));
+    until(|| fixture.ctx.state.lock().unwrap().dongle.health.reconnect_automatically == Some(true));
+    assert!(fixture.hardware.lock().unwrap().reconnect_automatically);
+    assert!(!fixture.ctx.state.lock().unwrap().dongle.connected);
+}
+
+#[test]
+fn control_only_boot_and_audio_reenumeration_retire_old_sessions_without_reconnecting() {
+    let fixture = Fixture::start_config(false, |h| {
+        h.usb_audio_available = false;
+        h.usb_playback = false;
+        h.connected = false;
+    });
+    let before = fixture.ctx.state.lock().unwrap().dongle.clone();
+    assert!(before.present && !before.connected && !before.usb_audio_available);
+    assert_eq!(before.serial.as_deref(), Some("test-board"));
+    assert_eq!(before.available_devices.len(), 1);
+    {
+        let mut h = fixture.hardware.lock().unwrap();
+        h.path += 1;
+        h.generation += 1;
+        h.connected = true;
+        h.usb_audio_available = true;
+    }
+    until(|| {
+        let d = &fixture.ctx.state.lock().unwrap().dongle;
+        d.session != before.session && d.connected && d.usb_audio_available
+    });
+    assert!(dongle::research_device(&fixture.ctx, before.session, before.generation).is_none());
+    dongle::apply(&fixture.ctx, &ntpods_ipc::Command::DongleControl {
+        session: before.session, generation: before.generation, opcode: 1, argument: 0,
+    });
+    assert_eq!(fixture.ctx.state.lock().unwrap().dongle.error.as_deref(), Some("stale"));
+    assert!(fixture.hardware.lock().unwrap().commits.is_empty());
+}
+
+#[test]
+fn custom_transparency_loads_automatically_and_live_writes_preserve_the_complete_record() {
+    let fixture = Fixture::start_config(false, |h| {
+        let mut metadata = vec![4, 0, 4, 0, 0x1d, 0, 2, 0, 0, 4, 0];
+        for field in ["", "A2084", "", "", "6F21", "", "", "", "", "", ""] {
+            metadata.extend_from_slice(field.as_bytes()); metadata.push(0);
+        }
+        h.metadata = Some(metadata);
+        let mut record = vec![0; 104];
+        record[4..8].copy_from_slice(&12.5f32.to_le_bytes());
+        record[52..56].copy_from_slice(&8.25f32.to_le_bytes());
+        record[100..104].copy_from_slice(&0.5f32.to_le_bytes());
+        h.transparency = Some(record);
+    });
+    dongle_health::start(fixture.ctx.clone());
+    until(|| fixture.ctx.state.lock().unwrap().dongle.health.transparency.is_some());
+    let d = fixture.ctx.state.lock().unwrap().dongle.clone();
+    let expected = d.health.transparency.unwrap();
+    assert_eq!(expected.left_eq[0], 12.5);
+    assert!(!expected.enabled);
+    let original = fixture.hardware.lock().unwrap().transparency.clone().unwrap();
+    assert!(fixture.hardware.lock().unwrap().raw_requests.iter().all(|(_, p)| p[0] != 0x12));
+    let mut requested = expected;
+    requested.enabled = true;
+    requested.left_amplification = 1.25;
+    requested.right_amplification = 1.25;
+    dongle_health::apply(&fixture.ctx, &ntpods_ipc::Command::DongleHealth {
+        session: d.session, generation: d.generation,
+        command: Box::new(ntpods_ipc::Command::SetTransparency { settings: requested, expected: Some(expected) }),
+    });
+    until(|| fixture.ctx.state.lock().unwrap().dongle.health.transparency == Some(requested));
+    let h = fixture.hardware.lock().unwrap();
+    assert_eq!(h.raw_requests.iter().filter(|(_, p)| p[0] == 0x12).count(), 1);
+    let record = h.transparency.as_ref().unwrap();
+    assert_eq!(&record[4..36], &original[4..36]);
+    assert_eq!(&record[52..84], &original[52..84]);
+    assert_eq!(&record[100..104], &original[100..104]);
+    assert!(h.lease.is_none());
+}
+
+#[test]
+fn dongle_audiogram_uses_the_saved_profile_and_rejects_a_stale_live_edit_version() {
+    let fixture = Fixture::start_config(false, |h| {
+        let mut metadata = vec![4, 0, 4, 0, 0x1d, 0, 2, 0, 0, 4, 0];
+        for field in ["", "A3063", "", "", "9A348", "", "", "", "", "", ""] {
+            metadata.extend_from_slice(field.as_bytes()); metadata.push(0);
+        }
+        h.metadata = Some(metadata);
+        let mut record = vec![0; 104];
+        record[100..104].copy_from_slice(&0.5f32.to_le_bytes());
+        h.transparency = Some(record);
+        let fixture: serde_json::Value = serde_json::from_str(include_str!("fixtures/legacy-audiogram-synthetic-v1.json")).unwrap();
+        let hex = fixture["cases"][0]["ahps_hex"].as_str().unwrap();
+        h.clinical = Some(hex.as_bytes().chunks_exact(2).map(|pair|
+            u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap()).collect());
+        h.cached.insert(2, vec![4, 0, 4, 0, 9, 0, 0x2c, 1, 2, 0, 0]);
+        h.cached.insert(3, vec![4, 0, 4, 0, 9, 0, 0x33, 2, 0, 0, 0]);
+        let mut pme = vec![0; 140];
+        pme[..12].copy_from_slice(&[4, 0, 4, 0, 0x53, 0, 0x84, 0, 2, 2, 2, 2]);
+        pme[12..].copy_from_slice(accommodations::Preset::ALL[0].curves());
+        h.cached.insert(4, pme);
+    });
+    dongle_health::start(fixture.ctx.clone());
+    until(|| fixture.ctx.state.lock().unwrap().dongle.health.headphone_accommodations.as_ref()
+        .is_some_and(|view| view.audiogram_available && view.editable));
+    let d = fixture.ctx.state.lock().unwrap().dongle.clone();
+    let view = d.health.headphone_accommodations.unwrap();
+    let original = fixture.hardware.lock().unwrap().clinical.clone().unwrap();
+    let command = ntpods_ipc::Command::DongleHealth { session: d.session, generation: d.generation,
+        command: Box::new(ntpods_ipc::Command::SetHeadphoneAccommodations {
+            request_id: 1, device_id: format!("dongle:{}:{}", d.session, d.generation),
+            session: view.session, revision: view.revision, edit_version: view.edit_version,
+            audiogram: true, phone: Some(true), media: Some(true), preset: None,
+        }) };
+    dongle_health::apply(&fixture.ctx, &command);
+    until(|| fixture.ctx.state.lock().unwrap().dongle.health.headphone_accommodations.as_ref()
+        .is_some_and(|view| view.edit_version == 1 && !view.pending));
+    {
+        let h = fixture.hardware.lock().unwrap();
+        assert_eq!(h.clinical.as_ref(), Some(&original));
+        assert!(h.raw_requests.iter().all(|(op, p)| *op != 1 || !matches!(p[0], 0x12 | 0x52) || p[1] == 0x35));
+        assert_eq!(h.raw_requests.iter().filter(|(op, p)| *op == 2 && p[4] == 0x53).count(), 1);
+        let curves = hearing::legacy_audiogram_curves(&original).unwrap();
+        assert_eq!(&h.raw_requests.iter().find(|(op, p)| *op == 2 && p[4] == 0x53).unwrap().1[12..], &curves);
+    }
+    let writes = || fixture.hardware.lock().unwrap().raw_requests.iter()
+        .filter(|(op, p)| *op == 2 || (*op == 1 && matches!(p[0], 0x12 | 0x52))).count();
+    let sends = writes();
+    dongle_health::apply(&fixture.ctx, &command);
+    until(|| fixture.ctx.state.lock().unwrap().dongle.health.headphone_accommodations.as_ref()
+        .is_some_and(|view| !view.pending && view.error.as_ref().is_some_and(|error| error.contains("changed"))));
+    assert_eq!(writes(), sends);
 }
 
 #[test]

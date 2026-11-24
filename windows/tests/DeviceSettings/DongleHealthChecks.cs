@@ -1,11 +1,30 @@
 using NTPods.WinUI.Controls;
+using NTPods.WinUI.Services;
 using NTPods.WinUI.Ipc;
 
 internal static class DongleHealthChecks
 {
     public static void Run(Action<bool, string> check)
     {
-        var observation = new DongleState { Capabilities = 64, BatteryPresent = 5, BatteryCaseSource = 7,
+        var controlOnly = new DongleState { Present = true, Serial = "BOARD-A", AvailableDevices = [new() { Serial = "BOARD-A" }] };
+        check(DongleHealthPresentation.Attached(controlOnly) && !controlOnly.UsbAudioAvailable &&
+            DongleHealthPresentation.ConnectionKey(controlOnly) == "Dongle_NotConnected",
+            "A control-only dongle is attached even while USB headphones and AirPods are absent.");
+        controlOnly.Connected = true;
+        check(DongleHealthPresentation.ConnectionKey(controlOnly) == "Dongle_Connected" && !controlOnly.UsbAudioAvailable,
+            "AirPods connection does not imply USB audio availability or host output selection.");
+        controlOnly.Present = false; controlOnly.Connected = false; controlOnly.Error = "selected_missing";
+        check(DongleHealthPresentation.Attached(controlOnly) && DongleHealthPresentation.ConnectionKey(controlOnly) == "Dongle_SelectedMissing",
+            "Another attached board keeps the picker visible without impersonating the missing selected board.");
+        var idle = new DongleState { Health = new() { Audio = new() } };
+        check(DongleHealthPresentation.ProfileIdle(idle), "An idle reported profile permits an explicit profile edit.");
+        idle.Streaming = true;
+        check(!DongleHealthPresentation.ProfileIdle(idle), "A live stream blocks codec renegotiation independently of Game Mode.");
+        idle.Streaming = false; idle.UsbPlayback = true;
+        check(!DongleHealthPresentation.ProfileIdle(idle), "USB input blocks a profile change before streaming reports catch up.");
+        idle.UsbPlayback = false; idle.Health.Audio = new() { GameModeState = "restoring" };
+        check(!DongleHealthPresentation.ProfileIdle(idle), "An unresolved Game Mode restoration blocks profile renegotiation.");
+        var observation = new DongleState { Present = true, Capabilities = 64, BatteryPresent = 5, BatteryCaseSource = 7,
             Battery = new Battery { Left = 94, Right = 93, Case = 61 },
             BatteryAgeMs = [89_999, 1000, 90_000] };
         check(DongleHealthPresentation.BatteryIsCurrent(observation, 0) &&
@@ -14,13 +33,24 @@ internal static class DongleHealthChecks
             "Case readings expire at 90 seconds; an absent bud stays dim even with a recently retained percentage.");
         check(observation.Battery.Right == 93 && observation.BatteryAgeMs[1] == 1000,
             "Presentation retains the original absent-bud percentage and age.");
+        observation.Present = false;
+        check(!DongleHealthPresentation.BatteryIsCurrent(observation, 0) && observation.Battery.Left == 94,
+            "Unplugged boards retain known percentages without presenting their cached observations as live.");
+        observation.Present = true;
         observation.Capabilities = observation.BatteryCaseSource = 0;
         observation.BatteryAgeMs = [30_000, 30_001, null];
         check(DongleHealthPresentation.BatteryIsCurrent(observation, 0) &&
             !DongleHealthPresentation.BatteryIsCurrent(observation, 1) &&
             !DongleHealthPresentation.BatteryIsCurrent(observation, 2),
             "Legacy firmware keeps its existing age behavior without assuming new presence flags.");
-        var native = new Snapshot { DeviceId = "native", Model = "A2084", Connected = true, HearingAidError = "native error" };
+        var native = new Snapshot { DeviceId = "native", DevName = "Native pair", Serial = "NATIVE-SERIAL", Model = "A2084", Connected = true, HearingAidError = "native error" };
+        var board = new DongleState { UsbAudioAvailable = false };
+        check(DongleHealthPresentation.ReconnectPolicyIdle(board), "The control-only dongle can change its reconnect preference.");
+        board.UsbPlayback = true;
+        check(!DongleHealthPresentation.ReconnectPolicyIdle(board), "A silent open USB output also blocks the flash write.");
+        board.UsbPlayback = false;
+        board.PhoneConnected = true;
+        check(!DongleHealthPresentation.ReconnectPolicyIdle(board), "Phone relay use blocks policy changes.");
         var dongle = native.Dongle;
         dongle.Present = dongle.Selected = dongle.Connected = dongle.ControlsReady = true;
         dongle.Session = ulong.MaxValue;
@@ -30,9 +60,16 @@ internal static class DongleHealthChecks
             HearingAidEditable = true, HearingAidError = "USB error", MediaAssistEnabled = false, MediaAssistRevision = 12 };
         var read = new GetHearingAidCmd();
         check(!DongleHealthPresentation.Busy(dongle.Health), "Idle health controls do not block dongle actions.");
+        dongle.Health.TransparencyPending = true;
+        check(DongleHealthPresentation.Busy(dongle.Health), "A Custom Transparency transaction blocks competing dongle operations.");
+        dongle.Health.TransparencyPending = false;
+        dongle.Health.Transparency = new() { LeftEq = new float[8], RightEq = new float[8], LeftAmplification = 0.25f };
         dongle.Health.HearingAidPending = true;
         check(DongleHealthPresentation.Busy(dongle.Health), "A profile transaction blocks competing dongle actions.");
         dongle.Health.HearingAidPending = false;
+        dongle.Health.HeadphoneAccommodations = new() { Session = 17, Pending = true };
+        check(DongleHealthPresentation.Busy(dongle.Health), "Pending accommodations must block competing dongle operations.");
+        dongle.Health.HeadphoneAccommodations = new() { Session = 17, Revision = 4, Phone = true, Media = false, Editable = true };
         dongle.Health.HardwareDiagnosticsPending = true;
         check(DongleHealthPresentation.Busy(dongle.Health), "Reading saved checks blocks competing dongle actions.");
         dongle.Health.HardwareDiagnosticsPending = false;
@@ -48,6 +85,20 @@ internal static class DongleHealthChecks
         check(ReferenceEquals(DongleHealthPresentation.Route(native, "native", read), read), "Native commands retain their existing path.");
         native.Connected = false;
         var projected = DongleHealthPresentation.Project(native);
+        check(projected.DevName == "" && projected.Serial == "" && native.DevName == "Native pair" && native.Serial == "NATIVE-SERIAL",
+            "Dongle settings must not inherit another native pair's name or serial when firmware has not reported them.");
+        check(projected.Transparency?.LeftAmplification == 0.25f && native.Transparency is null &&
+            DongleHealthPresentation.Route(native, projected.DeviceId, new SetTransparencyCmd { Settings = dongle.Health.Transparency }) is
+                DongleHealthCmd { Command: SetTransparencyCmd },
+            "Custom Transparency uses the selected dongle's confirmed profile and guarded transport without changing native state.");
+        check(!DongleHealthPresentation.ShowHearingProtection(native) && DeviceModels.Find(projected.Model).LoudSoundReduction,
+            "USB models must not expose a native-only Hearing Protection destination.");
+        check(DongleHealthPresentation.ShowHearingProtection(new Snapshot { Connected = true, Model = "A3063" }),
+            "Supported native models keep Hearing Protection reachable.");
+        check(projected.HeadphoneAccommodations == dongle.Health.HeadphoneAccommodations &&
+            DongleHealthPresentation.Route(native, projected.DeviceId, new GetHeadphoneAccommodationsCmd { DeviceId = projected.DeviceId }) is
+                DongleHealthCmd { Command: GetHeadphoneAccommodationsCmd },
+            "Accommodations must use the selected dongle's state and exact guarded transport.");
         check(projected.Connected && projected.DeviceId == $"dongle:{ulong.MaxValue}:{uint.MaxValue}" && projected.Model == "A3063",
             "The USB projection has its own complete target identity and reported model.");
         check(native.DeviceId == "native" && native.HearingAidError == "native error" && projected.HearingAidError == "USB error",
@@ -56,6 +107,15 @@ internal static class DongleHealthChecks
             "Health projection retains independent exact readback revisions.");
         check(projected.DeviceControls.Count == 0 && !projected.PlaybackAvailable && !projected.MicAvailable,
             "USB health must not invent support for other native features.");
+        dongle.Health.DeviceControls[0x0d] = 0x0104;
+        dongle.Health.DeviceControls[0x24] = 0x00022301;
+        dongle.Health.DeviceControls[0x16] = 0x01050501;
+        var rawProjected = DongleHealthPresentation.Project(native);
+        check(rawProjected.Anc == 0 && rawProjected.DeviceControls[0x0d] == 0x0104 &&
+            rawProjected.DeviceControls[0x24] == 0x00022301 && !DeviceSettingStatus.CanEdit(rawProjected, 0x24) &&
+            DeviceSettingStatus.DisplayValue(rawProjected, 0x16) == 0x0501,
+            "USB projection preserves raw settings without truncating an unfamiliar mode or enabling a legacy call write.");
+        dongle.Health.DeviceControls.Clear();
         check(HardwareDiagnosticsPresentation.CanRead(projected, true) && HardwareDiagnosticsPresentation.CanRun(projected, true),
             "Known metadata and case state preserve the existing diagnostic gates.");
         check(DongleHealthPresentation.Route(native, projected.DeviceId, read) is DongleHealthCmd { Session: ulong.MaxValue, Generation: uint.MaxValue, Command: GetHearingAidCmd },

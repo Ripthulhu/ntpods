@@ -9,11 +9,17 @@ use windows::Win32::Media::Audio::{
     IDeviceTopology, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
 };
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL, COINIT_MULTITHREADED, STGM_READ,
+    CoCreateInstance, CoIncrementMTAUsage, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL,
+    COINIT_MULTITHREADED, STGM_READ,
 };
 
 /// Initialize COM MTA on each daemon thread before it accesses volume.
 pub fn init() {
+    static PROCESS_MTA: std::sync::Once = std::sync::Once::new();
+    // Keep one MTA usage until process exit so cached WinRT factories survive worker exits.
+    PROCESS_MTA.call_once(|| unsafe {
+        CoIncrementMTAUsage().expect("Could not retain the process COM apartment");
+    });
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
     }
@@ -72,6 +78,44 @@ pub(crate) fn default_dongle_output() -> windows::core::Result<IMMDevice> {
 
 pub(crate) fn player_owns_dongle_output(player: &str) -> bool {
     default_dongle_output().is_ok_and(|selected| player_owns_device(selected, player))
+}
+
+pub(crate) fn default_dongle_output_id(serial: &str) -> Option<String> {
+    use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
+        CM_Get_Device_IDW, CM_Get_Parent, CM_Locate_DevNodeW, CR_SUCCESS,
+    };
+    let output = default_dongle_output().ok()?;
+    unsafe {
+        let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).ok()?;
+        let adapter = adapter_instance(&enumerator, &output).ok()?;
+        let mut node = 0;
+        if CM_Locate_DevNodeW(&mut node, crate::wide(&adapter).as_ptr(), 0) != CR_SUCCESS { return None; }
+        for _ in 0..4 {
+            let mut parent = 0;
+            if CM_Get_Parent(&mut parent, node, 0) != CR_SUCCESS || parent == node { return None; }
+            node = parent;
+            let mut id = [0u16; 256];
+            if CM_Get_Device_IDW(node, id.as_mut_ptr(), id.len() as u32, 0) != CR_SUCCESS { return None; }
+            let end = id.iter().position(|c| *c == 0)?;
+            let instance = String::from_utf16(&id[..end]).ok()?;
+            if let Some(owner) = dongle_parent_serial(&instance) {
+                return owner.eq_ignore_ascii_case(serial).then(|| endpoint_id(&output)).flatten();
+            }
+        }
+    }
+    None
+}
+
+fn dongle_parent_serial(instance: &str) -> Option<&str> {
+    let mut parts = instance.split('\\');
+    if !parts.next()?.eq_ignore_ascii_case("USB") { return None; }
+    let mut fields = parts.next()?.split('&').collect::<Vec<_>>();
+    fields.sort_unstable_by_key(|field| field.to_ascii_uppercase());
+    if fields.len() != 2 || !fields[0].eq_ignore_ascii_case("PID_4015") || !fields[1].eq_ignore_ascii_case("VID_CAFE") {
+        return None;
+    }
+    let serial = parts.next()?;
+    (parts.next().is_none() && !serial.contains('&') && ntpods_ipc::valid_dongle_serial(serial)).then_some(serial)
 }
 
 fn find_output(
@@ -266,8 +310,15 @@ pub fn any_render_active(address: Option<u64>) -> bool {
 }
 
 pub fn render_activity(address: Option<u64>) -> windows::core::Result<bool> {
+    render_activity_on(output_device_for(address)?)
+}
+
+pub(crate) fn dongle_render_activity() -> windows::core::Result<bool> {
+    render_activity_on(default_dongle_output()?)
+}
+
+fn render_activity_on(device: IMMDevice) -> windows::core::Result<bool> {
     unsafe {
-        let device = output_device_for(address)?;
         let manager = device.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None)?;
         let sessions = manager.GetSessionEnumerator()?;
         let count = sessions.GetCount()?;
@@ -405,16 +456,21 @@ fn player_identity_matches(player: &str, app: Option<&str>, image: &str) -> bool
         return player == app;
     }
     // A packaged ID cannot be inferred from a desktop executable name.
-    if player.contains('!') || !player.to_ascii_lowercase().ends_with(".exe") {
+    if player.contains('!') {
         return false;
     }
     if player.contains(['\\', '/']) {
         player.eq_ignore_ascii_case(image)
     } else {
+        let executable = if player.to_ascii_lowercase().ends_with(".exe") {
+            player.to_owned()
+        } else {
+            format!("{player}.exe")
+        };
         image
             .rsplit(['\\', '/'])
             .next()
-            .is_some_and(|name| name.eq_ignore_ascii_case(player))
+            .is_some_and(|name| name.eq_ignore_ascii_case(&executable))
     }
 }
 
@@ -871,6 +927,16 @@ fn override_duck<E: DuckVolume>(
 #[cfg(test)]
 mod tests {
     #[test]
+    fn dongle_output_identity_uses_composite_serial_not_interface_location_or_another_product() {
+        assert_eq!(super::dongle_parent_serial(r"USB\VID_CAFE&PID_4015\BOARD123"), Some("BOARD123"));
+        assert_eq!(super::dongle_parent_serial(r"usb\pid_4015&vid_cafe\board123"), Some("board123"));
+        for instance in [r"USB\VID_CAFE&PID_4015&MI_00\BOARD123", r"USB\VID_CAFE&PID_4005\BOARD123",
+            r"USB\VID_CAFE&PID_4015\7&123&0&1", r"USB\VID_CAFE&PID_4015\", r"BTHENUM\VID_CAFE&PID_4015\BOARD123",
+            r"USB\VID_CAFE&PID_4015\BOARD123\extra"] {
+            assert_eq!(super::dongle_parent_serial(instance), None, "{instance}");
+        }
+    }
+    #[test]
     fn dongle_endpoint_requires_the_exact_audio_interface_identity() {
         assert!(super::dongle_adapter(r"USB\VID_CAFE&PID_4015&MI_00\instance"));
         for instance in [r"USB\VID_CAFE&PID_4015&MI_02\x", r"BTHENUM\VID_CAFE&PID_4015&MI_00\x",
@@ -946,7 +1012,7 @@ mod tests {
             None,
             r"C:\Apps\Spotify.EXE"
         ));
-        assert!(!super::player_identity_matches(
+        assert!(super::player_identity_matches(
             "Spotify",
             None,
             r"C:\Apps\Spotify.exe"
@@ -966,6 +1032,26 @@ mod tests {
             None,
             r"C:\Apps\player.exe"
         ));
+        for (player, image) in [
+            ("Chrome", r"C:\Apps\chrome.exe"),
+            ("cHrOmE", r"C:\Apps\CHROME.EXE"),
+            ("VLC", r"C:\Apps\vlc.exe"),
+            ("vlc.exe", r"C:\Apps\VLC.EXE"),
+        ] {
+            assert!(super::player_identity_matches(player, None, image));
+        }
+        for (player, image) in [
+            ("Chrome", r"C:\Apps\chrome_proxy.exe"),
+            ("ChromeBeta", r"C:\Apps\chrome.exe"),
+            ("vl", r"C:\Apps\vlc.exe"),
+            ("Chrome!App", r"C:\Apps\chrome.exe"),
+            ("Chrome/Other", r"C:\Apps\Chrome\Other.exe"),
+            (r"C:\Other\Chrome", r"C:\Apps\chrome.exe"),
+            ("org.videolan.vlc", r"C:\Apps\vlc.exe"),
+        ] {
+            assert!(!super::player_identity_matches(player, None, image));
+        }
+        assert!(!super::player_identity_matches("Chrome", Some("Other.App!Player"), r"C:\Apps\chrome.exe"));
     }
 
     #[test]

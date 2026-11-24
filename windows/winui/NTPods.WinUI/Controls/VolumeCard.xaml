@@ -18,11 +18,11 @@
                               ToolTipService.ToolTip="{Binding [MuteToggle_Content], Source={StaticResource Loc}}">
                     <FontIcon Glyph="&#xE767;" FontSize="18" />
                 </ToggleButton>
-                <Slider x:Name="VolumeSlider" Grid.Column="1" Minimum="0" Maximum="100" StepFrequency="1"
+                <Slider x:Name="VolumeSlider" Style="{StaticResource AppleSlider}" Grid.Column="1" Minimum="0" Maximum="100" StepFrequency="1"
                         VerticalAlignment="Center"
                         AutomationProperties.Name="{Binding [VolumeTitle_Text], Source={StaticResource Loc}}"
                         ValueChanged="Volume_ValueChanged" />
-                <TextBlock x:Name="VolumeText" Grid.Column="2" Text="—" MinWidth="48" FontSize="16"
+                <TextBlock x:Name="VolumeText" Grid.Column="2" Text="—" MinWidth="48" FontSize="14"
                            VerticalAlignment="Center" TextAlignment="Right" Foreground="{ThemeResource AppleSecondaryBrush}" />
             </Grid>
         </Border>

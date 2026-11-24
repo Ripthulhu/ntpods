@@ -17,6 +17,7 @@ public sealed partial class CompanionCard : UserControl
     private CompanionPreferences _preferences = new();
     private bool _applyingPreferences;
     private readonly Dictionary<string, ulong> _preferenceRequests = [];
+    private string DeviceId => CompanionControls.SelectedDeviceId(_snapshot);
 
     public CompanionCard()
     {
@@ -38,7 +39,7 @@ public sealed partial class CompanionCard : UserControl
 
     public void Update(Snapshot snapshot)
     {
-        if (!string.Equals(_snapshot.DeviceId, snapshot.DeviceId, StringComparison.OrdinalIgnoreCase)) _preferenceRequests.Clear();
+        if (!string.Equals(CompanionControls.SelectedDeviceId(_snapshot), CompanionControls.SelectedDeviceId(snapshot), StringComparison.OrdinalIgnoreCase)) _preferenceRequests.Clear();
         _snapshot = snapshot;
         Render();
     }
@@ -110,7 +111,7 @@ public sealed partial class CompanionCard : UserControl
 
     private void RenderPreferences()
     {
-        bool matching = _preferences.Matches(_snapshot.DeviceId);
+        bool matching = _preferences.Matches(DeviceId);
         SharedSettings.Visibility = matching ? Visibility.Visible : Visibility.Collapsed;
         _applyingPreferences = true;
         try
@@ -137,8 +138,8 @@ public sealed partial class CompanionCard : UserControl
         if (_applyingPreferences || !IsLoaded) return;
         bool enabled = TakeCallsSwitch.IsOn;
         ulong consentId = ++_nextRequest;
-        if (Client?.IsReady != true || !_preferences.Matches(_snapshot.DeviceId) ||
-            !Client.Send(new CompanionCallConsentCmd { Enabled = enabled, DeviceId = _snapshot.DeviceId, RequestId = consentId }))
+        if (Client?.IsReady != true || !_preferences.Matches(DeviceId) ||
+            !Client.Send(new CompanionCallConsentCmd { Enabled = enabled, DeviceId = DeviceId, RequestId = consentId }))
         { PreferenceFailed(); RenderPreferences(); return; }
         _preferenceRequests["local_call_consent"] = consentId;
         SavePreference("call_takeover_enabled", enabled);
@@ -155,8 +156,8 @@ public sealed partial class CompanionCard : UserControl
     {
         ulong request = ++_nextRequest;
         SharedSettingsError.Visibility = Visibility.Collapsed;
-        if (Client?.IsReady == true && _preferences.Matches(_snapshot.DeviceId) &&
-            Client.SetCompanionPreference(key, value, _snapshot.DeviceId, request)) _preferenceRequests[key] = request;
+        if (Client?.IsReady == true && _preferences.Matches(DeviceId) &&
+            Client.SetCompanionPreference(key, value, DeviceId, request)) _preferenceRequests[key] = request;
         else { PreferenceFailed(); RenderPreferences(); }
     }
 

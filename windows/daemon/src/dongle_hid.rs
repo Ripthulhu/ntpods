@@ -1,4 +1,4 @@
-use super::dongle_protocol::{self, Report, SIZE};
+use super::dongle_protocol::{self, spec, Report, SIZE};
 use std::{io, mem, ptr};
 use windows_sys::Win32::{
     Devices::{DeviceAndDriverInstallation::*, HumanInterfaceDevice::*},
@@ -22,6 +22,8 @@ impl Drop for Handle {
 pub struct Device {
     handle: Handle,
     pub path: Vec<u16>,
+    pub serial: String,
+    pub usb_audio_available: bool,
 }
 
 impl Device {
@@ -86,7 +88,7 @@ impl Device {
     }
     fn read_raw(&self) -> io::Result<[u8; SIZE]> {
         let mut bytes = [0; SIZE];
-        bytes[0] = 2;
+        bytes[0] = spec::control::REPORT_ID;
         self.feature(false, &mut bytes)?;
         Ok(bytes)
     }
@@ -101,13 +103,7 @@ impl Device {
     }
 }
 
-pub enum Discovery {
-    None,
-    Multiple,
-    One(Device),
-}
-
-pub fn discover(previous_path: Option<&[u16]>) -> io::Result<Discovery> {
+pub fn discover(previous_path: Option<&[u16]>) -> io::Result<Vec<Device>> {
     unsafe {
         let mut guid = mem::zeroed();
         HidD_GetHidGuid(&mut guid);
@@ -129,7 +125,7 @@ pub fn discover(previous_path: Option<&[u16]>) -> io::Result<Discovery> {
             }
         }
         let _info = Info(info);
-        let mut found = None;
+        let mut found = Vec::<Device>::new();
         let mut uncertain = false;
         let mut complete = false;
         for index in 0..256 {
@@ -206,7 +202,12 @@ pub fn discover(previous_path: Option<&[u16]>) -> io::Result<Discovery> {
                 uncertain |= was_present;
                 continue;
             }
-            if attributes.VendorID != 0xcafe {
+            if attributes.VendorID != spec::usb::VENDOR_ID
+                || !matches!(
+                    attributes.ProductID,
+                    spec::usb::CONTROL_ONLY_PRODUCT_ID | spec::usb::AUDIO_PRODUCT_ID
+                )
+            {
                 continue;
             }
             let mut preparsed = 0isize;
@@ -218,16 +219,47 @@ pub fn discover(previous_path: Option<&[u16]>) -> io::Result<Discovery> {
             let status = HidP_GetCaps(preparsed, &mut caps);
             HidD_FreePreparsedData(preparsed);
             if status != HIDP_STATUS_SUCCESS
-                || caps.UsagePage != 0xff31
-                || caps.Usage != 1
-                || caps.FeatureReportByteLength != 64
+                || caps.UsagePage != spec::usb::VENDOR_USAGE_PAGE
+                || caps.Usage != spec::usb::VENDOR_USAGE
+                || caps.FeatureReportByteLength != SIZE as u16
             {
                 uncertain |= was_present;
                 continue;
             }
-            let next = Device { handle, path };
+            let mut serial = [0u16; 128];
+            if HidD_GetSerialNumberString(
+                handle.0,
+                serial.as_mut_ptr().cast(),
+                mem::size_of_val(&serial) as u32,
+            ) == 0
+            {
+                uncertain = true;
+                continue;
+            }
+            let Some(end) = serial.iter().position(|c| *c == 0) else {
+                uncertain = true;
+                continue;
+            };
+            let Ok(serial) = String::from_utf16(&serial[..end]) else {
+                uncertain = true;
+                continue;
+            };
+            if !ntpods_ipc::valid_dongle_serial(&serial) || found.iter().any(|d| d.serial == serial)
+            {
+                uncertain = true;
+                continue;
+            }
+            let next = Device {
+                handle,
+                path,
+                serial,
+                usb_audio_available: attributes.ProductID == spec::usb::AUDIO_PRODUCT_ID,
+            };
             match next.read_raw() {
-                Ok(identity) if identity[1..5] == *b"APDG" => {}
+                Ok(identity)
+                    if identity[spec::frame::MAGIC_OFFSET
+                        ..spec::frame::MAGIC_OFFSET + spec::frame::MAGIC_SIZE]
+                        == spec::MAGIC => {}
                 Err(_) if previous_path == Some(next.path.as_slice()) => {}
                 Err(_) => {
                     uncertain = true;
@@ -236,10 +268,7 @@ pub fn discover(previous_path: Option<&[u16]>) -> io::Result<Discovery> {
                 _ => continue,
             }
             // Unknown APDG versions stay visible, but cannot receive commands.
-            if found.is_some() {
-                return Ok(Discovery::Multiple);
-            }
-            found = Some(next);
+            found.push(next);
         }
         if uncertain || !complete {
             return Err(io::Error::new(
@@ -247,6 +276,7 @@ pub fn discover(previous_path: Option<&[u16]>) -> io::Result<Discovery> {
                 "USB identity unavailable",
             ));
         }
-        Ok(found.map_or(Discovery::None, Discovery::One))
+        found.sort_by(|a, b| a.serial.cmp(&b.serial));
+        Ok(found)
     }
 }

@@ -62,6 +62,16 @@ public static class DeviceArt
     /// The case image, or null when the family has no parts.
     public static string? CaseImage(string? model) => Part(model, "case");
 
+    public static string? SettingsLeftImage(string? model) => SettingsPart(model, "left");
+    public static string? SettingsRightImage(string? model) => SettingsPart(model, "right");
+    public static string? SettingsCaseImage(string? model) => SettingsPart(model, "case");
+
+    private static string? SettingsPart(string? model, string part)
+    {
+        var family = Family(model);
+        return HasParts(family) ? $"{Base}settings_{family}_{part}.png" : null;
+    }
+
     private static string? Part(string? model, string part)
     {
         var family = Family(model);

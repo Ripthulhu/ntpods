@@ -2,24 +2,24 @@
 name: NTPods WinUI
 description: Apple-style AirPods settings with native Windows controls.
 colors:
-  accent-light: "#0066D6"
-  accent-dark: "#0A84FF"
+  accent-light: "#0088FF"
+  accent-dark: "#0091FF"
   toggle-light: "#34C759"
-  toggle-dark: "#30D158"
+  toggle-dark: "#34C759"
   toggle-hover-light: "#30B851"
   toggle-hover-dark: "#34C759"
   toggle-pressed: "#248A3D"
   toggle-knob: "#FFFFFF"
-  battery-light: "#248A3D"
-  battery-dark: "#30D158"
+  battery-light: "#35C759"
+  battery-dark: "#2ED158"
   page-light: "#F2F2F7"
   page-dark: "#000000"
   group-light: "#FFFFFF"
   group-dark: "#1C1C1E"
   secondary-light: "#636366"
   secondary-dark: "#A1A1A6"
-  divider-light: "#D1D1D6"
-  divider-dark: "#38383A"
+  divider-light: "#88888840"
+  divider-dark: "#88888840"
   selected-light: "#FFFFFF"
   selected-dark: "#48484A"
   selected-text-light: "#000000"
@@ -30,22 +30,22 @@ colors:
   hover-dark: "#2C2C2E"
 typography:
   page-title:
-    fontSize: "30px"
-    fontWeight: 600
+    fontSize: "22px"
+    fontWeight: 800
   device-title:
-    fontSize: "24px"
-    fontWeight: 600
+    fontSize: "22px"
+    fontWeight: 800
   section-title:
     fontSize: "14px"
     fontWeight: 600
   body:
-    fontSize: "16px"
+    fontSize: "14px"
   status:
-    fontSize: "13px"
+    fontSize: "12px"
   label:
     fontSize: "12px"
 rounded:
-  group: "24px"
+  group: "28px"
   quiet-button: "18px"
   mode-button: "26px"
   mode-thumb: "27px"
@@ -55,24 +55,24 @@ spacing:
   compact: "8px"
   related: "12px"
   inset: "16px"
-  group: "20px"
-  section: "24px"
-  settings-section: "28px"
-  page-bottom: "48px"
+  group: "16px"
+  section: "16px"
+  settings-section: "16px"
+  page-bottom: "32px"
 components:
   group-light:
     backgroundColor: "{colors.group-light}"
     rounded: "{rounded.group}"
-    padding: "20px"
+    padding: "16px"
   group-dark:
     backgroundColor: "{colors.group-dark}"
     rounded: "{rounded.group}"
-    padding: "20px"
+    padding: "16px"
   setting-row:
     typography: "{typography.body}"
-    padding: "16px 20px"
+    padding: "15px 16px"
   setting-toggle:
-    width: "52px"
+    width: "64px"
   quiet-button:
     backgroundColor: "transparent"
     rounded: "{rounded.quiet-button}"
@@ -96,13 +96,13 @@ components:
 
 ## Overview
 
-NTPods follows LibrePods' Apple appearance: a light gray or black page, rounded inset groups, device artwork, green switches and battery rings. Text, navigation, keyboard controls and accessibility use native Windows behavior.
+The device screens follow LibrePods' Apple screens and shared primitives: `AppleSettingsScreen`, `StyledScaffold`, `StyledList`, `StyledListItem`, `StyledSwitch` and `BatteryView`. Their filled inset groups, compact artwork, centered titles and typography are the visual authority. WinUI retains native input, focus, keyboard and automation behavior.
 
 This record covers the main window, device page and app settings. `App.xaml` supplies the shared resources; the page and control XAML files supply the composition. The tray and island popup have separate layouts. All numeric lengths below are WinUI device-independent pixels (DIP), except the explicitly identified window pixel sizes. The portable frontmatter uses `px` to represent those logical lengths. Opaque XAML ARGB colors are written as equivalent CSS RGB hex values.
 
 ## Colors
 
-Green identifies enabled switches and battery readings. Blue is the native control accent. Light appearance uses a darker battery green than the switch fill so the small rings remain distinct against the page.
+Enabled switches use #34C759 in both appearances. Battery rings use #35C759 in light appearance and #2ED158 in dark appearance. Controls use the Apple source accents #0088FF and #0091FF.
 
 The `page`, `group`, `track` and `selected` pairs define the surface layers. The `secondary` pair is for descriptions, status and metadata; `divider` separates rows. `hover` supplies expander and checked listening-button pointer states. Selected listening icons use `selected-text`.
 
@@ -110,19 +110,75 @@ Use the matching `Apple*` or `NTPodsAccentBrush` theme resource in XAML. Normal 
 
 ## Typography
 
-Text inherits the WinUI theme font; the app does not bundle or set a custom text family. The intended native family is Segoe UI. Keep font fallback and text rendering under Windows control.
+The app bundles the same Roboto Flex font as LibrePods. `AppleBodyFont` and the native content font resource use that file. Body text uses the 400 weight; centered scaffold titles use the 800 weight at 22 DIP. Windows provides shaping and fallback for missing glyphs. Keep the font's OFL notice with the payload.
 
-The settings page title uses `page-title`; the centered device name uses `device-title`. `SectionTitle` uses the smaller semibold role in secondary text color. Row labels and every expander heading use `body` at normal weight. Optional help and actionable errors use `status`; listening-mode and battery part labels use `label`. Battery percentages use 17 DIP; the heart-rate reading uses 28 DIP semibold. Line height and character spacing remain native defaults. Settings labels and descriptions wrap, including translations. The device name and connection status stay on one line with ellipsis.
+Row labels and expander headings use 14 DIP at normal weight. Section captions use the 14-DIP semibold secondary role; helper copy, connection status, slider captions and battery readings use 12 DIP. Settings labels and descriptions wrap. Device names and scaffold titles use one line with ellipsis; the Name row retains the actual value separately.
 
 ## Layout
 
-Both pages use a full-width vertical scroll area so the side margins accept scrolling and the scrollbar sits at the window's right edge. The centered content column has a 688 DIP maximum outer width and 24 DIP side padding, leaving at most 640 DIP for controls. Device sections have 24 DIP gaps; app settings sections have 28 DIP gaps. The device page starts with 20 DIP top padding; app settings uses 24 DIP. Both end with 48 DIP padding. Current source retains the same side padding as the window narrows; it has no padding breakpoint.
+Keep the AirPods Dongle card below the shared settings. It stays reachable before
+a pair is selected, when the device settings are hidden. The device header
+reconnects the saved pair through the selected dongle.
+Spatial audio uses the shared navigation row and a single inset action group.
+Keep firmware counters behind the experimental settings preference.
 
-Grouped rows place wrapping text on the left and the control on the right. Repeated feature rows have a 64 DIP minimum height, 20 DIP horizontal padding, 16 DIP vertical padding and a 16 DIP gap before the switch. Standard inset dividers stop 16 DIP short of each side. Expanders use 20 DIP horizontal and 16 DIP vertical header padding; expanded content uses 20 DIP side and bottom padding with 8 DIP at the top.
+Use native acrylic for the round Back and Settings buttons, the header Connect action
+and the phone setup action. A one-DIP directional rim catches light along the
+upper edge. The two dongle pairing actions share one material, as do the Phone
+and This PC handoff actions. Keep their hit targets independent. A native
+connection with device actions uses More in the Settings slot. The dongle
+shows the pair name once in the header. App Settings puts appearance and local
+preferences before phone linking.
+A 16-DIP fade at the top of each scrolling page softens content passing the
+fixed header. High contrast removes the fade and uses system colors for glass
+surfaces. Windows selects the solid material fallback when transparency is off.
+Settings groups retain their filled backgrounds. Switch thumbs use acrylic
+while pressed and sliders retain their existing lens behavior.
+[Apple materials guidance](https://developer.apple.com/design/human-interface-guidelines/materials)
 
-The battery area has three equal columns, or one centered column for headphones. Each part has proportional artwork, a compact circular gauge, a percentage and a label. The device header's three-dot menu includes app settings; a Back button returns to the device page. The window opens at 820 × 880 physical pixels. Its minimum outer size is a 420 × 540 DIP client area plus the window borders, capped at the monitor's work area.
 
-Keep symmetric 40 DIP columns on either side of the device header, even when only the right side contains an action. The name and status rows reserve at least 32 DIP each. Showing Connect or Repair, or changing a status label, must not move the settings below or shift the device name off center. Keep Connect available when the control session is connected but its audio output is not ready.
+The device and app settings screens use a centered column with a maximum outer width of 608 DIP and 16-DIP side padding. Sections use 16-DIP gaps. The scroll area spans the window, including side margins, with its scrollbar at the edge. Body padding is 16 DIP above and 32 DIP below. These insets remain stable as the window narrows.
+
+The scaffold has a centered 22-DIP title and 48-DIP round navigation or action buttons in symmetric side slots. Subpage bars are 64 DIP high. The main header reserves a 44-DIP connection-status row so showing Connect or Repair keeps the title and settings in place.
+
+Navigation rows use filled 28-DIP groups, a 58-DIP minimum height and 16-DIP horizontal insets. Name shows its current value before the chevron. Hearing Health and Press and Hold each share one filled group with inset dividers. Standalone navigation rows use the same fill and radius. Text and trailing values remain vertically centered; long labels can grow the row.
+
+The battery hero is capped at 350 DIP. Bud artwork shares the left column and the case occupies the right, separated by 16 DIP. Independent left and right gauges sit together below the buds; the case gauge sits below the case. Keep every reported percentage and freshness independent, including near-equal readings. Individual artwork wrappers preserve per-ear availability dimming. Headphones span the hero with one reading. Do not add a second large device title or put Windows companion tools between the hero and Name.
+
+Filled groups have 16-DIP content insets, 28-DIP corners and no outer border. Repeated switch rows use a 58-DIP minimum height and a 12-DIP text/control gap. Switch tracks are 64 by 28 DIP with 39 by 24-DIP white knobs. Ordinary sliders use a six-DIP track and a white pill thumb; the listening-mode rail retains its separate glass control and motion. Standard inset dividers stop 16 DIP short of each side. Expanders use 16-DIP side padding and a 16-DIP header inset.
+
+The window opens at 820 × 880 physical pixels. Its minimum outer size remains a 420 × 540 DIP client area plus window borders, capped at the monitor's work area.
+
+## Device navigation
+
+Use the same Apple section names, order and destinations as LibrePods. Immediately after the battery hero, show Name, Hearing Health, Listening Mode, Heart Rate, Press and Hold AirPods (Left and Right), Call Controls, Audio, Automatic Ear Detection, Microphone Mode, Pause media when falling asleep, Optimized Charge Limit, Accessibility, Off Listening Mode and About. Omit unsupported sections. Do not substitute head tracking for Head Gestures or label microphone controls Recorder when recording is unavailable.
+
+Open settings in real subpages with a round Back action and centered scaffold title. Hearing Health opens Hearing Protection or Hearing Aid. Audio keeps Personalized Volume and Conversation Awareness together and opens Equalizer. Accessibility contains Press Speed, Press and Hold Duration, Listening Mode options, Headphone Accommodations, Tone Volume, Volume Control and Volume Swipe Speed. Headphone Accommodations opens Transparency. Keep Listen on, shared companion settings, Windows volume, playback, microphone, sensors, nearby features and hardware checks under the NTPods section after the common device sections. Reuse existing controls and their pending, identity, cleanup and command behavior; navigation must not duplicate them or send settings.
+
+Equalizer's Recommended sound or Custom EQ label follows the displayed live choice, including while a write is pending. Keep confirmation status in the existing accessibility help and tooltip. Do not show the old device preset beside newly edited bands. Explanatory and value text uses the shared 12-DIP helper size.
+
+Headphone Accommodations follows the shared Apple screen: master toggle, Audio tuning choices, independent Phone and Media switch rows and Transparency. Put Audiogram first, followed by Balanced Tone, Vocal Range and Brightness. Show the three fixed Optimization stops (Slight, Moderate, Strong) only for stock tunings. Audiogram uses the hearing profile saved on the selected AirPods and requires a complete validated source; it never rewrites that profile. Display received read-only flags and recognized selections while keeping editing disabled. Unmatched curves remain Custom settings, with no guessed Audiogram classification or Optimization value. Do not add Customize Audio or Play Sample until their decision flow and assets are verified. Send changes live and preserve unedited fields. Keep a successfully sent choice visible while awaiting a device report, without a routine warning or an automatic reconnect. Store requested choices separately from received values; fresh reports supersede them, and connection changes discard them. Remember Phone/Media choices per pair while the master is off; a fresh session must not reset them.
+
+Transparency has an independent master group and five separate slider groups in order: Amplification, Balance, Tone, Ambient Noise Reduction and Own Voice Amplification, followed by a separate Conversation Boost group. The subpage has no redundant expander. Use the source-backed PersonalAudio conversion described in the protocol reference. Noncanonical per-ear gains remain visible but disable the combined gain controls; other adjustments preserve them. Preserve separate per-ear values and both EQ curves until the user edits the corresponding control. Read automatically on connection and send valid changes live, with one write in flight and the latest gesture retained until it can be sent. Transparency and Optimization share the inset glass slider style. Their slider groups use 24-DIP horizontal and 16-DIP vertical padding, with an eight-DIP caption-to-track gap. The enlarged pressed thumb stays within the horizontal inset. Its 40-by-24-DIP white resting thumb reveals a refracting lens, directional rim and restrained shadow during a press, using the existing AndroidLiquidGlass lens math and native rendering. Keep its keyboard and RangeValue automation exposed; availability gates each input directly, with no focusable content wrapper. See [the protocol reference](docs/WINDOWS-AIRPODS-CONTROL-PROTOCOL.md) for verified layouts and limits.
+
+## Phone connection and selected route
+
+Phone connection is always available in App Settings and under NTPods on the
+device page. Keep system Bluetooth pairing and app linking distinct. Setup opens
+Windows Bluetooth settings, refreshes bonded phones on return, then creates a
+linking code only after an explicit action for the selected phone and AirPods.
+Explain that the phone uses the PC's Bluetooth adapter while AirPods may stay on
+the USB dongle. Match LibrePods' PC connection terminology and Apple groups.
+Show waiting separately from an authenticated connection. Opening or rendering
+setup must never replace an existing link or change call consent. Clear temporary
+codes on dismissal, selection or session changes; exclude copied codes from
+clipboard history and roaming. Keep transfer controls in the existing Listen on card.
+
+The header and battery hero follow the selected native or dongle route. Retain
+each component's freshness and artwork identity. Header Connect targets that
+route explicitly. Keep dongle pairing, Bluetooth audio input and diagnostics in
+one collapsed dongle group; reveal its picker when selection needs attention.
+Do not repeat ordinary battery, listening-mode or reconnect controls there.
 
 ## Elevation & Depth
 
@@ -138,11 +194,13 @@ Groups have no outer border. Internal dividers are one DIP high. Battery gauges 
 
 - **Inset groups and expanders.** Reuse `Card`, `GroupExpander`, `SectionTitle` and `InsetDivider`. A card normally owns its padding; a group of rows sets card padding to zero so each row and divider controls its inset. Equalizer, device adjustments and additional sensor controls use native expanders. Keep one rounded outer surface throughout expansion; the header must not abruptly change from rounded to square. Reveal content at its natural size through an animated viewport, with nearby cards moving alongside it. Open over 240 ms and close over 180 ms, continuing from the current height when interrupted. Disable closing content's interaction immediately, keep native expand/collapse events and keyboard behavior, and snap to the final layout when Windows animations are off.
 - **Switch rows.** `SettingToggle` retains `DefaultToggleSwitchStyle`, aligns right, and removes the redundant on/off captions. Labels and accessible names come from the same localization resource. On, hover and pressed fills use the toggle color tokens. Routine confirmation, pending and unavailable explanations belong in tooltips and accessibility help, not repeated lines beneath every label.
-- **Listen on.** Use the existing `Card` and `QuietButton` styles for equal Phone and This PC actions with native icons and wrapping body labels. Neither action indicates the current audio owner. Reserve a 20-DIP progress slot beside the title and animate it only during an active transfer. Keep routine guidance in tooltips and accessible help; show an unconfirmed switch once as an inline error.
-- **Unreported preferences.** Known supported preferences can accept an explicit choice without a current report. Use an unselected native On/Off chooser for unknown booleans, reserving the same 144 DIP control slot as the reported switch. Show sent choices separately from confirmed reports in tooltips and accessibility help. Require both hold actions before Apply; never guess the other side. Saved choices belong to their pair and never send automatically when loaded.
-- **Hearing edits.** Require explicit Apply for audiogram changes; debounce tuning gestures and preserve untouched settings from the current pair's confirmed profile.
-- **USB hearing controls.** Reuse the hearing assistance and hardware-check expanders below the native-only settings. A connected PC Bluetooth session keeps its controls; otherwise the dongle supplies these two groups with its own reported model and session. Changing the USB target clears drafts and confirmations. Preserve the experimental opt-in and model gates.
-- **Hardware checks.** Keep saved per-ear results in a collapsed expander with manual Refresh and raw device data in secondary details. Keep device timestamps distinct from the time read; cached flags are not a current health verdict. An in-case check requires explicit confirmation and verified support. Show the next physical action and separate new-result progress for each ear. Label cancellation Stop waiting because it does not stop the firmware check.
+- **Listen on.** Keep this Windows companion group below the common device sections. Place the Phone and This PC actions together inside one `GlassActionGroup`. Use equal-width `QuietButton` controls with native icons and wrapping labels. Reserve a 20-DIP progress slot beside the title during a transfer. Keep routine guidance in tooltips and accessible help and show a failed transfer once below the actions.
+- **Unreported preferences.** Known supported preferences can accept an explicit choice without a current report. Automatic ear detection always uses the standard switch, including saved choices. An unknown charging-case sounds setting uses an unselected native On/Off chooser in the same 144 DIP control slot as the reported switch. Show sent choices separately from confirmed reports in tooltips and accessibility help. Send paired hold actions only after both choices are valid; never guess the other side. Saved choices belong to their pair and never send automatically when loaded.
+- **Hearing edits.** Commit complete validated audiogram edits automatically; debounce tuning gestures and preserve untouched settings from the current pair's confirmed profile.
+- **Hearing profile presentation.** Load the validated stored profile automatically. Do not display a blanket missing-audiogram or Experimental warning above a loaded fitting. Keep missing-profile and failed-write handling tied to the actual state, with editing and enrollment safeguards enforced by the backend.
+- **USB hearing controls.** Reuse Hearing Aid, Headphone Accommodations and Hardware checks through their device subpages. A connected PC Bluetooth session keeps its controls; otherwise the dongle supplies these two groups with its own reported model and session. Changing the USB target clears drafts and confirmations. Preserve the experimental opt-in and model gates.
+- **Dongle selection.** Keep the native board picker in the existing dongle group when several boards are attached or the selected board is missing. Follow the hardware serial across USB personality changes and never silently select a different board. Keep AirPods connection separate from USB audio availability; control-only attachment retains the group and its supported actions. Codec/profile edits require idle audio, while Game Mode remains a live firmware control. Routine availability belongs in accessible help; do not claim route ownership from a connected link.
+- **Hardware checks.** Load saved per-ear results and device metadata automatically on connection. Keep results in a collapsed expander and raw data in secondary details. Keep device timestamps distinct from the time read; cached flags are not a current health verdict. An in-case check requires explicit confirmation and verified support. Show the next physical action and separate new-result progress for each ear. Label cancellation Stop waiting because it does not stop the firmware check.
 - **Find nearby.** Use a collapsed native expander with explicit Start and Stop. Show only the selected pair's verified Bluetooth signal, its trend and the age of the last report. Keep the last signal dimmed when reports stop; do not infer distance, direction or a lost device. Pause live guidance during microphone use. Stop this view's search when it collapses, unloads, leaves the device page, changes pairs, loses the daemon or hides with the window. Opening the card never starts a search or connects audio.
 - **Listening modes.** One draggable capsule marks the current mode. The rail contains only the modes supported by the model. Legacy ANC models offer Off directly; newer Pro models use the reported or saved Allow Off choice. Adaptive expands to three of five equal units within the same rail; Off is hidden during that expansion. Strength runs from 0 to 100 across the Adaptive region. The labels below the rail keep stable wrapping widths and move with the segment centers. Mode animations must not change the label row height or push other sections down. Disabled and disconnected states keep the same rail with dimmed icons; native button backgrounds must not create separate pills. Do not display a selected mode when its value is unknown.
 - **Listening interaction.** The capsule follows the pointer continuously across Adaptive strength. Keep the full 0–100 range even when firmware reports rounded values. Coalesce live changes while dragging and send the final position on release, waiting for mode confirmation before sending strength. Requested values remain separate from device readback without persistent status copy. Native toggle buttons provide keyboard mode selection; a native slider provides keyboard and automation access to strength. Its focused state draws a two-DIP outline around the Adaptive region. A send in progress must not interrupt a gesture.

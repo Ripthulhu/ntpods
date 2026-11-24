@@ -160,7 +160,9 @@ owning app connection stops the request. Removing the AirPods suspends it until
 they are worn again. This preference is not saved.
 
 The backend uses an advertised RTBuddy motion service when available. Otherwise
-it falls back to service 16 on firmware 8 and later, or 14 on older firmware.
+the WX path falls back to service 16 on firmware 8 and later, or 14 on older
+firmware. Ordinary AirPods 3 A2564/A2565 uses its exact RemoteHID declaration
+instead; see [the shared sensor contract](SENSOR-PROTOCOL.md).
 It validates the service, packet envelope and record length before reading the
 two signed channels. UI samples are sent separately from ordinary state updates,
 at most 25 times per second. The graph follows the

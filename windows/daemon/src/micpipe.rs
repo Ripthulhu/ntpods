@@ -162,7 +162,6 @@ impl MicPipe {
 
 /// Serializes mic access and reopens the handle after enumeration delays or driver removal.
 pub struct MicPipeCell {
-    #[cfg(test)]
     device_free: bool,
     inner: Mutex<Option<MicPipe>>,
     enabled: AtomicBool,
@@ -173,7 +172,9 @@ pub struct MicPipeCell {
 
 impl MicPipeCell {
     #[cfg(test)]
-    pub(crate) fn for_test() -> Self {
+    pub(crate) fn for_test() -> Self { Self::disabled() }
+
+    pub(crate) fn disabled() -> Self {
         Self {
             device_free: true,
             inner: Mutex::new(None),
@@ -187,7 +188,6 @@ impl MicPipeCell {
     /// Attempt the first open; later access retries if the device is unavailable.
     pub fn new() -> MicPipeCell {
         MicPipeCell {
-            #[cfg(test)]
             device_free: false,
             inner: Mutex::new(MicPipe::open()),
             enabled: AtomicBool::new(false),
@@ -203,7 +203,6 @@ impl MicPipeCell {
 
     /// Whether a pipe is currently open (reopening if it was closed).
     pub fn is_open(&self) -> bool {
-        #[cfg(test)]
         if self.device_free {
             return false;
         }
